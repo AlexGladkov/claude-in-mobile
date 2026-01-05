@@ -1,6 +1,6 @@
 {
   "name": "claude-in-android",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "MCP server for mobile device automation - Android (ADB) and iOS Simulator (simctl)",
   "type": "module",
   "main": "dist/index.js",
@@ -45,7 +45,7 @@
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "sharp": "^0.34.5"
+    "jimp": "^1.6.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

@@ -1,8 +1,8 @@
-import sharp from "sharp";
+import { Jimp } from "jimp";
 const DEFAULT_OPTIONS = {
-    maxWidth: 1080,
-    maxHeight: 1920,
-    quality: 80,
+    maxWidth: 800, // Safe for API limit of 2000px
+    maxHeight: 1400, // Safe for API limit of 2000px
+    quality: 70,
 };
 /**
  * Compress PNG image buffer
@@ -12,10 +12,9 @@ const DEFAULT_OPTIONS = {
  */
 export async function compressScreenshot(pngBuffer, options = {}) {
     const opts = { ...DEFAULT_OPTIONS, ...options };
-    const image = sharp(pngBuffer);
-    const metadata = await image.metadata();
-    const width = metadata.width ?? 1080;
-    const height = metadata.height ?? 1920;
+    const image = await Jimp.read(pngBuffer);
+    const width = image.width;
+    const height = image.height;
     // Calculate new dimensions maintaining aspect ratio
     let newWidth = width;
     let newHeight = height;
@@ -26,19 +25,14 @@ export async function compressScreenshot(pngBuffer, options = {}) {
         newWidth = Math.round(width * ratio);
         newHeight = Math.round(height * ratio);
     }
-    // Resize and compress to JPEG
-    const compressedBuffer = await image
-        .resize(newWidth, newHeight, {
-        fit: "inside",
-        withoutEnlargement: true,
-    })
-        .jpeg({
-        quality: opts.quality,
-        mozjpeg: true,
-    })
-        .toBuffer();
+    // Resize if needed
+    if (newWidth !== width || newHeight !== height) {
+        image.resize({ w: newWidth, h: newHeight });
+    }
+    // Convert to JPEG buffer
+    const jpegBuffer = await image.getBuffer("image/jpeg", { quality: opts.quality });
     return {
-        data: compressedBuffer.toString("base64"),
+        data: jpegBuffer.toString("base64"),
         mimeType: "image/jpeg",
     };
 }

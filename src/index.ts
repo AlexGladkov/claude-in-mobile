@@ -73,18 +73,18 @@ const tools: Tool[] = [
         },
         maxWidth: {
           type: "number",
-          description: "Max width in pixels (default: 1080)",
-          default: 1080,
+          description: "Max width in pixels (default: 800, max 2000 for API)",
+          default: 800,
         },
         maxHeight: {
           type: "number",
-          description: "Max height in pixels (default: 1920)",
-          default: 1920,
+          description: "Max height in pixels (default: 1400, max 2000 for API)",
+          default: 1400,
         },
         quality: {
           type: "number",
-          description: "JPEG quality 1-100 (default: 80)",
-          default: 80,
+          description: "JPEG quality 1-100 (default: 70)",
+          default: 70,
         },
       },
     },
@@ -691,7 +691,7 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
 const server = new Server(
   {
     name: "claude-mobile",
-    version: "2.1.0",
+    version: "2.1.1",
   },
   {
     capabilities: {
