@@ -1,0 +1,50 @@
+{
+  "name": "claude-in-android",
+  "version": "1.0.0",
+  "description": "MCP server for Android device automation via ADB",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "claude-in-android": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "start": "node dist/index.js",
+    "dev": "tsc && node dist/index.js",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "android",
+    "adb",
+    "automation",
+    "claude",
+    "anthropic",
+    "model-context-protocol"
+  ],
+  "author": "Alex Gladkov",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AlexGladkov/claude-in-android.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AlexGladkov/claude-in-android/issues"
+  },
+  "homepage": "https://github.com/AlexGladkov/claude-in-android#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}

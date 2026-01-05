@@ -1,0 +1,1 @@
+{"version":3,"file":"index.d.ts","sourceRoot":"","sources":["../../src/adb/index.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,SAAS,EAAE,MAAM,aAAa,CAAC;AACxC,YAAY,EAAE,MAAM,EAAE,MAAM,aAAa,CAAC;AAE1C,OAAO,EACL,gBAAgB,EAChB,UAAU,EACV,gBAAgB,EAChB,eAAe,EACf,aAAa,EACb,YAAY,EACZ,aAAa,EACb,YAAY,GACb,MAAM,gBAAgB,CAAC;AAExB,YAAY,EAAE,MAAM,EAAE,SAAS,EAAE,MAAM,gBAAgB,CAAC"}
