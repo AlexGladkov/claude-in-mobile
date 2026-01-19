@@ -79,18 +79,24 @@ class WindowManager {
         val windows = mutableListOf<WindowInfo>()
 
         try {
-            // Use AppleScript to get window list (simpler than CoreGraphics JNA)
+            // Use AppleScript to get window list - includes ALL processes (not just foreground)
+            // This script also catches Java/Kotlin/Compose Desktop apps
             val script = """
                 tell application "System Events"
                     set windowList to {}
-                    repeat with proc in (processes whose background only is false)
+                    -- Get all processes with windows (not just foreground apps)
+                    repeat with proc in (processes whose visible is true)
                         set procName to name of proc
-                        repeat with win in windows of proc
-                            set winName to name of win
-                            set winPos to position of win
-                            set winSize to size of win
-                            set end of windowList to {procName, winName, item 1 of winPos, item 2 of winPos, item 1 of winSize, item 2 of winSize}
-                        end repeat
+                        try
+                            repeat with win in windows of proc
+                                try
+                                    set winName to name of win
+                                    set winPos to position of win
+                                    set winSize to size of win
+                                    set end of windowList to {procName, winName, item 1 of winPos, item 2 of winPos, item 1 of winSize, item 2 of winSize}
+                                end try
+                            end repeat
+                        end try
                     end repeat
                     return windowList
                 end tell
@@ -107,9 +113,74 @@ class WindowManager {
             System.err.println("Error getting macOS windows: ${e.message}")
         }
 
-        // Mark first window as focused (simplified)
-        if (windows.isNotEmpty()) {
-            windows[0] = windows[0].copy(focused = true)
+        // Additionally scan for Java/JVM processes that might not appear in standard list
+        try {
+            val javaScript = """
+                tell application "System Events"
+                    set javaWindows to {}
+                    -- Scan for java, kotlin, JetBrains, gradle processes
+                    repeat with proc in processes
+                        set procName to name of proc
+                        if procName contains "java" or procName contains "kotlin" or procName contains "JetBrains" or procName contains "gradle" or procName contains "idea" then
+                            try
+                                repeat with win in windows of proc
+                                    try
+                                        set winName to name of win
+                                        set winPos to position of win
+                                        set winSize to size of win
+                                        set end of javaWindows to {procName, winName, item 1 of winPos, item 2 of winPos, item 1 of winSize, item 2 of winSize}
+                                    end try
+                                end repeat
+                            end try
+                        end if
+                    end repeat
+                    return javaWindows
+                end tell
+            """.trimIndent()
+
+            val javaProcess = ProcessBuilder("osascript", "-e", javaScript).start()
+            val javaOutput = javaProcess.inputStream.bufferedReader().readText()
+            javaProcess.waitFor()
+
+            // Parse and add Java windows (avoid duplicates)
+            val existingTitles = windows.map { it.title }.toSet()
+            val javaWindows = mutableListOf<WindowInfo>()
+            parseAppleScriptWindowList(javaOutput, javaWindows)
+
+            javaWindows.forEach { win ->
+                if (win.title !in existingTitles) {
+                    windows.add(win.copy(id = "mac_java_${windows.size}"))
+                }
+            }
+        } catch (e: Exception) {
+            System.err.println("Error getting Java windows: ${e.message}")
+        }
+
+        // Get actual focused window
+        try {
+            val focusScript = """
+                tell application "System Events"
+                    set frontApp to first application process whose frontmost is true
+                    return name of frontApp
+                end tell
+            """.trimIndent()
+
+            val focusProcess = ProcessBuilder("osascript", "-e", focusScript).start()
+            val focusedApp = focusProcess.inputStream.bufferedReader().readText().trim()
+            focusProcess.waitFor()
+
+            // Mark the focused app's first window as focused
+            val focusedIndex = windows.indexOfFirst { it.ownerName == focusedApp }
+            if (focusedIndex >= 0) {
+                windows[focusedIndex] = windows[focusedIndex].copy(focused = true)
+            } else if (windows.isNotEmpty()) {
+                windows[0] = windows[0].copy(focused = true)
+            }
+        } catch (e: Exception) {
+            // Fallback: mark first window as focused
+            if (windows.isNotEmpty()) {
+                windows[0] = windows[0].copy(focused = true)
+            }
         }
 
         return windows
@@ -138,13 +209,69 @@ class WindowManager {
         val windows = getMacWindows()
         val window = windows.find { it.id == windowId } ?: return
 
-        val script = """
-            tell application "${window.ownerName}"
-                activate
-            end tell
-        """.trimIndent()
+        // Strategy 1: Try direct application activation (works for native apps)
+        var success = false
+        try {
+            val script1 = """
+                tell application "${window.ownerName}"
+                    activate
+                end tell
+            """.trimIndent()
 
-        ProcessBuilder("osascript", "-e", script).start().waitFor()
+            val proc1 = ProcessBuilder("osascript", "-e", script1).start()
+            val exitCode = proc1.waitFor()
+            success = exitCode == 0
+
+            // Verify it actually worked
+            if (success) {
+                Thread.sleep(100) // Give time to switch
+                val verifyScript = """
+                    tell application "System Events"
+                        set frontApp to first application process whose frontmost is true
+                        return name of frontApp
+                    end tell
+                """.trimIndent()
+                val verifyProc = ProcessBuilder("osascript", "-e", verifyScript).start()
+                val frontApp = verifyProc.inputStream.bufferedReader().readText().trim()
+                verifyProc.waitFor()
+                success = frontApp == window.ownerName
+            }
+        } catch (e: Exception) {
+            success = false
+        }
+
+        // Strategy 2: Use System Events for Java/background processes
+        if (!success) {
+            try {
+                val script2 = """
+                    tell application "System Events"
+                        set frontmost of process "${window.ownerName}" to true
+                    end tell
+                """.trimIndent()
+                ProcessBuilder("osascript", "-e", script2).start().waitFor()
+            } catch (e: Exception) {
+                System.err.println("Error focusing window via System Events: ${e.message}")
+            }
+        }
+
+        // Strategy 3: Click on the window to bring it to front (last resort)
+        if (!success) {
+            try {
+                val script3 = """
+                    tell application "System Events"
+                        tell process "${window.ownerName}"
+                            try
+                                perform action "AXRaise" of window 1
+                            end try
+                            set frontmost to true
+                        end tell
+                    end tell
+                """.trimIndent()
+                ProcessBuilder("osascript", "-e", script3).start().waitFor()
+            } catch (e: Exception) {
+                System.err.println("Error raising window: ${e.message}")
+            }
+        }
     }
 
     private fun resizeMacWindow(windowId: String?, width: Int, height: Int) {

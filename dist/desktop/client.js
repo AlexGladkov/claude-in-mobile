@@ -461,6 +461,13 @@ export class DesktopClient extends EventEmitter {
         return { width: 1920, height: 1080 }; // Default
     }
     /**
+     * Get list of connected monitors (multi-monitor support)
+     */
+    async getMonitors() {
+        const result = await this.sendRequest("get_monitors");
+        return result.monitors;
+    }
+    /**
      * Launch app (for compatibility with mobile interface)
      */
     launchApp(packageName) {

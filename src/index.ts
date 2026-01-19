@@ -89,6 +89,10 @@ const tools: Tool[] = [
           description: "JPEG quality 1-100 (default: 70)",
           default: 70,
         },
+        monitorIndex: {
+          type: "number",
+          description: "Monitor index for multi-monitor desktop setups (Desktop only). If not specified, captures all monitors.",
+        },
       },
     },
   },
@@ -530,6 +534,14 @@ const tools: Tool[] = [
       properties: {},
     },
   },
+  {
+    name: "get_monitors",
+    description: "Get list of all connected monitors with their dimensions and positions (Desktop only, multi-monitor support)",
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
+  },
   // ============ Smart Android UI Tools ============
   {
     name: "analyze_screen",
@@ -627,6 +639,7 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
         maxWidth: args.maxWidth as number | undefined,
         maxHeight: args.maxHeight as number | undefined,
         quality: args.quality as number | undefined,
+        monitorIndex: args.monitorIndex as number | undefined,
       };
       const result = await deviceManager.screenshot(platform, compress, options);
       return {
@@ -953,6 +966,22 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
       return { text: result.trim() };
     }
 
+    case "get_monitors": {
+      if (!deviceManager.isDesktopRunning()) {
+        return { text: "Desktop app is not running. Use launch_desktop_app first." };
+      }
+      const monitors = await deviceManager.getDesktopClient().getMonitors();
+      if (monitors.length === 0) {
+        return { text: "No monitors found" };
+      }
+      let result = `Connected monitors (${monitors.length}):\n`;
+      for (const m of monitors) {
+        const primary = m.isPrimary ? " [PRIMARY]" : "";
+        result += `  • Monitor ${m.index}${primary}: ${m.width}x${m.height} at (${m.x}, ${m.y}) - ${m.name}\n`;
+      }
+      return { text: result.trim() };
+    }
+
     // ============ Smart Android UI Tools ============
 
     case "analyze_screen": {
@@ -1025,7 +1054,7 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
 const server = new Server(
   {
     name: "claude-mobile",
-    version: "2.3.0",
+    version: "2.4.0",
   },
   {
     capabilities: {

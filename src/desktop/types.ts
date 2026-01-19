@@ -77,6 +77,7 @@ export interface UiHierarchy {
 export interface ScreenshotOptions {
   windowId?: string;
   quality?: number; // JPEG quality 1-100, default 80
+  monitorIndex?: number; // Monitor index for multi-monitor support (captures all monitors if not specified)
 }
 
 export interface ScreenshotResult {
@@ -163,4 +164,19 @@ export interface DesktopState {
 export interface ClipboardContent {
   text?: string;
   hasImage?: boolean;
+}
+
+// Monitor types (multi-monitor support)
+export interface MonitorInfo {
+  index: number;
+  name: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  isPrimary: boolean;
+}
+
+export interface MonitorsResult {
+  monitors: MonitorInfo[];
 }

@@ -62,6 +62,7 @@ export interface UiHierarchy {
 export interface ScreenshotOptions {
     windowId?: string;
     quality?: number;
+    monitorIndex?: number;
 }
 export interface ScreenshotResult {
     base64: string;
@@ -127,5 +128,17 @@ export interface DesktopState {
 export interface ClipboardContent {
     text?: string;
     hasImage?: boolean;
+}
+export interface MonitorInfo {
+    index: number;
+    name: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    isPrimary: boolean;
+}
+export interface MonitorsResult {
+    monitors: MonitorInfo[];
 }
 //# sourceMappingURL=types.d.ts.map

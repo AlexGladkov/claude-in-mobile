@@ -262,12 +262,14 @@ export class DeviceManager {
   async screenshot(
     platform?: Platform,
     compress: boolean = true,
-    options?: CompressOptions
+    options?: CompressOptions & { monitorIndex?: number }
   ): Promise<{ data: string; mimeType: string }> {
     const client = this.getClient(platform);
 
     if (client instanceof DesktopClient) {
-      const result = await client.screenshotWithMeta();
+      const result = await client.screenshotWithMeta({
+        monitorIndex: options?.monitorIndex
+      });
       // Desktop returns JPEG already compressed
       return { data: result.base64, mimeType: result.mimeType };
     }

@@ -2,7 +2,7 @@
  * Desktop Client - communicates with Kotlin companion app via JSON-RPC
  */
 import { EventEmitter } from "events";
-import type { LaunchOptions, ScreenshotOptions, ScreenshotResult, UiHierarchy, WindowInfo, LogEntry, LogOptions, PerformanceMetrics, DesktopState, PermissionStatus } from "./types.js";
+import type { LaunchOptions, ScreenshotOptions, ScreenshotResult, UiHierarchy, WindowInfo, LogEntry, LogOptions, PerformanceMetrics, DesktopState, PermissionStatus, MonitorInfo } from "./types.js";
 export declare class DesktopClient extends EventEmitter {
     private process;
     private gradleLauncher;
@@ -145,6 +145,10 @@ export declare class DesktopClient extends EventEmitter {
         width: number;
         height: number;
     }>;
+    /**
+     * Get list of connected monitors (multi-monitor support)
+     */
+    getMonitors(): Promise<MonitorInfo[]>;
     /**
      * Launch app (for compatibility with mobile interface)
      */

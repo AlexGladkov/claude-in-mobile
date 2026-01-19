@@ -27,11 +27,17 @@ fun main() = runBlocking {
 
     // Register handlers
 
-    // Screenshot
+    // Screenshot (with multi-monitor support)
     server.registerTypedHandler("screenshot") { params ->
         val windowId = params.string("windowId")
         val quality = params.int("quality") ?: 80
-        screenCapture.capture(windowId, quality)
+        val monitorIndex = params.int("monitorIndex")
+        screenCapture.capture(windowId, quality, monitorIndex)
+    }
+
+    // Get list of monitors
+    server.registerTypedHandler("get_monitors") { _ ->
+        MonitorsResult(monitors = screenCapture.getMonitors())
     }
 
     // Tap

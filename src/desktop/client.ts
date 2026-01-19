@@ -27,6 +27,8 @@ import type {
   DesktopStatus,
   DesktopUiElement,
   PermissionStatus,
+  MonitorInfo,
+  MonitorsResult,
 } from "./types.js";
 
 const MAX_RESTARTS = 3;
@@ -557,6 +559,14 @@ export class DesktopClient extends EventEmitter {
       };
     }
     return { width: 1920, height: 1080 }; // Default
+  }
+
+  /**
+   * Get list of connected monitors (multi-monitor support)
+   */
+  async getMonitors(): Promise<MonitorInfo[]> {
+    const result = await this.sendRequest<MonitorsResult>("get_monitors");
+    return result.monitors;
   }
 
   /**

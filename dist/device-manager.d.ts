@@ -72,7 +72,9 @@ export declare class DeviceManager {
     /**
      * Take screenshot with optional compression
      */
-    screenshot(platform?: Platform, compress?: boolean, options?: CompressOptions): Promise<{
+    screenshot(platform?: Platform, compress?: boolean, options?: CompressOptions & {
+        monitorIndex?: number;
+    }): Promise<{
         data: string;
         mimeType: string;
     }>;

@@ -153,3 +153,11 @@ data class ScreenSizeResult(
 data class ScaleFactorResult(
     val scaleFactor: Double
 )
+
+/**
+ * Monitor information result
+ */
+@Serializable
+data class MonitorsResult(
+    val monitors: List<MonitorInfo>
+)

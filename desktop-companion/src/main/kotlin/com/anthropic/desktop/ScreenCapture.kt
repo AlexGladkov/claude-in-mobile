@@ -33,7 +33,7 @@ class ScreenCapture {
     /**
      * Capture screenshot of a specific window or the entire screen
      */
-    fun capture(windowId: String? = null, quality: Int = 80): ScreenshotResult {
+    fun capture(windowId: String? = null, quality: Int = 80, monitorIndex: Int? = null): ScreenshotResult {
         val ge = GraphicsEnvironment.getLocalGraphicsEnvironment()
         val scaleFactor = getScaleFactor()
 
@@ -41,8 +41,33 @@ class ScreenCapture {
         val bounds = if (windowId != null) {
             WindowManager().getWindowBounds(windowId)
         } else {
-            // Capture entire screen
-            ge.maximumWindowBounds
+            // Multi-monitor support
+            val devices = ge.screenDevices
+            when {
+                monitorIndex != null && monitorIndex < devices.size -> {
+                    // Capture specific monitor
+                    devices[monitorIndex].defaultConfiguration.bounds
+                }
+                devices.size == 1 -> {
+                    // Single monitor - use simple bounds
+                    devices[0].defaultConfiguration.bounds
+                }
+                else -> {
+                    // Multi-monitor - compute bounding rectangle of all screens
+                    var minX = Int.MAX_VALUE
+                    var minY = Int.MAX_VALUE
+                    var maxX = Int.MIN_VALUE
+                    var maxY = Int.MIN_VALUE
+                    devices.forEach { device ->
+                        val b = device.defaultConfiguration.bounds
+                        minX = minOf(minX, b.x)
+                        minY = minOf(minY, b.y)
+                        maxX = maxOf(maxX, b.x + b.width)
+                        maxY = maxOf(maxY, b.y + b.height)
+                    }
+                    Rectangle(minX, minY, maxX - minX, maxY - minY)
+                }
+            }
         }
 
         // Capture image
@@ -130,4 +155,36 @@ class ScreenCapture {
             (bounds.height / scaleFactor).toInt()
         )
     }
+
+    /**
+     * Get information about all connected monitors
+     */
+    fun getMonitors(): List<MonitorInfo> {
+        val ge = GraphicsEnvironment.getLocalGraphicsEnvironment()
+        val scaleFactor = getScaleFactor()
+
+        return ge.screenDevices.mapIndexed { index, device ->
+            val bounds = device.defaultConfiguration.bounds
+            MonitorInfo(
+                index = index,
+                name = device.iDstring,
+                x = bounds.x,
+                y = bounds.y,
+                width = (bounds.width / scaleFactor).toInt(),
+                height = (bounds.height / scaleFactor).toInt(),
+                isPrimary = device == ge.defaultScreenDevice
+            )
+        }
+    }
 }
+
+@kotlinx.serialization.Serializable
+data class MonitorInfo(
+    val index: Int,
+    val name: String,
+    val x: Int,
+    val y: Int,
+    val width: Int,
+    val height: Int,
+    val isPrimary: Boolean
+)
