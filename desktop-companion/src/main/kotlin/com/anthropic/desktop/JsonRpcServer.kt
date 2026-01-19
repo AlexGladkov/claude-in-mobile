@@ -1,5 +1,6 @@
 package com.anthropic.desktop
 
+import kotlinx.coroutines.*
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import java.io.BufferedReader
@@ -101,9 +102,9 @@ class JsonRpcServer(
     }
 
     /**
-     * Start the server (blocking)
+     * Start the server (blocking stdin read, async request processing)
      */
-    suspend fun start() {
+    suspend fun start() = coroutineScope {
         // Signal that we're ready
         System.err.println("Desktop companion ready")
 
@@ -116,7 +117,16 @@ class JsonRpcServer(
 
             try {
                 val request = json.decodeFromString<JsonRpcRequest>(line)
-                processRequest(request)
+                // Launch request processing in separate coroutine
+                // This prevents slow handlers (like AppleScript) from blocking stdin read
+                launch {
+                    try {
+                        processRequest(request)
+                    } catch (e: Exception) {
+                        System.err.println("Request processing error: ${e.message}")
+                        sendError(request.id, -32603, "Internal error: ${e.message}")
+                    }
+                }
             } catch (e: Exception) {
                 // Parse error
                 sendError(0, -32700, "Parse error: ${e.message}")

@@ -15,15 +15,41 @@ class WindowManager {
     private val isMac = System.getProperty("os.name").lowercase().contains("mac")
     private val isWindows = System.getProperty("os.name").lowercase().contains("windows")
 
+    // Cache window list to avoid expensive AppleScript calls
+    // AppleScript can take 10-20 seconds on macOS with many processes
+    @Volatile
+    private var cachedWindows: List<WindowInfo>? = null
+    @Volatile
+    private var cacheTimestamp: Long = 0
+    private val CACHE_TTL_MS = 1000L // 1 second cache
+
     /**
-     * Get list of all visible windows
+     * Get list of all visible windows (with caching)
      */
     fun getWindows(): List<WindowInfo> {
-        return when {
+        val now = System.currentTimeMillis()
+        val cached = cachedWindows
+        if (cached != null && (now - cacheTimestamp) < CACHE_TTL_MS) {
+            return cached
+        }
+
+        val windows = when {
             isMac -> getMacWindows()
             isWindows -> getWindowsWindows()
             else -> getLinuxWindows()
         }
+
+        cachedWindows = windows
+        cacheTimestamp = now
+        return windows
+    }
+
+    /**
+     * Invalidate cache (call after window changes)
+     */
+    fun invalidateCache() {
+        cachedWindows = null
+        cacheTimestamp = 0
     }
 
     /**
@@ -113,12 +139,17 @@ class WindowManager {
             """.trimIndent()
 
             val process = ProcessBuilder("osascript", "-e", script).start()
-            val output = process.inputStream.bufferedReader().readText()
-            process.waitFor()
+            val stdout = process.inputStream.bufferedReader().readText()
+            val stderr = process.errorStream.bufferedReader().readText()
+            val exitCode = process.waitFor()
 
-            // Parse AppleScript output
-            // Format: {{procName, winName, x, y, w, h}, ...}
-            parseAppleScriptWindowList(output, windows)
+            if (exitCode != 0) {
+                System.err.println("AppleScript main scan failed (exit $exitCode): $stderr")
+            } else if (stdout.isNotBlank()) {
+                // Parse AppleScript output
+                // Format: {{procName, winName, x, y, w, h}, ...}
+                parseAppleScriptWindowList(stdout, windows)
+            }
         } catch (e: Exception) {
             System.err.println("Error getting macOS windows: ${e.message}")
         }
@@ -154,13 +185,20 @@ class WindowManager {
             """.trimIndent()
 
             val javaProcess = ProcessBuilder("osascript", "-e", javaScript).start()
-            val javaOutput = javaProcess.inputStream.bufferedReader().readText()
-            javaProcess.waitFor()
+            val javaStdout = javaProcess.inputStream.bufferedReader().readText()
+            val javaStderr = javaProcess.errorStream.bufferedReader().readText()
+            val javaExitCode = javaProcess.waitFor()
+
+            if (javaExitCode != 0) {
+                System.err.println("AppleScript Java scan failed (exit $javaExitCode): $javaStderr")
+            }
 
             // Parse and add Java windows (avoid duplicates by checking title + bounds)
             val existingKeys = windows.map { "${it.title}_${it.bounds.x}_${it.bounds.y}" }.toSet()
             val javaWindows = mutableListOf<WindowInfo>()
-            parseAppleScriptWindowList(javaOutput, javaWindows)
+            if (javaStdout.isNotBlank()) {
+                parseAppleScriptWindowList(javaStdout, javaWindows)
+            }
 
             javaWindows.forEach { win ->
                 val key = "${win.title}_${win.bounds.x}_${win.bounds.y}"
@@ -183,7 +221,12 @@ class WindowManager {
 
             val focusProcess = ProcessBuilder("osascript", "-e", focusScript).start()
             val focusedApp = focusProcess.inputStream.bufferedReader().readText().trim()
-            focusProcess.waitFor()
+            val focusStderr = focusProcess.errorStream.bufferedReader().readText()
+            val focusExitCode = focusProcess.waitFor()
+
+            if (focusExitCode != 0) {
+                System.err.println("AppleScript focus check failed: $focusStderr")
+            }
 
             // Mark the focused app's first window as focused
             val focusedIndex = windows.indexOfFirst { it.ownerName == focusedApp }

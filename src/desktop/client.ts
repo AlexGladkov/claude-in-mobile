@@ -32,7 +32,7 @@ import type {
 } from "./types.js";
 
 const MAX_RESTARTS = 3;
-const REQUEST_TIMEOUT = 30000; // 30 seconds
+const REQUEST_TIMEOUT = 45000; // 45 seconds (AppleScript can be slow on macOS with many processes)
 
 // Get the directory of this module
 const __filename = fileURLToPath(import.meta.url);
