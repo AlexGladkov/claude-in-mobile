@@ -91,30 +91,29 @@ claude mcp add --transport stdio mobile -- cmd /c npx -y claude-in-android
 
 ### Core Tools (All Platforms)
 
-> **Note for Aurora OS:** Some tools marked as ❌ are planned for future implementation but are not yet available in the DeviceManager. The AuroraClient has these methods, but they need to be wired up in the DeviceManager routing logic.
-
 | Tool | Android | iOS | Desktop | Aurora | Description |
 |------|---------|-----|---------|--------|-------------|
 | `list_devices` | ✅ | ✅ | ✅ | ✅ | List all connected devices |
 | `set_device` | ✅ | ✅ | ✅ | ✅ | Select active device |
 | `screenshot` | ✅ | ✅ | ✅ | ✅ | Take screenshot |
-| `tap` | ✅ | ✅ | ✅ | ⚠️ | Tap at coordinates or by text (may have type issues on Aurora) |
-| `long_press` | ✅ | ✅ | ✅ | ⚠️ | Long press gesture (may have type issues on Aurora) |
-| `swipe` | ✅ | ✅ | ✅ | ⚠️ | Swipe in direction or coordinates (may have type issues on Aurora) |
+| `tap` | ✅ | ✅ | ✅ | ✅ | Tap at coordinates or by text |
+| `long_press` | ✅ | ✅ | ✅ | ✅ | Long press gesture |
+| `swipe` | ✅ | ✅ | ✅ | ✅ | Swipe in direction or coordinates |
 | `input_text` | ✅ | ✅ | ✅ | ❌ | Type text (not available on Aurora) |
-| `press_key` | ✅ | ✅ | ✅ | ❌ | Press hardware buttons (not yet implemented on Aurora) |
-| `launch_app` | ✅ | ✅ | ❌ | ❌ | Launch app (not yet implemented on Aurora) |
-| `stop_app` | ✅ | ✅ | ❌ | ❌ | Stop app (not yet implemented on Aurora) |
-| `install_app` | ✅ | ✅ | ❌ | ❌ | Install APK/.app (not yet implemented on Aurora) |
+| `press_key` | ✅ | ✅ | ✅ | ✅ | Press hardware buttons |
+| `launch_app` | ✅ | ✅ | ❌ | ✅ | Launch app |
+| `stop_app` | ✅ | ✅ | ❌ | ✅ | Stop app |
+| `install_app` | ✅ | ✅ | ❌ | ✅ | Install APK/.app/.rpm |
+| `list_apps` | ❌ | ❌ | ❌ | ✅ | List installed apps (Aurora only) |
 | `get_ui` | ✅ | ⚠️ | ✅ | ❌ | Get UI hierarchy (not available on Aurora) |
 | `find_element` | ✅ | ❌ | ✅ | ❌ | Find elements by text/id (not available on Aurora) |
 | `get_current_activity` | ✅ | ❌ | ❌ | ❌ | Get foreground activity (not available on Aurora) |
 | `open_url` | ✅ | ✅ | ❌ | ❌ | Open URL in browser (not yet implemented on Aurora) |
-| `shell` | ✅ | ✅ | ❌ | ❌ | Run shell command (not yet implemented on Aurora) |
+| `shell` | ✅ | ✅ | ❌ | ✅ | Run shell command |
 | `wait` | ✅ | ✅ | ✅ | ✅ | Wait for duration |
-| `get_logs` | ✅ | ✅ | ❌ | ❌ | Get device logs (logcat/system log) (not yet implemented on Aurora) |
-| `clear_logs` | ✅ | ⚠️ | ❌ | ❌ | Clear log buffer (not yet implemented on Aurora) |
-| `get_system_info` | ✅ | ❌ | ❌ | ❌ | Battery, memory info (not yet implemented on Aurora) |
+| `get_logs` | ✅ | ✅ | ❌ | ✅ | Get device logs (logcat/system log) |
+| `clear_logs` | ✅ | ⚠️ | ❌ | ✅ | Clear log buffer |
+| `get_system_info` | ✅ | ❌ | ❌ | ✅ | Battery, memory info |
 | `push_file` | ❌ | ❌ | ❌ | ✅ | Upload file (Aurora only) |
 | `pull_file` | ❌ | ❌ | ❌ | ✅ | Download file (Aurora only) |
 
@@ -194,6 +193,7 @@ Or set the active device:
 "Take a screenshot on Aurora"
 "Tap at coordinates 100, 200 on Aurora"
 "Launch ru.example.app on Aurora"
+"List installed apps on Aurora device"
 "Get logs from Aurora device"
 "Push file.txt to /home/defaultuser/ on Aurora device"
 ```
