@@ -67,9 +67,38 @@ export class AuroraClient {
     }
   }
 
+  /**
+   * List all configured Aurora devices
+   * @returns Array of Device objects
+   */
   async listDevices(): Promise<Device[]> {
-    // TODO: parse audb device list output
-    return [];
+    try {
+      const output = await this.runCommand("audb device list");
+      const devices: Device[] = [];
+
+      // Parse audb output format:
+      // • 192.168.2.15 - My Device (aurora-arm64, connected)
+      const lines = output.split("\n");
+      for (const line of lines) {
+        const match = line.match(/•\s+([\d.]+)\s+-\s+(.+?)\s+\((.+?),\s+(\w+)\)/);
+        if (match) {
+          const [, host, name, , state] = match;
+          devices.push({
+            id: host,
+            name: name.trim(),
+            platform: "aurora",
+            state: state === "connected" ? "connected" : "disconnected",
+            isSimulator: false,
+            host,
+          });
+        }
+      }
+
+      return devices;
+    } catch (error) {
+      // Return empty array on error (e.g., audb not installed)
+      return [];
+    }
   }
 
   async getActiveDevice(): Promise<string> {
