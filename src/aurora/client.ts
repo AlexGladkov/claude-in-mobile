@@ -233,6 +233,16 @@ export class AuroraClient {
   }
 
   /**
+   * List installed packages on the Aurora device
+   * @returns Array of package names
+   */
+  async listPackages(): Promise<string[]> {
+    const output = await this.runCommand("audb package list");
+    if (!output) return [];
+    return output.split("\n").filter(line => line.trim().length > 0);
+  }
+
+  /**
    * Execute a shell command on the Aurora device
    *
    * WARNING: This method executes arbitrary commands on the device.

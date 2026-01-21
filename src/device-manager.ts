@@ -3,7 +3,7 @@ import { IosClient } from "./ios/client.js";
 import { DesktopClient } from "./desktop/client.js";
 import { compressScreenshot, type CompressOptions } from "./utils/image.js";
 import type { LaunchOptions } from "./desktop/types.js";
-import { auroraClient as aurora } from "./aurora/index.js";
+import { auroraClient as aurora, AuroraClient } from "./aurora/index.js";
 
 export type Platform = "android" | "ios" | "desktop" | "aurora";
 
@@ -391,9 +391,12 @@ export class DeviceManager {
   /**
    * Launch app
    */
-  launchApp(packageOrBundleId: string, platform?: Platform): string {
+  async launchApp(packageOrBundleId: string, platform?: Platform): Promise<string> {
     const client = this.getClient(platform);
     if (client instanceof DesktopClient) {
+      return client.launchApp(packageOrBundleId);
+    }
+    if (client instanceof AuroraClient) {
       return client.launchApp(packageOrBundleId);
     }
     return (client as AdbClient | IosClient).launchApp(packageOrBundleId);
@@ -402,10 +405,12 @@ export class DeviceManager {
   /**
    * Stop app
    */
-  stopApp(packageOrBundleId: string, platform?: Platform): void {
+  async stopApp(packageOrBundleId: string, platform?: Platform): Promise<void> {
     const client = this.getClient(platform);
     if (client instanceof DesktopClient) {
       client.stopApp(packageOrBundleId);
+    } else if (client instanceof AuroraClient) {
+      await client.stopApp(packageOrBundleId);
     } else {
       (client as AdbClient | IosClient).stopApp(packageOrBundleId);
     }
@@ -414,13 +419,15 @@ export class DeviceManager {
   /**
    * Install app
    */
-  installApp(path: string, platform?: Platform): string {
+  async installApp(path: string, platform?: Platform): Promise<string> {
     const client = this.getClient(platform);
     if (client instanceof DesktopClient) {
       return "Desktop platform doesn't support app installation";
     }
     if (client instanceof AdbClient) {
       return client.installApk(path);
+    } else if (client instanceof AuroraClient) {
+      return client.installApp(path);
     } else {
       return (client as IosClient).installApp(path);
     }
@@ -442,9 +449,12 @@ export class DeviceManager {
   /**
    * Execute shell command
    */
-  shell(command: string, platform?: Platform): string {
+  async shell(command: string, platform?: Platform): Promise<string> {
     const client = this.getClient(platform);
     if (client instanceof DesktopClient) {
+      return client.shell(command);
+    }
+    if (client instanceof AuroraClient) {
       return client.shell(command);
     }
     return (client as AdbClient | IosClient).shell(command);
@@ -474,13 +484,13 @@ export class DeviceManager {
   /**
    * Get device logs
    */
-  getLogs(options: {
+  async getLogs(options: {
     platform?: Platform;
     level?: string;
     tag?: string;
     lines?: number;
     package?: string;
-  } = {}): string {
+  } = {}): Promise<string> {
     const targetPlatform = options.platform ?? this.activeTarget;
 
     if (targetPlatform === "desktop") {
@@ -499,6 +509,8 @@ export class DeviceManager {
         lines: options.lines,
         package: options.package,
       });
+    } else if (client instanceof AuroraClient) {
+      return client.getLogs(options);
     } else {
       return (client as IosClient).getLogs({
         level: options.level as "debug" | "info" | "default" | "error" | "fault" | undefined,
@@ -511,7 +523,7 @@ export class DeviceManager {
   /**
    * Clear logs
    */
-  clearLogs(platform?: Platform): string {
+  async clearLogs(platform?: Platform): Promise<string> {
     const targetPlatform = platform ?? this.activeTarget;
 
     if (targetPlatform === "desktop") {
@@ -524,6 +536,8 @@ export class DeviceManager {
     if (client instanceof AdbClient) {
       client.clearLogs();
       return "Logcat buffer cleared";
+    } else if (client instanceof AuroraClient) {
+      return client.clearLogs();
     } else {
       return (client as IosClient).clearLogs();
     }
@@ -546,6 +560,8 @@ export class DeviceManager {
       const battery = client.getBatteryInfo();
       const memory = client.getMemoryInfo();
       return `=== Battery ===\n${battery}\n\n=== Memory ===\n${memory}`;
+    } else if (client instanceof AuroraClient) {
+      return await client.getSystemInfo();
     } else {
       return "System info is only available for Android devices.";
     }

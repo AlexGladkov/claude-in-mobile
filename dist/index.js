@@ -10,7 +10,7 @@ const deviceManager = new DeviceManager();
 // Platform parameter schema (reused across tools)
 const platformParam = {
     type: "string",
-    enum: ["android", "ios", "desktop"],
+    enum: ["android", "ios", "desktop", "aurora"],
     description: "Target platform. If not specified, uses the active target.",
 };
 // Define tools
@@ -589,6 +589,44 @@ const tools = [
             required: ["text", "pid"],
         },
     },
+    // ============ Aurora Tools ============
+    {
+        name: "push_file",
+        description: "Upload file to Aurora OS device",
+        inputSchema: {
+            type: "object",
+            properties: {
+                platform: { ...platformParam, const: "aurora" },
+                localPath: { type: "string", description: "Local file path" },
+                remotePath: { type: "string", description: "Remote destination path" },
+            },
+            required: ["localPath", "remotePath"],
+        },
+    },
+    {
+        name: "pull_file",
+        description: "Download file from Aurora OS device",
+        inputSchema: {
+            type: "object",
+            properties: {
+                platform: { const: "aurora" },
+                remotePath: { type: "string", description: "Path to the remote file" },
+                localPath: { type: "string", description: "Optional local path" },
+            },
+            required: ["remotePath"],
+        },
+    },
+    {
+        name: "list_apps",
+        description: "List installed applications on Aurora OS device",
+        inputSchema: {
+            type: "object",
+            properties: {
+                platform: { const: "aurora" },
+            },
+            required: [],
+        },
+    },
 ];
 // Cache for UI elements (to support tap by index)
 let cachedElements = [];
@@ -597,7 +635,7 @@ async function handleTool(name, args) {
     const platform = args.platform;
     switch (name) {
         case "list_devices": {
-            const devices = deviceManager.getDevices(platform);
+            const devices = await deviceManager.getDevices(platform);
             if (devices.length === 0) {
                 return { text: "No devices connected. Make sure ADB/Xcode is running and a device/emulator/simulator is connected." };
             }
@@ -607,6 +645,7 @@ async function handleTool(name, args) {
             const android = devices.filter(d => d.platform === "android");
             const ios = devices.filter(d => d.platform === "ios");
             const desktop = devices.filter(d => d.platform === "desktop");
+            const aurora = devices.filter(d => d.platform === "aurora");
             let result = "Connected devices:\n";
             if (android.length > 0) {
                 result += "\nAndroid:\n";
@@ -631,10 +670,17 @@ async function handleTool(name, args) {
                     result += `  • ${d.id} - ${d.name} (${d.state})${active}\n`;
                 }
             }
+            if (aurora.length > 0) {
+                result += "\nAurora:\n";
+                for (const d of aurora) {
+                    const active = activeDevice?.id === d.id && activeTarget === "aurora" ? " [ACTIVE]" : "";
+                    result += `  • ${d.id} - ${d.name} (${d.state})${active}\n`;
+                }
+            }
             return { text: result.trim() };
         }
         case "set_device": {
-            const device = deviceManager.setDevice(args.deviceId, platform);
+            const device = await deviceManager.setDevice(args.deviceId, platform);
             return { text: `Device set to: ${device.name} (${device.platform}, ${device.id})` };
         }
         case "screenshot": {
@@ -778,16 +824,23 @@ async function handleTool(name, args) {
             return { text: `Found ${found.length} element(s):\n${list}${found.length > 20 ? "\n..." : ""}` };
         }
         case "launch_app": {
-            const result = deviceManager.launchApp(args.package, platform);
+            const result = await deviceManager.launchApp(args.package, platform);
             return { text: result };
         }
         case "stop_app": {
-            deviceManager.stopApp(args.package, platform);
+            await deviceManager.stopApp(args.package, platform);
             return { text: `Stopped: ${args.package}` };
         }
         case "install_app": {
-            const result = deviceManager.installApp(args.path, platform);
+            const result = await deviceManager.installApp(args.path, platform);
             return { text: result };
+        }
+        case "list_apps": {
+            if (platform !== "aurora") {
+                return { text: "list_apps is only available for Aurora OS." };
+            }
+            const packages = await deviceManager.getAurora().listPackages();
+            return { text: `Installed packages (${packages.length}):\n${packages.join("\n")}` };
         }
         case "get_current_activity": {
             const currentPlatform = platform ?? deviceManager.getCurrentPlatform();
@@ -798,7 +851,7 @@ async function handleTool(name, args) {
             return { text: `Current activity: ${activity}` };
         }
         case "shell": {
-            const output = deviceManager.shell(args.command, platform);
+            const output = await deviceManager.shell(args.command, platform);
             return { text: output || "(no output)" };
         }
         case "wait": {
@@ -817,7 +870,7 @@ async function handleTool(name, args) {
             return { text: `Opened URL: ${args.url}` };
         }
         case "get_logs": {
-            const logs = deviceManager.getLogs({
+            const logs = await deviceManager.getLogs({
                 platform,
                 level: args.level,
                 tag: args.tag,
@@ -827,7 +880,7 @@ async function handleTool(name, args) {
             return { text: logs || "(no logs)" };
         }
         case "clear_logs": {
-            const result = deviceManager.clearLogs(platform);
+            const result = await deviceManager.clearLogs(platform);
             return { text: result };
         }
         case "get_system_info": {
@@ -1003,6 +1056,15 @@ async function handleTool(name, args) {
                 };
             }
         }
+        // ============ Aurora Tools ============
+        case "push_file": {
+            const result = await deviceManager.getAurora().pushFile(args.localPath, args.remotePath);
+            return { text: result };
+        }
+        case "pull_file": {
+            const buffer = await deviceManager.getAurora().pullFile(args.remotePath, args.localPath);
+            return { text: `Downloaded ${args.remotePath} (${buffer.length} bytes)` };
+        }
         default:
             throw new Error(`Unknown tool: ${name}`);
     }
@@ -1010,7 +1072,7 @@ async function handleTool(name, args) {
 // Create server
 const server = new Server({
     name: "claude-mobile",
-    version: "2.7.0",
+    version: "2.8.0",
 }, {
     capabilities: {
         tools: {},
@@ -1067,7 +1129,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
     const transport = new StdioServerTransport();
     await server.connect(transport);
-    console.error("Claude Mobile MCP server running (Android + iOS + Desktop)");
+    console.error("Claude Mobile MCP server running (Android + iOS + Desktop + Aurora)");
 }
 main().catch((error) => {
     console.error("Fatal error:", error);

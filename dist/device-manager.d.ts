@@ -1,9 +1,9 @@
 import { AdbClient } from "./adb/client.js";
 import { IosClient } from "./ios/client.js";
 import { DesktopClient } from "./desktop/client.js";
-import { type CompressOptions } from "./utils/image.js";
 import type { LaunchOptions } from "./desktop/types.js";
-export type Platform = "android" | "ios" | "desktop";
+import { AuroraClient } from "./aurora/index.js";
+export type Platform = "android" | "ios" | "desktop" | "aurora";
 export interface Device {
     id: string;
     name: string;
@@ -15,9 +15,11 @@ export declare class DeviceManager {
     private androidClient;
     private iosClient;
     private desktopClient;
+    private aurora;
     private activeDevice?;
     private activeTarget;
     constructor();
+    private getClient;
     /**
      * Set active target platform
      */
@@ -46,25 +48,21 @@ export declare class DeviceManager {
      */
     isDesktopRunning(): boolean;
     /**
-     * Get all connected devices (Android + iOS)
+     * Get all connected devices (Android + iOS + Aurora)
      */
-    getAllDevices(): Device[];
+    getAllDevices(): Promise<Device[]>;
     /**
      * Get devices filtered by platform
      */
-    getDevices(platform?: Platform): Device[];
+    getDevices(platform?: Platform): Promise<Device[]>;
     /**
      * Set active device
      */
-    setDevice(deviceId: string, platform?: Platform): Device;
+    setDevice(deviceId: string, platform?: Platform): Promise<Device>;
     /**
      * Get active device
      */
     getActiveDevice(): Device | undefined;
-    /**
-     * Get the appropriate client for current device or specified platform
-     */
-    private getClient;
     /**
      * Get current platform
      */
@@ -72,7 +70,10 @@ export declare class DeviceManager {
     /**
      * Take screenshot with optional compression
      */
-    screenshot(platform?: Platform, compress?: boolean, options?: CompressOptions & {
+    screenshot(platform?: Platform, compress?: boolean, options?: {
+        maxWidth?: number;
+        maxHeight?: number;
+        quality?: number;
         monitorIndex?: number;
     }): Promise<{
         data: string;
@@ -112,15 +113,15 @@ export declare class DeviceManager {
     /**
      * Launch app
      */
-    launchApp(packageOrBundleId: string, platform?: Platform): string;
+    launchApp(packageOrBundleId: string, platform?: Platform): Promise<string>;
     /**
      * Stop app
      */
-    stopApp(packageOrBundleId: string, platform?: Platform): void;
+    stopApp(packageOrBundleId: string, platform?: Platform): Promise<void>;
     /**
      * Install app
      */
-    installApp(path: string, platform?: Platform): string;
+    installApp(path: string, platform?: Platform): Promise<string>;
     /**
      * Get UI hierarchy
      */
@@ -128,7 +129,7 @@ export declare class DeviceManager {
     /**
      * Execute shell command
      */
-    shell(command: string, platform?: Platform): string;
+    shell(command: string, platform?: Platform): Promise<string>;
     /**
      * Get Android client directly
      */
@@ -138,6 +139,10 @@ export declare class DeviceManager {
      */
     getIosClient(): IosClient;
     /**
+     * Get Aurora client directly
+     */
+    getAurora(): AuroraClient;
+    /**
      * Get device logs
      */
     getLogs(options?: {
@@ -146,11 +151,11 @@ export declare class DeviceManager {
         tag?: string;
         lines?: number;
         package?: string;
-    }): string;
+    }): Promise<string>;
     /**
      * Clear logs
      */
-    clearLogs(platform?: Platform): string;
+    clearLogs(platform?: Platform): Promise<string>;
     /**
      * Get system info (battery, memory, etc.)
      */

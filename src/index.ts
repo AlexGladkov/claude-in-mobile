@@ -636,6 +636,17 @@ const tools: Tool[] = [
       required: ["remotePath"],
     },
   },
+  {
+    name: "list_apps",
+    description: "List installed applications on Aurora OS device",
+    inputSchema: {
+      type: "object",
+      properties: {
+        platform: { const: "aurora" },
+      },
+      required: [],
+    },
+  },
 ];
 
 // Cache for UI elements (to support tap by index)
@@ -881,18 +892,26 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
     }
 
     case "launch_app": {
-      const result = deviceManager.launchApp(args.package as string, platform);
+      const result = await deviceManager.launchApp(args.package as string, platform);
       return { text: result };
     }
 
     case "stop_app": {
-      deviceManager.stopApp(args.package as string, platform);
+      await deviceManager.stopApp(args.package as string, platform);
       return { text: `Stopped: ${args.package}` };
     }
 
     case "install_app": {
-      const result = deviceManager.installApp(args.path as string, platform);
+      const result = await deviceManager.installApp(args.path as string, platform);
       return { text: result };
+    }
+
+    case "list_apps": {
+      if (platform !== "aurora") {
+        return { text: "list_apps is only available for Aurora OS." };
+      }
+      const packages = await deviceManager.getAurora().listPackages();
+      return { text: `Installed packages (${packages.length}):\n${packages.join("\n")}` };
     }
 
     case "get_current_activity": {
@@ -907,7 +926,7 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
     }
 
     case "shell": {
-      const output = deviceManager.shell(args.command as string, platform);
+      const output = await deviceManager.shell(args.command as string, platform);
       return { text: output || "(no output)" };
     }
 
@@ -929,7 +948,7 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
     }
 
     case "get_logs": {
-      const logs = deviceManager.getLogs({
+      const logs = await deviceManager.getLogs({
         platform,
         level: args.level as string | undefined,
         tag: args.tag as string | undefined,
@@ -940,7 +959,7 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
     }
 
     case "clear_logs": {
-      const result = deviceManager.clearLogs(platform);
+      const result = await deviceManager.clearLogs(platform);
       return { text: result };
     }
 

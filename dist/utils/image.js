@@ -1,71 +1,36 @@
-import { Jimp } from "jimp";
-const DEFAULT_OPTIONS = {
-    maxWidth: 800, // Safe for API limit of 2000px
-    maxHeight: 1400, // Safe for API limit of 2000px
-    quality: 70,
-    maxSizeBytes: 1024 * 1024, // 1MB max for base64 (safe margin for API)
-};
-/**
- * Compress PNG image buffer
- * - Resize if larger than max dimensions
- * - Convert to JPEG with specified quality
- * - Iteratively reduce quality if still too large
- * Returns base64 encoded JPEG
- */
-export async function compressScreenshot(pngBuffer, options = {}) {
-    const opts = { ...DEFAULT_OPTIONS, ...options };
-    const image = await Jimp.read(pngBuffer);
-    const width = image.width;
-    const height = image.height;
-    // Calculate new dimensions maintaining aspect ratio
-    let newWidth = width;
-    let newHeight = height;
-    if (width > opts.maxWidth || height > opts.maxHeight) {
-        const widthRatio = opts.maxWidth / width;
-        const heightRatio = opts.maxHeight / height;
-        const ratio = Math.min(widthRatio, heightRatio);
-        newWidth = Math.round(width * ratio);
-        newHeight = Math.round(height * ratio);
+import * as fs from "fs/promises";
+import { exec } from "child_process";
+import { promisify } from "util";
+import { randomBytes } from "crypto";
+const execAsync = promisify(exec);
+export async function compressScreenshot(buffer, options = {}) {
+    const { maxWidth = 800, maxHeight = 1400, quality = 70 } = options;
+    const uniqueId = randomBytes(8).toString("hex");
+    const tmpInput = `/tmp/screenshot_${uniqueId}_in.png`;
+    const tmpOutput = `/tmp/screenshot_${uniqueId}_out.jpg`;
+    await fs.writeFile(tmpInput, buffer);
+    try {
+        // Use escaped shell arguments to prevent injection
+        const scaleFilter = `scale='min(${maxWidth},iw):min(${maxHeight},ih)'`;
+        await execAsync(`ffmpeg -i "${tmpInput}" -vf "${scaleFilter}" -q:v ${quality} "${tmpOutput}"`);
+        const compressed = await fs.readFile(tmpOutput);
+        return {
+            data: compressed.toString("base64"),
+            mimeType: "image/jpeg",
+        };
     }
-    // Resize if needed
-    if (newWidth !== width || newHeight !== height) {
-        image.resize({ w: newWidth, h: newHeight });
+    catch (error) {
+        // Fallback: return original as PNG
+        console.warn(`Screenshot compression failed: ${error instanceof Error ? error.message : error}`);
+        return {
+            data: buffer.toString("base64"),
+            mimeType: "image/png",
+        };
     }
-    // Convert to JPEG with iterative quality reduction if needed
-    let quality = opts.quality;
-    let jpegBuffer;
-    let attempts = 0;
-    const maxAttempts = 5;
-    do {
-        jpegBuffer = await image.getBuffer("image/jpeg", { quality });
-        // Check if size is within limit
-        if (jpegBuffer.length <= opts.maxSizeBytes) {
-            break;
-        }
-        // Reduce quality and try again
-        quality = Math.max(20, quality - 15);
-        attempts++;
-    } while (attempts < maxAttempts);
-    // If still too large after quality reduction, resize further
-    if (jpegBuffer.length > opts.maxSizeBytes) {
-        const scaleFactor = Math.sqrt(opts.maxSizeBytes / jpegBuffer.length) * 0.9;
-        const smallerWidth = Math.round(newWidth * scaleFactor);
-        const smallerHeight = Math.round(newHeight * scaleFactor);
-        image.resize({ w: smallerWidth, h: smallerHeight });
-        jpegBuffer = await image.getBuffer("image/jpeg", { quality: 50 });
+    finally {
+        // Always cleanup temp files
+        await fs.unlink(tmpInput).catch(() => { });
+        await fs.unlink(tmpOutput).catch(() => { });
     }
-    return {
-        data: jpegBuffer.toString("base64"),
-        mimeType: "image/jpeg",
-    };
-}
-/**
- * Get original image as base64 PNG (no compression)
- */
-export function toBase64Png(buffer) {
-    return {
-        data: buffer.toString("base64"),
-        mimeType: "image/png",
-    };
 }
 //# sourceMappingURL=image.js.map
