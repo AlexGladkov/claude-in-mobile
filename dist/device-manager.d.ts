@@ -157,6 +157,6 @@ export declare class DeviceManager {
     /**
      * Get system info (battery, memory, etc.)
      */
-    getSystemInfo(platform?: Platform): string;
+    getSystemInfo(platform?: Platform): Promise<string>;
 }
 //# sourceMappingURL=device-manager.d.ts.map

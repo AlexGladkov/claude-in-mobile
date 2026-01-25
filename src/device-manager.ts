@@ -541,12 +541,12 @@ export class DeviceManager {
   /**
    * Get system info (battery, memory, etc.)
    */
-  getSystemInfo(platform?: Platform): string {
+  async getSystemInfo(platform?: Platform): Promise<string> {
     const targetPlatform = platform ?? this.activeTarget;
 
     if (targetPlatform === "desktop") {
-      // Desktop requires async - this is a limitation
-      throw new Error("getSystemInfo for desktop must be called with await. Use the async variant if needed.");
+      const metrics = await this.desktopClient.getPerformanceMetrics();
+      return `=== Desktop Performance ===\nMemory: ${metrics.memoryUsageMb} MB${metrics.cpuPercent ? `\nCPU: ${metrics.cpuPercent}%` : ''}`;
     }
 
     const client = this.getClient(platform);

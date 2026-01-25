@@ -964,7 +964,7 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
     }
 
     case "get_system_info": {
-      const info = deviceManager.getSystemInfo(platform);
+      const info = await deviceManager.getSystemInfo(platform);
       return { text: info };
     }
 

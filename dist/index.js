@@ -884,7 +884,7 @@ async function handleTool(name, args) {
             return { text: result };
         }
         case "get_system_info": {
-            const info = deviceManager.getSystemInfo(platform);
+            const info = await deviceManager.getSystemInfo(platform);
             return { text: info };
         }
         // ============ Desktop Tools ============
