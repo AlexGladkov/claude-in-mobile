@@ -16,7 +16,6 @@ export declare class DeviceManager {
     private androidClient;
     private iosClient;
     private desktopClient;
-    private aurora;
     private auroraClient;
     private activeDevice?;
     private activeTarget;

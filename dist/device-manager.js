@@ -7,7 +7,6 @@ export class DeviceManager {
     androidClient;
     iosClient;
     desktopClient;
-    aurora = aurora;
     auroraClient = aurora;
     activeDevice;
     activeTarget = "android";

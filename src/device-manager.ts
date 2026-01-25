@@ -19,7 +19,6 @@ export class DeviceManager {
   private androidClient: AdbClient;
   private iosClient: IosClient;
   private desktopClient: DesktopClient;
-  private aurora = aurora;
   private auroraClient = aurora;
   private activeDevice?: Device;
   private activeTarget: Platform = "android";
