@@ -15,6 +15,13 @@ export interface Device {
   isSimulator: boolean;
 }
 
+/**
+ * Interface for mobile clients that support raw screenshots
+ */
+interface MobileClientWithScreenshot {
+  screenshotRaw(): Buffer;
+}
+
 export class DeviceManager {
   private androidClient: AdbClient;
   private iosClient: IosClient;
@@ -273,14 +280,9 @@ export class DeviceManager {
       return { data: result.base64, mimeType: result.mimeType };
     }
 
-    // Handle AuroraClient
-    if ("screenshot" in client && typeof client.screenshot === "function" && !("screenshotRaw" in client)) {
-      return await (client as any).screenshot({ compress, ...options });
-    }
-
-    // Handle Android and iOS clients
-    if ("screenshotRaw" in client && typeof client.screenshotRaw === "function") {
-      const buffer = (client as AdbClient | IosClient).screenshotRaw();
+    // Handle Android, iOS, Aurora clients (all have screenshotRaw)
+    if (this.isMobileClientWithScreenshot(client)) {
+      const buffer = client.screenshotRaw();
       if (compress) {
         return compressScreenshot(buffer, options);
       }
@@ -291,23 +293,33 @@ export class DeviceManager {
   }
 
   /**
+   * Type guard for mobile clients with screenshotRaw support
+   */
+  private isMobileClientWithScreenshot(client: unknown): client is MobileClientWithScreenshot {
+    return (
+      client instanceof AdbClient ||
+      client instanceof IosClient ||
+      client instanceof AuroraClient
+    );
+  }
+
+  /**
    * Take screenshot without compression (legacy)
    */
   screenshotRaw(platform?: Platform): string {
     const client = this.getClient(platform);
 
-    // Desktop and Aurora don't support screenshotRaw
+    // Desktop doesn't support screenshotRaw (different architecture)
     if (client instanceof DesktopClient) {
       throw new Error("Use screenshot() for desktop platform");
     }
 
-    // Aurora client doesn't have screenshotRaw
-    if ("screenshot" in client && typeof client.screenshot === "function" && !("screenshotRaw" in client)) {
-      throw new Error("Use screenshot() for aurora platform");
+    // All mobile platforms (Android, iOS, Aurora) support screenshotRaw
+    if (this.isMobileClientWithScreenshot(client)) {
+      return client.screenshotRaw().toString("base64");
     }
 
-    // Android and iOS clients
-    return (client as AdbClient | IosClient).screenshot();
+    throw new Error(`Screenshot not supported for platform: ${platform ?? this.getCurrentPlatform()}`);
   }
 
   /**

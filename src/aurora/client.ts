@@ -1,6 +1,7 @@
 import { exec, execSync } from "child_process";
 import { promisify } from "util";
 import * as fs from "fs/promises";
+import { readFileSync, unlinkSync } from "fs";
 import { randomBytes } from "crypto";
 import { tmpdir } from "os";
 import { compressScreenshot } from "../utils/image.js";
@@ -276,34 +277,41 @@ export class AuroraClient {
   }
 
   /**
+   * Take screenshot and return raw PNG buffer (consistent with Android/iOS)
+   * @returns Raw PNG buffer
+   */
+  screenshotRaw(): Buffer {
+    const uniqueId = randomBytes(8).toString("hex");
+    const tmpFile = `${tmpdir()}/aurora_screenshot_${uniqueId}.png`;
+
+    try {
+      execSync(`audb screenshot --output "${tmpFile}"`);
+      return readFileSync(tmpFile);
+    } finally {
+      try { unlinkSync(tmpFile); } catch {}
+    }
+  }
+
+  /**
    * Takes a screenshot of the Aurora device
    * @param options - Screenshot options (compression, size, quality)
    * @returns Screenshot result with base64 data and MIME type
    */
   async screenshot(options: ScreenshotOptions = {}): Promise<ScreenshotResult> {
-    const uniqueId = randomBytes(8).toString("hex");
-    const tmpFile = `${tmpdir()}/aurora_screenshot_${uniqueId}.png`;
+    const buffer = this.screenshotRaw();
 
-    try {
-      await this.runCommand(`audb screenshot --output "${tmpFile}"`);
-      const buffer = await fs.readFile(tmpFile);
-
-      if (options.compress !== false) {
-        return compressScreenshot(buffer, {
-          maxWidth: options.maxWidth,
-          maxHeight: options.maxHeight,
-          quality: options.quality,
-        });
-      }
-
-      return {
-        data: buffer.toString("base64"),
-        mimeType: "image/png",
-      };
-    } finally {
-      // Always cleanup temp file
-      await fs.unlink(tmpFile).catch(() => {});
+    if (options.compress !== false) {
+      return compressScreenshot(buffer, {
+        maxWidth: options.maxWidth,
+        maxHeight: options.maxHeight,
+        quality: options.quality,
+      });
     }
+
+    return {
+      data: buffer.toString("base64"),
+      mimeType: "image/png",
+    };
   }
 
   /**
