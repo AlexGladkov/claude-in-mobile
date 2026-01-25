@@ -8,6 +8,7 @@ export class DeviceManager {
     iosClient;
     desktopClient;
     aurora = aurora;
+    auroraClient = aurora;
     activeDevice;
     activeTarget = "android";
     constructor() {
@@ -36,7 +37,7 @@ export class DeviceManager {
                     if (booted.platform === "ios")
                         return this.iosClient;
                     if (booted.platform === "aurora")
-                        return this.aurora;
+                        return this.auroraClient;
                 }
                 throw new Error("No active device. Use set_device or list_devices first.");
             }
@@ -45,7 +46,7 @@ export class DeviceManager {
             if (mobilePlatform === "ios")
                 return this.iosClient;
             if (mobilePlatform === "aurora")
-                return this.aurora;
+                return this.auroraClient;
         }
         throw new Error(`Unknown platform: ${targetPlatform}`);
     }
@@ -151,7 +152,7 @@ export class DeviceManager {
         }
         // Get Aurora devices
         try {
-            const auroraDevices = this.aurora.listDevices();
+            const auroraDevices = this.auroraClient.listDevices();
             for (const d of auroraDevices) {
                 devices.push({
                     id: d.id,
@@ -422,7 +423,7 @@ export class DeviceManager {
      * Get Aurora client directly
      */
     getAuroraClient() {
-        return this.aurora;
+        return this.auroraClient;
     }
     /**
      * Get device logs
