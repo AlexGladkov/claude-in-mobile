@@ -1,6 +1,6 @@
 ---
 name: mobile-tools
-description: "This skill should be used when the user asks to interact with mobile devices, emulators, simulators, Aurora OS devices, or Compose Desktop apps. Covers screenshots, tapping, swiping, text input, UI inspection, app management, file transfer, clipboard, and system diagnostics."
+description: "This skill should be used when the user asks to \"take a screenshot\", \"tap on element\", \"swipe up/down\", \"type text\", \"install app\", \"launch app\", \"list devices\", \"dump UI\", \"find element\", \"get logs\", \"push file\", \"get clipboard\", \"reboot device\", or interact with Android devices, iOS simulators, Aurora OS devices, or Compose Desktop apps. Provides CLI commands for mobile device automation across all platforms."
 ---
 
 # mobile-tools CLI
@@ -205,14 +205,14 @@ mobile-tools get-monitors --companion-path /path/to/companion
 | Command | Android | iOS | Aurora | Desktop |
 |---------|---------|-----|--------|---------|
 | screenshot | yes | yes | yes | yes |
-| annotate | yes | limited | no | no |
+| annotate | yes | no | no | no |
 | tap | yes | yes | yes | yes |
-| long-press | yes | limited | yes | no |
-| swipe | yes | limited | yes | no |
+| long-press | yes | yes | yes | no |
+| swipe | yes | yes | yes | no |
 | input | yes | yes | yes | yes |
 | key | yes | yes | yes | yes |
-| ui-dump | yes | limited | no | yes |
-| find/tap-text | yes | limited | no | no |
+| ui-dump | yes | yes | no | yes |
+| find/tap-text | yes | yes | no | no |
 | analyze-screen | yes | no | no | no |
 | find-and-tap | yes | no | no | no |
 | devices | yes | yes | yes | n/a |
