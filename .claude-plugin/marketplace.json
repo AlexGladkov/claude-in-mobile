@@ -1,0 +1,15 @@
+{
+  "name": "claude-in-mobile",
+  "owner": {
+    "name": "AlexGladkov",
+    "url": "https://github.com/AlexGladkov"
+  },
+  "plugins": [
+    {
+      "name": "claude-in-mobile",
+      "description": "Mobile device automation CLI for Android, iOS, Aurora OS, and Desktop platforms",
+      "source": "./cli/plugin",
+      "version": "2.9.0"
+    }
+  ]
+}

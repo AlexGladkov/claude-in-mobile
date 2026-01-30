@@ -204,6 +204,52 @@ Or set the active device:
 "Push file.txt to /home/defaultuser/ on Aurora device"
 ```
 
+## Native CLI
+
+A 2 MB native Rust binary with all the same commands. No Node.js, no dependencies.
+
+### Install CLI
+
+```bash
+brew tap AlexGladkov/claude-in-mobile
+brew install claude-in-mobile
+```
+
+Or download from [Releases](https://github.com/AlexGladkov/claude-in-mobile/releases).
+
+### Advantages over MCP
+
+- **Easy install** — `brew install` or copy a single 2 MB binary
+- **No dependencies** — no Node.js, no npm, nothing
+- **Use from terminal** — run commands directly, no Claude Code or MCP client needed
+- **Test automation** — write universal `.sh` scripts for any platform without learning platform internals
+- **Token-efficient** — skill documentation loads only when used; MCP loads all tool schemas into every request, which adds up fast over a session
+- **Fast** — ~5ms command startup (Rust) vs ~500ms (Node.js MCP)
+- **CI/CD ready** — exit codes, stdout/stderr, runs anywhere
+
+### Test script example
+
+```bash
+#!/bin/bash
+claude-in-mobile launch android com.example.app
+claude-in-mobile wait 2000
+claude-in-mobile tap android 0 0 --text "Login"
+claude-in-mobile input android "test@example.com"
+claude-in-mobile screenshot android -o result.png
+claude-in-mobile ui-dump android | grep "Welcome" && echo "PASS" || echo "FAIL"
+```
+
+### Claude Code Plugin
+
+```bash
+claude plugin marketplace add AlexGladkov/claude-in-mobile
+claude plugin install claude-in-mobile@AlexGladkov-claude-in-mobile
+```
+
+After installing, Claude Code controls devices with natural language. The skill loads into context only on demand — no token overhead when not in use.
+
+See [cli/README.md](cli/README.md) for full CLI documentation.
+
 ## iOS WebDriverAgent Setup
 
 For full iOS UI inspection and element-based interaction, WebDriverAgent is required. It enables:
