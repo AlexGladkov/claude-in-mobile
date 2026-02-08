@@ -217,6 +217,24 @@ export class AdbClient {
         this.exec(`shell pm clear ${packageName}`);
     }
     /**
+     * Grant runtime permission to app
+     */
+    grantPermission(packageName, permission) {
+        this.exec(`shell pm grant ${packageName} ${permission}`);
+    }
+    /**
+     * Revoke runtime permission from app
+     */
+    revokePermission(packageName, permission) {
+        this.exec(`shell pm revoke ${packageName} ${permission}`);
+    }
+    /**
+     * Reset all permissions for app (clears app data)
+     */
+    resetPermissions(packageName) {
+        this.exec(`shell pm reset-permissions ${packageName}`);
+    }
+    /**
      * Install APK
      */
     installApk(apkPath) {

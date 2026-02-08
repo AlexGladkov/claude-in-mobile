@@ -78,6 +78,10 @@ export declare class DeviceManager {
         mimeType: string;
     }>;
     /**
+     * Get raw screenshot as PNG Buffer (for annotation/processing)
+     */
+    getScreenshotBuffer(platform?: Platform): Buffer;
+    /**
      * Take screenshot without compression (legacy)
      */
     screenshotRaw(platform?: Platform): string;
@@ -120,6 +124,18 @@ export declare class DeviceManager {
      * Install app
      */
     installApp(path: string, platform?: Platform): string;
+    /**
+     * Grant permission to app
+     */
+    grantPermission(packageOrBundleId: string, permission: string, platform?: Platform): string;
+    /**
+     * Revoke permission from app
+     */
+    revokePermission(packageOrBundleId: string, permission: string, platform?: Platform): string;
+    /**
+     * Reset permissions for app
+     */
+    resetPermissions(packageOrBundleId: string, platform?: Platform): string;
     /**
      * Get UI hierarchy
      */

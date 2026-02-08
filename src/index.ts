@@ -10,6 +10,7 @@ import {
 
 import { DeviceManager, Platform } from "./device-manager.js";
 import { desktopClient } from "./desktop/client.js";
+import { annotateScreenshot } from "./utils/image.js";
 import {
   parseUiHierarchy,
   findByText,
@@ -93,6 +94,31 @@ const tools: Tool[] = [
         monitorIndex: {
           type: "number",
           description: "Monitor index for multi-monitor desktop setups (Desktop only). If not specified, captures all monitors.",
+        },
+      },
+    },
+  },
+  {
+    name: "annotate_screenshot",
+    description: "Take a screenshot with colored bounding boxes and numbered labels overlaid on UI elements. Green = clickable, Red = non-clickable. Returns annotated image + element index. Useful for visual understanding of UI layout. Android and iOS only.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        platform: platformParam,
+        maxWidth: {
+          type: "number",
+          description: "Max width in pixels (default: 800)",
+          default: 800,
+        },
+        maxHeight: {
+          type: "number",
+          description: "Max height in pixels (default: 1400)",
+          default: 1400,
+        },
+        quality: {
+          type: "number",
+          description: "JPEG quality 1-100 (default: 70)",
+          default: 70,
         },
       },
     },
@@ -328,6 +354,59 @@ const tools: Tool[] = [
         platform: platformParam,
       },
       required: ["path"],
+    },
+  },
+  {
+    name: "grant_permission",
+    description: "Grant a permission to an app. Android: runtime permissions (e.g., android.permission.CAMERA). iOS: privacy services (e.g., camera, microphone, photos, location, contacts, calendar, reminders)",
+    inputSchema: {
+      type: "object",
+      properties: {
+        package: {
+          type: "string",
+          description: "Package name (Android) or bundle ID (iOS)",
+        },
+        permission: {
+          type: "string",
+          description: "Permission to grant. Android: android.permission.CAMERA, android.permission.ACCESS_FINE_LOCATION, etc. iOS: camera, microphone, photos, location, contacts, calendar, reminders, motion, health, speech-recognition",
+        },
+        platform: platformParam,
+      },
+      required: ["package", "permission"],
+    },
+  },
+  {
+    name: "revoke_permission",
+    description: "Revoke a permission from an app. Android: runtime permissions. iOS: privacy services",
+    inputSchema: {
+      type: "object",
+      properties: {
+        package: {
+          type: "string",
+          description: "Package name (Android) or bundle ID (iOS)",
+        },
+        permission: {
+          type: "string",
+          description: "Permission to revoke. Same values as grant_permission",
+        },
+        platform: platformParam,
+      },
+      required: ["package", "permission"],
+    },
+  },
+  {
+    name: "reset_permissions",
+    description: "Reset all permissions for an app. Android: resets runtime permissions. iOS: resets all privacy settings",
+    inputSchema: {
+      type: "object",
+      properties: {
+        package: {
+          type: "string",
+          description: "Package name (Android) or bundle ID (iOS)",
+        },
+        platform: platformParam,
+      },
+      required: ["package"],
     },
   },
   {
@@ -665,6 +744,52 @@ const tools: Tool[] = [
 let cachedElements: UiElement[] = [];
 
 // Helper to format iOS UI tree
+/**
+ * Convert iOS accessibility tree (from WDA) to UiElement[] for annotation
+ */
+function iosTreeToUiElements(tree: any, elements: UiElement[] = [], index = { value: 0 }): UiElement[] {
+  if (tree.rect) {
+    const x = tree.rect.x ?? 0;
+    const y = tree.rect.y ?? 0;
+    const w = tree.rect.width ?? 0;
+    const h = tree.rect.height ?? 0;
+
+    if (w > 0 && h > 0) {
+      elements.push({
+        index: index.value++,
+        resourceId: tree.identifier ?? "",
+        className: tree.type ?? "",
+        packageName: "",
+        text: tree.label ?? tree.value ?? "",
+        contentDesc: tree.name ?? "",
+        checkable: false,
+        checked: false,
+        clickable: tree.enabled !== false && (tree.type?.includes("Button") || tree.type?.includes("Link") || tree.type?.includes("Cell")),
+        enabled: tree.enabled !== false,
+        focusable: tree.enabled !== false,
+        focused: false,
+        scrollable: tree.type?.includes("ScrollView") ?? false,
+        longClickable: false,
+        password: tree.type?.includes("SecureTextField") ?? false,
+        selected: tree.selected ?? false,
+        bounds: { x1: x, y1: y, x2: x + w, y2: y + h },
+        centerX: Math.floor(x + w / 2),
+        centerY: Math.floor(y + h / 2),
+        width: w,
+        height: h,
+      });
+    }
+  }
+
+  if (tree.children) {
+    for (const child of tree.children) {
+      iosTreeToUiElements(child, elements, index);
+    }
+  }
+
+  return elements;
+}
+
 function formatIOSUITree(tree: any, indent = 0): string {
   const lines: string[] = [];
   const prefix = '  '.repeat(indent);
@@ -780,6 +905,62 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
           data: result.data,
           mimeType: result.mimeType,
         },
+      };
+    }
+
+    case "annotate_screenshot": {
+      const currentPlat = platform ?? deviceManager.getCurrentPlatform();
+      if (currentPlat === "desktop") {
+        return { text: "annotate_screenshot is not supported for desktop platform. Use screenshot + get_ui instead." };
+      }
+
+      // Get raw screenshot buffer
+      const pngBuffer = deviceManager.getScreenshotBuffer(currentPlat);
+
+      // Get UI elements
+      let uiElements: UiElement[] = [];
+      if (currentPlat === "android" || !currentPlat) {
+        const xml = deviceManager.getAndroidClient().getUiHierarchy();
+        uiElements = parseUiHierarchy(xml);
+      } else if (currentPlat === "ios") {
+        try {
+          const json = await deviceManager.getUiHierarchy("ios");
+          const tree = JSON.parse(json);
+          uiElements = iosTreeToUiElements(tree);
+        } catch {
+          // Fall back to screenshot only
+        }
+      }
+
+      if (uiElements.length === 0) {
+        // No UI elements available, return plain screenshot
+        const result = await deviceManager.screenshot(currentPlat, true, {
+          maxWidth: args.maxWidth as number | undefined,
+          maxHeight: args.maxHeight as number | undefined,
+          quality: args.quality as number | undefined,
+        });
+        return {
+          image: { data: result.data, mimeType: result.mimeType },
+          text: "No UI elements found to annotate. Returning plain screenshot.",
+        };
+      }
+
+      const annotResult = await annotateScreenshot(pngBuffer, uiElements, {
+        maxWidth: args.maxWidth as number | undefined,
+        maxHeight: args.maxHeight as number | undefined,
+        quality: args.quality as number | undefined,
+      });
+
+      const elementsList = annotResult.elements
+        .map(el => `  ${el.index}: ${el.clickable ? "[clickable] " : ""}${el.label} @ (${el.center.x}, ${el.center.y})`)
+        .join("\n");
+
+      return {
+        image: {
+          data: annotResult.image.data,
+          mimeType: annotResult.image.mimeType,
+        },
+        text: `Annotated ${annotResult.elements.length} elements:\n${elementsList}`,
       };
     }
 
@@ -1002,6 +1183,32 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
 
     case "install_app": {
       const result = deviceManager.installApp(args.path as string, platform);
+      return { text: result };
+    }
+
+    case "grant_permission": {
+      const result = deviceManager.grantPermission(
+        args.package as string,
+        args.permission as string,
+        platform
+      );
+      return { text: result };
+    }
+
+    case "revoke_permission": {
+      const result = deviceManager.revokePermission(
+        args.package as string,
+        args.permission as string,
+        platform
+      );
+      return { text: result };
+    }
+
+    case "reset_permissions": {
+      const result = deviceManager.resetPermissions(
+        args.package as string,
+        platform
+      );
       return { text: result };
     }
 
@@ -1298,7 +1505,7 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
 const server = new Server(
   {
     name: "claude-mobile",
-    version: "2.8.0",
+    version: "2.10.0",
   },
   {
     capabilities: {
@@ -1319,18 +1526,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     const result = await handleTool(name, args ?? {});
 
-    // Handle image response
+    // Handle image response (optionally with text)
     if (typeof result === "object" && result !== null && "image" in result) {
-      const img = (result as { image: { data: string; mimeType: string } }).image;
-      return {
-        content: [
-          {
-            type: "image",
-            data: img.data,
-            mimeType: img.mimeType,
-          },
-        ],
-      };
+      const img = (result as { image: { data: string; mimeType: string }; text?: string }).image;
+      const text = (result as { text?: string }).text;
+      const content: Array<{ type: string; data?: string; mimeType?: string; text?: string }> = [
+        {
+          type: "image",
+          data: img.data,
+          mimeType: img.mimeType,
+        },
+      ];
+      if (text) {
+        content.push({ type: "text", text });
+      }
+      return { content };
     }
 
     // Handle text response

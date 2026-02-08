@@ -76,6 +76,18 @@ export declare class AdbClient {
      */
     clearAppData(packageName: string): void;
     /**
+     * Grant runtime permission to app
+     */
+    grantPermission(packageName: string, permission: string): void;
+    /**
+     * Revoke runtime permission from app
+     */
+    revokePermission(packageName: string, permission: string): void;
+    /**
+     * Reset all permissions for app (clears app data)
+     */
+    resetPermissions(packageName: string): void;
+    /**
      * Install APK
      */
     installApk(apkPath: string): string;

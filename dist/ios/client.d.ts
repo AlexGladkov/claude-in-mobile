@@ -150,5 +150,18 @@ export declare class IosClient {
      * Clear logs (not fully supported on iOS, but we can note the timestamp)
      */
     clearLogs(): string;
+    /**
+     * Grant privacy permission on iOS simulator
+     * Services: camera, microphone, photos, location, contacts, calendar, reminders, motion, health, speech-recognition
+     */
+    grantPermission(bundleId: string, service: string): string;
+    /**
+     * Revoke privacy permission on iOS simulator
+     */
+    revokePermission(bundleId: string, service: string): string;
+    /**
+     * Reset all privacy permissions for an app on iOS simulator
+     */
+    resetPermissions(bundleId: string): string;
 }
 //# sourceMappingURL=client.d.ts.map

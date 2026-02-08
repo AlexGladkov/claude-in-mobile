@@ -8,6 +8,8 @@ Control your Android phone, emulator, iOS Simulator, Desktop applications, or Au
 
 - **Unified API** — Same commands work for Android, iOS, Desktop, and Aurora OS
 - **Smart screenshots** — Auto-compressed for optimal LLM processing (no more oversized images!)
+- **Annotated screenshots** — Screenshots with colored bounding boxes and numbered element labels for visual UI understanding
+- **Permission management** — Grant, revoke, and reset app permissions programmatically (Android runtime permissions, iOS privacy services)
 - **Device logs** — Read logcat/system logs with filters for debugging
 - **UI interactions** — Tap, long press, swipe by coordinates or element text
 - **Text input** — Type into focused fields
@@ -113,6 +115,10 @@ claude mcp add --transport stdio mobile -- cmd /c npx -y claude-in-mobile
 | `list_apps` | ❌ | ❌ | ❌ | ✅ | List installed apps (Aurora only) |
 | `get_ui` | ✅ | ✅ | ✅ | ❌ | Get UI hierarchy (iOS: requires WebDriverAgent) |
 | `find_element` | ✅ | ✅ | ✅ | ❌ | Find elements by text/id/label (iOS: requires WebDriverAgent) |
+| `annotate_screenshot` | ✅ | ✅ | ❌ | ❌ | Screenshot with colored bounding boxes and numbered element labels |
+| `grant_permission` | ✅ | ✅ | ❌ | ❌ | Grant app permission (Android: runtime, iOS: privacy service) |
+| `revoke_permission` | ✅ | ✅ | ❌ | ❌ | Revoke app permission |
+| `reset_permissions` | ✅ | ✅ | ❌ | ❌ | Reset all permissions for an app |
 | `get_current_activity` | ✅ | ❌ | ❌ | ❌ | Get foreground activity |
 | `open_url` | ✅ | ✅ | ❌ | ❌ | Open URL in browser (not yet implemented on Aurora) |
 | `shell` | ✅ | ✅ | ❌ | ✅ | Run shell command |
@@ -155,6 +161,20 @@ Just talk to Claude naturally:
 "Open Safari on iOS"
 "Switch to iOS simulator"
 "Run the app on both platforms"
+```
+
+### Permission Management
+
+```
+"Grant camera permission to com.example.app on Android"
+"Revoke location access from com.example.app"
+"Reset all permissions for com.apple.Maps on iOS"
+```
+
+### Annotated Screenshots
+
+```
+"Take an annotated screenshot"  → Screenshot with green (clickable) and red (non-clickable) bounding boxes + numbered element index
 ```
 
 ### Platform Selection

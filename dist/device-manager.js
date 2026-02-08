@@ -258,6 +258,16 @@ export class DeviceManager {
         return { data: buffer.toString("base64"), mimeType: "image/png" };
     }
     /**
+     * Get raw screenshot as PNG Buffer (for annotation/processing)
+     */
+    getScreenshotBuffer(platform) {
+        const client = this.getClient(platform);
+        if (client instanceof DesktopClient) {
+            throw new Error("Use screenshot() for desktop platform");
+        }
+        return client.screenshotRaw();
+    }
+    /**
      * Take screenshot without compression (legacy)
      */
     screenshotRaw(platform) {
@@ -392,6 +402,51 @@ export class DeviceManager {
         else {
             return client.installApp(path);
         }
+    }
+    /**
+     * Grant permission to app
+     */
+    grantPermission(packageOrBundleId, permission, platform) {
+        const client = this.getClient(platform);
+        if (client instanceof AdbClient) {
+            client.grantPermission(packageOrBundleId, permission);
+            return `Granted ${permission} to ${packageOrBundleId}`;
+        }
+        else if (client instanceof IosClient) {
+            client.grantPermission(packageOrBundleId, permission);
+            return `Granted ${permission} to ${packageOrBundleId}`;
+        }
+        throw new Error("Permission management is not supported for this platform");
+    }
+    /**
+     * Revoke permission from app
+     */
+    revokePermission(packageOrBundleId, permission, platform) {
+        const client = this.getClient(platform);
+        if (client instanceof AdbClient) {
+            client.revokePermission(packageOrBundleId, permission);
+            return `Revoked ${permission} from ${packageOrBundleId}`;
+        }
+        else if (client instanceof IosClient) {
+            client.revokePermission(packageOrBundleId, permission);
+            return `Revoked ${permission} from ${packageOrBundleId}`;
+        }
+        throw new Error("Permission management is not supported for this platform");
+    }
+    /**
+     * Reset permissions for app
+     */
+    resetPermissions(packageOrBundleId, platform) {
+        const client = this.getClient(platform);
+        if (client instanceof AdbClient) {
+            client.resetPermissions(packageOrBundleId);
+            return `Reset permissions for ${packageOrBundleId}`;
+        }
+        else if (client instanceof IosClient) {
+            client.resetPermissions(packageOrBundleId);
+            return `Reset permissions for ${packageOrBundleId}`;
+        }
+        throw new Error("Permission management is not supported for this platform");
     }
     /**
      * Get UI hierarchy

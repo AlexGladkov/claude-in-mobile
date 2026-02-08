@@ -456,4 +456,26 @@ export class IosClient {
   clearLogs(): string {
     return "iOS simulator logs cannot be cleared. Use --last parameter to filter recent logs.";
   }
+
+  /**
+   * Grant privacy permission on iOS simulator
+   * Services: camera, microphone, photos, location, contacts, calendar, reminders, motion, health, speech-recognition
+   */
+  grantPermission(bundleId: string, service: string): string {
+    return this.exec(`privacy ${this.targetDevice} grant ${service} ${bundleId}`);
+  }
+
+  /**
+   * Revoke privacy permission on iOS simulator
+   */
+  revokePermission(bundleId: string, service: string): string {
+    return this.exec(`privacy ${this.targetDevice} revoke ${service} ${bundleId}`);
+  }
+
+  /**
+   * Reset all privacy permissions for an app on iOS simulator
+   */
+  resetPermissions(bundleId: string): string {
+    return this.exec(`privacy ${this.targetDevice} reset all ${bundleId}`);
+  }
 }
