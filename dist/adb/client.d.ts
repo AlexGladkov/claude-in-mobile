@@ -16,9 +16,13 @@ export declare class AdbClient {
      */
     execRaw(command: string): Buffer;
     /**
-     * Execute ADB command async
+     * Execute ADB command async (non-blocking)
      */
     execAsync(command: string): Promise<string>;
+    /**
+     * Execute ADB command async and return raw bytes (for screenshots)
+     */
+    execRawAsync(command: string): Promise<Buffer>;
     /**
      * Get list of connected devices
      */
@@ -31,6 +35,10 @@ export declare class AdbClient {
      * Take screenshot and return raw PNG buffer
      */
     screenshotRaw(): Buffer;
+    /**
+     * Take screenshot async (non-blocking)
+     */
+    screenshotRawAsync(): Promise<Buffer>;
     /**
      * Take screenshot and return as base64 PNG (legacy)
      */
@@ -60,9 +68,13 @@ export declare class AdbClient {
      */
     pressKey(key: string): void;
     /**
-     * Get UI hierarchy XML
+     * Get UI hierarchy XML (sync — blocks event loop)
      */
     getUiHierarchy(): string;
+    /**
+     * Get UI hierarchy XML async (non-blocking)
+     */
+    getUiHierarchyAsync(): Promise<string>;
     /**
      * Launch app by package name
      */

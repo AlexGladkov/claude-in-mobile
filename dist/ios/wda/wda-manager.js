@@ -6,9 +6,12 @@ import { WDAClient } from "./wda-client.js";
 export class WDAManager {
     instances = new Map();
     clients = new Map();
+    /** Deduplicates parallel launches for the same device */
+    launchPromises = new Map();
     startupTimeout = 30000;
     buildTimeout = 120000;
     async ensureWDAReady(deviceId) {
+        // Check existing client
         if (this.clients.has(deviceId)) {
             const client = this.clients.get(deviceId);
             try {
@@ -30,6 +33,21 @@ export class WDAManager {
                 // Fall through to relaunch
             }
         }
+        // Deduplicate parallel launches — if another call is already launching
+        // WDA for this device, reuse its promise instead of spawning a second xcodebuild
+        if (this.launchPromises.has(deviceId)) {
+            return this.launchPromises.get(deviceId);
+        }
+        const launchPromise = this.doLaunch(deviceId);
+        this.launchPromises.set(deviceId, launchPromise);
+        try {
+            return await launchPromise;
+        }
+        finally {
+            this.launchPromises.delete(deviceId);
+        }
+    }
+    async doLaunch(deviceId) {
         const wdaPath = await this.discoverWDA();
         await this.buildWDAIfNeeded(wdaPath);
         const port = await this.findFreePort();

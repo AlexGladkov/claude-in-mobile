@@ -1,7 +1,9 @@
-import { execSync, exec } from "child_process";
+import { execSync, exec, execFile } from "child_process";
 import { promisify } from "util";
+import { classifyAdbError } from "../errors.js";
 
-const execAsync = promisify(exec);
+const execAsyncCmd = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 export interface Device {
   id: string;
@@ -31,7 +33,7 @@ export class AdbClient {
         maxBuffer: 50 * 1024 * 1024 // 50MB for screenshots
       }).trim();
     } catch (error: any) {
-      throw new Error(`ADB command failed: ${fullCommand}\n${error.message}`);
+      throw classifyAdbError(error.stderr?.toString() ?? error.message, fullCommand);
     }
   }
 
@@ -45,19 +47,41 @@ export class AdbClient {
         maxBuffer: 50 * 1024 * 1024
       });
     } catch (error: any) {
-      throw new Error(`ADB command failed: ${fullCommand}\n${error.message}`);
+      throw classifyAdbError(error.stderr?.toString() ?? error.message, fullCommand);
     }
   }
 
   /**
-   * Execute ADB command async
+   * Execute ADB command async (non-blocking)
    */
   async execAsync(command: string): Promise<string> {
     const fullCommand = `adb ${this.deviceFlag} ${command}`;
-    const { stdout } = await execAsync(fullCommand, {
-      maxBuffer: 50 * 1024 * 1024
-    });
-    return stdout.trim();
+    try {
+      const { stdout } = await execAsyncCmd(fullCommand, {
+        maxBuffer: 50 * 1024 * 1024
+      });
+      return stdout.trim();
+    } catch (error: any) {
+      throw classifyAdbError(error.stderr?.toString() ?? error.message, fullCommand);
+    }
+  }
+
+  /**
+   * Execute ADB command async and return raw bytes (for screenshots)
+   */
+  async execRawAsync(command: string): Promise<Buffer> {
+    const args = this.deviceId
+      ? ["-s", this.deviceId, ...command.split(/\s+/)]
+      : command.split(/\s+/);
+    try {
+      const { stdout } = await execFileAsync("adb", args, {
+        maxBuffer: 50 * 1024 * 1024,
+        encoding: "buffer" as any,
+      });
+      return stdout as unknown as Buffer;
+    } catch (error: any) {
+      throw classifyAdbError(error.stderr?.toString() ?? error.message, `adb ${args.join(" ")}`);
+    }
   }
 
   /**
@@ -95,6 +119,13 @@ export class AdbClient {
    */
   screenshotRaw(): Buffer {
     return this.execRaw("exec-out screencap -p");
+  }
+
+  /**
+   * Take screenshot async (non-blocking)
+   */
+  async screenshotRawAsync(): Promise<Buffer> {
+    return this.execRawAsync("exec-out screencap -p");
   }
 
   /**
@@ -209,11 +240,19 @@ export class AdbClient {
   }
 
   /**
-   * Get UI hierarchy XML
+   * Get UI hierarchy XML (sync — blocks event loop)
    */
   getUiHierarchy(): string {
     this.exec("shell uiautomator dump /sdcard/ui.xml");
     return this.exec("shell cat /sdcard/ui.xml");
+  }
+
+  /**
+   * Get UI hierarchy XML async (non-blocking)
+   */
+  async getUiHierarchyAsync(): Promise<string> {
+    await this.execAsync("shell uiautomator dump /sdcard/ui.xml");
+    return this.execAsync("shell cat /sdcard/ui.xml");
   }
 
   /**

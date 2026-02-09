@@ -126,6 +126,11 @@ claude mcp add --transport stdio mobile -- cmd /c npx -y claude-in-mobile
 | `get_logs` | ✅ | ✅ | ❌ | ✅ | Get device logs (logcat/system log) |
 | `clear_logs` | ✅ | ⚠️ | ❌ | ✅ | Clear log buffer |
 | `get_system_info` | ✅ | ❌ | ❌ | ✅ | Battery, memory info |
+| `wait_for_element` | ✅ | ✅ | ❌ | ❌ | Wait for element to appear (polling + timeout) |
+| `assert_visible` | ✅ | ✅ | ❌ | ❌ | Assert element is visible (pass/fail) |
+| `assert_not_exists` | ✅ | ✅ | ❌ | ❌ | Assert element does NOT exist (pass/fail) |
+| `batch_commands` | ✅ | ✅ | ✅ | ✅ | Execute multiple commands in single round-trip |
+| `get_webview` | ✅ | ❌ | ❌ | ❌ | Inspect WebView via Chrome DevTools Protocol |
 | `push_file` | ❌ | ❌ | ❌ | ✅ | Upload file (Aurora only) |
 | `pull_file` | ❌ | ❌ | ❌ | ✅ | Download file (Aurora only) |
 

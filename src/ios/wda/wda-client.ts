@@ -153,6 +153,41 @@ export class WDAClient {
     });
   }
 
+  async longPress(x: number, y: number, durationMs: number = 1000): Promise<void> {
+    if (!this.sessionId) {
+      throw new Error("No active WDA session");
+    }
+
+    // Use W3C WebDriver Actions API: pointerDown + pause(duration) + pointerUp
+    await this.request("POST", `/session/${this.sessionId}/actions`, {
+      actions: [
+        {
+          type: "pointer",
+          id: "finger1",
+          parameters: { pointerType: "touch" },
+          actions: [
+            { type: "pointerMove", duration: 0, x, y },
+            { type: "pointerDown", button: 0 },
+            { type: "pause", duration: durationMs },
+            { type: "pointerUp", button: 0 },
+          ],
+        },
+      ],
+    });
+  }
+
+  async getWindowSize(): Promise<{ width: number; height: number }> {
+    if (!this.sessionId) {
+      throw new Error("No active WDA session");
+    }
+
+    const response = await this.request(
+      "GET",
+      `/session/${this.sessionId}/window/size`
+    );
+    return response.value || response;
+  }
+
   async swipe(
     x1: number,
     y1: number,

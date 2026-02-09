@@ -3,6 +3,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { readFileSync, unlinkSync } from "fs";
 import { WDAManager, WDAClient, WDAElement, WDARect } from "./wda/index.js";
+import { classifySimctlError } from "../errors.js";
 
 export interface IosDevice {
   id: string;
@@ -47,7 +48,7 @@ export class IosClient {
         maxBuffer: 50 * 1024 * 1024
       }).trim();
     } catch (error: any) {
-      throw new Error(`simctl command failed: ${fullCommand}\n${error.message}`);
+      throw classifySimctlError(error.stderr?.toString() ?? error.message, fullCommand);
     }
   }
 
@@ -172,12 +173,38 @@ export class IosClient {
   }
 
   /**
-   * Swipe in direction
+   * Long press at coordinates via WDA Actions API
+   */
+  async longPress(x: number, y: number, durationMs: number = 1000): Promise<void> {
+    try {
+      const wdaClient = await this.ensureWDA();
+      await wdaClient.longPress(x, y, durationMs);
+    } catch (error: any) {
+      throw new Error(
+        `Long press requires WebDriverAgent.\n\n` +
+        `Install: npm install -g appium && appium driver install xcuitest\n` +
+        `Or set WDA_PATH environment variable.\n\n` +
+        `Error: ${error.message}`
+      );
+    }
+  }
+
+  /**
+   * Swipe in direction (uses actual screen center from WDA, not hardcoded)
    */
   async swipeDirection(direction: "up" | "down" | "left" | "right", distance: number = 400): Promise<void> {
-    // Default to center of typical simulator screen
-    const centerX = 200;
-    const centerY = 400;
+    // Get actual screen size from WDA instead of using hardcoded values
+    let centerX = 200;
+    let centerY = 400;
+
+    try {
+      const wdaClient = await this.ensureWDA();
+      const size = await wdaClient.getWindowSize();
+      centerX = Math.floor(size.width / 2);
+      centerY = Math.floor(size.height / 2);
+    } catch {
+      // Fallback to defaults if WDA not available
+    }
 
     const coords = {
       up: [centerX, centerY + distance/2, centerX, centerY - distance/2],

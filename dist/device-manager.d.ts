@@ -4,6 +4,7 @@ import { DesktopClient } from "./desktop/client.js";
 import { type CompressOptions } from "./utils/image.js";
 import type { LaunchOptions } from "./desktop/types.js";
 import { AuroraClient } from "./aurora/index.js";
+import { WebViewInspector } from "./adb/webview.js";
 export type Platform = "android" | "ios" | "desktop" | "aurora";
 export interface Device {
     id: string;
@@ -156,6 +157,27 @@ export declare class DeviceManager {
      * Get Aurora client directly
      */
     getAuroraClient(): AuroraClient;
+    /**
+     * Get WebView inspector for current Android device
+     */
+    getWebViewInspector(): WebViewInspector;
+    /**
+     * Get UI hierarchy async (non-blocking for Android)
+     */
+    getUiHierarchyAsync(platform?: Platform): Promise<string>;
+    /**
+     * Take screenshot async (non-blocking for Android)
+     */
+    screenshotAsync(platform?: Platform, compress?: boolean, options?: CompressOptions & {
+        monitorIndex?: number;
+    }): Promise<{
+        data: string;
+        mimeType: string;
+    }>;
+    /**
+     * Get raw screenshot buffer async (for annotation)
+     */
+    getScreenshotBufferAsync(platform?: Platform): Promise<Buffer>;
     /**
      * Get device logs
      */

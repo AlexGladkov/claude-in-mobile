@@ -8,10 +8,13 @@ import { WDAInstanceInfo } from "./wda-types.js";
 export class WDAManager {
   private instances: Map<string, WDAInstanceInfo> = new Map();
   private clients: Map<string, WDAClient> = new Map();
+  /** Deduplicates parallel launches for the same device */
+  private launchPromises: Map<string, Promise<WDAClient>> = new Map();
   private readonly startupTimeout = 30000;
   private readonly buildTimeout = 120000;
 
   async ensureWDAReady(deviceId: string): Promise<WDAClient> {
+    // Check existing client
     if (this.clients.has(deviceId)) {
       const client = this.clients.get(deviceId)!;
       try {
@@ -32,6 +35,23 @@ export class WDAManager {
       }
     }
 
+    // Deduplicate parallel launches — if another call is already launching
+    // WDA for this device, reuse its promise instead of spawning a second xcodebuild
+    if (this.launchPromises.has(deviceId)) {
+      return this.launchPromises.get(deviceId)!;
+    }
+
+    const launchPromise = this.doLaunch(deviceId);
+    this.launchPromises.set(deviceId, launchPromise);
+
+    try {
+      return await launchPromise;
+    } finally {
+      this.launchPromises.delete(deviceId);
+    }
+  }
+
+  private async doLaunch(deviceId: string): Promise<WDAClient> {
     const wdaPath = await this.discoverWDA();
     await this.buildWDAIfNeeded(wdaPath);
     const port = await this.findFreePort();

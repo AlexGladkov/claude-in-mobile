@@ -4,6 +4,7 @@ import { DesktopClient } from "./desktop/client.js";
 import { compressScreenshot, type CompressOptions } from "./utils/image.js";
 import type { LaunchOptions } from "./desktop/types.js";
 import { auroraClient as aurora, AuroraClient } from "./aurora/index.js";
+import { WebViewInspector } from "./adb/webview.js";
 
 export type Platform = "android" | "ios" | "desktop" | "aurora";
 
@@ -347,8 +348,7 @@ export class DeviceManager {
     if (client instanceof DesktopClient) {
       await client.longPress(x, y, durationMs);
     } else if (client instanceof IosClient) {
-      // iOS: simulate with longer tap
-      client.tap(x, y);
+      await client.longPress(x, y, durationMs);
     } else {
       // Android and Aurora: use longPress
       (client as AdbClient | AuroraClient).longPress(x, y, durationMs);
@@ -538,6 +538,78 @@ export class DeviceManager {
    */
   getAuroraClient() {
     return this.auroraClient;
+  }
+
+  /**
+   * Get WebView inspector for current Android device
+   */
+  getWebViewInspector(): WebViewInspector {
+    return new WebViewInspector(this.androidClient);
+  }
+
+  /**
+   * Get UI hierarchy async (non-blocking for Android)
+   */
+  async getUiHierarchyAsync(platform?: Platform): Promise<string> {
+    const client = this.getClient(platform);
+    if (client instanceof DesktopClient) {
+      const hierarchy = await client.getUiHierarchy();
+      return formatDesktopHierarchy(hierarchy);
+    }
+    if (client instanceof IosClient) {
+      return await client.getUiHierarchy();
+    }
+    if (client instanceof AdbClient) {
+      return await client.getUiHierarchyAsync();
+    }
+    return (client as AuroraClient).getUiHierarchy();
+  }
+
+  /**
+   * Take screenshot async (non-blocking for Android)
+   */
+  async screenshotAsync(
+    platform?: Platform,
+    compress: boolean = true,
+    options?: CompressOptions & { monitorIndex?: number }
+  ): Promise<{ data: string; mimeType: string }> {
+    const client = this.getClient(platform);
+
+    if (client instanceof DesktopClient) {
+      const result = await client.screenshotWithMeta({
+        monitorIndex: options?.monitorIndex
+      });
+      return { data: result.base64, mimeType: result.mimeType };
+    }
+
+    if (client instanceof AdbClient) {
+      const buffer = await client.screenshotRawAsync();
+      if (compress) {
+        return compressScreenshot(buffer, options);
+      }
+      return { data: buffer.toString("base64"), mimeType: "image/png" };
+    }
+
+    // iOS and Aurora: still sync
+    const buffer = (client as IosClient | AuroraClient).screenshotRaw();
+    if (compress) {
+      return compressScreenshot(buffer, options);
+    }
+    return { data: buffer.toString("base64"), mimeType: "image/png" };
+  }
+
+  /**
+   * Get raw screenshot buffer async (for annotation)
+   */
+  async getScreenshotBufferAsync(platform?: Platform): Promise<Buffer> {
+    const client = this.getClient(platform);
+    if (client instanceof DesktopClient) {
+      throw new Error("Use screenshot() for desktop platform");
+    }
+    if (client instanceof AdbClient) {
+      return client.screenshotRawAsync();
+    }
+    return (client as IosClient | AuroraClient).screenshotRaw();
   }
 
   /**

@@ -57,7 +57,11 @@ export declare class IosClient {
      */
     swipe(x1: number, y1: number, x2: number, y2: number, durationMs?: number): Promise<void>;
     /**
-     * Swipe in direction
+     * Long press at coordinates via WDA Actions API
+     */
+    longPress(x: number, y: number, durationMs?: number): Promise<void>;
+    /**
+     * Swipe in direction (uses actual screen center from WDA, not hardcoded)
      */
     swipeDirection(direction: "up" | "down" | "left" | "right", distance?: number): Promise<void>;
     /**

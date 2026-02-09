@@ -1,6 +1,8 @@
-import { execSync, exec } from "child_process";
+import { execSync, exec, execFile } from "child_process";
 import { promisify } from "util";
-const execAsync = promisify(exec);
+import { classifyAdbError } from "../errors.js";
+const execAsyncCmd = promisify(exec);
+const execFileAsync = promisify(execFile);
 export class AdbClient {
     deviceId;
     constructor(deviceId) {
@@ -21,7 +23,7 @@ export class AdbClient {
             }).trim();
         }
         catch (error) {
-            throw new Error(`ADB command failed: ${fullCommand}\n${error.message}`);
+            throw classifyAdbError(error.stderr?.toString() ?? error.message, fullCommand);
         }
     }
     /**
@@ -35,18 +37,41 @@ export class AdbClient {
             });
         }
         catch (error) {
-            throw new Error(`ADB command failed: ${fullCommand}\n${error.message}`);
+            throw classifyAdbError(error.stderr?.toString() ?? error.message, fullCommand);
         }
     }
     /**
-     * Execute ADB command async
+     * Execute ADB command async (non-blocking)
      */
     async execAsync(command) {
         const fullCommand = `adb ${this.deviceFlag} ${command}`;
-        const { stdout } = await execAsync(fullCommand, {
-            maxBuffer: 50 * 1024 * 1024
-        });
-        return stdout.trim();
+        try {
+            const { stdout } = await execAsyncCmd(fullCommand, {
+                maxBuffer: 50 * 1024 * 1024
+            });
+            return stdout.trim();
+        }
+        catch (error) {
+            throw classifyAdbError(error.stderr?.toString() ?? error.message, fullCommand);
+        }
+    }
+    /**
+     * Execute ADB command async and return raw bytes (for screenshots)
+     */
+    async execRawAsync(command) {
+        const args = this.deviceId
+            ? ["-s", this.deviceId, ...command.split(/\s+/)]
+            : command.split(/\s+/);
+        try {
+            const { stdout } = await execFileAsync("adb", args, {
+                maxBuffer: 50 * 1024 * 1024,
+                encoding: "buffer",
+            });
+            return stdout;
+        }
+        catch (error) {
+            throw classifyAdbError(error.stderr?.toString() ?? error.message, `adb ${args.join(" ")}`);
+        }
     }
     /**
      * Get list of connected devices
@@ -79,6 +104,12 @@ export class AdbClient {
      */
     screenshotRaw() {
         return this.execRaw("exec-out screencap -p");
+    }
+    /**
+     * Take screenshot async (non-blocking)
+     */
+    async screenshotRawAsync() {
+        return this.execRawAsync("exec-out screencap -p");
     }
     /**
      * Take screenshot and return as base64 PNG (legacy)
@@ -179,11 +210,18 @@ export class AdbClient {
         this.exec(`shell input keyevent ${keyCode}`);
     }
     /**
-     * Get UI hierarchy XML
+     * Get UI hierarchy XML (sync — blocks event loop)
      */
     getUiHierarchy() {
         this.exec("shell uiautomator dump /sdcard/ui.xml");
         return this.exec("shell cat /sdcard/ui.xml");
+    }
+    /**
+     * Get UI hierarchy XML async (non-blocking)
+     */
+    async getUiHierarchyAsync() {
+        await this.execAsync("shell uiautomator dump /sdcard/ui.xml");
+        return this.execAsync("shell cat /sdcard/ui.xml");
     }
     /**
      * Launch app by package name

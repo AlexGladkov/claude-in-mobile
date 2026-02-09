@@ -718,9 +718,122 @@ const tools = [
             required: [],
         },
     },
+    // ============ Reliability Tools ============
+    {
+        name: "wait_for_element",
+        description: "Wait for a UI element to appear. Polls the UI hierarchy until the element is found or timeout. Much more reliable than manual wait(ms) for animations and loading.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                text: {
+                    type: "string",
+                    description: "Element text to wait for (partial match, case-insensitive)",
+                },
+                resourceId: {
+                    type: "string",
+                    description: "Android: resource ID to wait for (partial match)",
+                },
+                className: {
+                    type: "string",
+                    description: "Class name to wait for",
+                },
+                timeout: {
+                    type: "number",
+                    description: "Max wait time in ms (default: 5000)",
+                    default: 5000,
+                },
+                interval: {
+                    type: "number",
+                    description: "Poll interval in ms (default: 500)",
+                    default: 500,
+                },
+                platform: platformParam,
+            },
+        },
+    },
+    {
+        name: "assert_visible",
+        description: "Assert that a UI element is visible on screen. Returns pass/fail without taking a screenshot. Much cheaper than visual verification.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                text: {
+                    type: "string",
+                    description: "Element text to check for (partial match)",
+                },
+                resourceId: {
+                    type: "string",
+                    description: "Android: resource ID to check for",
+                },
+                platform: platformParam,
+            },
+        },
+    },
+    {
+        name: "assert_not_exists",
+        description: "Assert that a UI element does NOT exist on screen. Useful for verifying elements were removed, dialogs dismissed, etc.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                text: {
+                    type: "string",
+                    description: "Element text that should NOT be present",
+                },
+                resourceId: {
+                    type: "string",
+                    description: "Android: resource ID that should NOT be present",
+                },
+                platform: platformParam,
+            },
+        },
+    },
+    {
+        name: "batch_commands",
+        description: "Execute multiple commands in a single MCP round-trip. Commands run sequentially on the server. 2-4x faster than individual tool calls for multi-step automation.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                commands: {
+                    type: "array",
+                    items: {
+                        type: "object",
+                        properties: {
+                            name: { type: "string", description: "Tool name (e.g., 'tap', 'wait', 'input_text')" },
+                            arguments: { type: "object", description: "Tool arguments" },
+                        },
+                        required: ["name"],
+                    },
+                    description: "Array of commands to execute sequentially",
+                },
+                stopOnError: {
+                    type: "boolean",
+                    description: "Stop execution on first error (default: true)",
+                    default: true,
+                },
+            },
+            required: ["commands"],
+        },
+    },
+    {
+        name: "get_webview",
+        description: "Inspect WebView content in the current Android app via Chrome DevTools Protocol. Lists available WebView pages with their URLs and titles. (Android only)",
+        inputSchema: {
+            type: "object",
+            properties: {
+                platform: platformParam,
+            },
+        },
+    },
 ];
-// Cache for UI elements (to support tap by index)
-let cachedElements = [];
+// Per-platform cache for UI elements (to support tap by index)
+// Keyed by platform string to avoid cross-device contamination
+const cachedElementsMap = new Map();
+function getCachedElements(platform) {
+    return cachedElementsMap.get(platform) ?? [];
+}
+function setCachedElements(platform, elements) {
+    cachedElementsMap.set(platform, elements);
+}
 // Helper to format iOS UI tree
 /**
  * Convert iOS accessibility tree (from WDA) to UiElement[] for annotation
@@ -870,12 +983,12 @@ async function handleTool(name, args) {
             if (currentPlat === "desktop") {
                 return { text: "annotate_screenshot is not supported for desktop platform. Use screenshot + get_ui instead." };
             }
-            // Get raw screenshot buffer
-            const pngBuffer = deviceManager.getScreenshotBuffer(currentPlat);
+            // Get raw screenshot buffer (async for Android)
+            const pngBuffer = await deviceManager.getScreenshotBufferAsync(currentPlat);
             // Get UI elements
             let uiElements = [];
             if (currentPlat === "android" || !currentPlat) {
-                const xml = deviceManager.getAndroidClient().getUiHierarchy();
+                const xml = await deviceManager.getUiHierarchyAsync("android");
                 uiElements = parseUiHierarchy(xml);
             }
             else if (currentPlat === "ios") {
@@ -934,13 +1047,14 @@ async function handleTool(name, args) {
                 }
             }
             // Desktop returns pre-formatted text from DeviceManager
-            const xml = await deviceManager.getUiHierarchy(platform);
+            const xml = await deviceManager.getUiHierarchyAsync(platform);
             if (currentPlatform === "desktop") {
                 return { text: xml };
             }
             // Android: parse XML and format
-            cachedElements = parseUiHierarchy(xml);
-            const tree = formatUiTree(cachedElements, {
+            const parsedElements = parseUiHierarchy(xml);
+            setCachedElements("android", parsedElements);
+            const tree = formatUiTree(parsedElements, {
                 showAll: args.showAll,
             });
             return { text: tree };
@@ -967,11 +1081,13 @@ async function handleTool(name, args) {
             // Find by index from cached elements (Android only)
             if (args.index !== undefined && currentPlatform === "android") {
                 const idx = args.index;
-                if (cachedElements.length === 0) {
-                    const xml = await deviceManager.getUiHierarchy("android");
-                    cachedElements = parseUiHierarchy(xml);
+                let elements = getCachedElements("android");
+                if (elements.length === 0) {
+                    const xml = await deviceManager.getUiHierarchyAsync("android");
+                    elements = parseUiHierarchy(xml);
+                    setCachedElements("android", elements);
                 }
-                const el = cachedElements.find(e => e.index === idx);
+                const el = elements.find(e => e.index === idx);
                 if (!el) {
                     return { text: `Element with index ${idx} not found. Run get_ui first.` };
                 }
@@ -980,14 +1096,15 @@ async function handleTool(name, args) {
             }
             // Find by text or resourceId (Android only)
             if ((args.text || args.resourceId) && currentPlatform === "android") {
-                const xml = await deviceManager.getUiHierarchy("android");
-                cachedElements = parseUiHierarchy(xml);
+                const xml = await deviceManager.getUiHierarchyAsync("android");
+                const elements = parseUiHierarchy(xml);
+                setCachedElements("android", elements);
                 let found = [];
                 if (args.text) {
-                    found = findByText(cachedElements, args.text);
+                    found = findByText(elements, args.text);
                 }
                 else if (args.resourceId) {
-                    found = findByResourceId(cachedElements, args.resourceId);
+                    found = findByResourceId(elements, args.resourceId);
                 }
                 if (found.length === 0) {
                     return { text: `Element not found: ${args.text || args.resourceId}` };
@@ -1010,9 +1127,10 @@ async function handleTool(name, args) {
             const duration = args.duration ?? 1000;
             const currentPlatform = platform ?? deviceManager.getCurrentPlatform();
             if (args.text && currentPlatform === "android") {
-                const xml = await deviceManager.getUiHierarchy("android");
-                cachedElements = parseUiHierarchy(xml);
-                const found = findByText(cachedElements, args.text);
+                const xml = await deviceManager.getUiHierarchyAsync("android");
+                const elements = parseUiHierarchy(xml);
+                setCachedElements("android", elements);
+                const found = findByText(elements, args.text);
                 if (found.length === 0) {
                     return { text: `Element not found: ${args.text}` };
                 }
@@ -1072,9 +1190,10 @@ async function handleTool(name, args) {
                     };
                 }
             }
-            const xml = await deviceManager.getUiHierarchy("android");
-            cachedElements = parseUiHierarchy(xml);
-            const found = findElements(cachedElements, {
+            const xml = await deviceManager.getUiHierarchyAsync("android");
+            const parsedEls = parseUiHierarchy(xml);
+            setCachedElements("android", parsedEls);
+            const found = findElements(parsedEls, {
                 text: args.text,
                 resourceId: args.resourceId,
                 className: args.className,
@@ -1261,8 +1380,9 @@ async function handleTool(name, args) {
             if (currentPlatform !== "android") {
                 return { text: "analyze_screen is only available for Android. Use screenshot for iOS/Desktop." };
             }
-            const xml = await deviceManager.getUiHierarchy("android");
-            cachedElements = parseUiHierarchy(xml);
+            const xml = await deviceManager.getUiHierarchyAsync("android");
+            const screenElements = parseUiHierarchy(xml);
+            setCachedElements("android", screenElements);
             // Get current activity for context
             let activity;
             try {
@@ -1271,7 +1391,7 @@ async function handleTool(name, args) {
             catch {
                 // Ignore - activity is optional
             }
-            const analysis = analyzeScreen(cachedElements, activity);
+            const analysis = analyzeScreen(screenElements, activity);
             return { text: formatScreenAnalysis(analysis) };
         }
         case "find_and_tap": {
@@ -1282,10 +1402,11 @@ async function handleTool(name, args) {
             const description = args.description;
             const minConfidence = args.minConfidence ?? 30;
             // Get fresh UI hierarchy
-            const xml = await deviceManager.getUiHierarchy("android");
-            cachedElements = parseUiHierarchy(xml);
+            const xml = await deviceManager.getUiHierarchyAsync("android");
+            const tapElements = parseUiHierarchy(xml);
+            setCachedElements("android", tapElements);
             // Find best matching element
-            const match = findBestMatch(cachedElements, description);
+            const match = findBestMatch(tapElements, description);
             if (!match) {
                 return { text: `No element found matching "${description}". Try using get_ui or analyze_screen to see available elements.` };
             }
@@ -1340,6 +1461,161 @@ async function handleTool(name, args) {
             const buffer = await deviceManager.getAuroraClient().pullFile(args.remotePath, args.localPath);
             return { text: `Downloaded ${args.remotePath} (${buffer.length} bytes)` };
         }
+        // ============ Reliability & Batch Tools ============
+        case "wait_for_element": {
+            const currentPlatform = platform ?? deviceManager.getCurrentPlatform();
+            const timeout = args.timeout ?? 5000;
+            const interval = args.interval ?? 500;
+            const searchText = args.text;
+            const searchId = args.resourceId;
+            const searchClass = args.className;
+            if (!searchText && !searchId && !searchClass) {
+                return { text: "Provide at least one search criteria: text, resourceId, or className" };
+            }
+            const startTime = Date.now();
+            let lastElements = [];
+            while (Date.now() - startTime < timeout) {
+                try {
+                    if (currentPlatform === "android") {
+                        const xml = await deviceManager.getUiHierarchyAsync("android");
+                        lastElements = parseUiHierarchy(xml);
+                        setCachedElements("android", lastElements);
+                    }
+                    else if (currentPlatform === "ios") {
+                        const json = await deviceManager.getUiHierarchyAsync("ios");
+                        const tree = JSON.parse(json);
+                        lastElements = iosTreeToUiElements(tree);
+                    }
+                    const found = findElements(lastElements, {
+                        text: searchText,
+                        resourceId: searchId,
+                        className: searchClass,
+                    });
+                    if (found.length > 0) {
+                        const elapsed = Date.now() - startTime;
+                        return {
+                            text: `Element found after ${elapsed}ms:\n${formatElement(found[0])}\n` +
+                                (found.length > 1 ? `(${found.length} total matches)` : "")
+                        };
+                    }
+                }
+                catch {
+                    // UI hierarchy not available yet, keep polling
+                }
+                await new Promise(resolve => setTimeout(resolve, interval));
+            }
+            return { text: `Timeout after ${timeout}ms: element not found (text=${searchText ?? ""}, resourceId=${searchId ?? ""}, className=${searchClass ?? ""})` };
+        }
+        case "assert_visible": {
+            const currentPlatform = platform ?? deviceManager.getCurrentPlatform();
+            const searchText = args.text;
+            const searchId = args.resourceId;
+            if (!searchText && !searchId) {
+                return { text: "Provide text or resourceId to assert" };
+            }
+            let elements = [];
+            if (currentPlatform === "android") {
+                const xml = await deviceManager.getUiHierarchyAsync("android");
+                elements = parseUiHierarchy(xml);
+                setCachedElements("android", elements);
+            }
+            else if (currentPlatform === "ios") {
+                const json = await deviceManager.getUiHierarchyAsync("ios");
+                const tree = JSON.parse(json);
+                elements = iosTreeToUiElements(tree);
+            }
+            const found = findElements(elements, {
+                text: searchText,
+                resourceId: searchId,
+            });
+            if (found.length > 0) {
+                return { text: `PASS: Element visible — ${formatElement(found[0])}` };
+            }
+            return { text: `FAIL: Element not visible (text=${searchText ?? ""}, resourceId=${searchId ?? ""})` };
+        }
+        case "assert_not_exists": {
+            const currentPlatform = platform ?? deviceManager.getCurrentPlatform();
+            const searchText = args.text;
+            const searchId = args.resourceId;
+            if (!searchText && !searchId) {
+                return { text: "Provide text or resourceId to assert absence" };
+            }
+            let elements = [];
+            if (currentPlatform === "android") {
+                const xml = await deviceManager.getUiHierarchyAsync("android");
+                elements = parseUiHierarchy(xml);
+                setCachedElements("android", elements);
+            }
+            else if (currentPlatform === "ios") {
+                const json = await deviceManager.getUiHierarchyAsync("ios");
+                const tree = JSON.parse(json);
+                elements = iosTreeToUiElements(tree);
+            }
+            const found = findElements(elements, {
+                text: searchText,
+                resourceId: searchId,
+            });
+            if (found.length === 0) {
+                return { text: `PASS: Element not present (text=${searchText ?? ""}, resourceId=${searchId ?? ""})` };
+            }
+            return { text: `FAIL: Element exists — ${formatElement(found[0])}` };
+        }
+        case "batch_commands": {
+            const commands = args.commands;
+            const stopOnError = args.stopOnError !== false;
+            if (!commands || commands.length === 0) {
+                return { text: "No commands provided" };
+            }
+            const results = [];
+            for (const cmd of commands) {
+                try {
+                    const result = await handleTool(cmd.name, cmd.arguments ?? {});
+                    const text = typeof result === "object" && result !== null && "text" in result
+                        ? result.text
+                        : JSON.stringify(result);
+                    results.push({ command: cmd.name, success: true, result: text });
+                }
+                catch (error) {
+                    results.push({ command: cmd.name, success: false, result: error.message });
+                    if (stopOnError) {
+                        break;
+                    }
+                }
+            }
+            const output = results.map((r, i) => `${i + 1}. ${r.command}: ${r.success ? "OK" : "ERROR"} — ${r.result}`).join("\n");
+            const failed = results.filter(r => !r.success).length;
+            const summary = failed > 0
+                ? `Batch: ${results.length}/${commands.length} executed, ${failed} failed`
+                : `Batch: ${results.length} commands OK`;
+            return { text: `${summary}\n\n${output}` };
+        }
+        case "get_webview": {
+            const currentPlatform = platform ?? deviceManager.getCurrentPlatform();
+            if (currentPlatform !== "android") {
+                return { text: "get_webview is only available for Android." };
+            }
+            try {
+                const inspector = deviceManager.getWebViewInspector();
+                const result = await inspector.inspect();
+                let output = `WebView sockets found: ${result.sockets.join(", ")}\n`;
+                output += `Forwarded to port: ${result.forwardedPort}\n\n`;
+                if (result.targets.length === 0) {
+                    output += "No active pages found in WebView.";
+                }
+                else {
+                    output += `Pages (${result.targets.length}):\n`;
+                    for (const target of result.targets) {
+                        output += `  • [${target.type}] "${target.title}"\n`;
+                        output += `    URL: ${target.url}\n`;
+                        output += `    ID: ${target.id}\n`;
+                    }
+                }
+                return { text: output };
+            }
+            catch (error) {
+                return { text: `WebView inspection failed: ${error.message}` };
+            }
+        }
         default:
             throw new Error(`Unknown tool: ${name}`);
     }
@@ -1347,7 +1623,7 @@ async function handleTool(name, args) {
 // Create server
 const server = new Server({
     name: "claude-mobile",
-    version: "2.10.0",
+    version: "2.11.0",
 }, {
     capabilities: {
         tools: {},
