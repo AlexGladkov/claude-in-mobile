@@ -7,6 +7,7 @@ mod aurora;
 mod desktop;
 mod ios;
 mod screenshot;
+mod testcase;
 
 use std::process::ExitCode;
 
@@ -727,6 +728,62 @@ enum Commands {
         #[arg(long)]
         companion_path: Option<String>,
     },
+
+    // ===== Testcase commands =====
+
+    /// Save a YAML test case file (validates before writing)
+    SaveTestcase {
+        /// Directory path to save the test case
+        path: String,
+
+        /// Filename (e.g., TC001-login.yaml)
+        filename: String,
+
+        /// Full YAML content of the test case
+        content: String,
+    },
+
+    /// List all test cases in a directory
+    ListTestcases {
+        /// Directory path containing test case YAML files
+        path: String,
+
+        /// Optional platform filter
+        #[arg(long)]
+        platform: Option<String>,
+    },
+
+    /// Read a test case file and show metadata + YAML
+    GetTestcase {
+        /// Full path to the test case YAML file
+        path: String,
+    },
+
+    /// Delete a test case file
+    DeleteTestcase {
+        /// Full path to the test case YAML file
+        path: String,
+    },
+
+    /// Load a test case for execution
+    RunTestcase {
+        /// Full path to the test case YAML file
+        path: String,
+    },
+
+    /// Load multiple test cases for sequential execution
+    RunSuite {
+        /// Directory path containing test case YAML files
+        path: String,
+
+        /// Comma-separated test case IDs to run
+        #[arg(short, long, value_delimiter = ',')]
+        ids: Vec<String>,
+
+        /// Optional path to save the execution report
+        #[arg(long)]
+        report_path: Option<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -1269,6 +1326,32 @@ fn run(cli: Cli) -> Result<()> {
 
         Commands::ResizeWindow { window_id, width, height, companion_path } => {
             desktop::resize_window(&window_id, width, height, companion_path.as_deref())
+        }
+
+        // ===== Testcase commands =====
+
+        Commands::SaveTestcase { path, filename, content } => {
+            testcase::save_testcase(&path, &filename, &content)
+        }
+
+        Commands::ListTestcases { path, platform } => {
+            testcase::list_testcases(&path, platform.as_deref())
+        }
+
+        Commands::GetTestcase { path } => {
+            testcase::get_testcase(&path)
+        }
+
+        Commands::DeleteTestcase { path } => {
+            testcase::delete_testcase(&path)
+        }
+
+        Commands::RunTestcase { path } => {
+            testcase::run_testcase(&path)
+        }
+
+        Commands::RunSuite { path, ids, report_path } => {
+            testcase::run_suite(&path, &ids, report_path.as_deref())
         }
     }
 }

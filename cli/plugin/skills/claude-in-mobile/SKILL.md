@@ -646,3 +646,128 @@ For full platform support matrix and per-platform details (backends, supported/u
 - Desktop commands communicate via JSON-RPC with a companion app over stdin/stdout
 - Combine `ui-dump` + `tap --index N` for reliable element interaction by index
 - Use `wait` between actions in automation scripts to allow UI transitions
+
+---
+
+## Testcase Commands
+
+Manage and execute YAML-based test cases. Test cases are semantic — they describe *what* to test, and Claude interprets them each run.
+
+### save-testcase
+
+Save a validated YAML test case file to a directory.
+
+```bash
+claude-in-mobile save-testcase ./testcases TC001-login.yaml "$(cat tc.yaml)"
+```
+
+**Arguments:** `<path>` (directory), `<filename>`, `<content>` (YAML string)
+
+---
+
+### list-testcases
+
+List all test cases in a directory with their metadata.
+
+```bash
+claude-in-mobile list-testcases ./testcases
+claude-in-mobile list-testcases ./testcases --platform android
+```
+
+| Flag | Description |
+|------|-------------|
+| `--platform <name>` | Filter by platform |
+
+---
+
+### get-testcase
+
+Read a test case and display its metadata and YAML content.
+
+```bash
+claude-in-mobile get-testcase ./testcases/TC001-login.yaml
+```
+
+---
+
+### delete-testcase
+
+Delete a test case file.
+
+```bash
+claude-in-mobile delete-testcase ./testcases/TC001-login.yaml
+```
+
+---
+
+### run-testcase
+
+Load a test case for Claude to interpret and execute step-by-step.
+
+```bash
+claude-in-mobile run-testcase ./testcases/TC001-login.yaml
+```
+
+---
+
+### run-suite
+
+Load multiple test cases by ID for sequential execution.
+
+```bash
+claude-in-mobile run-suite ./testcases -i TC001,TC002,TC003
+claude-in-mobile run-suite ./testcases -i TC001,TC002 --report-path ./reports/run1.json
+```
+
+| Flag | Description |
+|------|-------------|
+| `-i, --ids <id1,id2,...>` | Comma-separated test case IDs |
+| `--report-path <path>` | Optional path to save execution report |
+
+---
+
+### YAML Test Case Format
+
+```yaml
+id: TC001
+name: Login with valid credentials
+platform: android
+priority: high
+tags: [auth, smoke]
+author: claude
+created_at: "2026-02-13"
+linked_feature: FL001-auth
+description: Verify that a user can log in with valid email and password
+preconditions:
+  - App is installed
+  - User is on the login screen
+steps:
+  - action: Enter email "user@example.com" into the email field
+    expected: Email field shows the entered text
+  - action: Enter password "pass123" into the password field
+    expected: Password field shows masked text
+  - action: Tap the "Login" button
+    expected: User is redirected to the home screen
+```
+
+**Required fields:** `id`, `name`, `platform`, `priority`, `tags`, `author`, `created_at`, `description`, `steps`
+**Optional fields:** `linked_feature`, `last_run_status`, `preconditions`
+**Priority values:** `critical`, `high`, `medium`, `low`
+
+### Proactive Test Case Generation
+
+When working with apps, Claude should proactively generate test cases when:
+- A new feature or screen is explored for the first time
+- A bug is found and fixed (regression test)
+- The user performs a complex multi-step flow
+
+**Quality criteria:**
+- Each step must have a clear `action` and `expected` result
+- Steps should be high-level (semantic), not coordinate-based
+- Test case names should be descriptive and unique
+- Use appropriate priority: `critical` for auth/payment, `high` for core flows, `medium` for secondary features, `low` for edge cases
+
+**Dedup rules:**
+- Before saving, use `list-testcases` to check for existing tests covering the same flow
+- If a similar test exists, update it rather than creating a duplicate
+- Use consistent ID prefixes per feature (e.g., `TC-AUTH-001`, `TC-CART-001`)

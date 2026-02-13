@@ -24,6 +24,15 @@ import {
   UiElement,
 } from "./adb/ui-parser.js";
 import { ElementNotFoundError } from "./errors.js";
+import * as fs from "fs";
+import * as path from "path";
+import {
+  saveTestCase,
+  listTestCases,
+  readTestCase,
+  deleteTestCase,
+  parseTestCase as parseTestCaseYaml,
+} from "./testcases.js";
 
 // Initialize device manager
 const deviceManager = new DeviceManager();
@@ -843,6 +852,112 @@ const tools: Tool[] = [
       properties: {
         platform: platformParam,
       },
+    },
+  },
+  // ============ Testcase Tools ============
+  {
+    name: "save_testcase",
+    description: "Save a YAML test case file. Validates format before writing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Directory path where the test case file will be saved",
+        },
+        filename: {
+          type: "string",
+          description: "Filename for the test case (e.g., 'TC001-login.yaml')",
+        },
+        content: {
+          type: "string",
+          description: "Full YAML content of the test case",
+        },
+      },
+      required: ["path", "filename", "content"],
+    },
+  },
+  {
+    name: "list_testcases",
+    description: "List all test cases in a directory. Returns id, name, platform, priority, and tags for each.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Directory path containing test case YAML files",
+        },
+        platform: {
+          type: "string",
+          description: "Optional platform filter (e.g., 'android', 'ios')",
+        },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    name: "get_testcase",
+    description: "Read a test case file and return its YAML content and parsed metadata.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Full path to the test case YAML file",
+        },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    name: "delete_testcase",
+    description: "Delete a test case file.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Full path to the test case YAML file to delete",
+        },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    name: "run_testcase",
+    description: "Load a test case for execution. Returns the full YAML content for Claude to interpret and execute step-by-step.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Full path to the test case YAML file",
+        },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    name: "run_suite",
+    description: "Load multiple test cases for sequential execution. Returns an array of test case contents.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Directory path containing test case YAML files",
+        },
+        ids: {
+          type: "array",
+          items: { type: "string" },
+          description: "Array of test case IDs to run",
+        },
+        report_path: {
+          type: "string",
+          description: "Optional path to save the execution report",
+        },
+      },
+      required: ["path", "ids"],
     },
   },
 ];
@@ -1803,6 +1918,94 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
       }
     }
 
+    // ============ Testcase Tools ============
+
+    case "save_testcase": {
+      const saved = saveTestCase(
+        args.path as string,
+        args.filename as string,
+        args.content as string,
+      );
+      return { text: `Saved: ${saved}` };
+    }
+
+    case "list_testcases": {
+      const cases = listTestCases(args.path as string, args.platform as string | undefined);
+      if (cases.length === 0) {
+        return { text: "No test cases found." };
+      }
+      const catalog = cases.map((tc) =>
+        `  ${tc.id} | ${tc.name} | ${tc.platform} | ${tc.priority} | [${tc.tags.join(", ")}]`
+      ).join("\n");
+      return { text: `Test cases (${cases.length}):\n${catalog}` };
+    }
+
+    case "get_testcase": {
+      const { content, parsed } = readTestCase(args.path as string);
+      return {
+        text: `--- Metadata ---\nID: ${parsed.id}\nName: ${parsed.name}\nPlatform: ${parsed.platform}\nPriority: ${parsed.priority}\nSteps: ${parsed.steps.length}\n\n--- YAML ---\n${content}`,
+      };
+    }
+
+    case "delete_testcase": {
+      deleteTestCase(args.path as string);
+      return { text: `Deleted: ${args.path}` };
+    }
+
+    case "run_testcase": {
+      const { content, parsed } = readTestCase(args.path as string);
+      return {
+        text: `Execute test case: ${parsed.id} — ${parsed.name}\nPlatform: ${parsed.platform}\nSteps: ${parsed.steps.length}\n\n${content}`,
+      };
+    }
+
+    case "run_suite": {
+      const dirPath = args.path as string;
+      const ids = args.ids as string[];
+
+      if (!fs.existsSync(dirPath)) {
+        return { text: `Directory not found: ${dirPath}` };
+      }
+
+      const files = fs.readdirSync(dirPath).filter(
+        (f) => f.endsWith(".yaml") || f.endsWith(".yml")
+      );
+
+      const suiteResults: Array<{ id: string; name: string; content: string }> = [];
+
+      for (const id of ids) {
+        const matchFile = files.find((f) => {
+          try {
+            const raw = fs.readFileSync(path.join(dirPath, f), "utf-8");
+            const tc = parseTestCaseYaml(raw);
+            return tc.id === id;
+          } catch {
+            return false;
+          }
+        });
+
+        if (matchFile) {
+          const raw = fs.readFileSync(path.join(dirPath, matchFile), "utf-8");
+          suiteResults.push({ id, name: matchFile, content: raw });
+        }
+      }
+
+      if (suiteResults.length === 0) {
+        return { text: `No test cases matched IDs: ${ids.join(", ")}` };
+      }
+
+      const reportPath = args.report_path as string | undefined;
+      const result = JSON.stringify(suiteResults, null, 2);
+
+      if (reportPath) {
+        return {
+          text: `Suite loaded (${suiteResults.length} test cases). Report will be saved to: ${reportPath}\n\n${result}`,
+        };
+      }
+
+      return { text: `Suite loaded (${suiteResults.length} test cases):\n\n${result}` };
+    }
+
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -1812,7 +2015,7 @@ async function handleTool(name: string, args: Record<string, unknown>): Promise<
 const server = new Server(
   {
     name: "claude-mobile",
-    version: "2.11.0",
+    version: "3.0.0-experimental",
   },
   {
     capabilities: {

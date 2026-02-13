@@ -6,5 +6,6 @@ pub mod desktop;
 pub mod ios;
 pub mod screenshot;
 pub mod platform;
+pub mod testcase;
 
 pub use platform::Platform;

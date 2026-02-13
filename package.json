@@ -1,6 +1,6 @@
 {
   "name": "claude-in-mobile",
-  "version": "2.11.0",
+  "version": "3.0.0-experimental",
   "description": "MCP server for mobile and desktop automation - Android (ADB), iOS Simulator (simctl), and Desktop (Compose)",
   "type": "module",
   "main": "dist/index.js",
@@ -52,9 +52,11 @@
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "jimp": "^1.6.0"
+    "jimp": "^1.6.0",
+    "js-yaml": "^4.1.0"
   },
   "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.10.0",
     "typescript": "^5.7.0",
     "vitest": "^4.0.18"

@@ -17,6 +17,7 @@ ab_glyph = "0.2"
 base64 = "0.22"
 colored = "2.0"
 regex = "1.10"
+serde_yaml = "0.9"
 
 [profile.release]
 opt-level = 3
