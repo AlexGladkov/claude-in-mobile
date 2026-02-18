@@ -16,7 +16,7 @@
     "dev": "tsc && node dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepublishOnly": "npm run build:all"
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "mcp",
