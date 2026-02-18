@@ -75,6 +75,19 @@ export declare function formatUiTree(elements: UiElement[], options?: {
 export interface ScreenAnalysis {
     /** Current activity/screen name */
     activity?: string;
+    /** Detected screen title (from Toolbar/NavigationBar) */
+    screenTitle?: string;
+    /** Whether a dialog/modal is detected */
+    hasDialog?: boolean;
+    /** Dialog title if detected */
+    dialogTitle?: string;
+    /** Navigation state */
+    navigationState?: {
+        hasBack: boolean;
+        hasMenu: boolean;
+        hasTabs: boolean;
+        currentTab?: string;
+    };
     /** Buttons and clickable elements */
     buttons: Array<{
         index: number;
@@ -115,6 +128,32 @@ export interface ScreenAnalysis {
     summary: string;
 }
 /**
+ * Detect screen title from Toolbar/ActionBar/NavigationBar elements
+ */
+export declare function detectScreenTitle(elements: UiElement[]): string | undefined;
+/**
+ * Detect if a dialog/modal is present and return its title
+ */
+export declare function detectDialog(elements: UiElement[]): {
+    hasDialog: boolean;
+    dialogTitle?: string;
+};
+/**
+ * Detect navigation state (back button, menu, tabs)
+ */
+export declare function detectNavigation(elements: UiElement[]): {
+    hasBack: boolean;
+    hasMenu: boolean;
+    hasTabs: boolean;
+    currentTab?: string;
+};
+/**
+ * Convert desktop UI hierarchy text to UiElement[] for cross-platform analysis.
+ * Desktop hierarchy is pre-formatted text from the companion app.
+ * Format: indented lines like "  <Button> text="Click me" @ (100, 200) [50x30]"
+ */
+export declare function desktopHierarchyToUiElements(hierarchyText: string): UiElement[];
+/**
  * Analyze screen and return structured information
  * More useful than raw UI tree for Claude to understand
  */
@@ -132,4 +171,20 @@ export declare function findBestMatch(elements: UiElement[], description: string
  * Format screen analysis as text
  */
 export declare function formatScreenAnalysis(analysis: ScreenAnalysis): string;
+export interface UiDiffResult {
+    screenChanged: boolean;
+    appeared: string[];
+    disappeared: string[];
+    beforeCount: number;
+    afterCount: number;
+}
+/**
+ * Diff two sets of UI elements to detect changes.
+ * Returns appeared/disappeared element descriptions and whether the screen changed significantly.
+ */
+export declare function diffUiElements(before: UiElement[], after: UiElement[]): UiDiffResult;
+/**
+ * Suggest next actions based on current UI state.
+ */
+export declare function suggestNextActions(elements: UiElement[]): string[];
 //# sourceMappingURL=ui-parser.d.ts.map

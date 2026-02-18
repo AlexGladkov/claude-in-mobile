@@ -11,6 +11,12 @@ import {
   formatElement,
   formatUiTree,
   formatScreenAnalysis,
+  detectScreenTitle,
+  detectDialog,
+  detectNavigation,
+  desktopHierarchyToUiElements,
+  diffUiElements,
+  suggestNextActions,
 } from "./ui-parser.js";
 import type { UiElement } from "./ui-parser.js";
 
@@ -496,3 +502,307 @@ describe("formatScreenAnalysis", () => {
     expect(formatted).toContain("Empty screen");
   });
 });
+
+// ──────────────────────────────────────────────
+// Feature 2: detectScreenTitle
+// ──────────────────────────────────────────────
+
+describe("detectScreenTitle", () => {
+  it("detects title from Toolbar element", () => {
+    const elements: UiElement[] = [
+      makeTestElement({ className: "android.widget.Toolbar", text: "Settings" }),
+    ];
+    expect(detectScreenTitle(elements)).toBe("Settings");
+  });
+
+  it("falls back to top-of-screen text", () => {
+    const elements: UiElement[] = [
+      makeTestElement({
+        className: "android.widget.TextView", text: "Profile",
+        bounds: { x1: 50, y1: 80, x2: 500, y2: 120 },
+      }),
+    ];
+    expect(detectScreenTitle(elements)).toBe("Profile");
+  });
+
+  it("returns undefined when no title found", () => {
+    const elements: UiElement[] = [
+      makeTestElement({ className: "android.widget.Button", text: "Click me", clickable: true }),
+    ];
+    expect(detectScreenTitle(elements)).toBeUndefined();
+  });
+});
+
+// ──────────────────────────────────────────────
+// Feature 2: detectDialog
+// ──────────────────────────────────────────────
+
+describe("detectDialog", () => {
+  it("detects AlertDialog", () => {
+    const elements: UiElement[] = [
+      makeTestElement({
+        className: "android.app.AlertDialog",
+        bounds: { x1: 100, y1: 300, x2: 900, y2: 700 },
+      }),
+      makeTestElement({
+        className: "android.widget.TextView", text: "Delete item?",
+        bounds: { x1: 120, y1: 320, x2: 880, y2: 380 },
+      }),
+    ];
+    const result = detectDialog(elements);
+    expect(result.hasDialog).toBe(true);
+    expect(result.dialogTitle).toBe("Delete item?");
+  });
+
+  it("returns false when no dialog", () => {
+    const elements = parseUiHierarchy(SAMPLE_XML);
+    const result = detectDialog(elements);
+    expect(result.hasDialog).toBe(false);
+  });
+});
+
+// ──────────────────────────────────────────────
+// Feature 2: detectNavigation
+// ──────────────────────────────────────────────
+
+describe("detectNavigation", () => {
+  it("detects back button", () => {
+    const elements: UiElement[] = [
+      makeTestElement({ contentDesc: "Navigate up", clickable: true }),
+    ];
+    const result = detectNavigation(elements);
+    expect(result.hasBack).toBe(true);
+  });
+
+  it("detects menu button", () => {
+    const elements: UiElement[] = [
+      makeTestElement({ contentDesc: "More options", clickable: true }),
+    ];
+    const result = detectNavigation(elements);
+    expect(result.hasMenu).toBe(true);
+  });
+
+  it("detects tab layout", () => {
+    const elements: UiElement[] = [
+      makeTestElement({ className: "com.google.android.material.tabs.TabLayout" }),
+      makeTestElement({ className: "TabItem", text: "Home", selected: true }),
+    ];
+    const result = detectNavigation(elements);
+    expect(result.hasTabs).toBe(true);
+    expect(result.currentTab).toBe("Home");
+  });
+
+  it("returns all false for plain screen", () => {
+    const result = detectNavigation([]);
+    expect(result.hasBack).toBe(false);
+    expect(result.hasMenu).toBe(false);
+    expect(result.hasTabs).toBe(false);
+  });
+});
+
+// ──────────────────────────────────────────────
+// Feature 2: desktopHierarchyToUiElements
+// ──────────────────────────────────────────────
+
+describe("desktopHierarchyToUiElements", () => {
+  it("parses desktop hierarchy text", () => {
+    const text = `<Button> text="OK" @ (100, 200) [80x30]\n<TextField> text="Search" @ (50, 50) [200x30]`;
+    const elements = desktopHierarchyToUiElements(text);
+    expect(elements.length).toBe(2);
+    expect(elements[0].className).toBe("Button");
+    expect(elements[0].text).toBe("OK");
+    expect(elements[0].clickable).toBe(true);
+    expect(elements[1].className).toBe("TextField");
+  });
+
+  it("handles empty input", () => {
+    const elements = desktopHierarchyToUiElements("");
+    expect(elements).toEqual([]);
+  });
+});
+
+// ──────────────────────────────────────────────
+// Feature 2: analyzeScreen cross-platform
+// ──────────────────────────────────────────────
+
+describe("analyzeScreen cross-platform", () => {
+  it("detects iOS TextField as input", () => {
+    const elements: UiElement[] = [
+      makeTestElement({ className: "XCUIElementTypeTextField", text: "" , contentDesc: "Email" }),
+    ];
+    const analysis = analyzeScreen(elements);
+    expect(analysis.inputs.length).toBe(1);
+    expect(analysis.inputs[0].hint).toBe("Email");
+  });
+
+  it("detects iOS StaticText as text", () => {
+    const elements: UiElement[] = [
+      makeTestElement({ className: "XCUIElementTypeStaticText", text: "Hello World" }),
+    ];
+    const analysis = analyzeScreen(elements);
+    expect(analysis.texts.length).toBe(1);
+    expect(analysis.texts[0].content).toBe("Hello World");
+  });
+
+  it("includes screenTitle in analysis", () => {
+    const elements: UiElement[] = [
+      makeTestElement({
+        className: "android.widget.Toolbar", text: "My Screen",
+        bounds: { x1: 0, y1: 0, x2: 1080, y2: 56 },
+      }),
+    ];
+    const analysis = analyzeScreen(elements);
+    expect(analysis.screenTitle).toBe("My Screen");
+  });
+
+  it("includes navigation state", () => {
+    const elements: UiElement[] = [
+      makeTestElement({ contentDesc: "Navigate up", clickable: true }),
+      makeTestElement({ contentDesc: "More options", clickable: true }),
+    ];
+    const analysis = analyzeScreen(elements);
+    expect(analysis.navigationState).toBeDefined();
+    expect(analysis.navigationState!.hasBack).toBe(true);
+    expect(analysis.navigationState!.hasMenu).toBe(true);
+  });
+});
+
+// ──────────────────────────────────────────────
+// Feature 4: diffUiElements
+// ──────────────────────────────────────────────
+
+describe("diffUiElements", () => {
+  it("detects no changes for identical lists", () => {
+    const elements = parseUiHierarchy(SAMPLE_XML);
+    const diff = diffUiElements(elements, elements);
+    expect(diff.appeared.length).toBe(0);
+    expect(diff.disappeared.length).toBe(0);
+    expect(diff.screenChanged).toBe(false);
+  });
+
+  it("detects appeared elements", () => {
+    const before: UiElement[] = [
+      makeTestElement({ text: "Login", className: "Button" }),
+    ];
+    const after: UiElement[] = [
+      makeTestElement({ text: "Login", className: "Button" }),
+      makeTestElement({ text: "Welcome", className: "TextView" }),
+    ];
+    const diff = diffUiElements(before, after);
+    expect(diff.appeared.length).toBe(1);
+    expect(diff.appeared[0]).toContain("Welcome");
+  });
+
+  it("detects disappeared elements", () => {
+    const before: UiElement[] = [
+      makeTestElement({ text: "Login", className: "Button" }),
+      makeTestElement({ text: "Register", className: "Button" }),
+    ];
+    const after: UiElement[] = [
+      makeTestElement({ text: "Login", className: "Button" }),
+    ];
+    const diff = diffUiElements(before, after);
+    expect(diff.disappeared.length).toBe(1);
+    expect(diff.disappeared[0]).toContain("Register");
+  });
+
+  it("detects screen change when >60% elements differ", () => {
+    const before: UiElement[] = [
+      makeTestElement({ text: "A", className: "View" }),
+      makeTestElement({ text: "B", className: "View" }),
+      makeTestElement({ text: "C", className: "View" }),
+    ];
+    const after: UiElement[] = [
+      makeTestElement({ text: "X", className: "View" }),
+      makeTestElement({ text: "Y", className: "View" }),
+      makeTestElement({ text: "Z", className: "View" }),
+    ];
+    const diff = diffUiElements(before, after);
+    expect(diff.screenChanged).toBe(true);
+  });
+
+  it("handles empty before list", () => {
+    const after: UiElement[] = [
+      makeTestElement({ text: "New", className: "View" }),
+    ];
+    const diff = diffUiElements([], after);
+    expect(diff.appeared.length).toBe(1);
+    expect(diff.beforeCount).toBe(0);
+    expect(diff.afterCount).toBe(1);
+  });
+});
+
+// ──────────────────────────────────────────────
+// Feature 4: suggestNextActions
+// ──────────────────────────────────────────────
+
+describe("suggestNextActions", () => {
+  it("suggests input for focused EditText", () => {
+    const elements: UiElement[] = [
+      makeTestElement({ className: "android.widget.EditText", focused: true, contentDesc: "Username" }),
+    ];
+    const suggestions = suggestNextActions(elements);
+    expect(suggestions.some(s => s.includes("input_text"))).toBe(true);
+    expect(suggestions.some(s => s.includes("Username"))).toBe(true);
+  });
+
+  it("suggests dialog buttons", () => {
+    const elements: UiElement[] = [
+      makeTestElement({ text: "OK", clickable: true, className: "Button" }),
+      makeTestElement({ text: "Cancel", clickable: true, className: "Button" }),
+    ];
+    const suggestions = suggestNextActions(elements);
+    expect(suggestions.some(s => s.includes("OK") && s.includes("Cancel"))).toBe(true);
+  });
+
+  it("suggests scroll when scrollable", () => {
+    const elements: UiElement[] = [
+      makeTestElement({ className: "android.widget.ScrollView", scrollable: true }),
+    ];
+    const suggestions = suggestNextActions(elements);
+    expect(suggestions.some(s => s.includes("scroll"))).toBe(true);
+  });
+
+  it("returns empty for empty screen", () => {
+    const suggestions = suggestNextActions([]);
+    expect(suggestions).toEqual([]);
+  });
+});
+
+// ──────────────────────────────────────────────
+// Helpers
+// ──────────────────────────────────────────────
+
+function makeTestElement(overrides: Partial<UiElement>): UiElement {
+  const defaults: UiElement = {
+    index: 0,
+    resourceId: "",
+    className: "android.widget.View",
+    packageName: "com.test",
+    text: "",
+    contentDesc: "",
+    checkable: false,
+    checked: false,
+    clickable: false,
+    enabled: true,
+    focusable: false,
+    focused: false,
+    scrollable: false,
+    longClickable: false,
+    password: false,
+    selected: false,
+    bounds: { x1: 0, y1: 0, x2: 100, y2: 50 },
+    centerX: 50,
+    centerY: 25,
+    width: 100,
+    height: 50,
+  };
+  const el = { ...defaults, ...overrides };
+  if (overrides.bounds) {
+    el.width = el.bounds.x2 - el.bounds.x1;
+    el.height = el.bounds.y2 - el.bounds.y1;
+    el.centerX = Math.floor((el.bounds.x1 + el.bounds.x2) / 2);
+    el.centerY = Math.floor((el.bounds.y1 + el.bounds.y2) / 2);
+  }
+  return el;
+}

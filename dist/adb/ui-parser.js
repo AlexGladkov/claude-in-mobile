@@ -166,6 +166,175 @@ export function formatUiTree(elements, options) {
     return filtered.map(formatElement).join("\n");
 }
 /**
+ * Detect screen title from Toolbar/ActionBar/NavigationBar elements
+ */
+export function detectScreenTitle(elements) {
+    // Look for text within Toolbar, ActionBar, or NavigationBar containers
+    const toolbarClasses = ["Toolbar", "ActionBar", "NavigationBar", "Header"];
+    for (const el of elements) {
+        const className = el.className;
+        const isToolbar = toolbarClasses.some(tc => className.includes(tc));
+        if (isToolbar && el.text) {
+            return el.text;
+        }
+    }
+    // Fallback: look for a prominent text near the top of the screen (y < 200, large width)
+    for (const el of elements) {
+        if (el.text && !el.clickable && el.bounds.y1 < 200 && el.width > 200 &&
+            (el.className.includes("TextView") || el.className.includes("StaticText"))) {
+            return el.text;
+        }
+    }
+    return undefined;
+}
+/**
+ * Detect if a dialog/modal is present and return its title
+ */
+export function detectDialog(elements) {
+    const dialogClasses = ["AlertDialog", "Dialog", "BottomSheet", "Modal", "Popup", "Alert"];
+    for (const el of elements) {
+        if (dialogClasses.some(dc => el.className.includes(dc))) {
+            // Find the first text child that could be the title
+            const titleEl = elements.find(child => child.text &&
+                child.bounds.y1 >= el.bounds.y1 &&
+                child.bounds.y2 <= el.bounds.y2 &&
+                child.bounds.x1 >= el.bounds.x1 &&
+                child.bounds.x2 <= el.bounds.x2 &&
+                (child.className.includes("TextView") || child.className.includes("StaticText")));
+            return { hasDialog: true, dialogTitle: titleEl?.text };
+        }
+    }
+    // Heuristic: overlay-like element covering most of the screen with a smaller card inside
+    const screenArea = elements.length > 0
+        ? Math.max(...elements.map(el => el.width * el.height))
+        : 0;
+    for (const el of elements) {
+        if (el.className.includes("FrameLayout") || el.className.includes("View")) {
+            const area = el.width * el.height;
+            if (area > screenArea * 0.3 && area < screenArea * 0.85 &&
+                el.bounds.y1 > 100 && el.bounds.x1 > 20) {
+                // Looks like a dialog card
+                const titleEl = elements.find(child => child.text && !child.clickable &&
+                    child.bounds.y1 >= el.bounds.y1 &&
+                    child.bounds.y2 <= el.bounds.y2 &&
+                    child.bounds.x1 >= el.bounds.x1 &&
+                    child.bounds.x2 <= el.bounds.x2);
+                if (titleEl) {
+                    return { hasDialog: true, dialogTitle: titleEl.text };
+                }
+            }
+        }
+    }
+    return { hasDialog: false };
+}
+/**
+ * Detect navigation state (back button, menu, tabs)
+ */
+export function detectNavigation(elements) {
+    let hasBack = false;
+    let hasMenu = false;
+    let hasTabs = false;
+    let currentTab;
+    for (const el of elements) {
+        const desc = (el.contentDesc || "").toLowerCase();
+        const id = (el.resourceId || "").toLowerCase();
+        const text = (el.text || "").toLowerCase();
+        // Back button detection
+        if (desc.includes("back") || desc.includes("navigate up") ||
+            id.includes("back") || id.includes("navigate_up") ||
+            desc === "back" || el.className.includes("BackButton")) {
+            hasBack = true;
+        }
+        // Menu/hamburger detection
+        if (desc.includes("menu") || desc.includes("more options") ||
+            desc.includes("overflow") || id.includes("menu") ||
+            id.includes("overflow") || id.includes("hamburger")) {
+            hasMenu = true;
+        }
+        // Tab detection
+        if (el.className.includes("TabLayout") || el.className.includes("TabBar") ||
+            el.className.includes("BottomNavigation") || el.className.includes("TabView") ||
+            id.includes("tab_layout") || id.includes("bottom_nav") ||
+            id.includes("tab_bar")) {
+            hasTabs = true;
+        }
+        // Selected tab
+        if (el.selected && hasTabs && el.text) {
+            currentTab = el.text;
+        }
+        if (el.selected && (el.className.includes("Tab") || id.includes("tab")) && el.text) {
+            hasTabs = true;
+            currentTab = el.text;
+        }
+    }
+    return { hasBack, hasMenu, hasTabs, currentTab };
+}
+/**
+ * Convert desktop UI hierarchy text to UiElement[] for cross-platform analysis.
+ * Desktop hierarchy is pre-formatted text from the companion app.
+ * Format: indented lines like "  <Button> text="Click me" @ (100, 200) [50x30]"
+ */
+export function desktopHierarchyToUiElements(hierarchyText) {
+    const elements = [];
+    const lines = hierarchyText.split("\n");
+    let index = 0;
+    for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("─") || trimmed.startsWith("="))
+            continue;
+        // Try to extract element info from formatted line
+        const classMatch = trimmed.match(/<(\w+)>/);
+        const textMatch = trimmed.match(/text="([^"]*)"/);
+        const labelMatch = trimmed.match(/label="([^"]*)"/);
+        const valueMatch = trimmed.match(/value="([^"]*)"/);
+        const idMatch = trimmed.match(/id="([^"]*)"/);
+        const coordMatch = trimmed.match(/@ \((\d+),\s*(\d+)\)/);
+        const sizeMatch = trimmed.match(/\[(\d+)x(\d+)\]/);
+        const roleMatch = trimmed.match(/role="([^"]*)"/);
+        if (!classMatch && !textMatch && !coordMatch)
+            continue;
+        const className = classMatch?.[1] ?? "";
+        const text = textMatch?.[1] ?? labelMatch?.[1] ?? valueMatch?.[1] ?? "";
+        const x = coordMatch ? parseInt(coordMatch[1]) : 0;
+        const y = coordMatch ? parseInt(coordMatch[2]) : 0;
+        const w = sizeMatch ? parseInt(sizeMatch[1]) : 100;
+        const h = sizeMatch ? parseInt(sizeMatch[2]) : 40;
+        const role = roleMatch?.[1] ?? "";
+        const isClickable = role.includes("button") || role.includes("link") ||
+            className.includes("Button") || className.includes("Link") ||
+            className.includes("MenuItem") || trimmed.includes("clickable");
+        const isScrollable = className.includes("ScrollView") || className.includes("List") ||
+            role.includes("scroll");
+        const isFocused = trimmed.includes("focused");
+        const isInput = className.includes("TextField") || className.includes("TextInput") ||
+            className.includes("EditText") || role.includes("textfield") || role.includes("textarea");
+        elements.push({
+            index: index++,
+            resourceId: idMatch?.[1] ?? "",
+            className,
+            packageName: "",
+            text,
+            contentDesc: "",
+            checkable: false,
+            checked: false,
+            clickable: isClickable,
+            enabled: !trimmed.includes("disabled"),
+            focusable: isClickable || isInput,
+            focused: isFocused,
+            scrollable: isScrollable,
+            longClickable: false,
+            password: className.includes("SecureTextField") || className.includes("Password"),
+            selected: trimmed.includes("selected"),
+            bounds: { x1: x, y1: y, x2: x + w, y2: y + h },
+            centerX: Math.floor(x + w / 2),
+            centerY: Math.floor(y + h / 2),
+            width: w,
+            height: h,
+        });
+    }
+    return elements;
+}
+/**
  * Analyze screen and return structured information
  * More useful than raw UI tree for Claude to understand
  */
@@ -189,8 +358,10 @@ export function analyzeScreen(elements, activity) {
                 });
             }
         }
-        // Input fields (EditText)
-        if (el.className.includes("EditText") || el.className.includes("TextInputEditText")) {
+        // Input fields — cross-platform: Android EditText, iOS TextField/SecureTextField
+        if (el.className.includes("EditText") || el.className.includes("TextInputEditText") ||
+            el.className.includes("TextField") || el.className.includes("TextInput") ||
+            el.className.includes("SecureTextField")) {
             inputs.push({
                 index: el.index,
                 hint: el.contentDesc || getShortId(el.resourceId) || "",
@@ -198,8 +369,10 @@ export function analyzeScreen(elements, activity) {
                 coordinates: { x: el.centerX, y: el.centerY }
             });
         }
-        // Static text (non-clickable text)
-        if (el.text && !el.clickable && el.className.includes("TextView")) {
+        // Static text — cross-platform: Android TextView, iOS StaticText
+        if (el.text && !el.clickable &&
+            (el.className.includes("TextView") || el.className.includes("StaticText") ||
+                el.className.includes("Label"))) {
             texts.push({
                 content: el.text,
                 coordinates: { x: el.centerX, y: el.centerY }
@@ -215,10 +388,20 @@ export function analyzeScreen(elements, activity) {
             });
         }
     }
+    // Detect semantic features
+    const screenTitle = detectScreenTitle(elements);
+    const dialogInfo = detectDialog(elements);
+    const navigationState = detectNavigation(elements);
     // Create summary
     const summaryParts = [];
     if (activity) {
         summaryParts.push(`Screen: ${activity.split(".").pop()}`);
+    }
+    else if (screenTitle) {
+        summaryParts.push(`Screen: ${screenTitle}`);
+    }
+    if (dialogInfo.hasDialog) {
+        summaryParts.push(`Dialog: "${dialogInfo.dialogTitle ?? "untitled"}"`);
     }
     if (buttons.length > 0) {
         summaryParts.push(`${buttons.length} buttons: ${buttons.slice(0, 5).map(b => `"${b.label}"`).join(", ")}${buttons.length > 5 ? "..." : ""}`);
@@ -229,8 +412,23 @@ export function analyzeScreen(elements, activity) {
     if (scrollable.length > 0) {
         summaryParts.push(`Scrollable: ${scrollable[0].direction}`);
     }
+    if (navigationState.hasBack || navigationState.hasMenu || navigationState.hasTabs) {
+        const navParts = [];
+        if (navigationState.hasBack)
+            navParts.push("back");
+        if (navigationState.hasMenu)
+            navParts.push("menu");
+        if (navigationState.hasTabs)
+            navParts.push(`tabs${navigationState.currentTab ? `(${navigationState.currentTab})` : ""}`);
+        summaryParts.push(`Nav: ${navParts.join(", ")}`);
+    }
     return {
         activity,
+        screenTitle,
+        hasDialog: dialogInfo.hasDialog || undefined,
+        dialogTitle: dialogInfo.dialogTitle,
+        navigationState: (navigationState.hasBack || navigationState.hasMenu || navigationState.hasTabs)
+            ? navigationState : undefined,
         buttons,
         inputs,
         texts: texts.slice(0, 20), // Limit text count
@@ -322,6 +520,26 @@ export function formatScreenAnalysis(analysis) {
     lines.push(`=== Screen Analysis ===`);
     lines.push(analysis.summary);
     lines.push("");
+    if (analysis.screenTitle) {
+        lines.push(`Title: "${analysis.screenTitle}"`);
+    }
+    if (analysis.hasDialog) {
+        lines.push(`Dialog: "${analysis.dialogTitle ?? "untitled"}"`);
+    }
+    if (analysis.navigationState) {
+        const nav = analysis.navigationState;
+        const parts = [];
+        if (nav.hasBack)
+            parts.push("Back");
+        if (nav.hasMenu)
+            parts.push("Menu");
+        if (nav.hasTabs)
+            parts.push(`Tabs${nav.currentTab ? ` [${nav.currentTab}]` : ""}`);
+        lines.push(`Navigation: ${parts.join(", ")}`);
+    }
+    if (analysis.screenTitle || analysis.hasDialog || analysis.navigationState) {
+        lines.push("");
+    }
     if (analysis.buttons.length > 0) {
         lines.push(`Buttons (${analysis.buttons.length}):`);
         for (const btn of analysis.buttons.slice(0, 15)) {
@@ -350,5 +568,71 @@ export function formatScreenAnalysis(analysis) {
         }
     }
     return lines.join("\n");
+}
+function elementFingerprint(el) {
+    return `${el.resourceId}|${el.text}|${el.className}`;
+}
+/**
+ * Diff two sets of UI elements to detect changes.
+ * Returns appeared/disappeared element descriptions and whether the screen changed significantly.
+ */
+export function diffUiElements(before, after) {
+    const beforeSet = new Set(before.map(elementFingerprint));
+    const afterSet = new Set(after.map(elementFingerprint));
+    const appearedElements = after.filter(el => !beforeSet.has(elementFingerprint(el)));
+    const disappearedElements = before.filter(el => !afterSet.has(elementFingerprint(el)));
+    // If more than 60% of elements are different, consider it a screen change
+    const totalUnique = new Set([...beforeSet, ...afterSet]).size;
+    const changedCount = appearedElements.length + disappearedElements.length;
+    const screenChanged = totalUnique > 0 && (changedCount / totalUnique) > 0.6;
+    // Format descriptions (limit to 5 each)
+    const describeEl = (el) => {
+        const label = el.text || el.contentDesc || getShortId(el.resourceId) || "";
+        const shortClass = el.className.split(".").pop() ?? el.className;
+        if (label) {
+            return el.clickable ? `"${label}" ${shortClass.toLowerCase()}` : `"${label}"`;
+        }
+        return shortClass;
+    };
+    return {
+        screenChanged,
+        appeared: appearedElements.slice(0, 5).map(describeEl).filter(s => s.length > 0),
+        disappeared: disappearedElements.slice(0, 5).map(describeEl).filter(s => s.length > 0),
+        beforeCount: before.length,
+        afterCount: after.length,
+    };
+}
+/**
+ * Suggest next actions based on current UI state.
+ */
+export function suggestNextActions(elements) {
+    const suggestions = [];
+    // Focused input field
+    const focusedInput = elements.find(el => el.focused && (el.className.includes("EditText") || el.className.includes("TextField") ||
+        el.className.includes("TextInput")));
+    if (focusedInput) {
+        const name = focusedInput.contentDesc || focusedInput.text || getShortId(focusedInput.resourceId) || "field";
+        suggestions.push(`input_text into ${name}`);
+    }
+    // Dialog with OK/Cancel
+    const dialogButtons = elements.filter(el => el.clickable && el.enabled &&
+        (el.text.match(/^(OK|Cancel|Yes|No|Confirm|Dismiss|Close|Accept|Deny|Allow|Don't allow)$/i) ||
+            el.contentDesc.match(/^(OK|Cancel|Yes|No|Confirm|Dismiss|Close|Accept|Deny|Allow)$/i)));
+    if (dialogButtons.length > 0) {
+        const labels = dialogButtons.map(b => b.text || b.contentDesc).join(" or ");
+        suggestions.push(`tap ${labels}`);
+    }
+    // New clickable elements (limit to 3)
+    const clickableElements = elements.filter(el => el.clickable && el.enabled && (el.text || el.contentDesc) && el.width > 10 && el.height > 10);
+    if (clickableElements.length > 0 && suggestions.length < 3) {
+        const labels = clickableElements.slice(0, 3).map(el => `"${el.text || el.contentDesc}"`).join(", ");
+        suggestions.push(`tap ${labels}`);
+    }
+    // Scrollable area
+    const scrollable = elements.find(el => el.scrollable);
+    if (scrollable) {
+        suggestions.push("scroll to see more");
+    }
+    return suggestions.slice(0, 4);
 }
 //# sourceMappingURL=ui-parser.js.map

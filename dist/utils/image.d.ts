@@ -23,6 +23,29 @@ export declare function toBase64Png(buffer: Buffer): {
     data: string;
     mimeType: string;
 };
+export interface DiffRegion {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+}
+export interface ScreenDiffResult {
+    changePercent: number;
+    changedRegion: DiffRegion | null;
+    changedPixels: number;
+    totalPixels: number;
+}
+/**
+ * Compare two screenshot buffers pixel-by-pixel.
+ * Returns change percentage and bounding box of changed region.
+ * Samples every 2nd pixel for speed.
+ */
+export declare function compareScreenshots(prev: Buffer, next: Buffer, threshold?: number): Promise<ScreenDiffResult>;
+/**
+ * Crop a region from a PNG buffer with padding.
+ * Returns the cropped image as a PNG buffer.
+ */
+export declare function cropRegion(pngBuffer: Buffer, region: DiffRegion, padding?: number): Promise<Buffer>;
 export interface AnnotateResult {
     image: {
         data: string;

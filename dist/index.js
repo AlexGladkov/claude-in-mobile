@@ -4,8 +4,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { CallToolRequestSchema, ListToolsRequestSchema, } from "@modelcontextprotocol/sdk/types.js";
 import { DeviceManager } from "./device-manager.js";
 import { desktopClient } from "./desktop/client.js";
-import { annotateScreenshot } from "./utils/image.js";
-import { parseUiHierarchy, findByText, findByResourceId, findElements, formatUiTree, formatElement, analyzeScreen, findBestMatch, formatScreenAnalysis, } from "./adb/ui-parser.js";
+import { annotateScreenshot, compareScreenshots, cropRegion, compressScreenshot } from "./utils/image.js";
+import { parseUiHierarchy, findByText, findByResourceId, findElements, formatUiTree, formatElement, analyzeScreen, findBestMatch, formatScreenAnalysis, desktopHierarchyToUiElements, diffUiElements, suggestNextActions, } from "./adb/ui-parser.js";
 // Initialize device manager
 const deviceManager = new DeviceManager();
 // Platform parameter schema (reused across tools)
@@ -46,7 +46,7 @@ const tools = [
     },
     {
         name: "screenshot",
-        description: "Take a screenshot of the device screen. Images are automatically compressed for optimal LLM processing.",
+        description: "Take a screenshot of the device screen. Images are automatically compressed for optimal LLM processing. Use diff mode to only see what changed since last screenshot (saves 60-80% tokens).",
         inputSchema: {
             type: "object",
             properties: {
@@ -74,6 +74,16 @@ const tools = [
                 monitorIndex: {
                     type: "number",
                     description: "Monitor index for multi-monitor desktop setups (Desktop only). If not specified, captures all monitors.",
+                },
+                diff: {
+                    type: "boolean",
+                    description: "Compare with previous screenshot. Returns only changed region (<5% change = text only, 5-80% = cropped diff, >80% = full screenshot).",
+                    default: false,
+                },
+                diffThreshold: {
+                    type: "number",
+                    description: "Pixel difference threshold 0-255 for diff mode (default: 30). Lower = more sensitive.",
+                    default: 30,
                 },
             },
         },
@@ -152,6 +162,11 @@ const tools = [
                     type: "number",
                     description: "Desktop only: PID of target process. When provided, sends tap without stealing window focus.",
                 },
+                hints: {
+                    type: "boolean",
+                    description: "Return hints about what changed after the action (new/gone elements, suggestions). Eliminates need for follow-up screenshot/get_ui.",
+                    default: false,
+                },
                 platform: platformParam,
             },
         },
@@ -215,6 +230,11 @@ const tools = [
                     description: "Duration in ms (default: 300)",
                     default: 300,
                 },
+                hints: {
+                    type: "boolean",
+                    description: "Return hints about what changed after the action (new/gone elements, suggestions). Eliminates need for follow-up screenshot/get_ui.",
+                    default: false,
+                },
                 platform: platformParam,
             },
         },
@@ -232,6 +252,11 @@ const tools = [
                 targetPid: {
                     type: "number",
                     description: "Desktop only: PID of target process. When provided, sends input without stealing window focus.",
+                },
+                hints: {
+                    type: "boolean",
+                    description: "Return hints about what changed after the action (new/gone elements, suggestions). Eliminates need for follow-up screenshot/get_ui.",
+                    default: false,
                 },
                 platform: platformParam,
             },
@@ -251,6 +276,11 @@ const tools = [
                 targetPid: {
                     type: "number",
                     description: "Desktop only: PID of target process. When provided, sends key without stealing window focus.",
+                },
+                hints: {
+                    type: "boolean",
+                    description: "Return hints about what changed after the action (new/gone elements, suggestions). Eliminates need for follow-up screenshot/get_ui.",
+                    default: false,
                 },
                 platform: platformParam,
             },
@@ -629,7 +659,7 @@ const tools = [
     // ============ Smart Android UI Tools ============
     {
         name: "analyze_screen",
-        description: "Get structured analysis of the current screen without taking a screenshot. Returns buttons, input fields, text content, and scrollable areas. Much cheaper than screenshot for understanding screen layout. (Android only)",
+        description: "Get structured analysis of the current screen without taking a screenshot. Returns buttons, input fields, text content, scrollable areas, screen title, dialog detection, and navigation state. Much cheaper than screenshot for understanding screen layout.",
         inputSchema: {
             type: "object",
             properties: {
@@ -815,6 +845,63 @@ const tools = [
         },
     },
     {
+        name: "run_flow",
+        description: "Execute a multi-step automation flow in a single round-trip. Supports conditional logic (if_not_found), loops (repeat), and error handling (on_error). Much more efficient than individual tool calls for sequences. Max 20 steps, 60s timeout.",
+        inputSchema: {
+            type: "object",
+            properties: {
+                steps: {
+                    type: "array",
+                    items: {
+                        type: "object",
+                        properties: {
+                            action: {
+                                type: "string",
+                                description: "Tool name: tap, swipe, input_text, press_key, wait, wait_for_element, screenshot, analyze_screen, assert_visible, assert_not_exists, find_and_tap, find_element, open_url",
+                            },
+                            args: {
+                                type: "object",
+                                description: "Tool arguments",
+                            },
+                            if_not_found: {
+                                type: "string",
+                                enum: ["skip", "scroll_down", "scroll_up", "fail"],
+                                description: "Fallback when element not found (for tap/find actions)",
+                            },
+                            repeat: {
+                                type: "object",
+                                properties: {
+                                    times: { type: "number", description: "Repeat N times (max 10)" },
+                                    until_found: { type: "string", description: "Repeat until element with this text appears" },
+                                    until_not_found: { type: "string", description: "Repeat until element with this text disappears" },
+                                },
+                                description: "Loop control",
+                            },
+                            on_error: {
+                                type: "string",
+                                enum: ["stop", "skip", "retry"],
+                                description: "Error handling (default: stop)",
+                            },
+                            label: {
+                                type: "string",
+                                description: "Label for logging",
+                            },
+                        },
+                        required: ["action"],
+                    },
+                    description: "Steps to execute sequentially",
+                },
+                maxDuration: {
+                    type: "number",
+                    description: "Max total duration in ms (default: 30000, max: 60000)",
+                    default: 30000,
+                },
+                platform: platformParam,
+            },
+            required: ["steps"],
+        },
+    },
+    {
         name: "get_webview",
         description: "Inspect WebView content in the current Android app via Chrome DevTools Protocol. Lists available WebView pages with their URLs and titles. (Android only)",
         inputSchema: {
@@ -828,11 +915,64 @@ const tools = [
 // Per-platform cache for UI elements (to support tap by index)
 // Keyed by platform string to avoid cross-device contamination
 const cachedElementsMap = new Map();
+// Per-platform cache for last screenshot buffer (for diff mode)
+const lastScreenshotMap = new Map();
 function getCachedElements(platform) {
     return cachedElementsMap.get(platform) ?? [];
 }
 function setCachedElements(platform, elements) {
     cachedElementsMap.set(platform, elements);
+}
+/**
+ * Generate action hints by diffing before/after UI state.
+ * Fetches current UI hierarchy, compares with cached "before" elements,
+ * and returns a formatted hints string.
+ */
+async function generateActionHints(platform) {
+    const currentPlatform = platform ?? deviceManager.getCurrentPlatform() ?? "android";
+    const beforeElements = getCachedElements(currentPlatform);
+    // Wait briefly for UI to settle after action
+    await new Promise(resolve => setTimeout(resolve, 150));
+    let afterElements = [];
+    try {
+        if (currentPlatform === "android") {
+            const xml = await deviceManager.getUiHierarchyAsync("android");
+            afterElements = parseUiHierarchy(xml);
+        }
+        else if (currentPlatform === "ios") {
+            const json = await deviceManager.getUiHierarchy("ios");
+            const tree = JSON.parse(json);
+            afterElements = iosTreeToUiElements(tree);
+        }
+        else if (currentPlatform === "desktop") {
+            const text = await deviceManager.getUiHierarchyAsync("desktop");
+            afterElements = desktopHierarchyToUiElements(text);
+        }
+    }
+    catch {
+        return "\n--- Hints ---\nUnable to fetch UI state for hints.";
+    }
+    setCachedElements(currentPlatform, afterElements);
+    if (beforeElements.length === 0 && afterElements.length === 0) {
+        return "\n--- Hints ---\nNo UI elements detected.";
+    }
+    const diff = diffUiElements(beforeElements, afterElements);
+    const suggestions = suggestNextActions(afterElements);
+    const lines = ["\n--- Hints ---"];
+    if (diff.screenChanged) {
+        lines.push("Screen changed (new activity or major UI update)");
+    }
+    if (diff.appeared.length > 0) {
+        lines.push(`New: ${diff.appeared.join(", ")}`);
+    }
+    if (diff.disappeared.length > 0) {
+        lines.push(`Gone: ${diff.disappeared.join(", ")}`);
+    }
+    lines.push(`Elements: ${diff.beforeCount} → ${diff.afterCount}`);
+    if (suggestions.length > 0) {
+        lines.push(`Suggested: ${suggestions.join("; ")}`);
+    }
+    return lines.join("\n");
 }
 // Helper to format iOS UI tree
 /**
@@ -909,6 +1049,49 @@ function formatIOSUITree(tree, indent = 0) {
     }
     return lines.join('\n');
 }
+// Flow Engine — allowed actions whitelist
+const FLOW_ALLOWED_ACTIONS = new Set([
+    "tap", "swipe", "input_text", "press_key", "wait", "wait_for_element",
+    "screenshot", "analyze_screen", "assert_visible", "assert_not_exists",
+    "find_and_tap", "find_element", "open_url",
+]);
+const FLOW_MAX_STEPS = 20;
+const FLOW_MAX_DURATION = 60000;
+const FLOW_MAX_REPEAT = 10;
+/**
+ * Get UI elements for the current platform (helper for flow element checks)
+ */
+async function getElementsForPlatform(plat) {
+    if (plat === "android" || !plat) {
+        const xml = await deviceManager.getUiHierarchyAsync("android");
+        const elements = parseUiHierarchy(xml);
+        setCachedElements("android", elements);
+        return elements;
+    }
+    else if (plat === "ios") {
+        const json = await deviceManager.getUiHierarchy("ios");
+        const tree = JSON.parse(json);
+        const elements = iosTreeToUiElements(tree);
+        setCachedElements("ios", elements);
+        return elements;
+    }
+    else if (plat === "desktop") {
+        const text = await deviceManager.getUiHierarchyAsync("desktop");
+        const elements = desktopHierarchyToUiElements(text);
+        setCachedElements("desktop", elements);
+        return elements;
+    }
+    return [];
+}
+function formatFlowResults(results, totalMs) {
+    const lines = [`Flow completed (${totalMs}ms)`, ""];
+    for (const r of results) {
+        const label = r.label ? ` (${r.label})` : "";
+        const status = r.success ? "OK" : "FAIL";
+        lines.push(`${r.step}. ${r.action}${label}: ${status} — ${r.message} (${r.durationMs}ms)`);
+    }
+    return lines.join("\n");
+}
 // Tool handlers
 async function handleTool(name, args) {
     const platform = args.platform;
@@ -964,13 +1147,65 @@ async function handleTool(name, args) {
         }
         case "screenshot": {
             const compress = args.compress !== false;
-            const options = {
+            const diffMode = args.diff === true;
+            const diffThreshold = args.diffThreshold ?? 30;
+            const compressOptions = {
                 maxWidth: args.maxWidth,
                 maxHeight: args.maxHeight,
                 quality: args.quality,
                 monitorIndex: args.monitorIndex,
             };
-            const result = await deviceManager.screenshot(platform, compress, options);
+            const currentPlatform = platform ?? deviceManager.getCurrentPlatform() ?? "android";
+            if (diffMode) {
+                // Get raw PNG buffer for diff comparison
+                const pngBuffer = await deviceManager.getScreenshotBufferAsync(currentPlatform);
+                const prevBuffer = lastScreenshotMap.get(currentPlatform);
+                lastScreenshotMap.set(currentPlatform, pngBuffer);
+                if (!prevBuffer) {
+                    // No previous screenshot — return full screenshot
+                    const result = compress
+                        ? await compressScreenshot(pngBuffer, compressOptions)
+                        : { data: pngBuffer.toString("base64"), mimeType: "image/png" };
+                    return {
+                        image: { data: result.data, mimeType: result.mimeType },
+                        text: "First screenshot (no previous to diff against)",
+                    };
+                }
+                const diff = await compareScreenshots(prevBuffer, pngBuffer, diffThreshold);
+                if (diff.changePercent < 5) {
+                    // Nearly unchanged — text only, no image
+                    return { text: `Screen unchanged (${diff.changePercent}% diff)` };
+                }
+                if (diff.changePercent >= 80 || !diff.changedRegion) {
+                    // Major change — return full screenshot
+                    const result = compress
+                        ? await compressScreenshot(pngBuffer, compressOptions)
+                        : { data: pngBuffer.toString("base64"), mimeType: "image/png" };
+                    return {
+                        image: { data: result.data, mimeType: result.mimeType },
+                        text: `Screen changed significantly (${diff.changePercent}% diff) — full screenshot`,
+                    };
+                }
+                // Partial change — crop changed region
+                const croppedBuffer = await cropRegion(pngBuffer, diff.changedRegion, 20);
+                const result = compress
+                    ? await compressScreenshot(croppedBuffer, compressOptions)
+                    : { data: croppedBuffer.toString("base64"), mimeType: "image/png" };
+                return {
+                    image: { data: result.data, mimeType: result.mimeType },
+                    text: `Changed region (${diff.changePercent}% diff) at (${diff.changedRegion.x}, ${diff.changedRegion.y}) ${diff.changedRegion.width}x${diff.changedRegion.height}`,
+                };
+            }
+            // Standard screenshot (non-diff)
+            const result = await deviceManager.screenshot(platform, compress, compressOptions);
+            // Store raw buffer for future diffs
+            try {
+                const rawBuffer = await deviceManager.getScreenshotBufferAsync(currentPlatform);
+                lastScreenshotMap.set(currentPlatform, rawBuffer);
+            }
+            catch {
+                // Non-critical — just skip caching
+            }
             return {
                 image: {
                     data: result.data,
@@ -1119,7 +1354,11 @@ async function handleTool(name, args) {
             }
             const targetPid = args.targetPid;
             await deviceManager.tap(x, y, platform, targetPid);
-            return { text: `Tapped at (${x}, ${y})` };
+            let result = `Tapped at (${x}, ${y})`;
+            if (args.hints === true) {
+                result += await generateActionHints(platform);
+            }
+            return { text: result };
         }
         case "long_press": {
             let x = args.x;
@@ -1146,25 +1385,41 @@ async function handleTool(name, args) {
         case "swipe": {
             if (args.direction) {
                 await deviceManager.swipeDirection(args.direction, platform);
-                return { text: `Swiped ${args.direction}` };
+                let result = `Swiped ${args.direction}`;
+                if (args.hints === true) {
+                    result += await generateActionHints(platform);
+                }
+                return { text: result };
             }
             if (args.x1 !== undefined && args.y1 !== undefined &&
                 args.x2 !== undefined && args.y2 !== undefined) {
                 const duration = args.duration ?? 300;
                 await deviceManager.swipe(args.x1, args.y1, args.x2, args.y2, duration, platform);
-                return { text: `Swiped from (${args.x1}, ${args.y1}) to (${args.x2}, ${args.y2})` };
+                let result = `Swiped from (${args.x1}, ${args.y1}) to (${args.x2}, ${args.y2})`;
+                if (args.hints === true) {
+                    result += await generateActionHints(platform);
+                }
+                return { text: result };
             }
             return { text: "Please provide direction or x1,y1,x2,y2 coordinates" };
         }
         case "input_text": {
             const targetPid = args.targetPid;
             await deviceManager.inputText(args.text, platform, targetPid);
-            return { text: `Entered text: "${args.text}"` };
+            let result = `Entered text: "${args.text}"`;
+            if (args.hints === true) {
+                result += await generateActionHints(platform);
+            }
+            return { text: result };
         }
         case "press_key": {
             const targetPid = args.targetPid;
             await deviceManager.pressKey(args.key, platform, targetPid);
-            return { text: `Pressed key: ${args.key}` };
+            let result = `Pressed key: ${args.key}`;
+            if (args.hints === true) {
+                result += await generateActionHints(platform);
+            }
+            return { text: result };
         }
         case "find_element": {
             const currentPlatform = platform ?? deviceManager.getCurrentPlatform();
@@ -1377,19 +1632,47 @@ async function handleTool(name, args) {
         // ============ Smart Android UI Tools ============
         case "analyze_screen": {
             const currentPlatform = platform ?? deviceManager.getCurrentPlatform();
-            if (currentPlatform !== "android") {
-                return { text: "analyze_screen is only available for Android. Use screenshot for iOS/Desktop." };
-            }
-            const xml = await deviceManager.getUiHierarchyAsync("android");
-            const screenElements = parseUiHierarchy(xml);
-            setCachedElements("android", screenElements);
-            // Get current activity for context
+            let screenElements = [];
             let activity;
-            try {
-                activity = deviceManager.getAndroidClient().getCurrentActivity();
+            if (currentPlatform === "android" || !currentPlatform) {
+                const xml = await deviceManager.getUiHierarchyAsync("android");
+                screenElements = parseUiHierarchy(xml);
+                setCachedElements("android", screenElements);
+                // Get current activity for context
+                try {
+                    activity = deviceManager.getAndroidClient().getCurrentActivity();
+                }
+                catch {
+                    // Ignore - activity is optional
+                }
             }
-            catch {
-                // Ignore - activity is optional
+            else if (currentPlatform === "ios") {
+                try {
+                    const json = await deviceManager.getUiHierarchy("ios");
+                    const tree = JSON.parse(json);
+                    screenElements = iosTreeToUiElements(tree);
+                    setCachedElements("ios", screenElements);
+                }
+                catch (error) {
+                    return {
+                        text: `iOS UI inspection requires WebDriverAgent.\n\n` +
+                            `Install: npm install -g appium && appium driver install xcuitest\n\n` +
+                            `Error: ${error.message}`
+                    };
+                }
+            }
+            else if (currentPlatform === "desktop") {
+                try {
+                    const hierarchyText = await deviceManager.getUiHierarchyAsync("desktop");
+                    screenElements = desktopHierarchyToUiElements(hierarchyText);
+                    setCachedElements("desktop", screenElements);
+                }
+                catch (error) {
+                    return { text: `Desktop UI hierarchy not available: ${error.message}` };
+                }
+            }
+            else {
+                return { text: `analyze_screen is not supported for platform: ${currentPlatform}` };
             }
             const analysis = analyzeScreen(screenElements, activity);
             return { text: formatScreenAnalysis(analysis) };
@@ -1589,6 +1872,160 @@ async function handleTool(name, args) {
                 : `Batch: ${results.length} commands OK`;
             return { text: `${summary}\n\n${output}` };
         }
+        case "run_flow": {
+            const steps = args.steps;
+            const maxDuration = Math.min(args.maxDuration ?? 30000, FLOW_MAX_DURATION);
+            const currentPlatform = (platform ?? deviceManager.getCurrentPlatform());
+            if (!steps || steps.length === 0) {
+                return { text: "No steps provided" };
+            }
+            if (steps.length > FLOW_MAX_STEPS) {
+                return { text: `Too many steps (${steps.length}). Maximum is ${FLOW_MAX_STEPS}.` };
+            }
+            // Validate all actions are allowed
+            for (const step of steps) {
+                if (!FLOW_ALLOWED_ACTIONS.has(step.action)) {
+                    return { text: `Action "${step.action}" is not allowed in flows. Allowed: ${[...FLOW_ALLOWED_ACTIONS].join(", ")}` };
+                }
+            }
+            const flowStart = Date.now();
+            const results = [];
+            for (let i = 0; i < steps.length; i++) {
+                // Check global timeout
+                if (Date.now() - flowStart > maxDuration) {
+                    results.push({
+                        step: i + 1,
+                        action: steps[i].action,
+                        label: steps[i].label,
+                        success: false,
+                        message: `Flow timeout (${maxDuration}ms exceeded)`,
+                        durationMs: 0,
+                    });
+                    break;
+                }
+                const step = steps[i];
+                const stepArgs = { ...step.args, platform: currentPlatform };
+                const onError = step.on_error ?? "stop";
+                // Handle repeat
+                const repeatTimes = step.repeat?.times ? Math.min(step.repeat.times, FLOW_MAX_REPEAT) : 1;
+                const untilFound = step.repeat?.until_found;
+                const untilNotFound = step.repeat?.until_not_found;
+                const hasRepeatCondition = untilFound || untilNotFound;
+                const maxIterations = hasRepeatCondition ? FLOW_MAX_REPEAT : repeatTimes;
+                let lastStepResult = null;
+                for (let iter = 0; iter < maxIterations; iter++) {
+                    if (Date.now() - flowStart > maxDuration)
+                        break;
+                    const stepStart = Date.now();
+                    try {
+                        const result = await handleTool(step.action, stepArgs);
+                        const text = typeof result === "object" && result !== null && "text" in result
+                            ? result.text
+                            : JSON.stringify(result);
+                        lastStepResult = {
+                            step: i + 1,
+                            action: step.action,
+                            label: step.label,
+                            success: true,
+                            message: text.slice(0, 200),
+                            durationMs: Date.now() - stepStart,
+                        };
+                        // Check repeat until conditions
+                        if (hasRepeatCondition) {
+                            try {
+                                const elements = await getElementsForPlatform(currentPlatform);
+                                if (untilFound) {
+                                    const found = findElements(elements, { text: untilFound });
+                                    if (found.length > 0)
+                                        break;
+                                }
+                                if (untilNotFound) {
+                                    const found = findElements(elements, { text: untilNotFound });
+                                    if (found.length === 0)
+                                        break;
+                                }
+                            }
+                            catch {
+                                // Continue loop if UI check fails
+                            }
+                            // Small delay between iterations
+                            await new Promise(resolve => setTimeout(resolve, 300));
+                        }
+                    }
+                    catch (error) {
+                        const durationMs = Date.now() - stepStart;
+                        const isNotFound = error.message?.includes("not found") || error.message?.includes("No element");
+                        // Handle if_not_found fallback
+                        if (isNotFound && step.if_not_found) {
+                            if (step.if_not_found === "skip") {
+                                lastStepResult = {
+                                    step: i + 1, action: step.action, label: step.label,
+                                    success: true, message: `Skipped (element not found)`, durationMs,
+                                };
+                                break;
+                            }
+                            else if (step.if_not_found === "scroll_down" || step.if_not_found === "scroll_up") {
+                                try {
+                                    await handleTool("swipe", { direction: step.if_not_found === "scroll_down" ? "up" : "down", platform: currentPlatform });
+                                    await new Promise(resolve => setTimeout(resolve, 300));
+                                    // Retry the original action after scrolling
+                                    const retryResult = await handleTool(step.action, stepArgs);
+                                    const retryText = typeof retryResult === "object" && retryResult !== null && "text" in retryResult
+                                        ? retryResult.text
+                                        : JSON.stringify(retryResult);
+                                    lastStepResult = {
+                                        step: i + 1, action: step.action, label: step.label,
+                                        success: true, message: `${retryText.slice(0, 150)} (after ${step.if_not_found})`,
+                                        durationMs: Date.now() - stepStart,
+                                    };
+                                    break;
+                                }
+                                catch (retryErr) {
+                                    lastStepResult = {
+                                        step: i + 1, action: step.action, label: step.label,
+                                        success: false, message: `${retryErr.message} (after ${step.if_not_found})`,
+                                        durationMs: Date.now() - stepStart,
+                                    };
+                                    if (onError === "stop")
+                                        break;
+                                    if (onError === "skip")
+                                        break;
+                                }
+                            }
+                            else {
+                                // fail
+                                lastStepResult = {
+                                    step: i + 1, action: step.action, label: step.label,
+                                    success: false, message: error.message, durationMs,
+                                };
+                            }
+                            break;
+                        }
+                        // Handle on_error
+                        if (onError === "retry" && iter < maxIterations - 1) {
+                            await new Promise(resolve => setTimeout(resolve, 300));
+                            continue;
+                        }
+                        lastStepResult = {
+                            step: i + 1, action: step.action, label: step.label,
+                            success: false, message: error.message, durationMs,
+                        };
+                        if (onError === "stop") {
+                            results.push(lastStepResult);
+                            return { text: formatFlowResults(results, Date.now() - flowStart) };
+                        }
+                        break; // skip
+                    }
+                }
+                if (lastStepResult) {
+                    results.push(lastStepResult);
+                    if (!lastStepResult.success && (step.on_error ?? "stop") === "stop") {
+                        return { text: formatFlowResults(results, Date.now() - flowStart) };
+                    }
+                }
+            }
+            return { text: formatFlowResults(results, Date.now() - flowStart) };
+        }
         case "get_webview": {
             const currentPlatform = platform ?? deviceManager.getCurrentPlatform();
             if (currentPlatform !== "android") {
@@ -1623,7 +2060,7 @@ async function handleTool(name, args) {
 // Create server
 const server = new Server({
     name: "claude-mobile",
-    version: "2.11.0",
+    version: "2.12.0",
 }, {
     capabilities: {
         tools: {},
