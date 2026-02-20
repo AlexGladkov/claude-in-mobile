@@ -1,9 +1,24 @@
-import { AdbClient } from "./adb/client.js";
-import { IosClient } from "./ios/client.js";
+/**
+ * DeviceManager — thin orchestrator that delegates to platform adapters.
+ *
+ * Refactored from a 715-line God Object into a ~230-line routing layer.
+ * All platform-specific logic lives in src/adapters/*.
+ *
+ * FIX #8: auto-detect device when no deviceId is selected — see getAdapter().
+ */
+
+import type { PlatformAdapter } from "./adapters/platform-adapter.js";
+import { AndroidAdapter } from "./adapters/android-adapter.js";
+import { IosAdapter } from "./adapters/ios-adapter.js";
+import { DesktopAdapter } from "./adapters/desktop-adapter.js";
+import { AuroraAdapter } from "./adapters/aurora-adapter.js";
+
+import type { AdbClient } from "./adb/client.js";
+import type { IosClient } from "./ios/client.js";
 import { DesktopClient } from "./desktop/client.js";
-import { compressScreenshot, type CompressOptions } from "./utils/image.js";
+import type { AuroraClient } from "./aurora/index.js";
+import type { CompressOptions } from "./utils/image.js";
 import type { LaunchOptions } from "./desktop/types.js";
-import { auroraClient as aurora, AuroraClient } from "./aurora/index.js";
 import { WebViewInspector } from "./adb/webview.js";
 
 export type Platform = "android" | "ios" | "desktop" | "aurora";
@@ -17,68 +32,73 @@ export interface Device {
 }
 
 export class DeviceManager {
-  private androidClient: AdbClient;
-  private iosClient: IosClient;
-  private desktopClient: DesktopClient;
-  private auroraClient = aurora;
+  private androidAdapter: AndroidAdapter;
+  private iosAdapter: IosAdapter;
+  private desktopAdapter: DesktopAdapter;
+  private auroraAdapter: AuroraAdapter;
+
+  private adapters: Map<Platform, PlatformAdapter>;
   private activeDevice?: Device;
   private activeTarget: Platform = "android";
 
   constructor() {
-    this.androidClient = new AdbClient();
-    this.iosClient = new IosClient();
-    this.desktopClient = new DesktopClient();
+    this.androidAdapter = new AndroidAdapter();
+    this.iosAdapter = new IosAdapter();
+    this.desktopAdapter = new DesktopAdapter();
+    this.auroraAdapter = new AuroraAdapter();
+
+    this.adapters = new Map<Platform, PlatformAdapter>([
+      ["android", this.androidAdapter],
+      ["ios", this.iosAdapter],
+      ["desktop", this.desktopAdapter],
+      ["aurora", this.auroraAdapter],
+    ]);
   }
 
-  private getClient(platform?: Platform): AdbClient | IosClient | DesktopClient | AuroraClient {
-    const targetPlatform = platform ?? this.activeTarget;
-
-    if (targetPlatform === "desktop") {
-      if (!this.desktopClient.isRunning()) {
-        throw new Error("Desktop app is not running. Use launch_desktop_app first.");
-      }
-      return this.desktopClient;
+  /**
+   * Resolve the correct adapter for a given platform (or the active platform).
+   *
+   * FIX #8: If the adapter has no selected device, attempt auto-detection.
+   * This ensures commands work after a server restart without requiring
+   * an explicit set_device call.
+   */
+  private getAdapter(platform?: Platform): PlatformAdapter {
+    const target = platform ?? this.activeTarget;
+    const adapter = this.adapters.get(target);
+    if (!adapter) {
+      throw new Error(`Unknown platform: ${target}`);
     }
 
-    if (!targetPlatform || targetPlatform === "android" || targetPlatform === "ios" || targetPlatform === "aurora") {
-      const mobilePlatform = targetPlatform ?? this.activeDevice?.platform;
-
-      if (!mobilePlatform) {
-        // Try to auto-detect: prefer Android if available
-        const devices = this.getAllDevices().filter(d => d.platform !== "desktop");
-        const booted = devices.find(d => d.state === "device" || d.state === "booted" || d.state === "connected");
-        if (booted) {
-          this.setDevice(booted.id);
-          if (booted.platform === "android") return this.androidClient;
-          if (booted.platform === "ios") return this.iosClient;
-          if (booted.platform === "aurora") return this.auroraClient;
-        }
-        throw new Error("No active device. Use set_device or list_devices first.");
-      }
-
-      if (mobilePlatform === "android") return this.androidClient;
-      if (mobilePlatform === "ios") return this.iosClient;
-      if (mobilePlatform === "aurora") return this.auroraClient;
+    // Desktop returns immediately — the adapter itself guards isRunning()
+    // where needed (actions, screenshots, UI). Logs/clearLogs work even when stopped.
+    if (target === "desktop") {
+      return adapter;
     }
 
-    throw new Error(`Unknown platform: ${targetPlatform}`);
+    // FIX #8 — auto-detect device when none is selected.
+    // After a server restart the in-memory deviceId is lost, so we probe
+    // the platform for a connected device before the command runs.
+    if (!adapter.getSelectedDeviceId()) {
+      const detected = adapter.autoDetectDevice();
+      if (detected) {
+        adapter.selectDevice(detected.id);
+        this.activeDevice = detected;
+        this.activeTarget = detected.platform;
+      }
+    }
+
+    return adapter;
   }
 
   // ============ Target Management ============
 
-  /**
-   * Set active target platform
-   */
   setTarget(target: Platform): void {
     this.activeTarget = target;
   }
 
-  /**
-   * Get active target and its status
-   */
   getTarget(): { target: Platform; status: string } {
     if (this.activeTarget === "desktop") {
-      const state = this.desktopClient.getState();
+      const state = this.desktopAdapter.getState();
       return { target: "desktop", status: state.status };
     }
 
@@ -92,11 +112,8 @@ export class DeviceManager {
 
   // ============ Desktop Specific ============
 
-  /**
-   * Launch desktop automation (and optionally a user's app via Gradle)
-   */
   async launchDesktopApp(options: LaunchOptions): Promise<string> {
-    await this.desktopClient.launch(options);
+    await this.desktopAdapter.launch(options);
     this.activeTarget = "desktop";
     if (options.projectPath) {
       return `Desktop automation started. Also launching app from ${options.projectPath}`;
@@ -104,114 +121,40 @@ export class DeviceManager {
     return "Desktop automation started";
   }
 
-  /**
-   * Stop desktop app
-   */
   async stopDesktopApp(): Promise<void> {
-    await this.desktopClient.stop();
+    await this.desktopAdapter.stop();
   }
 
-  /**
-   * Get desktop client directly
-   */
   getDesktopClient(): DesktopClient {
-    return this.desktopClient;
+    return this.desktopAdapter.getClient();
   }
 
-  /**
-   * Check if desktop app is running
-   */
   isDesktopRunning(): boolean {
-    return this.desktopClient.isRunning();
+    return this.desktopAdapter.isRunning();
   }
 
   // ============ Device Management ============
 
-  /**
-   * Get all connected devices (Android + iOS + Aurora)
-   */
   getAllDevices(): Device[] {
     const devices: Device[] = [];
-
-    // Get Android devices
-    try {
-      const androidDevices = this.androidClient.getDevices();
-      for (const d of androidDevices) {
-        devices.push({
-          id: d.id,
-          name: d.model ?? d.id,
-          platform: "android",
-          state: d.state,
-          isSimulator: d.id.startsWith("emulator")
-        });
-      }
-    } catch {
-      // ADB not available or no devices
+    for (const adapter of this.adapters.values()) {
+      devices.push(...adapter.listDevices());
     }
-
-    // Get iOS simulators
-    try {
-      const iosDevices = this.iosClient.getDevices();
-      for (const d of iosDevices) {
-        devices.push({
-          id: d.id,
-          name: d.name,
-          platform: "ios",
-          state: d.state,
-          isSimulator: d.isSimulator
-        });
-      }
-    } catch {
-      // simctl not available or no simulators
-    }
-
-    // Add desktop as virtual device if running
-    if (this.desktopClient.isRunning()) {
-      const state = this.desktopClient.getState();
-      devices.push({
-        id: "desktop",
-        name: "Desktop App",
-        platform: "desktop",
-        state: state.status,
-        isSimulator: false
-      });
-    }
-
-    // Get Aurora devices
-    try {
-      const auroraDevices = this.auroraClient.listDevices();
-      for (const d of auroraDevices) {
-        devices.push({
-          id: d.id,
-          name: d.name,
-          platform: "aurora",
-          state: d.state,
-          isSimulator: d.isSimulator
-        });
-      }
-    } catch {
-      // audb not available or no devices
-    }
-
     return devices;
   }
 
-  /**
-   * Get devices filtered by platform
-   */
   getDevices(platform?: Platform): Device[] {
-    const all = this.getAllDevices();
-    if (!platform) return all;
-    return all.filter(d => d.platform === platform);
+    if (platform) {
+      const adapter = this.adapters.get(platform);
+      return adapter ? adapter.listDevices() : [];
+    }
+    return this.getAllDevices();
   }
 
-  /**
-   * Set active device
-   */
   setDevice(deviceId: string, platform?: Platform): Device {
     // Handle desktop special case
     if (deviceId === "desktop" || platform === "desktop") {
-      if (!this.desktopClient.isRunning()) {
+      if (!this.desktopAdapter.isRunning()) {
         throw new Error("Desktop app is not running. Use launch_desktop_app first.");
       }
       this.activeTarget = "desktop";
@@ -220,18 +163,22 @@ export class DeviceManager {
         name: "Desktop App",
         platform: "desktop",
         state: "running",
-        isSimulator: false
+        isSimulator: false,
       };
     }
 
     const devices = this.getAllDevices();
 
     // Find device by ID
-    let device = devices.find(d => d.id === deviceId);
+    let device = devices.find((d) => d.id === deviceId);
 
-    // If platform specified but device not found, try to match
+    // If platform specified but device not found, try to match any booted device on that platform
     if (!device && platform) {
-      device = devices.find(d => d.platform === platform && (d.state === "device" || d.state === "booted" || d.state === "connected"));
+      device = devices.find(
+        (d) =>
+          d.platform === platform &&
+          (d.state === "device" || d.state === "booted" || d.state === "connected"),
+      );
     }
 
     if (!device) {
@@ -241,474 +188,218 @@ export class DeviceManager {
     this.activeDevice = device;
     this.activeTarget = device.platform;
 
-    // Set on the appropriate client
-    if (device.platform === "android") {
-      this.androidClient.setDevice(device.id);
-    } else if (device.platform === "ios") {
-      this.iosClient.setDevice(device.id);
-    }
-    // Aurora and Desktop don't need explicit device selection
+    // Propagate to the adapter
+    const adapter = this.adapters.get(device.platform);
+    adapter?.selectDevice(device.id);
 
     return device;
   }
 
-  /**
-   * Get active device
-   */
   getActiveDevice(): Device | undefined {
-    if (this.activeTarget === "desktop" && this.desktopClient.isRunning()) {
+    if (this.activeTarget === "desktop" && this.desktopAdapter.isRunning()) {
       return {
         id: "desktop",
         name: "Desktop App",
         platform: "desktop",
         state: "running",
-        isSimulator: false
+        isSimulator: false,
       };
     }
     return this.activeDevice;
   }
 
-  /**
-   * Get current platform
-   */
   getCurrentPlatform(): Platform {
     return this.activeTarget;
   }
 
-  // ============ Unified Commands ============
+  // ============ Unified Commands (delegate to adapters) ============
 
-  /**
-   * Take screenshot with optional compression
-   */
   async screenshot(
     platform?: Platform,
     compress: boolean = true,
-    options?: CompressOptions & { monitorIndex?: number }
+    options?: CompressOptions & { monitorIndex?: number },
   ): Promise<{ data: string; mimeType: string }> {
-    // Delegate to screenshotAsync to avoid blocking event loop
     return this.screenshotAsync(platform, compress, options);
   }
 
-  /**
-   * Get raw screenshot as PNG Buffer (for annotation/processing)
-   */
   async getScreenshotBuffer(platform?: Platform): Promise<Buffer> {
     return this.getScreenshotBufferAsync(platform);
   }
 
-  /**
-   * Take screenshot without compression (legacy)
-   */
   screenshotRaw(platform?: Platform): string {
-    const client = this.getClient(platform);
-    if (client instanceof DesktopClient) {
-      throw new Error("Use screenshot() for desktop platform");
-    }
-    return (client as AdbClient | IosClient | AuroraClient).screenshot();
+    const adapter = this.getAdapter(platform);
+    return adapter.screenshotRaw();
   }
 
-  /**
-   * Tap at coordinates
-   * @param targetPid - Optional PID for desktop background mode (no focus stealing)
-   */
   async tap(x: number, y: number, platform?: Platform, targetPid?: number): Promise<void> {
-    const client = this.getClient(platform);
-    if (client instanceof DesktopClient) {
-      await client.tap(x, y, targetPid);
-    } else if (client instanceof IosClient) {
-      await client.tap(x, y);
-    } else {
-      (client as AdbClient | AuroraClient).tap(x, y);
-    }
+    const adapter = this.getAdapter(platform);
+    await adapter.tap(x, y, targetPid);
   }
 
-  /**
-   * Long press
-   */
-  async longPress(x: number, y: number, durationMs: number = 1000, platform?: Platform): Promise<void> {
-    const client = this.getClient(platform);
-    if (client instanceof DesktopClient) {
-      await client.longPress(x, y, durationMs);
-    } else if (client instanceof IosClient) {
-      await client.longPress(x, y, durationMs);
-    } else {
-      // Android and Aurora: use longPress
-      (client as AdbClient | AuroraClient).longPress(x, y, durationMs);
-    }
+  async doubleTap(
+    x: number,
+    y: number,
+    intervalMs: number = 100,
+    platform?: Platform,
+  ): Promise<void> {
+    const adapter = this.getAdapter(platform);
+    await adapter.doubleTap(x, y, intervalMs);
   }
 
-  /**
-   * Swipe
-   */
-  async swipe(x1: number, y1: number, x2: number, y2: number, durationMs: number = 300, platform?: Platform): Promise<void> {
-    const client = this.getClient(platform);
-    if (client instanceof DesktopClient) {
-      await client.swipe(x1, y1, x2, y2, durationMs);
-    } else if (client instanceof IosClient) {
-      await client.swipe(x1, y1, x2, y2, durationMs);
-    } else {
-      (client as AdbClient | AuroraClient).swipe(x1, y1, x2, y2, durationMs);
-    }
+  async longPress(
+    x: number,
+    y: number,
+    durationMs: number = 1000,
+    platform?: Platform,
+  ): Promise<void> {
+    const adapter = this.getAdapter(platform);
+    await adapter.longPress(x, y, durationMs);
   }
 
-  /**
-   * Swipe direction
-   */
-  async swipeDirection(direction: "up" | "down" | "left" | "right", platform?: Platform): Promise<void> {
-    const client = this.getClient(platform);
-    if (client instanceof DesktopClient) {
-      await client.swipeDirection(direction);
-    } else if (client instanceof IosClient) {
-      await client.swipeDirection(direction);
-    } else {
-      (client as AdbClient | AuroraClient).swipeDirection(direction);
-    }
+  async swipe(
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    durationMs: number = 300,
+    platform?: Platform,
+  ): Promise<void> {
+    const adapter = this.getAdapter(platform);
+    await adapter.swipe(x1, y1, x2, y2, durationMs);
   }
 
-  /**
-   * Input text
-   * @param targetPid - Optional PID for desktop background mode (no focus stealing)
-   */
+  async swipeDirection(
+    direction: "up" | "down" | "left" | "right",
+    platform?: Platform,
+  ): Promise<void> {
+    const adapter = this.getAdapter(platform);
+    await adapter.swipeDirection(direction);
+  }
+
   async inputText(text: string, platform?: Platform, targetPid?: number): Promise<void> {
-    const client = this.getClient(platform);
-    if (client instanceof DesktopClient) {
-      await client.inputText(text, targetPid);
-    } else {
-      (client as AdbClient | IosClient | AuroraClient).inputText(text);
-    }
+    const adapter = this.getAdapter(platform);
+    await adapter.inputText(text, targetPid);
   }
 
-  /**
-   * Press key
-   * @param targetPid - Optional PID for desktop background mode (no focus stealing)
-   */
   async pressKey(key: string, platform?: Platform, targetPid?: number): Promise<void> {
-    const client = this.getClient(platform);
-    if (client instanceof DesktopClient) {
-      await client.pressKey(key, undefined, targetPid);
-    } else {
-      (client as AdbClient | IosClient | AuroraClient).pressKey(key);
-    }
+    const adapter = this.getAdapter(platform);
+    await adapter.pressKey(key, targetPid);
   }
 
-  /**
-   * Launch app
-   */
   launchApp(packageOrBundleId: string, platform?: Platform): string {
-    const client = this.getClient(platform);
-    if (client instanceof DesktopClient) {
-      return client.launchApp(packageOrBundleId);
-    }
-    return (client as AdbClient | IosClient | AuroraClient).launchApp(packageOrBundleId);
+    const adapter = this.getAdapter(platform);
+    return adapter.launchApp(packageOrBundleId);
   }
 
-  /**
-   * Stop app
-   */
   stopApp(packageOrBundleId: string, platform?: Platform): void {
-    const client = this.getClient(platform);
-    if (client instanceof DesktopClient) {
-      client.stopApp(packageOrBundleId);
-    } else {
-      (client as AdbClient | IosClient | AuroraClient).stopApp(packageOrBundleId);
-    }
+    const adapter = this.getAdapter(platform);
+    adapter.stopApp(packageOrBundleId);
   }
 
-  /**
-   * Install app
-   */
   installApp(path: string, platform?: Platform): string {
-    const client = this.getClient(platform);
-    if (client instanceof DesktopClient) {
-      return "Desktop platform doesn't support app installation";
-    }
-    if (client instanceof AdbClient) {
-      return client.installApk(path);
-    } else {
-      return (client as IosClient | AuroraClient).installApp(path);
-    }
+    const adapter = this.getAdapter(platform);
+    return adapter.installApp(path);
   }
 
-  /**
-   * Grant permission to app
-   */
-  grantPermission(packageOrBundleId: string, permission: string, platform?: Platform): string {
-    const client = this.getClient(platform);
-    if (client instanceof AdbClient) {
-      client.grantPermission(packageOrBundleId, permission);
-      return `Granted ${permission} to ${packageOrBundleId}`;
-    } else if (client instanceof IosClient) {
-      client.grantPermission(packageOrBundleId, permission);
-      return `Granted ${permission} to ${packageOrBundleId}`;
-    }
-    throw new Error("Permission management is not supported for this platform");
+  grantPermission(
+    packageOrBundleId: string,
+    permission: string,
+    platform?: Platform,
+  ): string {
+    const adapter = this.getAdapter(platform);
+    return adapter.grantPermission(packageOrBundleId, permission);
   }
 
-  /**
-   * Revoke permission from app
-   */
-  revokePermission(packageOrBundleId: string, permission: string, platform?: Platform): string {
-    const client = this.getClient(platform);
-    if (client instanceof AdbClient) {
-      client.revokePermission(packageOrBundleId, permission);
-      return `Revoked ${permission} from ${packageOrBundleId}`;
-    } else if (client instanceof IosClient) {
-      client.revokePermission(packageOrBundleId, permission);
-      return `Revoked ${permission} from ${packageOrBundleId}`;
-    }
-    throw new Error("Permission management is not supported for this platform");
+  revokePermission(
+    packageOrBundleId: string,
+    permission: string,
+    platform?: Platform,
+  ): string {
+    const adapter = this.getAdapter(platform);
+    return adapter.revokePermission(packageOrBundleId, permission);
   }
 
-  /**
-   * Reset permissions for app
-   */
   resetPermissions(packageOrBundleId: string, platform?: Platform): string {
-    const client = this.getClient(platform);
-    if (client instanceof AdbClient) {
-      client.resetPermissions(packageOrBundleId);
-      return `Reset permissions for ${packageOrBundleId}`;
-    } else if (client instanceof IosClient) {
-      client.resetPermissions(packageOrBundleId);
-      return `Reset permissions for ${packageOrBundleId}`;
-    }
-    throw new Error("Permission management is not supported for this platform");
+    const adapter = this.getAdapter(platform);
+    return adapter.resetPermissions(packageOrBundleId);
   }
 
-  /**
-   * Get UI hierarchy
-   */
   async getUiHierarchy(platform?: Platform): Promise<string> {
-    const client = this.getClient(platform);
-    if (client instanceof DesktopClient) {
-      const hierarchy = await client.getUiHierarchy();
-      // Format as text for compatibility
-      return formatDesktopHierarchy(hierarchy);
-    }
-    if (client instanceof IosClient) {
-      return await client.getUiHierarchy();
-    }
-    if (client instanceof AdbClient) {
-      return await client.getUiHierarchyAsync();
-    }
-    return (client as AuroraClient).getUiHierarchy();
+    const adapter = this.getAdapter(platform);
+    return adapter.getUiHierarchy();
   }
 
-  /**
-   * Execute shell command
-   */
-  shell(command: string, platform?: Platform): string {
-    const client = this.getClient(platform);
-    if (client instanceof DesktopClient) {
-      return client.shell(command);
-    }
-    return (client as AdbClient | IosClient | AuroraClient).shell(command);
-  }
-
-  /**
-   * Get Android client directly
-   */
-  getAndroidClient(): AdbClient {
-    return this.androidClient;
-  }
-
-  /**
-   * Get iOS client directly
-   */
-  getIosClient(): IosClient {
-    return this.iosClient;
-  }
-
-  /**
-   * Get Aurora client directly
-   */
-  getAuroraClient() {
-    return this.auroraClient;
-  }
-
-  /**
-   * Get WebView inspector for current Android device
-   */
-  getWebViewInspector(): WebViewInspector {
-    return new WebViewInspector(this.androidClient);
-  }
-
-  /**
-   * Get UI hierarchy async (non-blocking for Android)
-   */
   async getUiHierarchyAsync(platform?: Platform): Promise<string> {
-    const client = this.getClient(platform);
-    if (client instanceof DesktopClient) {
-      const hierarchy = await client.getUiHierarchy();
-      return formatDesktopHierarchy(hierarchy);
-    }
-    if (client instanceof IosClient) {
-      return await client.getUiHierarchy();
-    }
-    if (client instanceof AdbClient) {
-      return await client.getUiHierarchyAsync();
-    }
-    return (client as AuroraClient).getUiHierarchy();
+    const adapter = this.getAdapter(platform);
+    return adapter.getUiHierarchy();
   }
 
-  /**
-   * Take screenshot async (non-blocking for Android)
-   */
+  shell(command: string, platform?: Platform): string {
+    const adapter = this.getAdapter(platform);
+    return adapter.shell(command);
+  }
+
+  // ============ Raw client accessors (used by tools directly) ============
+
+  getAndroidClient(): AdbClient {
+    return this.androidAdapter.getClient();
+  }
+
+  getIosClient(): IosClient {
+    return this.iosAdapter.getClient();
+  }
+
+  getAuroraClient(): AuroraClient {
+    return this.auroraAdapter.getClient();
+  }
+
+  getWebViewInspector(): WebViewInspector {
+    return new WebViewInspector(this.androidAdapter.getClient());
+  }
+
+  // ============ Async screenshot helpers ============
+
   async screenshotAsync(
     platform?: Platform,
     compress: boolean = true,
-    options?: CompressOptions & { monitorIndex?: number }
+    options?: CompressOptions & { monitorIndex?: number },
   ): Promise<{ data: string; mimeType: string }> {
-    const client = this.getClient(platform);
-
-    if (client instanceof DesktopClient) {
-      const result = await client.screenshotWithMeta({
-        monitorIndex: options?.monitorIndex
-      });
-      return { data: result.base64, mimeType: result.mimeType };
-    }
-
-    if (client instanceof AdbClient) {
-      const buffer = await client.screenshotRawAsync();
-      if (compress) {
-        return compressScreenshot(buffer, options);
-      }
-      return { data: buffer.toString("base64"), mimeType: "image/png" };
-    }
-
-    // iOS and Aurora: still sync
-    const buffer = (client as IosClient | AuroraClient).screenshotRaw();
-    if (compress) {
-      return compressScreenshot(buffer, options);
-    }
-    return { data: buffer.toString("base64"), mimeType: "image/png" };
+    const adapter = this.getAdapter(platform);
+    return adapter.screenshotAsync(compress, options);
   }
 
-  /**
-   * Get raw screenshot buffer async (for annotation)
-   */
   async getScreenshotBufferAsync(platform?: Platform): Promise<Buffer> {
-    const client = this.getClient(platform);
-    if (client instanceof DesktopClient) {
-      throw new Error("Use screenshot() for desktop platform");
-    }
-    if (client instanceof AdbClient) {
-      return client.screenshotRawAsync();
-    }
-    return (client as IosClient | AuroraClient).screenshotRaw();
+    const adapter = this.getAdapter(platform);
+    return adapter.getScreenshotBufferAsync();
   }
 
-  /**
-   * Get device logs
-   */
-  getLogs(options: {
-    platform?: Platform;
-    level?: string;
-    tag?: string;
-    lines?: number;
-    package?: string;
-  } = {}): string {
-    const targetPlatform = options.platform ?? this.activeTarget;
+  // ============ Logs & System ============
 
-    if (targetPlatform === "desktop") {
-      const logs = this.desktopClient.getLogs({
-        limit: options.lines ?? 100
-      });
-      return logs.map(l => `[${l.type}] ${l.message}`).join("\n");
-    }
-
-    const client = this.getClient(options.platform);
-
-    if (client instanceof AdbClient) {
-      return client.getLogs({
-        level: options.level as "V" | "D" | "I" | "W" | "E" | "F" | undefined,
-        tag: options.tag,
-        lines: options.lines,
-        package: options.package,
-      });
-    } else if (client instanceof AuroraClient) {
-      return client.getLogs(options);
-    } else {
-      return (client as IosClient).getLogs({
-        level: options.level as "debug" | "info" | "default" | "error" | "fault" | undefined,
-        lines: options.lines,
-        predicate: options.package ? `subsystem == "${options.package}"` : undefined,
-      });
-    }
+  getLogs(
+    options: {
+      platform?: Platform;
+      level?: string;
+      tag?: string;
+      lines?: number;
+      package?: string;
+    } = {},
+  ): string {
+    const adapter = this.getAdapter(options.platform);
+    return adapter.getLogs({
+      level: options.level,
+      tag: options.tag,
+      lines: options.lines,
+      package: options.package,
+    });
   }
 
-  /**
-   * Clear logs
-   */
   clearLogs(platform?: Platform): string {
-    const targetPlatform = platform ?? this.activeTarget;
-
-    if (targetPlatform === "desktop") {
-      this.desktopClient.clearLogs();
-      return "Desktop logs cleared";
-    }
-
-    const client = this.getClient(platform);
-
-    if (client instanceof AdbClient) {
-      client.clearLogs();
-      return "Logcat buffer cleared";
-    } else {
-      return (client as IosClient | AuroraClient).clearLogs();
-    }
+    const adapter = this.getAdapter(platform);
+    return adapter.clearLogs();
   }
 
-  /**
-   * Get system info (battery, memory, etc.)
-   */
   async getSystemInfo(platform?: Platform): Promise<string> {
-    const targetPlatform = platform ?? this.activeTarget;
-
-    if (targetPlatform === "desktop") {
-      const metrics = await this.desktopClient.getPerformanceMetrics();
-      return `=== Desktop Performance ===\nMemory: ${metrics.memoryUsageMb} MB${metrics.cpuPercent ? `\nCPU: ${metrics.cpuPercent}%` : ''}`;
-    }
-
-    const client = this.getClient(platform);
-
-    if (client instanceof AdbClient) {
-      const battery = client.getBatteryInfo();
-      const memory = client.getMemoryInfo();
-      return `=== Battery ===\n${battery}\n\n=== Memory ===\n${memory}`;
-    } else if (client instanceof AuroraClient) {
-      return client.getSystemInfo();
-    } else {
-      return "System info is only available for Android and Aurora devices.";
-    }
+    const adapter = this.getAdapter(platform);
+    return adapter.getSystemInfo();
   }
-}
-
-/**
- * Format desktop UI hierarchy as text
- */
-function formatDesktopHierarchy(hierarchy: any): string {
-  const lines: string[] = [];
-
-  lines.push(`Scale Factor: ${hierarchy.scaleFactor}`);
-  lines.push(`\n=== Windows (${hierarchy.windows.length}) ===`);
-
-  for (const win of hierarchy.windows) {
-    const focused = win.focused ? " [FOCUSED]" : "";
-    lines.push(`  ${win.title}${focused} (${win.bounds.width}x${win.bounds.height})`);
-  }
-
-  lines.push(`\n=== UI Elements (${hierarchy.elements.length}) ===`);
-
-  for (const el of hierarchy.elements) {
-    const text = el.text ? `"${el.text}"` : "";
-    const role = el.role || el.className;
-    const clickable = el.clickable ? " [clickable]" : "";
-    const focused = el.focused ? " [focused]" : "";
-
-    lines.push(
-      `[${el.index}] ${role} ${text}${clickable}${focused} ` +
-      `(${el.centerX}, ${el.centerY}) [${el.bounds.x},${el.bounds.y},${el.bounds.width},${el.bounds.height}]`
-    );
-  }
-
-  return lines.join("\n");
 }
