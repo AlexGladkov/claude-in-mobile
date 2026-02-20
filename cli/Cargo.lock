@@ -308,7 +308,7 @@ checksum = "3a822ea5bc7590f9d40f1ba12c0dc3c2760f3482c6984db1573ad11031420831"
 
 [[package]]
 name = "claude-in-mobile"
-version = "2.11.0"
+version = "2.12.2"
 dependencies = [
  "ab_glyph",
  "anyhow",
