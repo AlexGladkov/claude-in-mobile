@@ -20,6 +20,7 @@ import { desktopTools } from "./tools/desktop-tools.js";
 import { auroraTools } from "./tools/aurora-tools.js";
 import { flowTools } from "./tools/flow-tools.js";
 import { clipboardTools } from "./tools/clipboard-tools.js";
+import { detectClient, getConfigSnippet } from "./client-adapter.js";
 
 // Dispatch function (needed by batch_commands / run_flow for recursion)
 async function handleTool(name: string, args: Record<string, unknown>, depth: number = 0): Promise<unknown> {
@@ -63,18 +64,52 @@ registerAliases({
   "take_screenshot": "screenshot",
 });
 
+// Handle --init CLI flag (generate config snippet and exit)
+const initIndex = process.argv.indexOf("--init");
+if (initIndex !== -1) {
+  const client = process.argv[initIndex + 1];
+  if (!client) {
+    console.error("Usage: claude-in-mobile --init <client>");
+    console.error("Supported clients: opencode, cursor, claude-code");
+    process.exit(1);
+  }
+  try {
+    const snippet = getConfigSnippet(client as any);
+    console.log(snippet);
+    process.exit(0);
+  } catch (e: any) {
+    console.error(e.message);
+    process.exit(1);
+  }
+}
+
 // Create MCP server
 const server = new Server(
   {
     name: "claude-mobile",
-    version: "2.12.1",
+    version: "2.13.0",
   },
   {
     capabilities: {
       tools: {},
     },
+    instructions: "Mobile and desktop automation server. Use 'screenshot' to see the screen, 'tap' to interact, 'get_ui' for the element tree. Use 'list_devices' to see connected devices.",
   }
 );
+
+// Detect client after MCP handshake and apply per-client adaptations
+server.oninitialized = () => {
+  const clientInfo = server.getClientVersion();
+  const adapter = detectClient(clientInfo);
+  console.error(`Client detected: ${adapter.clientType} (${adapter.clientName} v${adapter.clientVersion})`);
+
+  // Register client-specific aliases
+  const additionalAliases = adapter.getAdditionalAliases();
+  if (Object.keys(additionalAliases).length > 0) {
+    registerAliases(additionalAliases);
+    console.error(`Registered ${Object.keys(additionalAliases).length} additional aliases for ${adapter.clientType}`);
+  }
+};
 
 // Handle tool list request
 server.setRequestHandler(ListToolsRequestSchema, async () => {

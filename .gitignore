@@ -6,3 +6,4 @@ dist/
 *.local
 cli/target/
 cli/*.tar.gz
+docs/plans/

@@ -19,7 +19,23 @@ Control your Android phone, emulator, iOS Simulator, Desktop applications, or Au
 
 ## Installation
 
-### Claude Code CLI (recommended)
+### One-liner (any client)
+
+Using [add-mcp](https://github.com/neondatabase/add-mcp) — auto-detects installed clients:
+
+```bash
+npx add-mcp claude-in-mobile -y
+```
+
+Or target a specific client:
+
+```bash
+npx add-mcp claude-in-mobile -a claude-code -y
+npx add-mcp claude-in-mobile -a opencode -y
+npx add-mcp claude-in-mobile -a cursor -y
+```
+
+### Claude Code CLI
 
 ```bash
 claude mcp add --transport stdio mobile -- npx -y claude-in-mobile
@@ -29,6 +45,52 @@ To add globally (available in all projects):
 
 ```bash
 claude mcp add --scope user --transport stdio mobile -- npx -y claude-in-mobile
+```
+
+### OpenCode
+
+Use the interactive setup:
+
+```bash
+opencode mcp add
+```
+
+Or add manually to `opencode.json` (project root or `~/.config/opencode/opencode.json`):
+
+```json
+{
+  "mcp": {
+    "mobile": {
+      "type": "local",
+      "command": ["npx", "-y", "claude-in-mobile"],
+      "enabled": true
+    }
+  }
+}
+```
+
+### Cursor
+
+Add to `.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "mobile": {
+      "command": "npx",
+      "args": ["-y", "claude-in-mobile"]
+    }
+  }
+}
+```
+
+### Any MCP Client
+
+Print a config snippet for your client:
+
+```bash
+npx claude-in-mobile --init <client-name>
+# Supported: opencode, cursor, claude-code
 ```
 
 ### From npm
@@ -47,6 +109,35 @@ npm run build:all  # Builds TypeScript + Desktop companion
 ```
 
 > **Note:** For Desktop support, you need to run `npm run build:desktop` (or `build:all`) to compile the Desktop companion app.
+
+#### Using a local build with MCP clients
+
+After building from source, point your MCP client to the local `dist/index.js` instead of using npx:
+
+```json
+{
+  "mcpServers": {
+    "mobile": {
+      "command": "node",
+      "args": ["/path/to/claude-in-mobile/dist/index.js"]
+    }
+  }
+}
+```
+
+For OpenCode (`opencode.json`):
+
+```json
+{
+  "mcp": {
+    "mobile": {
+      "type": "local",
+      "command": ["node", "/path/to/claude-in-mobile/dist/index.js"],
+      "enabled": true
+    }
+  }
+}
+```
 
 ### Manual configuration
 
@@ -336,17 +427,17 @@ xcodebuild test -project WebDriverAgent.xcodeproj \
 
 ```
 ┌─────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   Claude    │────▶│  Claude Mobile   │────▶│  Android (ADB)  │
-│             │     │   MCP Server     │     └─────────────────┘
-│             │     │                  │     ┌─────────────────┐
-│             │     │                  │────▶│ iOS (simctl+WDA)│
-│             │     │                  │     └─────────────────┘
-│             │     │                  │     ┌─────────────────┐
-│             │     │                  │────▶│ Desktop (Compose)│
-│             │     │                  │     └─────────────────┘
-│             │     │                  │     ┌─────────────────┐
-│             │     │                  │────▶│ Aurora (audb)   │
-└─────────────┘     └──────────────────┘     └─────────────────┘
+│ Claude Code │────▶│                  │────▶│  Android (ADB)  │
+├─────────────┤     │  Claude Mobile   │     └─────────────────┘
+│  OpenCode   │────▶│   MCP Server     │     ┌─────────────────┐
+├─────────────┤     │                  │────▶│ iOS (simctl+WDA)│
+│   Cursor    │────▶│  (auto-detects   │     └─────────────────┘
+├─────────────┤     │   client via     │     ┌─────────────────┐
+│  Any MCP    │────▶│   MCP protocol)  │────▶│ Desktop (Compose)│
+│   Client    │     │                  │     └─────────────────┘
+└─────────────┘     │                  │     ┌─────────────────┐
+                    │                  │────▶│ Aurora (audb)   │
+                    └──────────────────┘     └─────────────────┘
 ```
 
 1. Claude sends commands through MCP protocol
