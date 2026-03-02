@@ -1,10 +1,16 @@
 export type ClientType = "claude-code" | "opencode" | "cursor" | "unknown";
 
+export interface AliasWithDefaults {
+  tool: string;
+  defaults: Record<string, unknown>;
+}
+
 export interface ClientAdapter {
   clientType: ClientType;
   clientName: string;
   clientVersion: string;
   getAdditionalAliases(): Record<string, string>;
+  getAliasesWithDefaults(): Record<string, AliasWithDefaults>;
   getInstructions(): string;
 }
 
@@ -22,9 +28,12 @@ const CLIENT_MATCHERS: Array<{ pattern: RegExp; type: ClientType }> = [
 const OPENCODE_ALIASES: Record<string, string> = {
   touch: "tap",
   press: "tap",
-  swipe_up: "swipe",
-  swipe_down: "swipe",
   capture_screen: "screenshot",
+};
+
+const OPENCODE_ALIASES_WITH_DEFAULTS: Record<string, AliasWithDefaults> = {
+  swipe_up: { tool: "swipe", defaults: { direction: "up" } },
+  swipe_down: { tool: "swipe", defaults: { direction: "down" } },
 };
 
 const INSTRUCTIONS: Record<ClientType, string> = {
@@ -61,6 +70,11 @@ function createAdapter(
 
     getAdditionalAliases(): Record<string, string> {
       if (clientType === "opencode") return { ...OPENCODE_ALIASES };
+      return {};
+    },
+
+    getAliasesWithDefaults(): Record<string, AliasWithDefaults> {
+      if (clientType === "opencode") return { ...OPENCODE_ALIASES_WITH_DEFAULTS };
       return {};
     },
 

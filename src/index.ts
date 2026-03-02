@@ -7,7 +7,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
-import { registerTools, registerAliases, getTools, getHandler } from "./tools/registry.js";
+import { registerTools, registerAliases, registerAliasesWithDefaults, getTools, resolveToolCall } from "./tools/registry.js";
 import { createToolContext, MAX_RECURSION_DEPTH } from "./tools/context.js";
 import { deviceTools } from "./tools/device-tools.js";
 import { screenshotTools } from "./tools/screenshot-tools.js";
@@ -28,12 +28,12 @@ async function handleTool(name: string, args: Record<string, unknown>, depth: nu
     throw new Error(`Maximum recursion depth (${MAX_RECURSION_DEPTH}) exceeded. Nested batch_commands/run_flow calls are limited to prevent stack overflow.`);
   }
 
-  const handler = getHandler(name);
-  if (!handler) {
+  const resolved = resolveToolCall(name, args);
+  if (!resolved) {
     throw new Error(`Unknown tool: ${name}`);
   }
 
-  return handler(args, ctx, depth);
+  return resolved.handler(resolved.args, ctx, depth);
 }
 
 // Shared context (wired after handleTool is defined)
@@ -108,6 +108,13 @@ server.oninitialized = () => {
   if (Object.keys(additionalAliases).length > 0) {
     registerAliases(additionalAliases);
     console.error(`Registered ${Object.keys(additionalAliases).length} additional aliases for ${adapter.clientType}`);
+  }
+
+  // Register aliases with default arguments (e.g., swipe_up → swipe with direction: "up")
+  const aliasesWithDefaults = adapter.getAliasesWithDefaults();
+  if (Object.keys(aliasesWithDefaults).length > 0) {
+    registerAliasesWithDefaults(aliasesWithDefaults);
+    console.error(`Registered ${Object.keys(aliasesWithDefaults).length} aliases with defaults for ${adapter.clientType}`);
   }
 };
 
