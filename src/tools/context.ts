@@ -177,7 +177,7 @@ export async function getElementsForPlatform(plat: string): Promise<UiElement[]>
 // Platform parameter schema (reused across tools)
 export const platformParam = {
   type: "string",
-  enum: ["android", "ios", "desktop", "aurora"],
+  enum: ["android", "ios", "desktop", "aurora", "browser"],
   description: "Target platform. If not specified, uses the active target.",
 };
 

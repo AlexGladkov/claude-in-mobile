@@ -11,7 +11,7 @@ export const appTools: ToolDefinition[] = [
         type: "object",
         properties: {
           package: { type: "string", description: "Package name (Android) or bundle ID (iOS), e.g., com.android.settings or com.apple.Preferences" },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora"], description: "Target platform. If not specified, uses the active target." },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
         },
         required: ["package"],
       },
@@ -30,7 +30,7 @@ export const appTools: ToolDefinition[] = [
         type: "object",
         properties: {
           package: { type: "string", description: "Package name (Android) or bundle ID (iOS)" },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora"], description: "Target platform. If not specified, uses the active target." },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
         },
         required: ["package"],
       },
@@ -49,7 +49,7 @@ export const appTools: ToolDefinition[] = [
         type: "object",
         properties: {
           path: { type: "string", description: "Path to APK (Android) or .app bundle (iOS)" },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora"], description: "Target platform. If not specified, uses the active target." },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
         },
         required: ["path"],
       },

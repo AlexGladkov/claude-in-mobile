@@ -9,7 +9,7 @@ export const auroraTools: ToolDefinition[] = [
       inputSchema: {
         type: "object",
         properties: {
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora"], const: "aurora", description: "Target platform. If not specified, uses the active target." },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], const: "aurora", description: "Target platform. If not specified, uses the active target." },
           localPath: { type: "string", description: "Local file path" },
           remotePath: { type: "string", description: "Remote destination path" },
         },

@@ -11,6 +11,9 @@ const FLOW_ALLOWED_ACTIONS = new Set([
   "screenshot", "analyze_screen", "assert_visible", "assert_not_exists",
   "find_and_tap", "find_element", "open_url",
   "select_text", "copy_text", "paste_text",
+  "browser_click", "browser_fill", "browser_snapshot", "browser_screenshot",
+  "browser_navigate", "browser_press_key", "browser_wait_for_selector",
+  "browser_evaluate",
 ]);
 
 const FLOW_MAX_STEPS = 20;
@@ -149,7 +152,7 @@ export const flowTools: ToolDefinition[] = [
             description: "Steps to execute sequentially",
           },
           maxDuration: { type: "number", description: "Max total duration in ms (default: 30000, max: 60000)", default: 30000 },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora"], description: "Target platform. If not specified, uses the active target." },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
         },
         required: ["steps"],
       },

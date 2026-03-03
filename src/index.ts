@@ -20,6 +20,7 @@ import { desktopTools } from "./tools/desktop-tools.js";
 import { auroraTools } from "./tools/aurora-tools.js";
 import { flowTools } from "./tools/flow-tools.js";
 import { clipboardTools } from "./tools/clipboard-tools.js";
+import { browserTools } from "./tools/browser-tools.js";
 import { detectClient, getConfigSnippet } from "./client-adapter.js";
 
 // Dispatch function (needed by batch_commands / run_flow for recursion)
@@ -52,6 +53,7 @@ registerTools([
   ...auroraTools,
   ...flowTools,
   ...clipboardTools,
+  ...browserTools,
 ]);
 
 // Register hidden aliases for common LLM misnaming
@@ -87,13 +89,13 @@ if (initIndex !== -1) {
 const server = new Server(
   {
     name: "claude-mobile",
-    version: "2.14.0",
+    version: "3.0.0",
   },
   {
     capabilities: {
       tools: {},
     },
-    instructions: "Mobile and desktop automation server. Use 'screenshot' to see the screen, 'tap' to interact, 'get_ui' for the element tree. Use 'list_devices' to see connected devices.",
+    instructions: "Mobile, desktop, and browser automation server. Use 'screenshot' to see the screen, 'tap' to interact, 'get_ui' for the element tree, 'browser_open' to automate web pages. Use 'list_devices' to see connected devices.",
   }
 );
 
@@ -186,12 +188,14 @@ async function shutdown(signal: string): Promise<void> {
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGHUP", () => shutdown("SIGHUP"));
+process.stdin.on("close", () => shutdown("stdin-close"));
 
 // Start server
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Claude Mobile MCP server running (Android + iOS + Desktop + Aurora)");
+  console.error("Claude Mobile MCP server running (Android + iOS + Desktop + Aurora + Browser)");
 }
 
 main().catch((error) => {

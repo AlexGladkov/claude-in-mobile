@@ -10,7 +10,7 @@ export const systemTools: ToolDefinition[] = [
       inputSchema: {
         type: "object",
         properties: {
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora"], description: "Target platform. If not specified, uses the active target." },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
         },
       },
     },
@@ -34,7 +34,7 @@ export const systemTools: ToolDefinition[] = [
         type: "object",
         properties: {
           command: { type: "string", description: "Shell command to execute" },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora"], description: "Target platform. If not specified, uses the active target." },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
         },
         required: ["command"],
       },
@@ -70,7 +70,7 @@ export const systemTools: ToolDefinition[] = [
         type: "object",
         properties: {
           url: { type: "string", description: "URL to open" },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora"], description: "Target platform. If not specified, uses the active target." },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
         },
         required: ["url"],
       },
@@ -99,7 +99,7 @@ export const systemTools: ToolDefinition[] = [
       inputSchema: {
         type: "object",
         properties: {
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora"], description: "Target platform. If not specified, uses the active target." },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
           level: { type: "string", description: "Log level filter. Android: V/D/I/W/E/F (Verbose/Debug/Info/Warning/Error/Fatal). iOS: debug/info/default/error/fault" },
           tag: { type: "string", description: "Filter by tag (Android only)" },
           lines: { type: "number", description: "Number of lines to return (default: 100)", default: 100 },
@@ -126,7 +126,7 @@ export const systemTools: ToolDefinition[] = [
       inputSchema: {
         type: "object",
         properties: {
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora"], description: "Target platform. If not specified, uses the active target." },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
         },
       },
     },
@@ -143,7 +143,7 @@ export const systemTools: ToolDefinition[] = [
       inputSchema: {
         type: "object",
         properties: {
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora"], description: "Target platform. If not specified, uses the active target." },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
         },
       },
     },
@@ -160,7 +160,7 @@ export const systemTools: ToolDefinition[] = [
       inputSchema: {
         type: "object",
         properties: {
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora"], description: "Target platform. If not specified, uses the active target." },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
         },
       },
     },

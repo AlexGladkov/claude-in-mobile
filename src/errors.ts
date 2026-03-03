@@ -93,6 +93,51 @@ export class WebViewNotFoundError extends MobileError {
   }
 }
 
+export class BrowserSecurityError extends MobileError {
+  constructor(url: string, protocol: string) {
+    super(
+      `Blocked URL "${url}". Protocol "${protocol}" is not allowed. Use http:// or https://.`,
+      "BROWSER_SECURITY"
+    );
+  }
+}
+
+export class BrowserSessionNotFoundError extends MobileError {
+  constructor(session: string, active: string[]) {
+    super(
+      `Browser session "${session}" not found.${active.length > 0 ? ` Active sessions: ${active.join(", ")}.` : ""} Use browser_open to start a session.`,
+      "BROWSER_SESSION_NOT_FOUND"
+    );
+  }
+}
+
+export class BrowserNoSessionError extends MobileError {
+  constructor() {
+    super(
+      "No active browser session. Call browser_open(url) to start.",
+      "BROWSER_NO_SESSION"
+    );
+  }
+}
+
+export class BrowserRefNotFoundError extends MobileError {
+  constructor(ref: string, lastKnown?: string) {
+    super(
+      `Ref "${ref}" is stale or not found${lastKnown ? ` (was: ${lastKnown})` : ""}. Call browser_snapshot to get fresh refs.`,
+      "BROWSER_REF_NOT_FOUND"
+    );
+  }
+}
+
+export class ChromeNotInstalledError extends MobileError {
+  constructor() {
+    super(
+      "Chrome/Chromium not found. Install Google Chrome: https://google.com/chrome or set CHROME_PATH environment variable.",
+      "CHROME_NOT_INSTALLED"
+    );
+  }
+}
+
 /**
  * Classify ADB errors from stderr output
  */

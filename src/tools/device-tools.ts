@@ -12,7 +12,7 @@ export const deviceTools: ToolDefinition[] = [
         properties: {
           platform: {
             type: "string",
-            enum: ["android", "ios", "desktop", "aurora"],
+            enum: ["android", "ios", "desktop", "aurora", "browser"],
             description: "Filter by platform (android/ios). If not specified, shows all.",
           },
         },
@@ -32,6 +32,7 @@ export const deviceTools: ToolDefinition[] = [
       const ios = devices.filter(d => d.platform === "ios");
       const desktop = devices.filter(d => d.platform === "desktop");
       const aurora = devices.filter(d => d.platform === "aurora");
+      const browser = devices.filter(d => d.platform === "browser");
 
       let result = "Connected devices:\n";
 
@@ -69,6 +70,14 @@ export const deviceTools: ToolDefinition[] = [
         }
       }
 
+      if (browser.length > 0) {
+        result += "\nBrowser:\n";
+        for (const d of browser) {
+          const active = activeTarget === "browser" ? " [ACTIVE]" : "";
+          result += `  • ${d.id} - ${d.name} (${d.state})${active}\n`;
+        }
+      }
+
       return { text: result.trim() };
     },
   },
@@ -85,7 +94,7 @@ export const deviceTools: ToolDefinition[] = [
           },
           platform: {
             type: "string",
-            enum: ["android", "ios", "desktop", "aurora"],
+            enum: ["android", "ios", "desktop", "aurora", "browser"],
             description: "Target platform. If not specified, uses the active target.",
           },
         },
@@ -107,7 +116,7 @@ export const deviceTools: ToolDefinition[] = [
         properties: {
           target: {
             type: "string",
-            enum: ["android", "ios", "desktop", "aurora"],
+            enum: ["android", "ios", "desktop", "aurora", "browser"],
             description: "Target platform to switch to",
           },
         },

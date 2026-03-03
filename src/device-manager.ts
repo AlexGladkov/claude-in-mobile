@@ -12,6 +12,7 @@ import { AndroidAdapter } from "./adapters/android-adapter.js";
 import { IosAdapter } from "./adapters/ios-adapter.js";
 import { DesktopAdapter } from "./adapters/desktop-adapter.js";
 import { AuroraAdapter } from "./adapters/aurora-adapter.js";
+import { BrowserAdapter } from "./adapters/browser-adapter.js";
 
 import { AdbClient } from "./adb/client.js";
 import { IosClient } from "./ios/client.js";
@@ -21,7 +22,7 @@ import type { CompressOptions } from "./utils/image.js";
 import type { LaunchOptions } from "./desktop/types.js";
 import { WebViewInspector } from "./adb/webview.js";
 
-export type Platform = "android" | "ios" | "desktop" | "aurora";
+export type Platform = "android" | "ios" | "desktop" | "aurora" | "browser";
 
 export interface Device {
   id: string;
@@ -36,6 +37,7 @@ export class DeviceManager {
   private iosAdapter: IosAdapter;
   private desktopAdapter: DesktopAdapter;
   private auroraAdapter: AuroraAdapter;
+  private browserAdapter: BrowserAdapter;
 
   private adapters: Map<Platform, PlatformAdapter>;
   private activeDevice?: Device;
@@ -56,12 +58,14 @@ export class DeviceManager {
 
     this.desktopAdapter = new DesktopAdapter();
     this.auroraAdapter = new AuroraAdapter();
+    this.browserAdapter = new BrowserAdapter();
 
     this.adapters = new Map<Platform, PlatformAdapter>([
       ["android", this.androidAdapter],
       ["ios", this.iosAdapter],
       ["desktop", this.desktopAdapter],
       ["aurora", this.auroraAdapter],
+      ["browser", this.browserAdapter],
     ]);
 
     // If env var specified a device, set it as active target
@@ -86,9 +90,9 @@ export class DeviceManager {
       throw new Error(`Unknown platform: ${target}`);
     }
 
-    // Desktop returns immediately — the adapter itself guards isRunning()
+    // Desktop and Browser return immediately — the adapter itself guards state
     // where needed (actions, screenshots, UI). Logs/clearLogs work even when stopped.
-    if (target === "desktop") {
+    if (target === "desktop" || target === "browser") {
       return adapter;
     }
 
@@ -146,6 +150,11 @@ export class DeviceManager {
     try { await this.desktopAdapter.stop(); } catch {}
     try { this.iosAdapter.getClient().cleanup(); } catch {}
     try { this.webViewInspector?.cleanup(); } catch {}
+    try { await this.browserAdapter.cleanup(); } catch {}
+  }
+
+  getBrowserAdapter(): BrowserAdapter {
+    return this.browserAdapter;
   }
 
   getDesktopClient(): DesktopClient {

@@ -24,7 +24,7 @@ export const clipboardTools: ToolDefinition[] = [
       inputSchema: {
         type: "object",
         properties: {
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora"], description: "Target platform. If not specified, uses the active target." },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
         },
       },
     },
@@ -42,7 +42,7 @@ export const clipboardTools: ToolDefinition[] = [
       inputSchema: {
         type: "object",
         properties: {
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora"], description: "Target platform. If not specified, uses the active target." },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
         },
       },
     },
@@ -64,7 +64,7 @@ export const clipboardTools: ToolDefinition[] = [
         properties: {
           fieldText: { type: "string", description: "Find input field by text and tap to focus before pasting" },
           fieldId: { type: "string", description: "Find input field by resource ID and tap to focus before pasting" },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora"], description: "Target platform. If not specified, uses the active target." },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
         },
       },
     },
@@ -105,7 +105,7 @@ export const clipboardTools: ToolDefinition[] = [
       inputSchema: {
         type: "object",
         properties: {
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora"], description: "Target platform. If not specified, uses the active target." },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
         },
       },
     },

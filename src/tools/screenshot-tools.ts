@@ -34,7 +34,7 @@ export const screenshotTools: ToolDefinition[] = [
         properties: {
           platform: {
             type: "string",
-            enum: ["android", "ios", "desktop", "aurora"],
+            enum: ["android", "ios", "desktop", "aurora", "browser"],
             description: "Target platform. If not specified, uses the active target.",
           },
           compress: {
@@ -172,7 +172,7 @@ export const screenshotTools: ToolDefinition[] = [
         properties: {
           platform: {
             type: "string",
-            enum: ["android", "ios", "desktop", "aurora"],
+            enum: ["android", "ios", "desktop", "aurora", "browser"],
             description: "Target platform. If not specified, uses the active target.",
           },
           maxWidth: {

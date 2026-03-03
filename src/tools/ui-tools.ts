@@ -23,7 +23,7 @@ export const uiTools: ToolDefinition[] = [
         type: "object",
         properties: {
           showAll: { type: "boolean", description: "Show all elements including non-interactive ones", default: false },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora"], description: "Target platform. If not specified, uses the active target." },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
         },
       },
     },
@@ -74,7 +74,7 @@ export const uiTools: ToolDefinition[] = [
           className: { type: "string", description: "Find by class name (Android: full class, iOS: XCUIElementType*)" },
           clickable: { type: "boolean", description: "Android: Filter by clickable state" },
           visible: { type: "boolean", description: "iOS: Filter by visibility" },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora"], description: "Target platform. If not specified, uses the active target." },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
         },
       },
     },
@@ -137,7 +137,7 @@ export const uiTools: ToolDefinition[] = [
         properties: {
           description: { type: "string", description: "Natural language description of the element to tap, e.g., 'submit button', 'settings', 'back'" },
           minConfidence: { type: "number", description: "Minimum confidence score (0-100) to accept a match (default: 30)", default: 30 },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora"], description: "Target platform. If not specified, uses the active target." },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
         },
         required: ["description"],
       },
@@ -234,7 +234,7 @@ export const uiTools: ToolDefinition[] = [
       inputSchema: {
         type: "object",
         properties: {
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora"], description: "Target platform. If not specified, uses the active target." },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
         },
       },
     },
@@ -295,7 +295,7 @@ export const uiTools: ToolDefinition[] = [
           className: { type: "string", description: "Class name to wait for" },
           timeout: { type: "number", description: "Max wait time in ms (default: 5000)", default: 5000 },
           interval: { type: "number", description: "Poll interval in ms (default: 500)", default: 500 },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora"], description: "Target platform. If not specified, uses the active target." },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
         },
       },
     },
@@ -361,7 +361,7 @@ export const uiTools: ToolDefinition[] = [
         properties: {
           text: { type: "string", description: "Element text to check for (partial match)" },
           resourceId: { type: "string", description: "Android: resource ID to check for" },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora"], description: "Target platform. If not specified, uses the active target." },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
         },
       },
     },
@@ -406,7 +406,7 @@ export const uiTools: ToolDefinition[] = [
         properties: {
           text: { type: "string", description: "Element text that should NOT be present" },
           resourceId: { type: "string", description: "Android: resource ID that should NOT be present" },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora"], description: "Target platform. If not specified, uses the active target." },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
         },
       },
     },
