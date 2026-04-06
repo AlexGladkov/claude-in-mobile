@@ -4,7 +4,7 @@ import type { ToolContext } from "./context.js";
 export const auroraTools: ToolDefinition[] = [
   {
     tool: {
-      name: "push_file",
+      name: "file_push",
       description: "Upload file to Aurora OS device",
       inputSchema: {
         type: "object",
@@ -26,7 +26,7 @@ export const auroraTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "pull_file",
+      name: "file_pull",
       description: "Download file from Aurora OS device",
       inputSchema: {
         type: "object",

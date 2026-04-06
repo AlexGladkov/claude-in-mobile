@@ -19,7 +19,7 @@ function getAndroidAdapter(ctx: ToolContext, platform?: Platform) {
 export const clipboardTools: ToolDefinition[] = [
   {
     tool: {
-      name: "select_text",
+      name: "clipboard_select",
       description: "Select all text in the currently focused input field (Android only)",
       inputSchema: {
         type: "object",
@@ -37,7 +37,7 @@ export const clipboardTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "copy_text",
+      name: "clipboard_copy",
       description: "Select all text and copy to clipboard (Android only)",
       inputSchema: {
         type: "object",
@@ -57,7 +57,7 @@ export const clipboardTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "paste_text",
+      name: "clipboard_paste",
       description: "Paste clipboard content into focused field. Optionally find a field by text or resource ID and tap to focus it first (Android only)",
       inputSchema: {
         type: "object",
@@ -100,7 +100,7 @@ export const clipboardTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "get_clipboard_android",
+      name: "clipboard_get_android",
       description: "Read clipboard text from Android device (requires API 29+ or clipper app)",
       inputSchema: {
         type: "object",

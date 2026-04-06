@@ -4,7 +4,7 @@ import type { ToolContext } from "./context.js";
 export const desktopTools: ToolDefinition[] = [
   {
     tool: {
-      name: "launch_desktop_app",
+      name: "desktop_launch",
       description: "Start desktop automation. Optionally also launches a Compose Desktop application via Gradle.",
       inputSchema: {
         type: "object",
@@ -26,7 +26,7 @@ export const desktopTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "stop_desktop_app",
+      name: "desktop_stop",
       description: "Stop the running desktop application",
       inputSchema: {
         type: "object",
@@ -40,7 +40,7 @@ export const desktopTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "get_window_info",
+      name: "desktop_windows",
       description: "Get information about desktop windows (Desktop only)",
       inputSchema: {
         type: "object",
@@ -66,7 +66,7 @@ export const desktopTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "focus_window",
+      name: "desktop_focus",
       description: "Focus a specific desktop window (Desktop only)",
       inputSchema: {
         type: "object",
@@ -86,7 +86,7 @@ export const desktopTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "resize_window",
+      name: "desktop_resize",
       description: "Resize a desktop window (Desktop only)",
       inputSchema: {
         type: "object",
@@ -112,7 +112,7 @@ export const desktopTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "get_clipboard",
+      name: "clipboard_get",
       description: "Get clipboard text content (Desktop only)",
       inputSchema: {
         type: "object",
@@ -129,7 +129,7 @@ export const desktopTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "set_clipboard",
+      name: "clipboard_set",
       description: "Set clipboard text content (Desktop only)",
       inputSchema: {
         type: "object",
@@ -149,7 +149,7 @@ export const desktopTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "get_performance_metrics",
+      name: "desktop_performance",
       description: "Get memory and CPU usage metrics (Desktop only)",
       inputSchema: {
         type: "object",
@@ -171,7 +171,7 @@ export const desktopTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "get_monitors",
+      name: "desktop_monitors",
       description: "Get list of all connected monitors with their dimensions and positions (Desktop only, multi-monitor support)",
       inputSchema: {
         type: "object",

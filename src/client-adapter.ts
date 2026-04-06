@@ -26,25 +26,25 @@ const CLIENT_MATCHERS: Array<{ pattern: RegExp; type: ClientType }> = [
 ];
 
 const OPENCODE_ALIASES: Record<string, string> = {
-  touch: "tap",
-  press: "tap",
-  capture_screen: "screenshot",
+  touch: "input_tap",
+  press: "input_tap",
+  capture_screen: "screen_capture",
 };
 
 const OPENCODE_ALIASES_WITH_DEFAULTS: Record<string, AliasWithDefaults> = {
-  swipe_up: { tool: "swipe", defaults: { direction: "up" } },
-  swipe_down: { tool: "swipe", defaults: { direction: "down" } },
+  swipe_up: { tool: "input_swipe", defaults: { direction: "up" } },
+  swipe_down: { tool: "input_swipe", defaults: { direction: "down" } },
 };
 
 const INSTRUCTIONS: Record<ClientType, string> = {
   "claude-code":
-    "Mobile and desktop automation server. Supports Android (ADB), iOS Simulator (simctl+WDA), Desktop (Compose), and Aurora OS (audb). Use 'screenshot' to see the screen, 'tap' to interact with elements, 'get_ui' for the accessibility tree, and 'annotate_screenshot' for visual element discovery.",
+    "Mobile and desktop automation server. Supports Android (ADB), iOS Simulator (simctl+WDA), Desktop (Compose), and Aurora OS (audb). Use 'screen_capture' to see the screen, 'input_tap' to interact with elements, 'ui_tree' for the accessibility tree, and 'screen_annotate' for visual element discovery.",
   opencode:
-    "Mobile and desktop automation server. Use 'screenshot' to see the screen, 'tap' to interact, 'get_ui' for the element tree. Supports Android, iOS Simulator, Desktop, and Aurora OS. Use 'list_devices' to see connected devices and 'set_device' to switch between them.",
+    "Mobile and desktop automation server. Use 'screen_capture' to see the screen, 'input_tap' to interact, 'ui_tree' for the element tree. Supports Android, iOS Simulator, Desktop, and Aurora OS. Use 'device_list' to see connected devices and 'device_set' to switch between them.",
   cursor:
-    "Mobile and desktop automation server. Supports Android (ADB), iOS Simulator (simctl+WDA), Desktop (Compose), and Aurora OS (audb). Use 'screenshot' to see the screen, 'tap' to interact with elements, 'get_ui' for the accessibility tree.",
+    "Mobile and desktop automation server. Supports Android (ADB), iOS Simulator (simctl+WDA), Desktop (Compose), and Aurora OS (audb). Use 'screen_capture' to see the screen, 'input_tap' to interact with elements, 'ui_tree' for the accessibility tree.",
   unknown:
-    "Mobile and desktop automation server. Use 'screenshot' to see the screen, 'tap' to interact, 'get_ui' for the element tree. Use 'list_devices' to see connected devices.",
+    "Mobile and desktop automation server. Use 'screen_capture' to see the screen, 'input_tap' to interact, 'ui_tree' for the element tree. Use 'device_list' to see connected devices.",
 };
 
 export function detectClient(clientInfo: ClientInfo | undefined): ClientAdapter {

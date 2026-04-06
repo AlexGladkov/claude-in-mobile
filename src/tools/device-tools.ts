@@ -5,7 +5,7 @@ import type { Platform } from "../device-manager.js";
 export const deviceTools: ToolDefinition[] = [
   {
     tool: {
-      name: "list_devices",
+      name: "device_list",
       description: "List all connected Android devices/emulators and iOS simulators",
       inputSchema: {
         type: "object",
@@ -83,7 +83,7 @@ export const deviceTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "set_device",
+      name: "device_set",
       description: "Select which device to use for subsequent commands",
       inputSchema: {
         type: "object",
@@ -109,7 +109,7 @@ export const deviceTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "set_target",
+      name: "device_set_target",
       description: "Switch the active target between Android, iOS, Desktop, and Aurora platforms",
       inputSchema: {
         type: "object",
@@ -131,7 +131,7 @@ export const deviceTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "get_target",
+      name: "device_get_target",
       description: "Get the current active target and its status",
       inputSchema: {
         type: "object",

@@ -5,7 +5,7 @@ import type { Platform } from "../device-manager.js";
 export const systemTools: ToolDefinition[] = [
   {
     tool: {
-      name: "get_current_activity",
+      name: "system_activity",
       description: "Get the currently active app/activity (Android only)",
       inputSchema: {
         type: "object",
@@ -28,7 +28,7 @@ export const systemTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "shell",
+      name: "system_shell",
       description: "Execute shell command. ADB shell for Android, simctl for iOS",
       inputSchema: {
         type: "object",
@@ -47,7 +47,7 @@ export const systemTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "wait",
+      name: "system_wait",
       description: "Wait for specified duration",
       inputSchema: {
         type: "object",
@@ -64,7 +64,7 @@ export const systemTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "open_url",
+      name: "system_open_url",
       description: "Open URL in device browser",
       inputSchema: {
         type: "object",
@@ -94,7 +94,7 @@ export const systemTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "get_logs",
+      name: "system_logs",
       description: "Get device logs (logcat for Android, system log for iOS). Useful for debugging app issues, crashes, and errors.",
       inputSchema: {
         type: "object",
@@ -121,7 +121,7 @@ export const systemTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "clear_logs",
+      name: "system_clear_logs",
       description: "Clear device log buffer (Android only)",
       inputSchema: {
         type: "object",
@@ -138,7 +138,7 @@ export const systemTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "get_system_info",
+      name: "system_info",
       description: "Get device system info: battery level, memory usage (Android only)",
       inputSchema: {
         type: "object",
@@ -155,7 +155,7 @@ export const systemTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "get_webview",
+      name: "system_webview",
       description: "Inspect WebView content in the current Android app via Chrome DevTools Protocol. Lists available WebView pages with their URLs and titles. (Android only)",
       inputSchema: {
         type: "object",

@@ -1,6 +1,6 @@
 {
   "name": "claude-in-mobile",
-  "version": "3.0.0",
+  "version": "3.2.0",
   "description": "MCP server for mobile, desktop and browser automation - Android (ADB), iOS Simulator (simctl), Desktop (Compose), Browser (CDP)",
   "type": "module",
   "main": "dist/index.js",
@@ -55,6 +55,7 @@
     "@modelcontextprotocol/sdk": "^1.0.0",
     "chrome-launcher": "^1.1.0",
     "chrome-remote-interface": "^0.33.0",
+    "google-auth-library": "^10.6.2",
     "jimp": "^1.6.0"
   },
   "devDependencies": {

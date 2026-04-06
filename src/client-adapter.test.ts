@@ -41,8 +41,8 @@ describe("getAdditionalAliases", () => {
   it("should return simple aliases for opencode", () => {
     const adapter = detectClient({ name: "opencode", version: "1.0.0" });
     const aliases = adapter.getAdditionalAliases();
-    expect(aliases["touch"]).toBe("tap");
-    expect(aliases["capture_screen"]).toBe("screenshot");
+    expect(aliases["touch"]).toBe("input_tap");
+    expect(aliases["capture_screen"]).toBe("screen_capture");
   });
 
   it("should not include swipe aliases in simple aliases", () => {
@@ -69,8 +69,8 @@ describe("getAliasesWithDefaults", () => {
   it("should return swipe aliases with direction defaults for opencode", () => {
     const adapter = detectClient({ name: "opencode", version: "1.0.0" });
     const aliases = adapter.getAliasesWithDefaults();
-    expect(aliases["swipe_up"]).toEqual({ tool: "swipe", defaults: { direction: "up" } });
-    expect(aliases["swipe_down"]).toEqual({ tool: "swipe", defaults: { direction: "down" } });
+    expect(aliases["swipe_up"]).toEqual({ tool: "input_swipe", defaults: { direction: "up" } });
+    expect(aliases["swipe_down"]).toEqual({ tool: "input_swipe", defaults: { direction: "down" } });
   });
 
   it("should return empty for claude-code", () => {
@@ -90,8 +90,8 @@ describe("getInstructions", () => {
   it("should return instructions string for opencode", () => {
     const adapter = detectClient({ name: "opencode", version: "1.0.0" });
     const instructions = adapter.getInstructions();
-    expect(instructions).toContain("screenshot");
-    expect(instructions).toContain("tap");
+    expect(instructions).toContain("screen_capture");
+    expect(instructions).toContain("input_tap");
     expect(instructions.length).toBeGreaterThan(0);
   });
 

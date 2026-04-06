@@ -7,10 +7,17 @@ import { MAX_RECURSION_DEPTH } from "./context.js";
 
 // Flow Engine constants
 const FLOW_ALLOWED_ACTIONS = new Set([
-  "tap", "double_tap", "swipe", "input_text", "press_key", "wait", "wait_for_element",
+  // v3.1+ canonical names
+  "input_tap", "input_double_tap", "input_swipe", "input_text", "input_key",
+  "system_wait", "ui_wait", "system_open_url",
+  "screen_capture", "ui_analyze", "ui_assert_visible", "ui_assert_gone",
+  "ui_find_tap", "ui_find", "clipboard_select", "clipboard_copy", "clipboard_paste",
+  // v3.0 backward compat aliases (still accepted in flows)
+  "tap", "double_tap", "swipe", "press_key", "wait", "wait_for_element",
   "screenshot", "analyze_screen", "assert_visible", "assert_not_exists",
   "find_and_tap", "find_element", "open_url",
   "select_text", "copy_text", "paste_text",
+  // browser (unchanged)
   "browser_click", "browser_fill", "browser_snapshot", "browser_screenshot",
   "browser_navigate", "browser_press_key", "browser_wait_for_selector",
   "browser_evaluate",
@@ -52,7 +59,7 @@ function formatFlowResults(results: FlowStepResult[], totalMs: number): string {
 export const flowTools: ToolDefinition[] = [
   {
     tool: {
-      name: "batch_commands",
+      name: "flow_batch",
       description: "Execute multiple commands in a single MCP round-trip. Commands run sequentially on the server. 2-4x faster than individual tool calls for multi-step automation.",
       inputSchema: {
         type: "object",
@@ -62,7 +69,7 @@ export const flowTools: ToolDefinition[] = [
             items: {
               type: "object",
               properties: {
-                name: { type: "string", description: "Tool name (e.g., 'tap', 'wait', 'input_text')" },
+                name: { type: "string", description: "Tool name (e.g., 'input_tap', 'system_wait', 'input_text')" },
                 arguments: { type: "object", description: "Tool arguments" },
               },
               required: ["name"],
@@ -122,7 +129,7 @@ export const flowTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "run_flow",
+      name: "flow_run",
       description: "Execute a multi-step automation flow in a single round-trip. Supports conditional logic (if_not_found), loops (repeat), and error handling (on_error). Much more efficient than individual tool calls for sequences. Max 20 steps, 60s timeout.",
       inputSchema: {
         type: "object",
@@ -132,7 +139,7 @@ export const flowTools: ToolDefinition[] = [
             items: {
               type: "object",
               properties: {
-                action: { type: "string", description: "Tool name: tap, swipe, input_text, press_key, wait, wait_for_element, screenshot, analyze_screen, assert_visible, assert_not_exists, find_and_tap, find_element, open_url" },
+                action: { type: "string", description: "Tool name: input_tap, input_swipe, input_text, input_key, system_wait, ui_wait, screen_capture, ui_analyze, ui_assert_visible, ui_assert_gone, ui_find_tap, ui_find, system_open_url" },
                 args: { type: "object", description: "Tool arguments" },
                 if_not_found: { type: "string", enum: ["skip", "scroll_down", "scroll_up", "fail"], description: "Fallback when element not found (for tap/find actions)" },
                 repeat: {

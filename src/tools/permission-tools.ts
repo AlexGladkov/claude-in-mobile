@@ -5,7 +5,7 @@ import type { Platform } from "../device-manager.js";
 export const permissionTools: ToolDefinition[] = [
   {
     tool: {
-      name: "grant_permission",
+      name: "permission_grant",
       description: "Grant a permission to an app. Android: runtime permissions (e.g., android.permission.CAMERA). iOS: privacy services (e.g., camera, microphone, photos, location, contacts, calendar, reminders)",
       inputSchema: {
         type: "object",
@@ -29,7 +29,7 @@ export const permissionTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "revoke_permission",
+      name: "permission_revoke",
       description: "Revoke a permission from an app. Android: runtime permissions. iOS: privacy services",
       inputSchema: {
         type: "object",
@@ -53,7 +53,7 @@ export const permissionTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "reset_permissions",
+      name: "permission_reset",
       description: "Reset all permissions for an app. Android: resets runtime permissions. iOS: resets all privacy settings",
       inputSchema: {
         type: "object",

@@ -17,7 +17,7 @@ import { DeviceNotFoundError, DeviceOfflineError, AdbNotInstalledError } from ".
 export const uiTools: ToolDefinition[] = [
   {
     tool: {
-      name: "get_ui",
+      name: "ui_tree",
       description: "Get the current UI hierarchy (accessibility tree). Shows all interactive elements with their text, IDs, and coordinates. Note: Limited on iOS.",
       inputSchema: {
         type: "object",
@@ -63,7 +63,7 @@ export const uiTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "find_element",
+      name: "ui_find",
       description: "Find UI elements by text, resource ID, or other criteria. Android: resourceId, className. iOS: label (accessibility id)",
       inputSchema: {
         type: "object",
@@ -130,7 +130,7 @@ export const uiTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "find_and_tap",
+      name: "ui_find_tap",
       description: "Smart tap by element description. Uses fuzzy matching to find the best element by text, content description, or resource ID, then taps it. More reliable than exact text matching. (Android only)",
       inputSchema: {
         type: "object",
@@ -182,7 +182,7 @@ export const uiTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "tap_by_text",
+      name: "ui_tap_text",
       description: "Tap an element by its text content using Accessibility API. Does NOT move cursor - perfect for background automation. (Desktop/macOS only)",
       inputSchema: {
         type: "object",
@@ -229,7 +229,7 @@ export const uiTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "analyze_screen",
+      name: "ui_analyze",
       description: "Get structured analysis of the current screen without taking a screenshot. Returns buttons, input fields, text content, scrollable areas, screen title, dialog detection, and navigation state. Much cheaper than screenshot for understanding screen layout.",
       inputSchema: {
         type: "object",
@@ -285,7 +285,7 @@ export const uiTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "wait_for_element",
+      name: "ui_wait",
       description: "Wait for a UI element to appear. Polls the UI hierarchy until the element is found or timeout. Much more reliable than manual wait(ms) for animations and loading.",
       inputSchema: {
         type: "object",
@@ -354,7 +354,7 @@ export const uiTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "assert_visible",
+      name: "ui_assert_visible",
       description: "Assert that a UI element is visible on screen. Returns pass/fail without taking a screenshot. Much cheaper than visual verification.",
       inputSchema: {
         type: "object",
@@ -399,7 +399,7 @@ export const uiTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "assert_not_exists",
+      name: "ui_assert_gone",
       description: "Assert that a UI element does NOT exist on screen. Useful for verifying elements were removed, dialogs dismissed, etc.",
       inputSchema: {
         type: "object",

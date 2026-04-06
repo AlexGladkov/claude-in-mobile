@@ -27,7 +27,7 @@ async function waitForStableScreenshot(
 export const screenshotTools: ToolDefinition[] = [
   {
     tool: {
-      name: "screenshot",
+      name: "screen_capture",
       description: "Take a screenshot of the device screen. Images are automatically compressed for optimal LLM processing. Use diff mode to only see what changed since last screenshot (saves 60-80% tokens).",
       inputSchema: {
         type: "object",
@@ -165,7 +165,7 @@ export const screenshotTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "annotate_screenshot",
+      name: "screen_annotate",
       description: "Take a screenshot with colored bounding boxes and numbered labels overlaid on UI elements. Green = clickable, Red = non-clickable. Returns annotated image + element index. Useful for visual understanding of UI layout. Android and iOS only.",
       inputSchema: {
         type: "object",

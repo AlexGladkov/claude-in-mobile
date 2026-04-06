@@ -5,7 +5,7 @@ import type { Platform } from "../device-manager.js";
 export const appTools: ToolDefinition[] = [
   {
     tool: {
-      name: "launch_app",
+      name: "app_launch",
       description: "Launch an app by package name (Android) or bundle ID (iOS)",
       inputSchema: {
         type: "object",
@@ -24,7 +24,7 @@ export const appTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "stop_app",
+      name: "app_stop",
       description: "Force stop an app",
       inputSchema: {
         type: "object",
@@ -43,7 +43,7 @@ export const appTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "install_app",
+      name: "app_install",
       description: "Install an app. APK for Android, .app bundle for iOS simulator",
       inputSchema: {
         type: "object",
@@ -62,7 +62,7 @@ export const appTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "list_apps",
+      name: "app_list",
       description: "List installed applications on Aurora OS device",
       inputSchema: {
         type: "object",

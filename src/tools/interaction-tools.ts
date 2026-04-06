@@ -7,7 +7,7 @@ import { ElementNotFoundError } from "../errors.js";
 export const interactionTools: ToolDefinition[] = [
   {
     tool: {
-      name: "tap",
+      name: "input_tap",
       description: "Tap at specific coordinates or find an element by text/id and tap it",
       inputSchema: {
         type: "object",
@@ -100,7 +100,7 @@ export const interactionTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "double_tap",
+      name: "input_double_tap",
       description: "Double tap at specific coordinates or find an element by text/id and double tap it",
       inputSchema: {
         type: "object",
@@ -177,7 +177,7 @@ export const interactionTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "long_press",
+      name: "input_long_press",
       description: "Long press at coordinates or on an element",
       inputSchema: {
         type: "object",
@@ -219,7 +219,7 @@ export const interactionTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "swipe",
+      name: "input_swipe",
       description: "Perform a swipe gesture",
       inputSchema: {
         type: "object",
@@ -296,7 +296,7 @@ export const interactionTools: ToolDefinition[] = [
   },
   {
     tool: {
-      name: "press_key",
+      name: "input_key",
       description: "Press a key button. Android: BACK, HOME, ENTER, etc. iOS: HOME, VOLUME_UP, VOLUME_DOWN",
       inputSchema: {
         type: "object",

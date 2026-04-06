@@ -21,6 +21,7 @@ import { auroraTools } from "./tools/aurora-tools.js";
 import { flowTools } from "./tools/flow-tools.js";
 import { clipboardTools } from "./tools/clipboard-tools.js";
 import { browserTools } from "./tools/browser-tools.js";
+import { storeTools } from "./tools/store-tools.js";
 import { detectClient, getConfigSnippet } from "./client-adapter.js";
 
 // Dispatch function (needed by batch_commands / run_flow for recursion)
@@ -54,16 +55,80 @@ registerTools([
   ...flowTools,
   ...clipboardTools,
   ...browserTools,
+  ...storeTools,
 ]);
 
-// Register hidden aliases for common LLM misnaming
+// Backward compat: v3.0.x names → v3.1.x canonical names
 registerAliases({
-  "press_button": "press_key",
+  // device
+  "list_devices": "device_list",
+  "set_device": "device_set",
+  "set_target": "device_set_target",
+  "get_target": "device_get_target",
+  // interaction
+  "tap": "input_tap",
+  "double_tap": "input_double_tap",
+  "long_press": "input_long_press",
+  "swipe": "input_swipe",
+  "press_key": "input_key",
+  // ui
+  "get_ui": "ui_tree",
+  "find_element": "ui_find",
+  "find_and_tap": "ui_find_tap",
+  "tap_by_text": "ui_tap_text",
+  "analyze_screen": "ui_analyze",
+  "wait_for_element": "ui_wait",
+  "assert_visible": "ui_assert_visible",
+  "assert_not_exists": "ui_assert_gone",
+  // system
+  "get_current_activity": "system_activity",
+  "shell": "system_shell",
+  "wait": "system_wait",
+  "open_url": "system_open_url",
+  "get_logs": "system_logs",
+  "clear_logs": "system_clear_logs",
+  "get_system_info": "system_info",
+  "get_webview": "system_webview",
+  // app
+  "launch_app": "app_launch",
+  "stop_app": "app_stop",
+  "install_app": "app_install",
+  "list_apps": "app_list",
+  // screenshot
+  "screenshot": "screen_capture",
+  "annotate_screenshot": "screen_annotate",
+  // desktop
+  "launch_desktop_app": "desktop_launch",
+  "stop_desktop_app": "desktop_stop",
+  "get_window_info": "desktop_windows",
+  "focus_window": "desktop_focus",
+  "resize_window": "desktop_resize",
+  "get_clipboard": "clipboard_get",
+  "set_clipboard": "clipboard_set",
+  "get_performance_metrics": "desktop_performance",
+  "get_monitors": "desktop_monitors",
+  // clipboard
+  "select_text": "clipboard_select",
+  "copy_text": "clipboard_copy",
+  "paste_text": "clipboard_paste",
+  "get_clipboard_android": "clipboard_get_android",
+  // flow
+  "batch_commands": "flow_batch",
+  "run_flow": "flow_run",
+  // permissions
+  "grant_permission": "permission_grant",
+  "revoke_permission": "permission_revoke",
+  "reset_permissions": "permission_reset",
+  // file (aurora)
+  "push_file": "file_push",
+  "pull_file": "file_pull",
+  // LLM misnaming helpers
+  "press_button": "input_key",
   "type_text": "input_text",
   "type": "input_text",
-  "click": "tap",
-  "long_tap": "long_press",
-  "take_screenshot": "screenshot",
+  "click": "input_tap",
+  "long_tap": "input_long_press",
+  "take_screenshot": "screen_capture",
 });
 
 // Handle --init CLI flag (generate config snippet and exit)
@@ -89,13 +154,13 @@ if (initIndex !== -1) {
 const server = new Server(
   {
     name: "claude-mobile",
-    version: "3.0.0",
+    version: "3.2.0",
   },
   {
     capabilities: {
       tools: {},
     },
-    instructions: "Mobile, desktop, and browser automation server. Use 'screenshot' to see the screen, 'tap' to interact, 'get_ui' for the element tree, 'browser_open' to automate web pages. Use 'list_devices' to see connected devices.",
+    instructions: "Mobile, desktop, browser automation + Google Play store management. Use 'screen_capture' to see the screen, 'input_tap' to interact, 'ui_tree' for the element tree. Use 'store_upload' → 'store_set_notes' → 'store_submit' to publish to Google Play. Use 'device_list' to see connected devices.",
   }
 );
 
