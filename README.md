@@ -38,13 +38,13 @@ npx add-mcp claude-in-mobile -a cursor -y
 ### Claude Code CLI
 
 ```bash
-claude mcp add --transport stdio mobile -- npx -y claude-in-mobile
+claude mcp add --transport stdio mobile -- npx claude-in-mobile@latest
 ```
 
 To add globally (available in all projects):
 
 ```bash
-claude mcp add --scope user --transport stdio mobile -- npx -y claude-in-mobile
+claude mcp add --scope user --transport stdio mobile -- npx claude-in-mobile@latest
 ```
 
 ### OpenCode
@@ -157,7 +157,7 @@ Add to your Claude Code settings (`~/.claude.json` or project settings):
 ### Windows
 
 ```bash
-claude mcp add --transport stdio mobile -- cmd /c npx -y claude-in-mobile
+claude mcp add --transport stdio mobile -- cmd /c npx claude-in-mobile@latest
 ```
 
 ## Requirements
