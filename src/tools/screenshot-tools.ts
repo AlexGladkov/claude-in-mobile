@@ -28,7 +28,7 @@ export const screenshotTools: ToolDefinition[] = [
   {
     tool: {
       name: "screen_capture",
-      description: "Take a screenshot of the device screen. Images are automatically compressed for optimal LLM processing. Use diff mode to only see what changed since last screenshot (saves 60-80% tokens).",
+      description: "Take a screenshot of the device screen. FALLBACK ONLY — prefer ui_tree for inspecting UI elements (text-based, ~10x cheaper). Use screen_capture only when: visual layout verification is needed, ui_tree fails, or you need to confirm something visually. Images are auto-compressed. Use diff mode to only see what changed (saves 60-80% tokens).",
       inputSchema: {
         type: "object",
         properties: {
@@ -155,10 +155,13 @@ export const screenshotTools: ToolDefinition[] = [
       const scaleY = result.originalHeight / result.height;
       const scaled = scaleX !== 1 || scaleY !== 1;
 
+      // Store scale so interaction tools can auto-correct coordinates
+      ctx.screenshotScaleMap.set(currentPlatform, { scaleX, scaleY });
+
       return {
         image: { data: result.data, mimeType: result.mimeType },
         text: scaled
-          ? `Screenshot: ${result.width}x${result.height} (device: ${result.originalWidth}x${result.originalHeight}, scaleX: ${scaleX.toFixed(2)}, scaleY: ${scaleY.toFixed(2)}). When tapping, multiply screenshot coordinates by scale factors to get device coordinates.`
+          ? `Screenshot: ${result.width}x${result.height} (device: ${result.originalWidth}x${result.originalHeight}). Coordinate scaling applied automatically.`
           : undefined,
       };
     },

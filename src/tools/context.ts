@@ -17,6 +17,9 @@ const cachedElementsMap: Map<string, UiElement[]> = new Map();
 // Per-platform cache for last screenshot buffer (for diff mode)
 export const lastScreenshotMap: Map<string, Buffer> = new Map();
 
+// Per-platform screenshot scale factors (compressed image → device coordinates)
+export const screenshotScaleMap: Map<string, { scaleX: number; scaleY: number }> = new Map();
+
 export function getCachedElements(platform: string): UiElement[] {
   return cachedElementsMap.get(platform) ?? [];
 }
@@ -189,6 +192,7 @@ export interface ToolContext {
   getCachedElements: (platform: string) => UiElement[];
   setCachedElements: (platform: string, elements: UiElement[]) => void;
   lastScreenshotMap: Map<string, Buffer>;
+  screenshotScaleMap: Map<string, { scaleX: number; scaleY: number }>;
   generateActionHints: (platform?: string) => Promise<string>;
   getElementsForPlatform: (plat: string) => Promise<UiElement[]>;
   iosTreeToUiElements: (tree: any) => UiElement[];
@@ -203,6 +207,7 @@ export function createToolContext(handleTool: ToolContext["handleTool"]): ToolCo
     getCachedElements,
     setCachedElements,
     lastScreenshotMap,
+    screenshotScaleMap,
     generateActionHints,
     getElementsForPlatform,
     iosTreeToUiElements,

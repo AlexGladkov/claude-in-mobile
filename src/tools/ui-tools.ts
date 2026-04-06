@@ -18,7 +18,7 @@ export const uiTools: ToolDefinition[] = [
   {
     tool: {
       name: "ui_tree",
-      description: "Get the current UI hierarchy (accessibility tree). Shows all interactive elements with their text, IDs, and coordinates. Note: Limited on iOS.",
+      description: "Get the current UI hierarchy (accessibility tree). PREFERRED over screen_capture — text-based, ~10x cheaper in tokens. Shows all interactive elements with their text, IDs, and coordinates. Use this first for navigation, finding elements, and inspecting screen state. Note: Limited on iOS.",
       inputSchema: {
         type: "object",
         properties: {

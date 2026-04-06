@@ -4,6 +4,22 @@ import type { Platform } from "../device-manager.js";
 import { parseUiHierarchy, findByText, findByResourceId } from "../adb/ui-parser.js";
 import { ElementNotFoundError } from "../errors.js";
 
+/** Apply screenshot scale to raw coordinates from Claude (image space → device space). */
+function applyScale(
+  x: number,
+  y: number,
+  platform: string | undefined,
+  ctx: ToolContext,
+): { x: number; y: number } {
+  const key = platform ?? ctx.deviceManager.getCurrentPlatform() ?? "android";
+  const scale = ctx.screenshotScaleMap.get(key);
+  if (!scale || (scale.scaleX === 1 && scale.scaleY === 1)) return { x, y };
+  return {
+    x: Math.round(x * scale.scaleX),
+    y: Math.round(y * scale.scaleY),
+  };
+}
+
 export const interactionTools: ToolDefinition[] = [
   {
     tool: {
@@ -29,6 +45,7 @@ export const interactionTools: ToolDefinition[] = [
       let x: number | undefined = args.x as number;
       let y: number | undefined = args.y as number;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
+      let coordsFromArgs = x !== undefined && y !== undefined;
 
       // iOS element-based tap (precedence: label > text > coordinates)
       if (currentPlatform === "ios" && (args.label || args.text)) {
@@ -45,7 +62,7 @@ export const interactionTools: ToolDefinition[] = [
         }
       }
 
-      // Find by index from cached elements (Android only)
+      // Find by index from cached elements (Android only) — device coords, no scale needed
       if (args.index !== undefined && currentPlatform === "android") {
         const idx = args.index as number;
         let elements = ctx.getCachedElements("android");
@@ -60,9 +77,10 @@ export const interactionTools: ToolDefinition[] = [
         }
         x = el.centerX;
         y = el.centerY;
+        coordsFromArgs = false;
       }
 
-      // Find by text or resourceId (Android only)
+      // Find by text or resourceId (Android only) — device coords, no scale needed
       if ((args.text || args.resourceId) && currentPlatform === "android") {
         const xml = await ctx.deviceManager.getUiHierarchyAsync("android");
         const elements = parseUiHierarchy(xml);
@@ -83,11 +101,15 @@ export const interactionTools: ToolDefinition[] = [
         const target = clickable[0] ?? found[0];
         x = target.centerX;
         y = target.centerY;
+        coordsFromArgs = false;
       }
 
       if (x === undefined || y === undefined) {
         return { text: "Please provide x,y coordinates, text, resourceId, label, or index" };
       }
+
+      // Scale raw screenshot coordinates → device coordinates
+      if (coordsFromArgs) ({ x, y } = applyScale(x, y, currentPlatform ?? undefined, ctx));
 
       const targetPid = args.targetPid as number | undefined;
       await ctx.deviceManager.tap(x, y, platform, targetPid);
@@ -122,8 +144,9 @@ export const interactionTools: ToolDefinition[] = [
       let y: number | undefined = args.y as number;
       const interval = (args.interval as number) ?? 100;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
+      let coordsFromArgs = x !== undefined && y !== undefined;
 
-      // Find by index from cached elements (Android only)
+      // Find by index from cached elements (Android only) — device coords, no scale needed
       if (args.index !== undefined && currentPlatform === "android") {
         const idx = args.index as number;
         let elements = ctx.getCachedElements("android");
@@ -138,9 +161,10 @@ export const interactionTools: ToolDefinition[] = [
         }
         x = el.centerX;
         y = el.centerY;
+        coordsFromArgs = false;
       }
 
-      // Find by text or resourceId (Android only)
+      // Find by text or resourceId (Android only) — device coords, no scale needed
       if ((args.text || args.resourceId) && currentPlatform === "android") {
         const xml = await ctx.deviceManager.getUiHierarchyAsync("android");
         const elements = parseUiHierarchy(xml);
@@ -161,11 +185,14 @@ export const interactionTools: ToolDefinition[] = [
         const target = clickable[0] ?? found[0];
         x = target.centerX;
         y = target.centerY;
+        coordsFromArgs = false;
       }
 
       if (x === undefined || y === undefined) {
         return { text: "Please provide x,y coordinates, text, resourceId, or index" };
       }
+
+      if (coordsFromArgs) ({ x, y } = applyScale(x, y, currentPlatform ?? undefined, ctx));
 
       await ctx.deviceManager.doubleTap(x, y, interval, platform);
       let result = `Double tapped at (${x}, ${y}) with ${interval}ms interval`;
@@ -197,6 +224,8 @@ export const interactionTools: ToolDefinition[] = [
       const duration = (args.duration as number) ?? 1000;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
 
+      let coordsFromArgs = x !== undefined && y !== undefined;
+
       if (args.text && currentPlatform === "android") {
         const xml = await ctx.deviceManager.getUiHierarchyAsync("android");
         const elements = parseUiHierarchy(xml);
@@ -207,11 +236,14 @@ export const interactionTools: ToolDefinition[] = [
         }
         x = found[0].centerX;
         y = found[0].centerY;
+        coordsFromArgs = false;
       }
 
       if (x === undefined || y === undefined) {
         return { text: "Please provide x,y coordinates or text" };
       }
+
+      if (coordsFromArgs) ({ x, y } = applyScale(x, y, currentPlatform ?? undefined, ctx));
 
       await ctx.deviceManager.longPress(x, y, duration, platform);
       return { text: `Long pressed at (${x}, ${y}) for ${duration}ms` };
@@ -250,15 +282,11 @@ export const interactionTools: ToolDefinition[] = [
       if (args.x1 !== undefined && args.y1 !== undefined &&
           args.x2 !== undefined && args.y2 !== undefined) {
         const duration = (args.duration as number) ?? 300;
-        await ctx.deviceManager.swipe(
-          args.x1 as number,
-          args.y1 as number,
-          args.x2 as number,
-          args.y2 as number,
-          duration,
-          platform
-        );
-        let result = `Swiped from (${args.x1}, ${args.y1}) to (${args.x2}, ${args.y2})`;
+        const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
+        const p1 = applyScale(args.x1 as number, args.y1 as number, currentPlatform ?? undefined, ctx);
+        const p2 = applyScale(args.x2 as number, args.y2 as number, currentPlatform ?? undefined, ctx);
+        await ctx.deviceManager.swipe(p1.x, p1.y, p2.x, p2.y, duration, platform);
+        let result = `Swiped from (${p1.x}, ${p1.y}) to (${p2.x}, ${p2.y})`;
         if (args.hints === true) {
           result += await ctx.generateActionHints(platform as string | undefined);
         }

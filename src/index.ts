@@ -22,6 +22,8 @@ import { flowTools } from "./tools/flow-tools.js";
 import { clipboardTools } from "./tools/clipboard-tools.js";
 import { browserTools } from "./tools/browser-tools.js";
 import { storeTools } from "./tools/store-tools.js";
+import { huaweiTools } from "./tools/huawei-tools.js";
+import { ruStoreTools } from "./tools/rustore-tools.js";
 import { detectClient, getConfigSnippet } from "./client-adapter.js";
 
 // Dispatch function (needed by batch_commands / run_flow for recursion)
@@ -56,6 +58,8 @@ registerTools([
   ...clipboardTools,
   ...browserTools,
   ...storeTools,
+  ...huaweiTools,
+  ...ruStoreTools,
 ]);
 
 // Backward compat: v3.0.x names → v3.1.x canonical names
@@ -154,13 +158,13 @@ if (initIndex !== -1) {
 const server = new Server(
   {
     name: "claude-mobile",
-    version: "3.2.0",
+    version: "3.3.0",
   },
   {
     capabilities: {
       tools: {},
     },
-    instructions: "Mobile, desktop, browser automation + Google Play store management. Use 'screen_capture' to see the screen, 'input_tap' to interact, 'ui_tree' for the element tree. Use 'store_upload' → 'store_set_notes' → 'store_submit' to publish to Google Play. Use 'device_list' to see connected devices.",
+    instructions: "Mobile, desktop, browser automation + store management (Google Play, Huawei AppGallery, RuStore). IMPORTANT: Always use 'ui_tree' first to inspect the screen — it is text-based and ~10x cheaper than screenshots. Use 'screen_capture' only as fallback when visual verification is required or ui_tree is insufficient. Use 'input_tap' to interact. For stores: 'store_upload' → 'store_set_notes' → 'store_submit' (Google Play), 'huawei_upload' → 'huawei_set_notes' → 'huawei_submit' (Huawei), 'rustore_upload' → 'rustore_set_notes' → 'rustore_submit' (RuStore). Use 'device_list' to see connected devices.",
   }
 );
 
