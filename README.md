@@ -19,6 +19,23 @@ Control your Android phone, emulator, iOS Simulator, Desktop applications, or Au
 
 ## Installation
 
+### Native CLI via Homebrew (macOS)
+
+```bash
+brew tap AlexGladkov/claude-in-mobile https://github.com/AlexGladkov/claude-in-mobile
+brew install claude-in-mobile
+```
+
+The CLI wraps all device automation tools plus store management (Google Play, Huawei AppGallery, RuStore):
+
+```bash
+claude-in-mobile screenshot android
+claude-in-mobile tap android 540 960 --from-size 540x960
+claude-in-mobile store upload --package com.example.app --file app.aab
+claude-in-mobile huawei upload --package com.example.app --file app.aab
+claude-in-mobile rustore upload --package com.example.app --file app.apk
+```
+
 ### One-liner (any client)
 
 Using [add-mcp](https://github.com/neondatabase/add-mcp) — auto-detects installed clients:
