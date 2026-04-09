@@ -131,6 +131,13 @@ export interface SonicConnectionInfo {
 
 ```typescript
 class SonicDeviceSource {
+  constructor(
+    baseUrl: string,          // SONIC_BASE_URL
+    agentId: number,          // SONIC_AGENT_ID（整数）
+    token: string,            // SONIC_TOKEN
+    pollInterval?: number,    // SONIC_POLL_INTERVAL ms，默认 30000
+  )
+
   // 启动：拉 agentInfo（一次）+ 首次拉设备列表 + 启动轮询 timer
   // agentInfo 失败则抛出异常，进程启动失败（早发现配置错误，优于第一次工具调用时才报错）
   async start(): Promise<void>
@@ -205,12 +212,13 @@ class SonicWsClient {
 | `inputText(text)` | `{ type:"text", detail:text }` | 无 |
 | `pressKey(key)` | `{ type:"keyEvent", detail:keycode }` | 无 |
 | `screenshotAsync()` | `{ type:"debug", detail:"screenshot" }` | 二进制帧 |
+| `getScreenshotBufferAsync()` | 同 `screenshotAsync()`，直接返回原始 `Buffer`（不压缩） | 二进制帧 |
 | `getUiHierarchy()` | `{ type:"debug", detail:"tree" }` | `{ msg:"tree" }` |
 | `launchApp(pkg)` | `{ type:"debug", detail:"openApp", pkg }` | 无 |
 | `stopApp(pkg)` | `{ type:"debug", detail:"killApp", pkg }` | 无 |
 | `installApp(path)` | `{ type:"debug", detail:"install", apk:path }` | `{ msg:"installFinish" }` |
-| `swipeDirection(dir)` | 计算坐标后委托 `swipe()`（屏幕宽高从 `getSystemInfo` 或固定比例） | 无 |
-| `getSystemInfo()` | `{ type:"debug", detail:"tree" }` 结合 activity 信息拼装，或返回基础信息 | `{ msg:"tree" }` |
+| `swipeDirection(dir)` | 计算坐标后委托 `swipe()`（屏幕宽高从 `wm size` shell 命令获取） | 无 |
+| `getSystemInfo()` | 第一期抛出 `"not supported on sonic-android"`（后续迭代通过 shell 实现） | — |
 | `grantPermission / revokePermission / resetPermissions` | 通过 `shell()` 执行 `pm grant/revoke` | Terminal WS |
 
 **Terminal WS 操作（按需连接，用完关闭）：**
@@ -233,6 +241,7 @@ class SonicWsClient {
 | `inputText(text)` | `{ type:"send", detail:text }` | 无 |
 | `pressKey(key)` | `{ type:"debug", detail:"keyEvent", key }` | 无 |
 | `screenshotAsync()` | `{ type:"debug", detail:"screenshot" }` | 二进制帧 |
+| `getScreenshotBufferAsync()` | 同 `screenshotAsync()`，直接返回原始 `Buffer`（不压缩） | 二进制帧 |
 | `getUiHierarchy()` | `{ type:"debug", detail:"tree" }` | `{ msg:"tree" }` |
 | `launchApp(pkg)` | `{ type:"launch", pkg }` | `{ msg:"launchResult" }` |
 | `stopApp(pkg)` | `{ type:"kill", pkg }` | `{ msg:"killResult" }` |
@@ -279,7 +288,12 @@ async listDevices(): Promise<Device[]> {
 ```typescript
 // server.connect() 之前启动
 if (process.env.SONIC_ENABLE === 'true') {
-  const sonicSource = new SonicDeviceSource(...);
+  const sonicSource = new SonicDeviceSource(
+    process.env.SONIC_BASE_URL!,
+    Number(process.env.SONIC_AGENT_ID),
+    process.env.SONIC_TOKEN!,
+    process.env.SONIC_POLL_INTERVAL ? Number(process.env.SONIC_POLL_INTERVAL) : undefined,
+  );
   await sonicSource.start();              // 失败则进程启动失败（早发现）
   deviceManager.setSonicSource(sonicSource);
 }
@@ -320,11 +334,17 @@ Sonic adapter 的操作天然是异步的（WebSocket 往返），但 `PlatformA
 | `revokePermission` | `string` | `Promise<string>` |
 | `resetPermissions` | `string` | `Promise<string>` |
 
-**影响范围：** 现有 AndroidAdapter、IosAdapter、DesktopAdapter、AuroraAdapter 的对应方法也需同步升级返回类型（大多内部已使用 `execSync`，改为 `execAsync` 即可）。调用这些方法的工具层代码需加 `await`。
+**影响范围（三层都需同步修改）：**
+1. `PlatformAdapter` 接口：升级上表中各方法的返回类型
+2. 现有 Adapter 实现：AndroidAdapter、IosAdapter、DesktopAdapter、AuroraAdapter 对应方法改为 `async`（大多内部已用 `execSync`，改为 `execAsync` 即可）
+3. `DeviceManager` wrapper 方法：`DeviceManager.shell()`、`DeviceManager.launchApp()`、`DeviceManager.getLogs()` 等直接封装 adapter 调用的方法，也必须改为 `async` 并加 `await`，否则 adapter 升级后 DeviceManager 层会静默返回 `Promise` 对象而非实际结果
+4. 工具层（`tools/`）：调用上述 DeviceManager 方法的工具代码需加 `await`
 
 **`screenshotRaw()`：** 这是历史遗留的同步路径。Sonic adapter 将抛出 `"not supported — use screenshotAsync()"`，不升级为 async。现有工具已优先使用 `screenshotAsync()`，影响可控。
 
 **`listDevices() / selectDevice() / autoDetectDevice()`：** Sonic 模式下设备管理由 `SonicDeviceSource` + `DeviceManager` 负责，Sonic adapter 的这几个方法实现为空 stub（`listDevices` 返回 `[]`，其余 no-op）。
+
+**`dispose()` 生命周期方法：** 在 `PlatformAdapter` 接口新增可选方法 `dispose?(): Promise<void>`。本地 adapter 默认不实现（undefined = no-op）。Sonic adapter 实现此方法，内部调用 `SonicWsClient.disconnect()` 关闭 WebSocket。`DeviceManager.selectDevice()` 在切换 adapter 前调用 `await this.activeAdapter?.dispose?.()` 触发清理。
 
 ---
 
@@ -334,8 +354,9 @@ Sonic adapter 的操作天然是异步的（WebSocket 往返），但 `PlatformA
 
 | 工具 | 原因 |
 |---|---|
-| `clipboard_get_android`（部分路径） | 调用 `getAndroidClient()` |
+| `clipboard_get_android`、`clipboard_select`、`clipboard_copy`、`clipboard_paste` | 调用 `getAndroidClient()` |
 | `system_activity` | 调用 `getAndroidClient().getCurrentActivity()` |
+| `system_open_url`（Android） | 调用 `getAndroidClient().shell(...)` |
 | `system_open_url`（iOS） | 调用 `getIosClient().openUrl()` |
 | `ui_find`（iOS element-level） | 调用 `getIosClient().findElements()` |
 | `system_webview` | 调用 `getWebViewInspector()` |
