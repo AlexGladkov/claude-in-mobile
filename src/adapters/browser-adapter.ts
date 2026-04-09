@@ -131,35 +131,35 @@ export class BrowserAdapter implements PlatformAdapter {
   }
 
   // -- App management (not supported) --
-  launchApp(_pkg: string): string {
+  async launchApp(_pkg: string): Promise<string> {
     throw new Error("launchApp is not supported for browser platform. Use browser_open.");
   }
-  stopApp(_pkg: string): void {
+  async stopApp(_pkg: string): Promise<void> {
     throw new Error("stopApp is not supported for browser platform. Use browser_close.");
   }
-  installApp(_path: string): string {
+  async installApp(_path: string): Promise<string> {
     throw new Error("installApp is not supported for browser platform.");
   }
 
   // -- Permissions (not supported) --
-  grantPermission(_pkg: string, _perm: string): string {
+  async grantPermission(_pkg: string, _perm: string): Promise<string> {
     throw new Error("grantPermission is not supported for browser platform.");
   }
-  revokePermission(_pkg: string, _perm: string): string {
+  async revokePermission(_pkg: string, _perm: string): Promise<string> {
     throw new Error("revokePermission is not supported for browser platform.");
   }
-  resetPermissions(_pkg: string): string {
+  async resetPermissions(_pkg: string): Promise<string> {
     throw new Error("resetPermissions is not supported for browser platform.");
   }
 
   // -- System (stub) --
-  shell(_cmd: string): string {
+  async shell(_cmd: string): Promise<string> {
     throw new Error("shell is not supported for browser platform.");
   }
-  getLogs(_opts: any): string {
+  async getLogs(_opts: any): Promise<string> {
     return "(Browser console logs not implemented. Use browser_evaluate to inspect page.)";
   }
-  clearLogs(): string {
+  async clearLogs(): Promise<string> {
     return "OK";
   }
   async getSystemInfo(): Promise<string> {

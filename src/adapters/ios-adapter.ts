@@ -123,47 +123,47 @@ export class IosAdapter implements PlatformAdapter {
 
   // ============ App management ============
 
-  launchApp(bundleId: string): string {
+  async launchApp(bundleId: string): Promise<string> {
     return this.client.launchApp(bundleId);
   }
 
-  stopApp(bundleId: string): void {
+  async stopApp(bundleId: string): Promise<void> {
     this.client.stopApp(bundleId);
   }
 
-  installApp(path: string): string {
+  async installApp(path: string): Promise<string> {
     return this.client.installApp(path);
   }
 
   // ============ Permissions ============
 
-  grantPermission(bundleId: string, service: string): string {
+  async grantPermission(bundleId: string, service: string): Promise<string> {
     this.client.grantPermission(bundleId, service);
     return `Granted ${service} to ${bundleId}`;
   }
 
-  revokePermission(bundleId: string, service: string): string {
+  async revokePermission(bundleId: string, service: string): Promise<string> {
     this.client.revokePermission(bundleId, service);
     return `Revoked ${service} from ${bundleId}`;
   }
 
-  resetPermissions(bundleId: string): string {
+  async resetPermissions(bundleId: string): Promise<string> {
     this.client.resetPermissions(bundleId);
     return `Reset permissions for ${bundleId}`;
   }
 
   // ============ System ============
 
-  shell(command: string): string {
+  async shell(command: string): Promise<string> {
     return this.client.shell(command);
   }
 
-  getLogs(options: {
+  async getLogs(options: {
     level?: string;
     tag?: string;
     lines?: number;
     package?: string;
-  } = {}): string {
+  } = {}): Promise<string> {
     return this.client.getLogs({
       level: options.level as "debug" | "info" | "default" | "error" | "fault" | undefined,
       lines: options.lines,
@@ -171,7 +171,7 @@ export class IosAdapter implements PlatformAdapter {
     });
   }
 
-  clearLogs(): string {
+  async clearLogs(): Promise<string> {
     return this.client.clearLogs();
   }
 

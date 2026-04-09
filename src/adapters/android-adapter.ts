@@ -136,47 +136,47 @@ export class AndroidAdapter implements PlatformAdapter {
 
   // ============ App management ============
 
-  launchApp(packageName: string): string {
+  async launchApp(packageName: string): Promise<string> {
     return this.client.launchApp(packageName);
   }
 
-  stopApp(packageName: string): void {
+  async stopApp(packageName: string): Promise<void> {
     this.client.stopApp(packageName);
   }
 
-  installApp(path: string): string {
+  async installApp(path: string): Promise<string> {
     return this.client.installApk(path);
   }
 
   // ============ Permissions ============
 
-  grantPermission(packageName: string, permission: string): string {
+  async grantPermission(packageName: string, permission: string): Promise<string> {
     this.client.grantPermission(packageName, permission);
     return `Granted ${permission} to ${packageName}`;
   }
 
-  revokePermission(packageName: string, permission: string): string {
+  async revokePermission(packageName: string, permission: string): Promise<string> {
     this.client.revokePermission(packageName, permission);
     return `Revoked ${permission} from ${packageName}`;
   }
 
-  resetPermissions(packageName: string): string {
+  async resetPermissions(packageName: string): Promise<string> {
     this.client.resetPermissions(packageName);
     return `Reset permissions for ${packageName}`;
   }
 
   // ============ System ============
 
-  shell(command: string): string {
+  async shell(command: string): Promise<string> {
     return this.client.shell(command);
   }
 
-  getLogs(options: {
+  async getLogs(options: {
     level?: string;
     tag?: string;
     lines?: number;
     package?: string;
-  } = {}): string {
+  } = {}): Promise<string> {
     return this.client.getLogs({
       level: options.level as "V" | "D" | "I" | "W" | "E" | "F" | undefined,
       tag: options.tag,
@@ -185,7 +185,7 @@ export class AndroidAdapter implements PlatformAdapter {
     });
   }
 
-  clearLogs(): string {
+  async clearLogs(): Promise<string> {
     this.client.clearLogs();
     return "Logcat buffer cleared";
   }

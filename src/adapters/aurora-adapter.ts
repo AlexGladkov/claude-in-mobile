@@ -118,48 +118,48 @@ export class AuroraAdapter implements PlatformAdapter {
 
   // ============ App management ============
 
-  launchApp(packageName: string): string {
+  async launchApp(packageName: string): Promise<string> {
     return this.client.launchApp(packageName);
   }
 
-  stopApp(packageName: string): void {
+  async stopApp(packageName: string): Promise<void> {
     this.client.stopApp(packageName);
   }
 
-  installApp(path: string): string {
+  async installApp(path: string): Promise<string> {
     return this.client.installApp(path);
   }
 
   // ============ Permissions ============
 
-  grantPermission(_pkg: string, _perm: string): string {
+  async grantPermission(_pkg: string, _perm: string): Promise<string> {
     throw new Error("Permission management is not supported for Aurora platform");
   }
 
-  revokePermission(_pkg: string, _perm: string): string {
+  async revokePermission(_pkg: string, _perm: string): Promise<string> {
     throw new Error("Permission management is not supported for Aurora platform");
   }
 
-  resetPermissions(_pkg: string): string {
+  async resetPermissions(_pkg: string): Promise<string> {
     throw new Error("Permission management is not supported for Aurora platform");
   }
 
   // ============ System ============
 
-  shell(command: string): string {
+  async shell(command: string): Promise<string> {
     return this.client.shell(command);
   }
 
-  getLogs(options: {
+  async getLogs(options: {
     level?: string;
     tag?: string;
     lines?: number;
     package?: string;
-  } = {}): string {
+  } = {}): Promise<string> {
     return this.client.getLogs(options);
   }
 
-  clearLogs(): string {
+  async clearLogs(): Promise<string> {
     return this.client.clearLogs();
   }
 

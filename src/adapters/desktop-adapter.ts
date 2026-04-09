@@ -165,51 +165,51 @@ export class DesktopAdapter implements PlatformAdapter {
 
   // ============ App management ============
 
-  launchApp(packageName: string): string {
+  async launchApp(packageName: string): Promise<string> {
     return this.client.launchApp(packageName);
   }
 
-  stopApp(packageName: string): void {
+  async stopApp(packageName: string): Promise<void> {
     this.client.stopApp(packageName);
   }
 
-  installApp(_path: string): string {
+  async installApp(_path: string): Promise<string> {
     return "Desktop platform doesn't support app installation";
   }
 
   // ============ Permissions ============
 
-  grantPermission(_pkg: string, _perm: string): string {
+  async grantPermission(_pkg: string, _perm: string): Promise<string> {
     throw new Error("Permission management is not supported for desktop platform");
   }
 
-  revokePermission(_pkg: string, _perm: string): string {
+  async revokePermission(_pkg: string, _perm: string): Promise<string> {
     throw new Error("Permission management is not supported for desktop platform");
   }
 
-  resetPermissions(_pkg: string): string {
+  async resetPermissions(_pkg: string): Promise<string> {
     throw new Error("Permission management is not supported for desktop platform");
   }
 
   // ============ System ============
 
-  shell(command: string): string {
+  async shell(command: string): Promise<string> {
     return this.client.shell(command);
   }
 
-  getLogs(options: {
+  async getLogs(options: {
     level?: string;
     tag?: string;
     lines?: number;
     package?: string;
-  } = {}): string {
+  } = {}): Promise<string> {
     const logs = this.client.getLogs({
       limit: options.lines ?? 100,
     });
     return logs.map((l) => `[${l.type}] ${l.message}`).join("\n");
   }
 
-  clearLogs(): string {
+  async clearLogs(): Promise<string> {
     this.client.clearLogs();
     return "Desktop logs cleared";
   }
