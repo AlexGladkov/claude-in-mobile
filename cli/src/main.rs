@@ -7,6 +7,7 @@ mod aurora;
 mod desktop;
 mod ios;
 mod screenshot;
+mod sonic;
 
 use std::process::ExitCode;
 
@@ -918,7 +919,32 @@ fn run(cli: Cli) -> Result<()> {
                 _ => {
                     android::print_devices()?;
                     ios::print_devices()?;
-                    aurora::print_devices()
+                    aurora::print_devices()?;
+                    
+                    // After listing local devices, append Sonic devices if SONIC_ENABLE is set
+                    if std::env::var("SONIC_ENABLE").as_deref() == Ok("true") {
+                        if let (Ok(base_url), Ok(agent_id), Ok(token)) = (
+                            std::env::var("SONIC_BASE_URL"),
+                            std::env::var("SONIC_AGENT_ID"),
+                            std::env::var("SONIC_TOKEN"),
+                        ) {
+                            if let Ok(agent_id_num) = agent_id.parse::<u32>() {
+                                let client = sonic::SonicClient::new(base_url, agent_id_num, token);
+                                match client.fetch_devices() {
+                                    Ok(devices) => {
+                                        for d in devices {
+                                            let platform_str = if d.platform == 2 { "ios" } else { "android" };
+                                            let name = d.nick_name.as_deref().unwrap_or(&d.ud_id);
+                                            println!("{:<24} {:<20} {:<10} {:<10} sonic",
+                                                d.ud_id, name, platform_str, d.status.to_lowercase());
+                                        }
+                                    }
+                                    Err(e) => eprintln!("Warning: Sonic device fetch failed: {}", e),
+                                }
+                            }
+                        }
+                    }
+                    Ok(())
                 }
             }
         }
