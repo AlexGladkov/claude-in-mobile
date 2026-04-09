@@ -83,6 +83,9 @@ export const uiTools: ToolDefinition[] = [
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
 
       if (currentPlatform === "ios") {
+        if (ctx.deviceManager.isSonicMode()) {
+          return { content: [{ type: "text", text: "ui_find is not supported in Sonic mode" }] };
+        }
         try {
           const iosClient = ctx.deviceManager.getIosClient();
           const elements = await iosClient.findElements({

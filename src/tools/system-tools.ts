@@ -15,6 +15,10 @@ export const systemTools: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
+      if (ctx.deviceManager.isSonicMode()) {
+        return { content: [{ type: "text", text: "system_activity is not supported in Sonic mode" }] };
+      }
+
       const platform = args.platform as Platform | undefined;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
 
@@ -83,8 +87,14 @@ export const systemTools: ToolDefinition[] = [
       const sanitizedUrl = url.replace(/'/g, "'\\''");
 
       if (currentPlatform === "android") {
+        if (ctx.deviceManager.isSonicMode()) {
+          return { content: [{ type: "text", text: "system_open_url is not supported in Sonic mode" }] };
+        }
         ctx.deviceManager.getAndroidClient().shell(`am start -a android.intent.action.VIEW -d '${sanitizedUrl}'`);
       } else if (currentPlatform === "ios") {
+        if (ctx.deviceManager.isSonicMode()) {
+          return { content: [{ type: "text", text: "system_open_url is not supported in Sonic mode" }] };
+        }
         ctx.deviceManager.getIosClient().openUrl(url);
       } else {
         return { text: `open_url is not supported for ${currentPlatform} platform. Supported: android, ios.` };
@@ -165,6 +175,10 @@ export const systemTools: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
+      if (ctx.deviceManager.isSonicMode()) {
+        return { content: [{ type: "text", text: "system_webview is not supported in Sonic mode" }] };
+      }
+
       const platform = args.platform as Platform | undefined;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
 

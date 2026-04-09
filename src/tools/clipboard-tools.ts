@@ -29,6 +29,9 @@ export const clipboardTools: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
+      if (ctx.deviceManager.isSonicMode()) {
+        return { content: [{ type: "text", text: "clipboard_select is not supported in Sonic mode" }] };
+      }
       const platform = args.platform as Platform | undefined;
       const client = getAndroidAdapter(ctx, platform);
       client.selectAll();
@@ -47,6 +50,9 @@ export const clipboardTools: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
+      if (ctx.deviceManager.isSonicMode()) {
+        return { content: [{ type: "text", text: "clipboard_copy is not supported in Sonic mode" }] };
+      }
       const platform = args.platform as Platform | undefined;
       const client = getAndroidAdapter(ctx, platform);
       client.selectAll();
@@ -69,6 +75,9 @@ export const clipboardTools: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
+      if (ctx.deviceManager.isSonicMode()) {
+        return { content: [{ type: "text", text: "clipboard_paste is not supported in Sonic mode" }] };
+      }
       const platform = args.platform as Platform | undefined;
       const client = getAndroidAdapter(ctx, platform);
 
@@ -110,6 +119,9 @@ export const clipboardTools: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
+      if (ctx.deviceManager.isSonicMode()) {
+        return { content: [{ type: "text", text: "clipboard_get_android is not supported in Sonic mode" }] };
+      }
       const platform = args.platform as Platform | undefined;
       const client = getAndroidAdapter(ctx, platform);
       const text = client.getClipboardText();
