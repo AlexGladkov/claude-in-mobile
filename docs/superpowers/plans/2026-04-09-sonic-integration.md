@@ -43,7 +43,7 @@
 - `cli/src/sonic.rs` — device discovery + WebSocket execution for Sonic devices
 
 ### Modified files (Rust CLI)
-- `cli/Cargo.toml` — add `reqwest`, `tokio`, `tungstenite`/`tokio-tungstenite`
+- `cli/Cargo.toml` — add `reqwest` (blocking), `tungstenite`
 - `cli/src/main.rs` — merge Sonic devices into `devices` command; route commands to sonic.rs
 
 ---
@@ -1348,7 +1348,7 @@ cd /Users/limeng/work/autospecter/claude-in-mobile && npm test
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/device-manager.ts src/index.ts
+git add src/device-manager.ts src/index.ts src/tools/device-tools.ts
 git commit -m "feat: wire SonicDeviceSource into DeviceManager, add sonic routing in setDevice"
 ```
 
