@@ -19,7 +19,7 @@ export const permissionTools: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
-      const result = ctx.deviceManager.grantPermission(
+      const result = await ctx.deviceManager.grantPermission(
         args.package as string,
         args.permission as string,
         platform
@@ -43,7 +43,7 @@ export const permissionTools: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
-      const result = ctx.deviceManager.revokePermission(
+      const result = await ctx.deviceManager.revokePermission(
         args.package as string,
         args.permission as string,
         platform
@@ -66,7 +66,7 @@ export const permissionTools: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
-      const result = ctx.deviceManager.resetPermissions(
+      const result = await ctx.deviceManager.resetPermissions(
         args.package as string,
         platform
       );

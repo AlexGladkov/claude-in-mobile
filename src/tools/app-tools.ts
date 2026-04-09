@@ -18,7 +18,7 @@ export const appTools: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
-      const result = ctx.deviceManager.launchApp(args.package as string, platform);
+      const result = await ctx.deviceManager.launchApp(args.package as string, platform);
       return { text: result };
     },
   },
@@ -37,7 +37,7 @@ export const appTools: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
-      ctx.deviceManager.stopApp(args.package as string, platform);
+      await ctx.deviceManager.stopApp(args.package as string, platform);
       return { text: `Stopped: ${args.package}` };
     },
   },
@@ -56,7 +56,7 @@ export const appTools: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
-      const result = ctx.deviceManager.installApp(args.path as string, platform);
+      const result = await ctx.deviceManager.installApp(args.path as string, platform);
       return { text: result };
     },
   },

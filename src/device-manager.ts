@@ -318,42 +318,42 @@ export class DeviceManager {
     await adapter.pressKey(key, targetPid);
   }
 
-  launchApp(packageOrBundleId: string, platform?: Platform): string {
+  async launchApp(packageOrBundleId: string, platform?: Platform): Promise<string> {
     const adapter = this.getAdapter(platform);
-    return adapter.launchApp(packageOrBundleId);
+    return await adapter.launchApp(packageOrBundleId);
   }
 
-  stopApp(packageOrBundleId: string, platform?: Platform): void {
+  async stopApp(packageOrBundleId: string, platform?: Platform): Promise<void> {
     const adapter = this.getAdapter(platform);
-    adapter.stopApp(packageOrBundleId);
+    await adapter.stopApp(packageOrBundleId);
   }
 
-  installApp(path: string, platform?: Platform): string {
+  async installApp(path: string, platform?: Platform): Promise<string> {
     const adapter = this.getAdapter(platform);
-    return adapter.installApp(path);
+    return await adapter.installApp(path);
   }
 
-  grantPermission(
+  async grantPermission(
     packageOrBundleId: string,
     permission: string,
     platform?: Platform,
-  ): string {
+  ): Promise<string> {
     const adapter = this.getAdapter(platform);
-    return adapter.grantPermission(packageOrBundleId, permission);
+    return await adapter.grantPermission(packageOrBundleId, permission);
   }
 
-  revokePermission(
+  async revokePermission(
     packageOrBundleId: string,
     permission: string,
     platform?: Platform,
-  ): string {
+  ): Promise<string> {
     const adapter = this.getAdapter(platform);
-    return adapter.revokePermission(packageOrBundleId, permission);
+    return await adapter.revokePermission(packageOrBundleId, permission);
   }
 
-  resetPermissions(packageOrBundleId: string, platform?: Platform): string {
+  async resetPermissions(packageOrBundleId: string, platform?: Platform): Promise<string> {
     const adapter = this.getAdapter(platform);
-    return adapter.resetPermissions(packageOrBundleId);
+    return await adapter.resetPermissions(packageOrBundleId);
   }
 
   async getUiHierarchy(platform?: Platform): Promise<string> {
@@ -366,9 +366,9 @@ export class DeviceManager {
     return adapter.getUiHierarchy();
   }
 
-  shell(command: string, platform?: Platform): string {
+  async shell(command: string, platform?: Platform): Promise<string> {
     const adapter = this.getAdapter(platform);
-    return adapter.shell(command);
+    return await adapter.shell(command);
   }
 
   // ============ Raw client accessors (used by tools directly) ============
@@ -410,7 +410,7 @@ export class DeviceManager {
 
   // ============ Logs & System ============
 
-  getLogs(
+  async getLogs(
     options: {
       platform?: Platform;
       level?: string;
@@ -418,9 +418,9 @@ export class DeviceManager {
       lines?: number;
       package?: string;
     } = {},
-  ): string {
+  ): Promise<string> {
     const adapter = this.getAdapter(options.platform);
-    return adapter.getLogs({
+    return await adapter.getLogs({
       level: options.level,
       tag: options.tag,
       lines: options.lines,
@@ -428,9 +428,9 @@ export class DeviceManager {
     });
   }
 
-  clearLogs(platform?: Platform): string {
+  async clearLogs(platform?: Platform): Promise<string> {
     const adapter = this.getAdapter(platform);
-    return adapter.clearLogs();
+    return await adapter.clearLogs();
   }
 
   async getSystemInfo(platform?: Platform): Promise<string> {

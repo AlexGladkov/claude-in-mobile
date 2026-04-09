@@ -41,7 +41,7 @@ export const systemTools: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
-      const output = ctx.deviceManager.shell(args.command as string, platform);
+      const output = await ctx.deviceManager.shell(args.command as string, platform);
       return { text: output || "(no output)" };
     },
   },
@@ -109,7 +109,7 @@ export const systemTools: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
-      const logs = ctx.deviceManager.getLogs({
+      const logs = await ctx.deviceManager.getLogs({
         platform,
         level: args.level as string | undefined,
         tag: args.tag as string | undefined,
@@ -132,7 +132,7 @@ export const systemTools: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
-      const result = ctx.deviceManager.clearLogs(platform);
+      const result = await ctx.deviceManager.clearLogs(platform);
       return { text: result };
     },
   },
