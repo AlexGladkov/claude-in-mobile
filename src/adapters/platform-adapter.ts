@@ -58,6 +58,8 @@ export interface PlatformAdapter {
    */
   getScreenshotBufferAsync(): Promise<Buffer>;
 
+  dispose?(): Promise<void>;
+
   /**
    * Take screenshot and return base64 (legacy sync path).
    * Not all platforms support this; those that don't should throw.
@@ -70,28 +72,28 @@ export interface PlatformAdapter {
 
   // ============ App management ============
 
-  launchApp(packageOrBundleId: string): string;
-  stopApp(packageOrBundleId: string): void;
-  installApp(path: string): string;
+  launchApp(packageOrBundleId: string): Promise<string>;
+  stopApp(packageOrBundleId: string): Promise<void>;
+  installApp(path: string): Promise<string>;
 
   // ============ Permissions ============
 
-  grantPermission(packageOrBundleId: string, permission: string): string;
-  revokePermission(packageOrBundleId: string, permission: string): string;
-  resetPermissions(packageOrBundleId: string): string;
+  grantPermission(packageOrBundleId: string, permission: string): Promise<string>;
+  revokePermission(packageOrBundleId: string, permission: string): Promise<string>;
+  resetPermissions(packageOrBundleId: string): Promise<string>;
 
   // ============ System ============
 
-  shell(command: string): string;
+  shell(command: string): Promise<string>;
 
   getLogs(options: {
     level?: string;
     tag?: string;
     lines?: number;
     package?: string;
-  }): string;
+  }): Promise<string>;
 
-  clearLogs(): string;
+  clearLogs(): Promise<string>;
 
   getSystemInfo(): Promise<string>;
 }
