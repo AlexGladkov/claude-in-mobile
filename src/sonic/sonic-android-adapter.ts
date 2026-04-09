@@ -149,9 +149,14 @@ export class SonicAndroidAdapter implements PlatformAdapter {
       `ws://${agentHost}:${agentPort}/websockets/android/terminal/${key}/${this.udId}/${token}`
     );
     try {
-      const lines: string[] = [];
+      // Collect logcat for 3 seconds then return
       return await new Promise((resolve) => {
-        termClient.send({ type: "logcat", level: options.level ?? "V", filter: "" });
+        const lines: string[] = [];
+        // Set up listener for logcat responses before sending command
+        termClient["msgListeners"].set("logcatResp", (data: Record<string, unknown>) => {
+          lines.push(String(data["detail"] ?? ""));
+        });
+        termClient.send({ type: "logcat", level: options.level ?? "V", filter: options.tag ?? "" });
         setTimeout(() => {
           termClient.disconnect();
           resolve(lines.join("\n"));
