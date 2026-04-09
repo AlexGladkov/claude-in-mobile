@@ -263,7 +263,7 @@ async selectDevice(id: string): Promise<void> {
     const adapter = device.platform === 'android'
       ? new SonicAndroidAdapter(device.id, conn)
       : new SonicIosAdapter(device.id, conn);
-    await this.activeAdapter?.dispose();   // 关旧连接
+    await this.activeAdapter?.dispose?.();  // 关旧连接（dispose 是可选方法）
     await adapter.connect();               // 建新连接（隐式锁定设备）
     this.activeAdapter = adapter;
     return;
@@ -287,8 +287,9 @@ async listDevices(): Promise<Device[]> {
 
 ```typescript
 // server.connect() 之前启动
+let sonicSource: SonicDeviceSource | undefined;   // 声明在外部作用域，供 SIGTERM 使用
 if (process.env.SONIC_ENABLE === 'true') {
-  const sonicSource = new SonicDeviceSource(
+  sonicSource = new SonicDeviceSource(
     process.env.SONIC_BASE_URL!,
     Number(process.env.SONIC_AGENT_ID),
     process.env.SONIC_TOKEN!,
@@ -333,6 +334,8 @@ Sonic adapter 的操作天然是异步的（WebSocket 往返），但 `PlatformA
 | `grantPermission` | `string` | `Promise<string>` |
 | `revokePermission` | `string` | `Promise<string>` |
 | `resetPermissions` | `string` | `Promise<string>` |
+
+> **注意：** 上表的返回类型变更须在三个层面同步完成——接口定义、所有 adapter 实现、对应的 `DeviceManager` wrapper 方法。三层任一遗漏，TypeScript 均不会报错（Promise 对象会被静默赋给 string 变量），但运行时返回值为 `[object Promise]`。工具层调用 `DeviceManager` 的对应方法处也须加 `await`。
 
 **影响范围（三层都需同步修改）：**
 1. `PlatformAdapter` 接口：升级上表中各方法的返回类型
