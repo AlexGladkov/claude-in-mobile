@@ -7,6 +7,7 @@ export class SonicWsClient {
   private msgListeners = new Map<string, MsgListener>();
   private binaryResolve: ((buf: Buffer) => void) | null = null;
   private binaryReject: ((err: Error) => void) | null = null;
+  private binaryTimer: ReturnType<typeof setTimeout> | null = null;
 
   async connect(url: string): Promise<void> {
     await new Promise<void>((resolve, reject) => {
@@ -20,6 +21,10 @@ export class SonicWsClient {
         this.binaryResolve?.(data as Buffer);
         this.binaryResolve = null;
         this.binaryReject = null;
+        if (this.binaryTimer) {
+          clearTimeout(this.binaryTimer);
+          this.binaryTimer = null;
+        }
         return;
       }
       try {
@@ -28,6 +33,9 @@ export class SonicWsClient {
         if (key) this.msgListeners.get(key)?.(msg);
       } catch { /* ignore malformed frames */ }
     });
+
+    this.ws!.on("close", () => this.cleanupPending("WebSocket closed"));
+    this.ws!.on("error", (err) => this.cleanupPending(`WebSocket error: ${err.message}`));
   }
 
   isConnected(): boolean {
@@ -64,17 +72,44 @@ export class SonicWsClient {
       const timer = setTimeout(() => {
         this.binaryResolve = null;
         this.binaryReject = null;
+        this.binaryTimer = null;
         reject(new Error("SonicWsClient sendForBinary timeout"));
       }, timeout);
 
-      this.binaryResolve = (buf) => { clearTimeout(timer); resolve(buf); };
+      this.binaryResolve = (buf) => {
+        clearTimeout(timer);
+        this.binaryTimer = null;
+        resolve(buf);
+      };
       this.binaryReject = reject;
+      this.binaryTimer = timer;
       this.send(payload);
     });
   }
 
   disconnect(): void {
+    this.cleanupPending("Client disconnected");
     this.ws?.close();
     this.ws = null;
+  }
+
+  private cleanupPending(reason: string): void {
+    // Reject pending binary request
+    if (this.binaryReject) {
+      this.binaryReject(new Error(`SonicWsClient: ${reason}`));
+    }
+    this.binaryResolve = null;
+    this.binaryReject = null;
+    if (this.binaryTimer) {
+      clearTimeout(this.binaryTimer);
+      this.binaryTimer = null;
+    }
+    // Reject pending message listeners
+    for (const [key, listener] of this.msgListeners) {
+      // Extract the reject function from closure - we need to reject with error
+      // Since we can't access the reject directly, clear the listener and let timeout handle it
+      // Actually, the timeout will fire and reject. Just clear them.
+      this.msgListeners.delete(key);
+    }
   }
 }
