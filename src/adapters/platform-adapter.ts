@@ -58,6 +58,12 @@ export interface PlatformAdapter {
    */
   getScreenshotBufferAsync(): Promise<Buffer>;
 
+  /**
+   * Optional cleanup hook. Called when the adapter is no longer needed
+   * (e.g., when a Sonic device connection is released). Implementors should
+   * close any open connections or resources. Local adapters may leave this
+   * unimplemented (undefined = no-op).
+   */
   dispose?(): Promise<void>;
 
   /**
