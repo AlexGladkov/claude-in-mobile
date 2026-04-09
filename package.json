@@ -56,10 +56,12 @@
     "chrome-launcher": "^1.1.0",
     "chrome-remote-interface": "^0.33.0",
     "google-auth-library": "^10.6.2",
-    "jimp": "^1.6.0"
+    "jimp": "^1.6.0",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "@types/ws": "^8.18.1",
     "typescript": "^5.7.0",
     "vitest": "^4.0.18"
   }
