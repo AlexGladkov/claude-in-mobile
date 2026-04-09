@@ -87,6 +87,34 @@ export class SonicWsClient {
     });
   }
 
+  async sendAndCollect(
+    payload: object,
+    streamMsg: string,
+    doneMsg: string,
+    timeout = 30_000,
+  ): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const lines: string[] = [];
+      const timer = setTimeout(() => {
+        this.msgListeners.delete(streamMsg);
+        this.msgListeners.delete(doneMsg);
+        reject(new Error(`sendAndCollect timeout waiting for "${doneMsg}"`));
+      }, timeout);
+
+      this.msgListeners.set(streamMsg, (data) => {
+        lines.push(String(data["detail"] ?? ""));
+      });
+      this.msgListeners.set(doneMsg, () => {
+        clearTimeout(timer);
+        this.msgListeners.delete(streamMsg);
+        this.msgListeners.delete(doneMsg);
+        resolve(lines.join("\n"));
+      });
+
+      this.send(payload);
+    });
+  }
+
   disconnect(): void {
     this.cleanupPending("Client disconnected");
     this.ws?.close();
