@@ -156,7 +156,7 @@ export class BrowserAdapter implements PlatformAdapter {
   async shell(_cmd: string): Promise<string> {
     throw new Error("shell is not supported for browser platform.");
   }
-  async getLogs(_opts: any): Promise<string> {
+  async getLogs(_opts: { level?: string; tag?: string; lines?: number; package?: string } = {}): Promise<string> {
     return "(Browser console logs not implemented. Use browser_evaluate to inspect page.)";
   }
   async clearLogs(): Promise<string> {
