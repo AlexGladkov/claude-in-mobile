@@ -25,6 +25,7 @@ import { storeTools } from "./tools/store-tools.js";
 import { huaweiTools } from "./tools/huawei-tools.js";
 import { ruStoreTools } from "./tools/rustore-tools.js";
 import { detectClient, getConfigSnippet } from "./client-adapter.js";
+import { SonicDeviceSource } from "./sonic/sonic-device-source.js";
 
 // Dispatch function (needed by batch_commands / run_flow for recursion)
 async function handleTool(name: string, args: Record<string, unknown>, depth: number = 0): Promise<unknown> {
@@ -263,8 +264,31 @@ process.stdin.on("close", () => shutdown("stdin-close"));
 // Start server
 async function main() {
   const transport = new StdioServerTransport();
+
+  let sonicSource: SonicDeviceSource | undefined;
+
+  if (process.env.SONIC_ENABLE === "true") {
+    const baseUrl = process.env.SONIC_BASE_URL;
+    const agentId = process.env.SONIC_AGENT_ID;
+    const token = process.env.SONIC_TOKEN;
+    if (!baseUrl || !agentId || !token) {
+      throw new Error("SONIC_ENABLE=true requires SONIC_BASE_URL, SONIC_AGENT_ID, SONIC_TOKEN");
+    }
+    sonicSource = new SonicDeviceSource(
+      baseUrl,
+      Number(agentId),
+      token,
+      process.env.SONIC_POLL_INTERVAL ? Number(process.env.SONIC_POLL_INTERVAL) : undefined,
+    );
+    await sonicSource.start();
+    ctx.deviceManager.setSonicSource(sonicSource);
+  }
+
   await server.connect(transport);
   console.error("Claude Mobile MCP server running (Android + iOS + Desktop + Aurora + Browser)");
+
+  process.on("SIGTERM", () => { sonicSource?.stop(); });
+  process.on("SIGINT",  () => { sonicSource?.stop(); });
 }
 
 main().catch((error) => {

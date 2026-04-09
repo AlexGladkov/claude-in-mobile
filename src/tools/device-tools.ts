@@ -103,7 +103,7 @@ export const deviceTools: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
-      const device = ctx.deviceManager.setDevice(args.deviceId as string, platform);
+      const device = await ctx.deviceManager.setDevice(args.deviceId as string, platform);
       return { text: `Device set to: ${device.name} (${device.platform}, ${device.id})` };
     },
   },

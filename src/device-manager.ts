@@ -14,6 +14,10 @@ import { DesktopAdapter } from "./adapters/desktop-adapter.js";
 import { AuroraAdapter } from "./adapters/aurora-adapter.js";
 import { BrowserAdapter } from "./adapters/browser-adapter.js";
 
+import { SonicDeviceSource } from "./sonic/sonic-device-source.js";
+import { SonicAndroidAdapter } from "./sonic/sonic-android-adapter.js";
+import { SonicIosAdapter } from "./sonic/sonic-ios-adapter.js";
+
 import { AdbClient } from "./adb/client.js";
 import { IosClient } from "./ios/client.js";
 import { DesktopClient } from "./desktop/client.js";
@@ -43,6 +47,10 @@ export class DeviceManager {
   private activeDevice?: Device;
   private activeTarget: Platform = "android";
   private webViewInspector?: WebViewInspector;
+
+  private sonicSource?: SonicDeviceSource;
+  private sonicEnabled = false;
+  private activeSonicAdapter?: SonicAndroidAdapter | SonicIosAdapter;
 
   constructor() {
     const androidDeviceId = process.env.DEVICE_ID ?? process.env.ANDROID_SERIAL ?? undefined;
@@ -74,6 +82,15 @@ export class DeviceManager {
     } else if (iosDeviceId) {
       this.activeTarget = "ios";
     }
+  }
+
+  setSonicSource(source: SonicDeviceSource): void {
+    this.sonicSource = source;
+    this.sonicEnabled = true;
+  }
+
+  isSonicMode(): boolean {
+    return this.sonicEnabled;
   }
 
   /**
@@ -147,6 +164,7 @@ export class DeviceManager {
   }
 
   async cleanup(): Promise<void> {
+    try { await this.activeSonicAdapter?.dispose?.(); } catch {}
     try { await this.desktopAdapter.stop(); } catch {}
     try { this.iosAdapter.getClient().cleanup(); } catch {}
     try { this.webViewInspector?.cleanup(); } catch {}
@@ -168,6 +186,16 @@ export class DeviceManager {
   // ============ Device Management ============
 
   getAllDevices(): Device[] {
+    if (this.sonicEnabled && this.sonicSource) {
+      const sonicDevices = this.sonicSource.listDevices();
+      const localNonMobile: Device[] = [];
+      for (const [platform, adapter] of this.adapters) {
+        if (platform !== "android" && platform !== "ios") {
+          localNonMobile.push(...adapter.listDevices());
+        }
+      }
+      return [...sonicDevices, ...localNonMobile];
+    }
     const devices: Device[] = [];
     for (const adapter of this.adapters.values()) {
       devices.push(...adapter.listDevices());
@@ -183,7 +211,7 @@ export class DeviceManager {
     return this.getAllDevices();
   }
 
-  setDevice(deviceId: string, platform?: Platform): Device {
+  async setDevice(deviceId: string, platform?: Platform): Promise<Device> {
     // Handle desktop special case
     if (deviceId === "desktop" || platform === "desktop") {
       if (!this.desktopAdapter.isRunning()) {
@@ -215,6 +243,22 @@ export class DeviceManager {
 
     if (!device) {
       throw new Error(`Device not found: ${deviceId}`);
+    }
+
+    if (this.sonicEnabled && (device.platform === "android" || device.platform === "ios")) {
+      const conn = this.sonicSource!.getConnectionInfo();
+      const newAdapter = device.platform === "android"
+        ? new SonicAndroidAdapter(device.id, conn)
+        : new SonicIosAdapter(device.id, conn);
+
+      await this.activeSonicAdapter?.dispose?.();
+      await newAdapter.connect();
+      this.activeSonicAdapter = newAdapter;
+
+      this.adapters.set(device.platform, newAdapter);
+      this.activeDevice = device;
+      this.activeTarget = device.platform;
+      return device;
     }
 
     this.activeDevice = device;
