@@ -114,11 +114,25 @@ cli/src/main.rs          # devices 命令合并 Sonic 设备；各命令支持 S
 | `SONIC_TOKEN` | 是 | 认证 Token |
 | `SONIC_POLL_INTERVAL` | 否 | 设备列表刷新间隔 ms，默认 `30000` |
 
+### SonicConnectionInfo 类型定义
+
+```typescript
+export interface SonicConnectionInfo {
+  agentHost: string;   // 来自 /agents API 的 host 字段
+  agentPort: number;   // 来自 /agents API 的 port 字段
+  key: string;         // 来自 /agents API 的 agentKey 字段（注意原始字段名为 agentKey）
+  token: string;       // 来自环境变量 SONIC_TOKEN
+}
+```
+
 ### SonicDeviceSource
+
+**HTTP 客户端：** 使用 Node.js 18+ 内置的 `fetch`，无需额外依赖。
 
 ```typescript
 class SonicDeviceSource {
   // 启动：拉 agentInfo（一次）+ 首次拉设备列表 + 启动轮询 timer
+  // agentInfo 失败则抛出异常，进程启动失败（早发现配置错误，优于第一次工具调用时才报错）
   async start(): Promise<void>
 
   // 单次拉取（CLI 使用，不启动 timer）
@@ -129,7 +143,7 @@ class SonicDeviceSource {
 
   // DeviceManager 调用
   listDevices(): Device[]
-  getConnectionInfo(): SonicConnectionInfo   // { agentHost, agentPort, key, token }
+  getConnectionInfo(): SonicConnectionInfo
 }
 ```
 
@@ -195,6 +209,9 @@ class SonicWsClient {
 | `launchApp(pkg)` | `{ type:"debug", detail:"openApp", pkg }` | 无 |
 | `stopApp(pkg)` | `{ type:"debug", detail:"killApp", pkg }` | 无 |
 | `installApp(path)` | `{ type:"debug", detail:"install", apk:path }` | `{ msg:"installFinish" }` |
+| `swipeDirection(dir)` | 计算坐标后委托 `swipe()`（屏幕宽高从 `getSystemInfo` 或固定比例） | 无 |
+| `getSystemInfo()` | `{ type:"debug", detail:"tree" }` 结合 activity 信息拼装，或返回基础信息 | `{ msg:"tree" }` |
+| `grantPermission / revokePermission / resetPermissions` | 通过 `shell()` 执行 `pm grant/revoke` | Terminal WS |
 
 **Terminal WS 操作（按需连接，用完关闭）：**
 
@@ -219,7 +236,11 @@ class SonicWsClient {
 | `getUiHierarchy()` | `{ type:"debug", detail:"tree" }` | `{ msg:"tree" }` |
 | `launchApp(pkg)` | `{ type:"launch", pkg }` | `{ msg:"launchResult" }` |
 | `stopApp(pkg)` | `{ type:"kill", pkg }` | `{ msg:"killResult" }` |
+| `installApp(ipa)` | `{ type:"debug", detail:"install", ipa:path }` | `{ msg:"installFinish" }` |
+| `swipeDirection(dir)` | 计算坐标后委托 `swipe()`（同 Android） | 无 |
 | `getLogs()` | Terminal WS: `{ type:"syslog", filter:"" }` | 流式 syslog |
+| `getSystemInfo()` | 不支持，抛出 `"not supported on sonic-ios"` | — |
+| `grantPermission / revokePermission / resetPermissions` | 不支持，抛出 `"not supported on sonic-ios"` | — |
 
 ### DeviceManager 变更
 
@@ -280,6 +301,54 @@ CLI 为短生命周期进程，不需要轮询：
 4. 找到目标设备，建 WebSocket 执行命令
 5. 进程退出，WebSocket 自动关闭，设备自动释放
 ```
+
+---
+
+## PlatformAdapter 接口变更
+
+Sonic adapter 的操作天然是异步的（WebSocket 往返），但 `PlatformAdapter` 接口中以下方法目前是同步签名，需要作为本次集成的一部分升级为 `async`：
+
+| 方法 | 当前签名 | 升级后 |
+|---|---|---|
+| `launchApp` | `string` | `Promise<string>` |
+| `stopApp` | `void` | `Promise<void>` |
+| `installApp` | `string` | `Promise<string>` |
+| `shell` | `string` | `Promise<string>` |
+| `getLogs` | `string` | `Promise<string>` |
+| `clearLogs` | `string` | `Promise<string>` |
+| `grantPermission` | `string` | `Promise<string>` |
+| `revokePermission` | `string` | `Promise<string>` |
+| `resetPermissions` | `string` | `Promise<string>` |
+
+**影响范围：** 现有 AndroidAdapter、IosAdapter、DesktopAdapter、AuroraAdapter 的对应方法也需同步升级返回类型（大多内部已使用 `execSync`，改为 `execAsync` 即可）。调用这些方法的工具层代码需加 `await`。
+
+**`screenshotRaw()`：** 这是历史遗留的同步路径。Sonic adapter 将抛出 `"not supported — use screenshotAsync()"`，不升级为 async。现有工具已优先使用 `screenshotAsync()`，影响可控。
+
+**`listDevices() / selectDevice() / autoDetectDevice()`：** Sonic 模式下设备管理由 `SonicDeviceSource` + `DeviceManager` 负责，Sonic adapter 的这几个方法实现为空 stub（`listDevices` 返回 `[]`，其余 no-op）。
+
+---
+
+## 工具层绕过 Adapter 的已知限制
+
+部分工具通过 `DeviceManager.getAndroidClient()` / `getIosClient()` 直接访问底层客户端，绕过了 adapter 路由。在 `SONIC_ENABLE=true` 时这些工具将无法正常工作：
+
+| 工具 | 原因 |
+|---|---|
+| `clipboard_get_android`（部分路径） | 调用 `getAndroidClient()` |
+| `system_activity` | 调用 `getAndroidClient().getCurrentActivity()` |
+| `system_open_url`（iOS） | 调用 `getIosClient().openUrl()` |
+| `ui_find`（iOS element-level） | 调用 `getIosClient().findElements()` |
+| `system_webview` | 调用 `getWebViewInspector()` |
+
+**第一期处理策略：** 以上工具在 Sonic 模式下调用时返回明确的错误信息（`"not supported in Sonic mode"`），不静默失败。后续迭代中根据需要将对应能力移入 `PlatformAdapter` 接口。
+
+---
+
+## 已知限制
+
+- **`doubleTap`（Android）：** 通过两次连续 `send()`（间隔 100ms）实现，fire-and-forget，无送达确认。在网络延迟较高时两次 tap 间隔可能不准确。第一期接受此限制。
+- **Terminal WS 连接失败：** `shell()` / `getLogs()` 按需连接 terminal WebSocket，若连接失败则直接抛出错误，不重试。
+- **`SONIC_ENABLE` 互斥语义：** Android/iOS 设备来源在本地和 Sonic 之间二选一，不支持混合使用。若同时需要本地模拟器和远程真机，需启动两个独立的 MCP server 实例。此约束是有意为之——实际场景中两者很少需要同时使用，混合模式会显著增加实现复杂度。
 
 ---
 
