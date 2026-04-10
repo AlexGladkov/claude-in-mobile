@@ -33,25 +33,15 @@ export class SonicAndroidAdapter implements PlatformAdapter {
   }
 
   /**
-   * Get screen size from device via shell command.
+   * Get screen size from screenshot.
+   * The raw screenshot size equals the device screen size.
    * Caches the result for coordinate conversion.
    */
   async getScreenSize(): Promise<{ width: number; height: number }> {
     if (this.screenWidth > 0 && this.screenHeight > 0) {
       return { width: this.screenWidth, height: this.screenHeight };
     }
-    try {
-      const output = await this.shell("wm size");
-      const match = output.match(/(\d+)x(\d+)/);
-      if (match) {
-        this.screenWidth = parseInt(match[1], 10);
-        this.screenHeight = parseInt(match[2], 10);
-        return { width: this.screenWidth, height: this.screenHeight };
-      }
-    } catch {
-      // Fallback to screenshot dimensions
-    }
-    // Fallback: get size from screenshot
+    // Get size from raw screenshot buffer (original size = screen size)
     const buf = await this.getScreenshotBufferAsync();
     const size = await import("../utils/image.js").then(m => m.getImageDimensions(buf));
     this.screenWidth = size.width;
