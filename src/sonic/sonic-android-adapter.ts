@@ -8,6 +8,8 @@ export class SonicAndroidAdapter implements PlatformAdapter {
   readonly platform = "android" as const;
   private client: SonicWsClient;
   private selectedDeviceId: string;
+  private screenWidth: number = 0;
+  private screenHeight: number = 0;
 
   constructor(
     private readonly udId: string,
@@ -15,6 +17,64 @@ export class SonicAndroidAdapter implements PlatformAdapter {
   ) {
     this.client = new SonicWsClient();
     this.selectedDeviceId = udId;
+  }
+
+  /**
+   * Convert relative coordinates (0-1000) to absolute pixels.
+   * Reference: /autospecter/autospecter/new_agents/tools/device/pos_adapter.py
+   */
+  private convertRelativeToAbsolute(xPos: number, yPos: number): { x: number; y: number } {
+    if (this.screenWidth === 0 || this.screenHeight === 0) {
+      throw new Error("Screen size not initialized. Call getScreenSize() first.");
+    }
+    const absX = Math.round(xPos / 1000 * this.screenWidth);
+    const absY = Math.round(yPos / 1000 * this.screenHeight);
+    return { x: absX, y: absY };
+  }
+
+  /**
+   * Get screen size from device via shell command.
+   * Caches the result for coordinate conversion.
+   */
+  async getScreenSize(): Promise<{ width: number; height: number }> {
+    if (this.screenWidth > 0 && this.screenHeight > 0) {
+      return { width: this.screenWidth, height: this.screenHeight };
+    }
+    try {
+      const output = await this.shell("wm size");
+      const match = output.match(/(\d+)x(\d+)/);
+      if (match) {
+        this.screenWidth = parseInt(match[1], 10);
+        this.screenHeight = parseInt(match[2], 10);
+        return { width: this.screenWidth, height: this.screenHeight };
+      }
+    } catch {
+      // Fallback to screenshot dimensions
+    }
+    // Fallback: get size from screenshot
+    const buf = await this.getScreenshotBufferAsync();
+    const size = await import("../utils/image.js").then(m => m.getImageDimensions(buf));
+    this.screenWidth = size.width;
+    this.screenHeight = size.height;
+    return { width: this.screenWidth, height: this.screenHeight };
+  }
+
+  /**
+   * Tap at relative coordinates (0-1000 range).
+   * Automatically converts to absolute pixels.
+   */
+  async tapRelative(x: number, y: number): Promise<void> {
+    const { x: absX, y: absY } = this.convertRelativeToAbsolute(x, y);
+    await this.tap(absX, absY);
+  }
+
+  /**
+   * Swipe from relative coordinates to relative coordinates (0-1000 range).
+   */
+  async swipeRelative(x1: number, y1: number, x2: number, y2: number, durationMs?: number): Promise<void> {
+    const start = this.convertRelativeToAbsolute(x1, y1);
+    const end = this.convertRelativeToAbsolute(x2, y2);
+    await this.swipe(start.x, start.y, end.x, end.y, durationMs);
   }
 
   async connect(): Promise<void> {

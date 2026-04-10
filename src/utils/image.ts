@@ -407,6 +407,14 @@ export interface AnnotateResult {
  * Green = clickable, Red = non-clickable.
  * Returns compressed annotated image + element index.
  */
+/**
+ * Get image dimensions without full processing
+ */
+export async function getImageDimensions(buffer: Buffer): Promise<{ width: number; height: number }> {
+  const image = await Jimp.read(buffer);
+  return { width: image.width, height: image.height };
+}
+
 export async function annotateScreenshot(
   pngBuffer: Buffer,
   elements: UiElement[],
