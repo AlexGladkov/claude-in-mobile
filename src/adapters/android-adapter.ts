@@ -195,4 +195,36 @@ export class AndroidAdapter implements PlatformAdapter {
     const memory = this.client.getMemoryInfo();
     return `=== Battery ===\n${battery}\n\n=== Memory ===\n${memory}`;
   }
+
+  // ============ App Listing ============
+
+  async getAppList(): Promise<Array<{
+    appName: string;
+    packageName: string;
+    versionName?: string;
+    versionCode?: string;
+  }>> {
+    // Use ADB to list installed packages
+    const output = this.client.shell("pm list packages -f");
+    const lines = output.trim().split("\n");
+    const apps: Array<{
+      appName: string;
+      packageName: string;
+      versionName?: string;
+      versionCode?: string;
+    }> = [];
+
+    for (const line of lines) {
+      // Parse package:path=package.name format
+      const match = line.match(/package:(.+?)=(.+)/);
+      if (match) {
+        const packageName = match[2];
+        // Try to get app name from package name (simplified)
+        const appName = packageName.split(".").pop() || packageName;
+        apps.push({ appName, packageName });
+      }
+    }
+
+    return apps;
+  }
 }

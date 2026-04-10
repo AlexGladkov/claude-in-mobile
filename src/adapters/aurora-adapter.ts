@@ -166,4 +166,20 @@ export class AuroraAdapter implements PlatformAdapter {
   async getSystemInfo(): Promise<string> {
     return this.client.getSystemInfo();
   }
+
+  // ============ App Listing ============
+
+  async getAppList(): Promise<Array<{
+    appName: string;
+    packageName: string;
+    versionName?: string;
+    versionCode?: string;
+  }>> {
+    // Use the Aurora client's listPackages method
+    const packages = this.client.listPackages();
+    return packages.map(pkg => ({
+      appName: pkg,
+      packageName: pkg,
+    }));
+  }
 }

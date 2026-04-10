@@ -178,4 +178,45 @@ export class IosAdapter implements PlatformAdapter {
   async getSystemInfo(): Promise<string> {
     return "System info is only available for Android and Aurora devices.";
   }
+
+  // ============ App Listing ============
+
+  async getAppList(): Promise<Array<{
+    appName: string;
+    packageName: string;
+    versionName?: string;
+    versionCode?: string;
+  }>> {
+    // Use simctl to list installed apps on iOS simulator
+    const output = this.client.shell("xcrun simctl listapps " + this.client.getDeviceId());
+    // Parse the plist-like output to extract bundle IDs
+    const apps: Array<{
+      appName: string;
+      packageName: string;
+      versionName?: string;
+      versionCode?: string;
+    }> = [];
+
+    // Simple parsing - look for CFBundleIdentifier entries
+    const lines = output.split("\n");
+    let currentBundle: string | null = null;
+
+    for (const line of lines) {
+      const bundleMatch = line.match(/CFBundleIdentifier\s*=\s*"([^"]+)"/);
+      if (bundleMatch) {
+        currentBundle = bundleMatch[1];
+      }
+
+      const nameMatch = line.match(/CFBundleName\s*=\s*"([^"]+)"/);
+      if (nameMatch && currentBundle) {
+        apps.push({
+          appName: nameMatch[1],
+          packageName: currentBundle,
+        });
+        currentBundle = null;
+      }
+    }
+
+    return apps;
+  }
 }

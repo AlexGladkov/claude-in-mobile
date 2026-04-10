@@ -63,22 +63,36 @@ export const appTools: ToolDefinition[] = [
   {
     tool: {
       name: "app_list",
-      description: "List installed applications on Aurora OS device",
+      description: "List installed applications on the device",
       inputSchema: {
         type: "object",
         properties: {
-          platform: { const: "aurora" },
+          platform: { type: "string", enum: ["android", "ios", "aurora"], description: "Target platform" },
         },
         required: [],
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
-      if (platform !== "aurora") {
-        return { text: "list_apps is only available for Aurora OS." };
+      const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
+
+      if (currentPlatform === "aurora") {
+        const packages = ctx.deviceManager.getAuroraClient().listPackages();
+        return { text: `Installed packages (${packages.length}):\n${packages.join("\n")}` };
       }
-      const packages = ctx.deviceManager.getAuroraClient().listPackages();
-      return { text: `Installed packages (${packages.length}):\n${packages.join("\n")}` };
+
+      if (ctx.deviceManager.isSonicMode() && (currentPlatform === "android" || currentPlatform === "ios")) {
+        const apps = await ctx.deviceManager.getAppList(platform);
+        if (apps.length === 0) {
+          return { text: "No apps found or unable to retrieve app list." };
+        }
+        const formatted = apps.map(a =>
+          `${a.appName} (${a.packageName})${a.versionName ? ` - v${a.versionName}` : ""}`
+        ).join("\n");
+        return { text: `Installed apps (${apps.length}):\n${formatted}` };
+      }
+
+      return { text: `app_list is not supported for ${currentPlatform} in non-Sonic mode.` };
     },
   },
 ];

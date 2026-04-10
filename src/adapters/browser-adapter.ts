@@ -285,4 +285,15 @@ export class BrowserAdapter implements PlatformAdapter {
   async cleanup(): Promise<void> {
     await this.client.closeAll();
   }
+
+  // ============ App Listing ============
+
+  async getAppList(): Promise<Array<{
+    appName: string;
+    packageName: string;
+    versionName?: string;
+    versionCode?: string;
+  }>> {
+    throw new Error("App listing is not supported for browser platform");
+  }
 }

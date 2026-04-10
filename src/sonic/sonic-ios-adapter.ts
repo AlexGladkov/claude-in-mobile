@@ -233,4 +233,39 @@ export class SonicIosAdapter implements PlatformAdapter {
   async getSystemInfo(): Promise<string> {
     throw new Error("getSystemInfo not supported on sonic-ios");
   }
+
+  // ============ App Listing ============
+
+  async getAppList(): Promise<Array<{
+    appName: string;
+    packageName: string;
+    versionName?: string;
+    versionCode?: string;
+  }>> {
+    const termClient = new SonicWsClient();
+    const { agentHost, agentPort, key, token } = this.conn;
+
+    try {
+      await termClient.connect(
+        `ws://${agentHost}:${agentPort}/websockets/ios/terminal/${key}/${this.udId}/${token}`
+      );
+
+      // iOS sends appListFinish, so we use the standard collection method
+      const apps = await termClient.sendAndCollectList<{
+        appName: string;
+        packageName: string;
+        versionName?: string;
+        versionCode?: string;
+      }>(
+        { type: "appList" },
+        "appListDetail",
+        "appListFinish",
+        30_000
+      );
+
+      return apps;
+    } finally {
+      termClient.disconnect();
+    }
+  }
 }

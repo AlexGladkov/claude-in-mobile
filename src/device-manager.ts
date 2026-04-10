@@ -481,4 +481,16 @@ export class DeviceManager {
     const adapter = this.getAdapter(platform);
     return adapter.getSystemInfo();
   }
+
+  // ============ App Listing ============
+
+  async getAppList(platform?: Platform): Promise<Array<{
+    appName: string;
+    packageName: string;
+    versionName?: string;
+    versionCode?: string;
+  }>> {
+    const adapter = this.getAdapter(platform);
+    return adapter.getAppList();
+  }
 }

@@ -221,6 +221,17 @@ export class DesktopAdapter implements PlatformAdapter {
       metrics.cpuPercent ? `\nCPU: ${metrics.cpuPercent}%` : ""
     }`;
   }
+
+  // ============ App Listing ============
+
+  async getAppList(): Promise<Array<{
+    appName: string;
+    packageName: string;
+    versionName?: string;
+    versionCode?: string;
+  }>> {
+    throw new Error("App listing is not supported for desktop platform");
+  }
 }
 
 // ============ Helpers (moved from old device-manager.ts) ============

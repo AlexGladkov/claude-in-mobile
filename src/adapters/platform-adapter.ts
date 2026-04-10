@@ -102,4 +102,17 @@ export interface PlatformAdapter {
   clearLogs(): Promise<string>;
 
   getSystemInfo(): Promise<string>;
+
+  // ============ App Listing ============
+
+  /**
+   * Get list of installed applications.
+   * Returns array of app info objects.
+   */
+  getAppList(): Promise<Array<{
+    appName: string;
+    packageName: string;
+    versionName?: string;
+    versionCode?: string;
+  }>>;
 }

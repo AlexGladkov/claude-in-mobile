@@ -33,11 +33,14 @@ export class SonicAndroidAdapter implements PlatformAdapter {
   async connect(): Promise<void> {
     const { agentHost, agentPort, key, token } = this.conn;
     await this.client.connect(`ws://${agentHost}:${agentPort}/websockets/android/${key}/${this.udId}/${token}`);
+    // Wait 10 seconds before getting screenshot
+    await new Promise(r => setTimeout(r, 10_000));
     // Initialize screen size once at connection time
     const buf = await this.getScreenshotBufferAsync();
     const size = await import("../utils/image.js").then(m => m.getImageDimensions(buf));
     this.screenWidth = size.width;
     this.screenHeight = size.height;
+    console.error(`[Sonic] Connected to ${this.udId} with screen size ${this.screenWidth}x${this.screenHeight}`);
   }
 
   async dispose(): Promise<void> {
@@ -52,7 +55,9 @@ export class SonicAndroidAdapter implements PlatformAdapter {
 
   // Core actions - Sonic receives relative coordinates (0-1000) and converts to absolute
   async tap(x: number, y: number, _targetPid?: number): Promise<void> {
+    console.error(`[Sonic] tap input: (${x}, ${y})`);
     const { x: absX, y: absY } = this.toAbsolute(x, y);
+    console.error(`[Sonic] tap absolute: (${absX}, ${absY})`);
     this.client.send({ type: "debug", detail: "tap", point: `${absX},${absY}` });
   }
 
@@ -201,5 +206,39 @@ export class SonicAndroidAdapter implements PlatformAdapter {
 
   async getSystemInfo(): Promise<string> {
     throw new Error("getSystemInfo not supported on sonic-android in phase 1");
+  }
+
+  // ============ App Listing ============
+
+  async getAppList(): Promise<Array<{
+    appName: string;
+    packageName: string;
+    versionName?: string;
+    versionCode?: string;
+  }>> {
+    const termClient = new SonicWsClient();
+    const { agentHost, agentPort, key, token } = this.conn;
+
+    try {
+      await termClient.connect(
+        `ws://${agentHost}:${agentPort}/websockets/android/terminal/${key}/${this.udId}/${token}`
+      );
+
+      // Android doesn't send appListFinish, so we use timeout-based collection
+      const apps = await termClient.sendAndCollectListWithTimeout<{
+        appName: string;
+        packageName: string;
+        versionName?: string;
+        versionCode?: string;
+      }>(
+        { type: "appList" },
+        "appListDetail",
+        30_000
+      );
+
+      return apps;
+    } finally {
+      termClient.disconnect();
+    }
   }
 }
