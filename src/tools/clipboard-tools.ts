@@ -20,7 +20,7 @@ export const clipboardTools: ToolDefinition[] = [
   {
     tool: {
       name: "clipboard_select",
-      description: "Select all text in the currently focused input field (Android only)",
+      description: "Select all text in the currently focused input field (Android only, non-Sonic)",
       inputSchema: {
         type: "object",
         properties: {
@@ -29,10 +29,13 @@ export const clipboardTools: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
-      if (ctx.deviceManager.isSonicMode()) {
-        return { content: [{ type: "text", text: "clipboard_select is not supported in Sonic mode" }] };
-      }
       const platform = args.platform as Platform | undefined;
+
+      // Sonic mode: clipboard_select is not supported (requires ADB-specific functionality)
+      if (ctx.deviceManager.isSonicMode()) {
+        return { content: [{ type: "text", text: "clipboard_select is not supported in Sonic mode. Use input_text to enter text directly." }] };
+      }
+
       const client = getAndroidAdapter(ctx, platform);
       client.selectAll();
       return { text: "Selected all text in focused input field" };
@@ -41,7 +44,7 @@ export const clipboardTools: ToolDefinition[] = [
   {
     tool: {
       name: "clipboard_copy",
-      description: "Select all text and copy to clipboard (Android only)",
+      description: "Select all text and copy to clipboard (Android non-Sonic only)",
       inputSchema: {
         type: "object",
         properties: {
@@ -50,10 +53,13 @@ export const clipboardTools: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
-      if (ctx.deviceManager.isSonicMode()) {
-        return { content: [{ type: "text", text: "clipboard_copy is not supported in Sonic mode" }] };
-      }
       const platform = args.platform as Platform | undefined;
+
+      // Sonic mode: clipboard_copy is not supported (requires ADB-specific functionality)
+      if (ctx.deviceManager.isSonicMode()) {
+        return { content: [{ type: "text", text: "clipboard_copy is not supported in Sonic mode. Use clipboard_get_android to read clipboard content." }] };
+      }
+
       const client = getAndroidAdapter(ctx, platform);
       client.selectAll();
       await new Promise(resolve => setTimeout(resolve, 100));
@@ -64,7 +70,7 @@ export const clipboardTools: ToolDefinition[] = [
   {
     tool: {
       name: "clipboard_paste",
-      description: "Paste clipboard content into focused field. Optionally find a field by text or resource ID and tap to focus it first (Android only)",
+      description: "Paste clipboard content into focused field. Optionally find a field by text or resource ID and tap to focus it first (Android non-Sonic only)",
       inputSchema: {
         type: "object",
         properties: {
@@ -75,10 +81,13 @@ export const clipboardTools: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
-      if (ctx.deviceManager.isSonicMode()) {
-        return { content: [{ type: "text", text: "clipboard_paste is not supported in Sonic mode" }] };
-      }
       const platform = args.platform as Platform | undefined;
+
+      // Sonic mode: clipboard_paste is not supported (requires ADB-specific functionality)
+      if (ctx.deviceManager.isSonicMode()) {
+        return { content: [{ type: "text", text: "clipboard_paste is not supported in Sonic mode. Use input_text to enter text directly." }] };
+      }
+
       const client = getAndroidAdapter(ctx, platform);
 
       // Optionally find and tap the target field first
@@ -110,7 +119,7 @@ export const clipboardTools: ToolDefinition[] = [
   {
     tool: {
       name: "clipboard_get_android",
-      description: "Read clipboard text from Android device (requires API 29+ or clipper app)",
+      description: "Read clipboard text from Android or iOS device (supports both ADB and Sonic modes)",
       inputSchema: {
         type: "object",
         properties: {
@@ -119,13 +128,57 @@ export const clipboardTools: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
-      if (ctx.deviceManager.isSonicMode()) {
-        return { content: [{ type: "text", text: "clipboard_get_android is not supported in Sonic mode" }] };
-      }
       const platform = args.platform as Platform | undefined;
+      const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
+
+      // Sonic mode support for Android and iOS - use DeviceManager delegation
+      if (ctx.deviceManager.isSonicMode() && (currentPlatform === "android" || currentPlatform === "ios")) {
+        const text = await ctx.deviceManager.getClipboard(platform);
+        return { content: [{ type: "text", text: `Clipboard: ${text}` }] };
+      }
+
+      // Original ADB implementation for Android (non-Sonic)
+      if (currentPlatform !== "android") {
+        return { content: [{ type: "text", text: "clipboard_get_android is only available on Android platform in non-Sonic mode" }] };
+      }
+
       const client = getAndroidAdapter(ctx, platform);
       const text = client.getClipboardText();
-      return { text: `Clipboard: ${text}` };
+      return { content: [{ type: "text", text: `Clipboard: ${text}` }] };
+    },
+  },
+  {
+    tool: {
+      name: "clipboard_set",
+      description: "Set clipboard text on Android or iOS device (supports both ADB and Sonic modes)",
+      inputSchema: {
+        type: "object",
+        properties: {
+          text: { type: "string", description: "Text to set in clipboard" },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+        },
+        required: ["text"],
+      },
+    },
+    handler: async (args, ctx) => {
+      const platform = args.platform as Platform | undefined;
+      const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
+      const text = args.text as string;
+
+      // Sonic mode support for Android and iOS - use DeviceManager delegation
+      if (ctx.deviceManager.isSonicMode() && (currentPlatform === "android" || currentPlatform === "ios")) {
+        await ctx.deviceManager.setClipboard(text, platform);
+        return { content: [{ type: "text", text: `Clipboard set to: ${text}` }] };
+      }
+
+      // ADB implementation for Android (non-Sonic)
+      if (currentPlatform === "android") {
+        const client = getAndroidAdapter(ctx, platform);
+        client.setClipboardText(text);
+        return { content: [{ type: "text", text: `Clipboard set to: ${text}` }] };
+      }
+
+      return { content: [{ type: "text", text: `clipboard_set is not supported for ${currentPlatform} in non-Sonic mode` }] };
     },
   },
 ];

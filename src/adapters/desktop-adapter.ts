@@ -232,6 +232,18 @@ export class DesktopAdapter implements PlatformAdapter {
   }>> {
     throw new Error("App listing is not supported for desktop platform");
   }
+
+  // ============ Clipboard Operations ============
+
+  async setClipboard(text: string): Promise<void> {
+    this.ensureRunning();
+    await this.client.setClipboard(text);
+  }
+
+  async getClipboard(): Promise<string> {
+    this.ensureRunning();
+    return this.client.getClipboard();
+  }
 }
 
 // ============ Helpers (moved from old device-manager.ts) ============

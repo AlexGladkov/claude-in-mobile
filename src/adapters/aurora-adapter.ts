@@ -182,4 +182,16 @@ export class AuroraAdapter implements PlatformAdapter {
       packageName: pkg,
     }));
   }
+
+  // ============ Clipboard Operations ============
+
+  async setClipboard(text: string): Promise<void> {
+    // Aurora clipboard can be set via shell
+    this.client.shell(`echo '${text}' | wl-copy`);
+  }
+
+  async getClipboard(): Promise<string> {
+    // Aurora clipboard can be read via shell
+    return this.client.shell("wl-paste");
+  }
 }

@@ -296,4 +296,26 @@ export class BrowserAdapter implements PlatformAdapter {
   }>> {
     throw new Error("App listing is not supported for browser platform");
   }
+
+  // ============ Clipboard Operations ============
+
+  async setClipboard(text: string): Promise<void> {
+    const session = this.getActiveSession();
+    // Use CDP to set clipboard via JavaScript
+    await session.cdp.Runtime.evaluate({
+      expression: `navigator.clipboard.writeText('${text.replace(/'/g, "\\'")}')`,
+      awaitPromise: true,
+    });
+  }
+
+  async getClipboard(): Promise<string> {
+    const session = this.getActiveSession();
+    // Use CDP to read clipboard via JavaScript
+    const { result } = await session.cdp.Runtime.evaluate({
+      expression: `navigator.clipboard.readText()`,
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    return String(result.value ?? "");
+  }
 }

@@ -493,4 +493,16 @@ export class DeviceManager {
     const adapter = this.getAdapter(platform);
     return adapter.getAppList();
   }
+
+  // ============ Clipboard Operations ============
+
+  async setClipboard(text: string, platform?: Platform): Promise<void> {
+    const adapter = this.getAdapter(platform);
+    return adapter.setClipboard(text);
+  }
+
+  async getClipboard(platform?: Platform): Promise<string> {
+    const adapter = this.getAdapter(platform);
+    return adapter.getClipboard();
+  }
 }

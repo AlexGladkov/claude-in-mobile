@@ -219,4 +219,18 @@ export class IosAdapter implements PlatformAdapter {
 
     return apps;
   }
+
+  // ============ Clipboard Operations ============
+
+  async setClipboard(text: string): Promise<void> {
+    // iOS simulator clipboard can be set via simctl
+    // Use echo piped to pbcopy
+    const escaped = text.replace(/'/g, "'\\''");
+    this.client.shell(`echo '${escaped}' | xcrun simctl pbcopy ${this.client.getDeviceId()}`);
+  }
+
+  async getClipboard(): Promise<string> {
+    // iOS clipboard access is limited; return placeholder for now
+    throw new Error("getClipboard not supported on iOS local adapter");
+  }
 }

@@ -115,4 +115,16 @@ export interface PlatformAdapter {
     versionName?: string;
     versionCode?: string;
   }>>;
+
+  // ============ Clipboard Operations ============
+
+  /**
+   * Set clipboard content.
+   */
+  setClipboard(text: string): Promise<void>;
+
+  /**
+   * Get clipboard content.
+   */
+  getClipboard(): Promise<string>;
 }

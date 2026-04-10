@@ -256,4 +256,21 @@ export class SonicAndroidAdapter implements PlatformAdapter {
       termClient.disconnect();
     }
   }
+
+  // ============ Clipboard Operations ============
+
+  async setClipboard(text: string): Promise<void> {
+    this.client.send({ type: "setPasteboard", detail: text });
+    // Small delay to allow operation to complete
+    await new Promise(r => setTimeout(r, 500));
+  }
+
+  async getClipboard(): Promise<string> {
+    const response = await this.client.sendAndWait(
+      { type: "getPasteboard" },
+      "paste",
+      5_000
+    );
+    return String(response.detail || "");
+  }
 }

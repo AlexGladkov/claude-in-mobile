@@ -285,6 +285,7 @@ async function main() {
   }
 
   await server.connect(transport);
+  console.error("Test connected to device");
   console.error("Claude Mobile MCP server running (Android + iOS + Desktop + Aurora + Browser)");
 
   process.on("SIGTERM", () => { sonicSource?.stop(); });

@@ -216,6 +216,15 @@ export class AdbClient {
   }
 
   /**
+   * Set clipboard text
+   */
+  setClipboardText(text: string): void {
+    // Escape single quotes for shell
+    const escaped = text.replace(/'/g, "'\\''");
+    this.exec(`shell cmd clipboard set-primary-clip --clip '${escaped}'`);
+  }
+
+  /**
    * Long press at coordinates
    */
   longPress(x: number, y: number, durationMs: number = 1000): void {

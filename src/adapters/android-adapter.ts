@@ -227,4 +227,14 @@ export class AndroidAdapter implements PlatformAdapter {
 
     return apps;
   }
+
+  // ============ Clipboard Operations ============
+
+  async setClipboard(text: string): Promise<void> {
+    this.client.setClipboardText(text);
+  }
+
+  async getClipboard(): Promise<string> {
+    return this.client.getClipboardText();
+  }
 }
