@@ -10,6 +10,8 @@ export class SonicIosAdapter implements PlatformAdapter {
   private selectedDeviceId: string;
   private screenWidth: number = 0;
   private screenHeight: number = 0;
+  private logicWidth: number = 0;
+  private logicHeight: number = 0;
 
   constructor(
     private readonly udId: string,
@@ -30,14 +32,57 @@ export class SonicIosAdapter implements PlatformAdapter {
     return { x: absX, y: absY };
   }
 
+  /**
+   * Convert coordinates using logic screen size factor.
+   * CRITICAL: This divides by the factor, NOT multiplies.
+   * Python reference: new_x = int(x / x_factor)
+   * Formula: xFactor = screenWidth / logicWidth, then x / xFactor
+   * Example: physical (300, 600) with factor 3 -> logical (100, 200)
+   */
+  private convertByFactor(x: number, y: number): { x: number; y: number } {
+    if (this.logicWidth <= 0 || this.logicHeight <= 0) {
+      throw new Error(`Logic screen size not available: ${this.logicWidth}x${this.logicHeight}`);
+    }
+
+    const xFactor = this.screenWidth / this.logicWidth;
+    const yFactor = this.screenHeight / this.logicHeight;
+
+    // IMPORTANT: Divide by factor, not multiply
+    // Example: physical (300, 600) with factor 3 -> logical (100, 200)
+    return {
+      x: Math.round(x / xFactor),
+      y: Math.round(y / yFactor)
+    };
+  }
+
   async connect(): Promise<void> {
     const { agentHost, agentPort, key, token } = this.conn;
     await this.client.connect(`ws://${agentHost}:${agentPort}/websockets/ios/${key}/${this.udId}/${token}`);
-    // Initialize screen size once at connection time
+
+    // Wait for openDriver response to get logic screen size
+    const openDriverResponse = await this.client.sendAndWaitWithError(
+      { type: "debug", detail: "openDriver" },
+      "openDriver",
+      "error",
+      60_000
+    );
+
+    if (openDriverResponse.status !== "success") {
+      throw new Error(`iOS Driver initialization failed: ${openDriverResponse.status}`);
+    }
+
+    // Get logical screen size from driver
+    this.logicWidth = (openDriverResponse.width as number) || 0;
+    this.logicHeight = (openDriverResponse.height as number) || 0;
+
+    // Initialize physical screen size from screenshot
     const buf = await this.getScreenshotBufferAsync();
     const size = await import("../utils/image.js").then(m => m.getImageDimensions(buf));
     this.screenWidth = size.width;
     this.screenHeight = size.height;
+
+    console.error(`[Sonic] Connected to ${this.udId}`);
+    console.error(`[Sonic] Logic size: ${this.logicWidth}x${this.logicHeight}, Physical: ${this.screenWidth}x${this.screenHeight}`);
   }
 
   async dispose(): Promise<void> {
@@ -50,27 +95,27 @@ export class SonicIosAdapter implements PlatformAdapter {
   getSelectedDeviceId(): string { return this.selectedDeviceId; }
   autoDetectDevice(): Device | undefined { return undefined; }
 
-  // Core actions - Sonic receives relative coordinates (0-1000) and converts to absolute
+  // Core actions - Sonic iOS receives physical coordinates and converts to logical
   async tap(x: number, y: number, _targetPid?: number): Promise<void> {
-    const { x: absX, y: absY } = this.toAbsolute(x, y);
-    this.client.send({ type: "debug", detail: "tap", point: `${absX},${absY}` });
+    const { x: convX, y: convY } = this.convertByFactor(x, y);
+    this.client.send({ type: "debug", detail: "tap", point: `${convX},${convY}` });
   }
 
   async doubleTap(x: number, y: number): Promise<void> {
-    const { x: absX, y: absY } = this.toAbsolute(x, y);
-    this.client.send({ type: "debug", detail: "tap", point: `${absX},${absY}` });
+    const { x: convX, y: convY } = this.convertByFactor(x, y);
+    this.client.send({ type: "debug", detail: "tap", point: `${convX},${convY}` });
     await new Promise(r => setTimeout(r, 100));
-    this.client.send({ type: "debug", detail: "tap", point: `${absX},${absY}` });
+    this.client.send({ type: "debug", detail: "tap", point: `${convX},${convY}` });
   }
 
   async longPress(x: number, y: number): Promise<void> {
-    const { x: absX, y: absY } = this.toAbsolute(x, y);
-    this.client.send({ type: "debug", detail: "longPress", point: `${absX},${absY}` });
+    const { x: convX, y: convY } = this.convertByFactor(x, y);
+    this.client.send({ type: "debug", detail: "longPress", point: `${convX},${convY}` });
   }
 
   async swipe(x1: number, y1: number, x2: number, y2: number, _durationMs?: number): Promise<void> {
-    const start = this.toAbsolute(x1, y1);
-    const end = this.toAbsolute(x2, y2);
+    const start = this.convertByFactor(x1, y1);
+    const end = this.convertByFactor(x2, y2);
     this.client.send({ type: "debug", detail: "swipe", pointA: `${start.x},${start.y}`, pointB: `${end.x},${end.y}` });
   }
 
