@@ -115,6 +115,103 @@ export class SonicWsClient {
     });
   }
 
+  /**
+   * Send message and collect a list of responses until a completion message.
+   * Used for app list, process list, etc.
+   */
+  async sendAndCollectList<T>(
+    payload: object,
+    itemMsg: string,
+    doneMsg: string,
+    timeout = 30_000,
+  ): Promise<T[]> {
+    return new Promise((resolve, reject) => {
+      const items: T[] = [];
+      const timer = setTimeout(() => {
+        this.msgListeners.delete(itemMsg);
+        this.msgListeners.delete(doneMsg);
+        reject(new Error(`sendAndCollectList timeout waiting for "${doneMsg}"`));
+      }, timeout);
+
+      this.msgListeners.set(itemMsg, (data: Record<string, unknown>) => {
+        const detail = data["detail"] as T;
+        if (detail) items.push(detail);
+      });
+
+      this.msgListeners.set(doneMsg, () => {
+        clearTimeout(timer);
+        this.msgListeners.delete(itemMsg);
+        this.msgListeners.delete(doneMsg);
+        resolve(items);
+      });
+
+      this.send(payload);
+    });
+  }
+
+  /**
+   * Send message and collect list responses with timeout-based completion.
+   * Used when the server doesn't send a completion message (like Android appList).
+   * Waits for messages and returns after timeout with collected items.
+   */
+  async sendAndCollectListWithTimeout<T>(
+    payload: object,
+    itemMsg: string,
+    timeout = 30_000,
+  ): Promise<T[]> {
+    return new Promise((resolve) => {
+      const items: T[] = [];
+
+      const timer = setTimeout(() => {
+        this.msgListeners.delete(itemMsg);
+        resolve(items);
+      }, timeout);
+
+      this.msgListeners.set(itemMsg, (data: Record<string, unknown>) => {
+        const detail = data["detail"] as T;
+        if (detail) items.push(detail);
+      });
+
+      this.send(payload);
+    });
+  }
+
+  /**
+   * Send message and wait for response with enhanced error handling.
+   * Handles screenshotError and other error responses.
+   */
+  async sendAndWaitWithError(
+    payload: object,
+    expectedMsg: string,
+    errorMsg: string,
+    timeout = 10_000,
+  ): Promise<Record<string, unknown>> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.msgListeners.delete(expectedMsg);
+        this.msgListeners.delete(errorMsg);
+        reject(new Error(`Timeout waiting for "${expectedMsg}"`));
+      }, timeout);
+
+      this.msgListeners.set(expectedMsg, (data) => {
+        clearTimeout(timer);
+        this.msgListeners.delete(expectedMsg);
+        this.msgListeners.delete(errorMsg);
+        resolve(data);
+      });
+
+      this.msgListeners.set(errorMsg, (data) => {
+        clearTimeout(timer);
+        this.msgListeners.delete(expectedMsg);
+        this.msgListeners.delete(errorMsg);
+        const error = data["error"] || "Unknown error";
+        reject(new Error(`${errorMsg}: ${error}`));
+      });
+
+      this.send(payload);
+    });
+  }
+
   disconnect(): void {
     this.cleanupPending("Client disconnected");
     this.ws?.close();
