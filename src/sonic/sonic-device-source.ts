@@ -65,14 +65,16 @@ export class SonicDeviceSource {
   }
 
   private async fetchAgentInfo(): Promise<void> {
-    const data = await this.get<{ host: string; port: number; agentKey: string }>(
+    const data = await this.get<{ host: string; port: number; agentKey?: string; secretKey?: string }>(
       "/server/api/controller/agents",
       { id: this.agentId },
     );
-    if (!data.host || !data.port || !data.agentKey) {
+    // Sonic Server may return agentKey or secretKey depending on version
+    const key = data.agentKey || data.secretKey;
+    if (!data.host || !data.port || !key) {
       throw new Error(`Sonic agent info incomplete: ${JSON.stringify(data)}`);
     }
-    this.conn = { agentHost: data.host, agentPort: data.port, key: data.agentKey, token: this.token };
+    this.conn = { agentHost: data.host, agentPort: data.port, key, token: this.token };
   }
 
   private buildDevice(raw: SonicServerDevice): Device {
