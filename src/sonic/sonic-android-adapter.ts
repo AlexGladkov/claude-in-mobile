@@ -273,4 +273,24 @@ export class SonicAndroidAdapter implements PlatformAdapter {
     );
     return String(response.detail || "");
   }
+
+  // ============ WebView Inspection ============
+
+  async getWebViews(): Promise<Array<{ packageName?: string; socket?: string; [key: string]: any }>> {
+    const res = await this.client.sendAndWait(
+      { type: "forwardView" },
+      "forwardView",
+      10_000
+    );
+
+    const detail = res.detail as any;
+    if (!detail) return [];
+
+    // Parse WebView info from response
+    if (Array.isArray(detail)) {
+      return detail;
+    }
+
+    return [detail];
+  }
 }

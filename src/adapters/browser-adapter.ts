@@ -318,4 +318,10 @@ export class BrowserAdapter implements PlatformAdapter {
     });
     return String(result.value ?? "");
   }
+
+  // ============ WebView Inspection ============
+
+  async getWebViews(): Promise<Array<{ packageName?: string; socket?: string; [key: string]: any }>> {
+    throw new Error("WebView inspection is not supported for browser platform");
+  }
 }

@@ -505,4 +505,11 @@ export class DeviceManager {
     const adapter = this.getAdapter(platform);
     return adapter.getClipboard();
   }
+
+  // ============ WebView Inspection ============
+
+  async getWebViews(platform?: Platform): Promise<Array<{ packageName?: string; socket?: string; [key: string]: any }>> {
+    const adapter = this.getAdapter(platform);
+    return adapter.getWebViews();
+  }
 }

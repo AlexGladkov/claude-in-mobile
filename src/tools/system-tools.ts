@@ -175,15 +175,31 @@ export const systemTools: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
-      if (ctx.deviceManager.isSonicMode()) {
-        return { content: [{ type: "text", text: "system_webview is not supported in Sonic mode" }] };
-      }
-
       const platform = args.platform as Platform | undefined;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
 
+      if (currentPlatform !== "android" && currentPlatform !== "ios") {
+        return { text: `system_webview is only available for Android and iOS.` };
+      }
+
+      // Sonic mode: use adapter's getWebViews method
+      if (ctx.deviceManager.isSonicMode() && (currentPlatform === "android" || currentPlatform === "ios")) {
+        const webviews = await ctx.deviceManager.getWebViews(platform);
+
+        if (webviews.length === 0) {
+          return { text: "No WebViews found in current app." };
+        }
+
+        const formatted = webviews.map((w, i) =>
+          `${i + 1}. Package: ${w.packageName || 'N/A'}, Socket: ${w.socket || 'N/A'}`
+        ).join('\n');
+
+        return { text: `Found ${webviews.length} WebView(s):\n${formatted}` };
+      }
+
+      // Non-Sonic mode: only Android is supported via WebViewInspector
       if (currentPlatform !== "android") {
-        return { text: "get_webview is only available for Android." };
+        return { text: `system_webview is only available for Android in non-Sonic mode.` };
       }
 
       try {

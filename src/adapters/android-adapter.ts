@@ -237,4 +237,17 @@ export class AndroidAdapter implements PlatformAdapter {
   async getClipboard(): Promise<string> {
     return this.client.getClipboardText();
   }
+
+  // ============ WebView Inspection ============
+
+  async getWebViews(): Promise<Array<{ packageName?: string; socket?: string; [key: string]: any }>> {
+    // Use the WebViewInspector to get WebView information
+    const inspector = new (await import("../adb/webview.js")).WebViewInspector(this.client);
+    const result = await inspector.inspect();
+    return result.targets.map(t => ({
+      packageName: t.url,
+      socket: result.sockets[0],
+      ...t
+    }));
+  }
 }

@@ -127,4 +127,15 @@ export interface PlatformAdapter {
    * Get clipboard content.
    */
   getClipboard(): Promise<string>;
+
+  // ============ WebView Inspection ============
+
+  /**
+   * Get list of WebViews in the current app.
+   */
+  getWebViews(): Promise<Array<{
+    packageName?: string;
+    socket?: string;
+    [key: string]: any;
+  }>>;
 }

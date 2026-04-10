@@ -194,4 +194,10 @@ export class AuroraAdapter implements PlatformAdapter {
     // Aurora clipboard can be read via shell
     return this.client.shell("wl-paste");
   }
+
+  // ============ WebView Inspection ============
+
+  async getWebViews(): Promise<Array<{ packageName?: string; socket?: string; [key: string]: any }>> {
+    throw new Error("WebView inspection is not supported for Aurora platform");
+  }
 }

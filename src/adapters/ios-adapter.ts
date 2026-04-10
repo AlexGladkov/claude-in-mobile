@@ -233,4 +233,10 @@ export class IosAdapter implements PlatformAdapter {
     // iOS clipboard access is limited; return placeholder for now
     throw new Error("getClipboard not supported on iOS local adapter");
   }
+
+  // ============ WebView Inspection ============
+
+  async getWebViews(): Promise<Array<{ packageName?: string; socket?: string; [key: string]: any }>> {
+    throw new Error("WebView inspection is not supported for iOS local adapter");
+  }
 }

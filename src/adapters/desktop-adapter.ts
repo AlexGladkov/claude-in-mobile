@@ -244,6 +244,12 @@ export class DesktopAdapter implements PlatformAdapter {
     this.ensureRunning();
     return this.client.getClipboard();
   }
+
+  // ============ WebView Inspection ============
+
+  async getWebViews(): Promise<Array<{ packageName?: string; socket?: string; [key: string]: any }>> {
+    throw new Error("WebView inspection is not supported for desktop platform");
+  }
 }
 
 // ============ Helpers (moved from old device-manager.ts) ============
