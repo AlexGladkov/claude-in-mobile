@@ -86,6 +86,31 @@ describe("SonicAndroidAdapter", () => {
     expect(mockClient.send).toHaveBeenCalledWith({ type: "debug", detail: "openApp", pkg: "com.example.app" });
   });
 
+  it("uninstallApp() waits for uninstallFinish response", async () => {
+    // Need to mock sendAndWaitWithError
+    const { SonicWsClient } = await import("./sonic-ws-client.js");
+    const mockSendAndWaitWithError = vi.fn().mockResolvedValue({ msg: "uninstallFinish", detail: "success" });
+    vi.spyOn(SonicWsClient.prototype, 'sendAndWaitWithError').mockImplementation(mockSendAndWaitWithError);
+
+    const result = await adapter.uninstallApp("com.example.app");
+
+    expect(mockSendAndWaitWithError).toHaveBeenCalledWith(
+      { type: "uninstallApp", detail: "com.example.app" },
+      "uninstallFinish",
+      "error",
+      60000
+    );
+    expect(result).toBe("Uninstalled com.example.app");
+  });
+
+  it("uninstallApp() throws error when uninstall fails", async () => {
+    const { SonicWsClient } = await import("./sonic-ws-client.js");
+    const mockSendAndWaitWithError = vi.fn().mockResolvedValue({ msg: "uninstallFinish", detail: "failed" });
+    vi.spyOn(SonicWsClient.prototype, 'sendAndWaitWithError').mockImplementation(mockSendAndWaitWithError);
+
+    await expect(adapter.uninstallApp("com.example.app")).rejects.toThrow("Uninstall failed: failed");
+  });
+
   it("dispose() disconnects WebSocket", async () => {
     await adapter.dispose();
     expect(mockClient.disconnect).toHaveBeenCalled();

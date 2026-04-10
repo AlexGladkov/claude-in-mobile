@@ -175,15 +175,55 @@ describe("SonicIosAdapter", () => {
     });
 
     it("launchApp() waits for launchResult", async () => {
-      mockClientMethods.sendAndWait.mockResolvedValue({ msg: "launchResult", pkg: "com.example", status: "success" });
+      mockClientMethods.sendAndWaitWithError.mockResolvedValue({ msg: "launchResult", pkg: "com.example", status: "success" });
 
       const adapter = new SonicIosAdapter(UDID, conn);
       await adapter.connect();
 
       await adapter.launchApp("com.example");
-      expect(mockClientMethods.sendAndWait).toHaveBeenCalledWith(
-        { type: "launch", pkg: "com.example" }, "launchResult", expect.any(Number)
+      expect(mockClientMethods.sendAndWaitWithError).toHaveBeenCalledWith(
+        { type: "launch", pkg: "com.example" }, "launchResult", "error", expect.any(Number)
       );
+    });
+
+    it("launchApp() throws error when launch fails", async () => {
+      mockClientMethods.sendAndWaitWithError.mockResolvedValue({
+        msg: "launchResult",
+        pkg: "com.example",
+        status: "failed",
+        error: "App not installed"
+      });
+
+      const adapter = new SonicIosAdapter(UDID, conn);
+      await adapter.connect();
+
+      await expect(adapter.launchApp("com.example")).rejects.toThrow("Launch failed: failed - App not installed");
+    });
+
+    it("stopApp() waits for killResult", async () => {
+      mockClientMethods.sendAndWaitWithError.mockResolvedValue({ msg: "killResult", pkg: "com.example", status: "success" });
+
+      const adapter = new SonicIosAdapter(UDID, conn);
+      await adapter.connect();
+
+      await adapter.stopApp("com.example");
+      expect(mockClientMethods.sendAndWaitWithError).toHaveBeenCalledWith(
+        { type: "kill", pkg: "com.example" }, "killResult", "error", expect.any(Number)
+      );
+    });
+
+    it("stopApp() throws error when kill fails", async () => {
+      mockClientMethods.sendAndWaitWithError.mockResolvedValue({
+        msg: "killResult",
+        pkg: "com.example",
+        status: "failed",
+        error: "Process not found"
+      });
+
+      const adapter = new SonicIosAdapter(UDID, conn);
+      await adapter.connect();
+
+      await expect(adapter.stopApp("com.example")).rejects.toThrow("Stop failed: failed - Process not found");
     });
 
     it("getSystemInfo() throws not supported", async () => {

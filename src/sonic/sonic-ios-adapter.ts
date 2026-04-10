@@ -165,13 +165,31 @@ export class SonicIosAdapter implements PlatformAdapter {
 
   // App management
   async launchApp(pkg: string): Promise<string> {
-    const res = await this.client.sendAndWait({ type: "launch", pkg }, "launchResult", 10_000);
-    if (res["status"] !== "success") throw new Error(`Launch failed: ${res["status"]}`);
+    const res = await this.client.sendAndWaitWithError(
+      { type: "launch", pkg },
+      "launchResult",
+      "error",
+      15_000
+    );
+
+    if (res.status !== "success") {
+      throw new Error(`Launch failed: ${res.status} - ${res.error || 'Unknown error'}`);
+    }
+
     return `Launched ${pkg}`;
   }
 
   async stopApp(pkg: string): Promise<void> {
-    await this.client.sendAndWait({ type: "kill", pkg }, "killResult", 10_000);
+    const res = await this.client.sendAndWaitWithError(
+      { type: "kill", pkg },
+      "killResult",
+      "error",
+      15_000
+    );
+
+    if (res.status !== "success") {
+      throw new Error(`Stop failed: ${res.status} - ${res.error || 'Unknown error'}`);
+    }
   }
 
   async installApp(path: string): Promise<string> {

@@ -143,6 +143,21 @@ export class SonicAndroidAdapter implements PlatformAdapter {
     return `Installed ${path}`;
   }
 
+  async uninstallApp(pkg: string): Promise<string> {
+    const res = await this.client.sendAndWaitWithError(
+      { type: "uninstallApp", detail: pkg },
+      "uninstallFinish",
+      "error",
+      60_000
+    );
+
+    if (res.detail !== "success") {
+      throw new Error(`Uninstall failed: ${res.detail}`);
+    }
+
+    return `Uninstalled ${pkg}`;
+  }
+
   // Permissions (via shell)
   async grantPermission(pkg: string, permission: string): Promise<string> {
     return this.shell(`pm grant ${pkg} ${permission}`);
