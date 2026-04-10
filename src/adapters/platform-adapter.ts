@@ -81,6 +81,7 @@ export interface PlatformAdapter {
   launchApp(packageOrBundleId: string): Promise<string>;
   stopApp(packageOrBundleId: string): Promise<void>;
   installApp(path: string): Promise<string>;
+  uninstallApp(packageOrBundleId: string): Promise<string>;
 
   // ============ Permissions ============
 

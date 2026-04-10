@@ -6,6 +6,11 @@ import { SonicWsClient } from "./sonic-ws-client.js";
 const conn: SonicConnectionInfo = { agentHost: "ZINFOID_05Q", agentPort: 7777, key: "k", token: "t" };
 const UDID = "device-001";
 
+// Mock the image utils module
+vi.mock("../utils/image.js", () => ({
+  getImageDimensions: vi.fn().mockResolvedValue({ width: 1080, height: 1920 })
+}));
+
 // Create a mock client factory
 function createMockClient() {
   return {
@@ -33,10 +38,18 @@ describe("SonicAndroidAdapter", () => {
     vi.spyOn(SonicWsClient.prototype, 'sendAndCollect').mockImplementation(mockClient.sendAndCollect);
     vi.spyOn(SonicWsClient.prototype, 'disconnect').mockImplementation(mockClient.disconnect);
     vi.spyOn(SonicWsClient.prototype, 'isConnected').mockImplementation(mockClient.isConnected);
-    
+
+    // Mock setTimeout to avoid 10s delay in connect()
+    vi.useFakeTimers();
+
     adapter = new SonicAndroidAdapter(UDID, conn);
-    await adapter.connect();
-  });
+    const connectPromise = adapter.connect();
+    // Advance timers to skip the 10s delay
+    await vi.runAllTimersAsync();
+    await connectPromise;
+
+    vi.useRealTimers();
+  }, 15000);
 
   afterEach(() => {
     vi.restoreAllMocks();
@@ -48,15 +61,19 @@ describe("SonicAndroidAdapter", () => {
     );
   });
 
-  it("tap() sends correct JSON", async () => {
+  it("tap() sends correct JSON with coordinate conversion", async () => {
+    // With screen size 1080x1920, relative (100, 200) -> absolute (108, 384)
     await adapter.tap(100, 200);
-    expect(mockClient.send).toHaveBeenCalledWith({ type: "debug", detail: "tap", point: "100,200" });
+    expect(mockClient.send).toHaveBeenCalledWith({ type: "debug", detail: "tap", point: "108,384" });
   });
 
-  it("swipe() sends correct JSON", async () => {
+  it("swipe() sends correct JSON with coordinate conversion", async () => {
+    // With screen size 1080x1920:
+    // relative (0, 500) -> absolute (0, 960)
+    // relative (0, 100) -> absolute (0, 192)
     await adapter.swipe(0, 500, 0, 100, 300);
     expect(mockClient.send).toHaveBeenCalledWith({
-      type: "debug", detail: "swipe", pointA: "0,500", pointB: "0,100"
+      type: "debug", detail: "swipe", pointA: "0,960", pointB: "0,192"
     });
   });
 

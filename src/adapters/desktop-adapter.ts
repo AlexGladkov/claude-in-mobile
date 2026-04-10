@@ -177,6 +177,10 @@ export class DesktopAdapter implements PlatformAdapter {
     return "Desktop platform doesn't support app installation";
   }
 
+  async uninstallApp(_packageName: string): Promise<string> {
+    return "Desktop platform doesn't support app uninstallation";
+  }
+
   // ============ Permissions ============
 
   async grantPermission(_pkg: string, _perm: string): Promise<string> {

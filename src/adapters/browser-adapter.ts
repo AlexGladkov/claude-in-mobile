@@ -140,6 +140,9 @@ export class BrowserAdapter implements PlatformAdapter {
   async installApp(_path: string): Promise<string> {
     throw new Error("installApp is not supported for browser platform.");
   }
+  async uninstallApp(_pkg: string): Promise<string> {
+    throw new Error("uninstallApp is not supported for browser platform.");
+  }
 
   // -- Permissions (not supported) --
   async grantPermission(_pkg: string, _perm: string): Promise<string> {

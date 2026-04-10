@@ -93,46 +93,45 @@ describe("SonicIosAdapter", () => {
       });
     });
 
-    it("tap() converts coordinates using logic screen size", async () => {
+    it("tap() converts relative coordinates (0-1000) to logical coordinates", async () => {
       const adapter = new SonicIosAdapter(UDID, conn);
       await adapter.connect();
 
-      // Tap at physical coordinates (300, 600)
-      // factorX = 1170 / 390 = 3
-      // factorY = 2532 / 844 = 3
-      // logical x = 300 / 3 = 100
-      // logical y = 600 / 3 = 200
-      await adapter.tap(300, 600);
+      // Tap at relative coordinates (256, 237) - approximately 300/1170*1000, 600/2532*1000
+      // Step 1: toAbsolute: (256/1000*1170, 237/1000*2532) = (300, 600)
+      // Step 2: convertByFactor: factorX = 1170/390 = 3, factorY = 2532/844 = 3
+      //         logical = (300/3, 600/3) = (100, 200)
+      await adapter.tap(256, 237);
 
       const sendCall = mockClientMethods.send.mock.calls.find(c => c[0].detail === "tap");
       expect(sendCall[0].point).toBe("100,200");
     });
 
-    it("longPress() converts coordinates using logic screen size", async () => {
+    it("longPress() converts relative coordinates (0-1000) to logical coordinates", async () => {
       const adapter = new SonicIosAdapter(UDID, conn);
       await adapter.connect();
 
-      // Long press at physical coordinates (600, 900)
-      // factorX = 1170 / 390 = 3
-      // factorY = 2532 / 844 = 3
-      // logical x = 600 / 3 = 200
-      // logical y = 900 / 3 = 300
-      await adapter.longPress(600, 900);
+      // Long press at relative coordinates (513, 355) - approximately 600/1170*1000, 900/2532*1000
+      // Step 1: toAbsolute: (513/1000*1170, 355/1000*2532) = (600, 900)
+      // Step 2: convertByFactor: factorX = 1170/390 = 3, factorY = 2532/844 = 3
+      //         logical = (600/3, 900/3) = (200, 300)
+      await adapter.longPress(513, 355);
 
       const sendCall = mockClientMethods.send.mock.calls.find(c => c[0].detail === "longPress");
       expect(sendCall[0].point).toBe("200,300");
     });
 
-    it("swipe() converts both points using logic screen size", async () => {
+    it("swipe() converts relative coordinates (0-1000) to logical coordinates", async () => {
       const adapter = new SonicIosAdapter(UDID, conn);
       await adapter.connect();
 
-      // Swipe from physical (900, 1200) to (1800, 2400)
-      // factorX = 1170 / 390 = 3
-      // factorY = 2532 / 844 = 3
-      // logical start: (900/3, 1200/3) = (300, 400)
-      // logical end: (1800/3, 2400/3) = (600, 800)
-      await adapter.swipe(900, 1200, 1800, 2400);
+      // Swipe from relative (769, 474) to (1538, 948)
+      // Step 1: toAbsolute: (769/1000*1170, 474/1000*2532) = (900, 1200)
+      //         toAbsolute: (1538/1000*1170, 948/1000*2532) = (1800, 2400)
+      // Step 2: convertByFactor: factorX = 1170/390 = 3, factorY = 2532/844 = 3
+      //         logical start: (900/3, 1200/3) = (300, 400)
+      //         logical end: (1800/3, 2400/3) = (600, 800)
+      await adapter.swipe(769, 474, 1538, 948);
 
       const sendCall = mockClientMethods.send.mock.calls.find(c => c[0].detail === "swipe");
       expect(sendCall[0].pointA).toBe("300,400");
@@ -157,12 +156,14 @@ describe("SonicIosAdapter", () => {
       });
     });
 
-    it("tap() sends correct JSON", async () => {
+    it("tap() sends correct JSON with coordinate conversion", async () => {
       const adapter = new SonicIosAdapter(UDID, conn);
       await adapter.connect();
 
-      await adapter.tap(50, 100);
-      // 50 / 3 = 16.67 -> 17, 100 / 3 = 33.33 -> 33
+      // Input: relative coordinates (43, 39) - approximately 50/1170*1000, 100/2532*1000
+      // Step 1: toAbsolute: (43/1000*1170, 39/1000*2532) = (50, 100)
+      // Step 2: convertByFactor: (50/3, 100/3) = (17, 33)
+      await adapter.tap(43, 39);
       expect(mockClientMethods.send).toHaveBeenCalledWith({ type: "debug", detail: "tap", point: "17,33" });
     });
 

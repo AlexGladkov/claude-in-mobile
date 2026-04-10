@@ -148,6 +148,10 @@ export class AndroidAdapter implements PlatformAdapter {
     return this.client.installApk(path);
   }
 
+  async uninstallApp(packageName: string): Promise<string> {
+    return this.client.uninstallApp(packageName);
+  }
+
   // ============ Permissions ============
 
   async grantPermission(packageName: string, permission: string): Promise<string> {

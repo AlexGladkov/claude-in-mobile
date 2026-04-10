@@ -130,6 +130,10 @@ export class AuroraAdapter implements PlatformAdapter {
     return this.client.installApp(path);
   }
 
+  async uninstallApp(packageName: string): Promise<string> {
+    return this.client.uninstallApp(packageName);
+  }
+
   // ============ Permissions ============
 
   async grantPermission(_pkg: string, _perm: string): Promise<string> {

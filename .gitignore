@@ -7,3 +7,4 @@ dist/
 cli/target/
 cli/*.tar.gz
 docs/plans/
+.idea

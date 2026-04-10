@@ -135,6 +135,10 @@ export class IosAdapter implements PlatformAdapter {
     return this.client.installApp(path);
   }
 
+  async uninstallApp(bundleId: string): Promise<string> {
+    return this.client.uninstallApp(bundleId);
+  }
+
   // ============ Permissions ============
 
   async grantPermission(bundleId: string, service: string): Promise<string> {

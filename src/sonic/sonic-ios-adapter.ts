@@ -95,44 +95,56 @@ export class SonicIosAdapter implements PlatformAdapter {
   getSelectedDeviceId(): string { return this.selectedDeviceId; }
   autoDetectDevice(): Device | undefined { return undefined; }
 
-  // Core actions - Sonic iOS receives physical coordinates and converts to logical
+  // Core actions - Sonic iOS receives relative coordinates (0-1000),
+  // converts to absolute pixels, then to logical coordinates for Sonic
   async tap(x: number, y: number, _targetPid?: number): Promise<void> {
-    const { x: convX, y: convY } = this.convertByFactor(x, y);
+    // Step 1: Convert relative (0-1000) to absolute pixels
+    const abs = this.toAbsolute(x, y);
+    // Step 2: Convert absolute pixels to logical coordinates for Sonic
+    const { x: convX, y: convY } = this.convertByFactor(abs.x, abs.y);
     this.client.send({ type: "debug", detail: "tap", point: `${convX},${convY}` });
   }
 
   async doubleTap(x: number, y: number): Promise<void> {
-    const { x: convX, y: convY } = this.convertByFactor(x, y);
+    // Step 1: Convert relative (0-1000) to absolute pixels
+    const abs = this.toAbsolute(x, y);
+    // Step 2: Convert absolute pixels to logical coordinates for Sonic
+    const { x: convX, y: convY } = this.convertByFactor(abs.x, abs.y);
     this.client.send({ type: "debug", detail: "tap", point: `${convX},${convY}` });
     await new Promise(r => setTimeout(r, 100));
     this.client.send({ type: "debug", detail: "tap", point: `${convX},${convY}` });
   }
 
   async longPress(x: number, y: number): Promise<void> {
-    const { x: convX, y: convY } = this.convertByFactor(x, y);
+    // Step 1: Convert relative (0-1000) to absolute pixels
+    const abs = this.toAbsolute(x, y);
+    // Step 2: Convert absolute pixels to logical coordinates for Sonic
+    const { x: convX, y: convY } = this.convertByFactor(abs.x, abs.y);
     this.client.send({ type: "debug", detail: "longPress", point: `${convX},${convY}` });
   }
 
   async swipe(x1: number, y1: number, x2: number, y2: number, _durationMs?: number): Promise<void> {
-    const start = this.convertByFactor(x1, y1);
-    const end = this.convertByFactor(x2, y2);
+    // Step 1: Convert relative (0-1000) to absolute pixels
+    const absStart = this.toAbsolute(x1, y1);
+    const absEnd = this.toAbsolute(x2, y2);
+    // Step 2: Convert absolute pixels to logical coordinates for Sonic
+    const start = this.convertByFactor(absStart.x, absStart.y);
+    const end = this.convertByFactor(absEnd.x, absEnd.y);
     this.client.send({ type: "debug", detail: "swipe", pointA: `${start.x},${start.y}`, pointB: `${end.x},${end.y}` });
   }
 
   async swipeDirection(direction: "up" | "down" | "left" | "right"): Promise<void> {
-    const cx = this.screenWidth / 2;
-    const cy = this.screenHeight / 2;
-    const delta = Math.min(this.screenWidth, this.screenHeight) * 0.3;
+    // swipe() now handles the full conversion internally:
+    // relative (0-1000) -> absolute pixels -> logical coordinates
+    // So we pass relative coordinates directly
     const dirs = {
-      up:    [cx, cy + delta, cx, cy - delta],
-      down:  [cx, cy - delta, cx, cy + delta],
-      left:  [cx + delta, cy, cx - delta, cy],
-      right: [cx - delta, cy, cx + delta, cy],
+      up:    [500, 800, 500, 200],    // center-bottom to center-top
+      down:  [500, 200, 500, 800],    // center-top to center-bottom
+      left:  [800, 500, 200, 500],    // right-center to left-center
+      right: [200, 500, 800, 500],    // left-center to right-center
     };
     const [x1, y1, x2, y2] = dirs[direction];
-    // swipe() expects relative coordinates (0-1000), so convert back
-    const toRel = (v: number, max: number) => Math.round(v / max * 1000);
-    await this.swipe(toRel(x1, this.screenWidth), toRel(y1, this.screenHeight), toRel(x2, this.screenWidth), toRel(y2, this.screenHeight));
+    await this.swipe(x1, y1, x2, y2);
   }
 
   async inputText(text: string, _targetPid?: number): Promise<void> {
@@ -200,6 +212,21 @@ export class SonicIosAdapter implements PlatformAdapter {
     );
     if (res["status"] !== "success") throw new Error(`Install failed: ${res["status"]}`);
     return `Installed ${path}`;
+  }
+
+  async uninstallApp(bundleId: string): Promise<string> {
+    const res = await this.client.sendAndWaitWithError(
+      { type: "uninstallApp", detail: bundleId },
+      "uninstallFinish",
+      "error",
+      60_000
+    );
+
+    if (res.detail !== "success") {
+      throw new Error(`Uninstall failed: ${res.detail}`);
+    }
+
+    return `Uninstalled ${bundleId}`;
   }
 
   // Permissions — not supported on iOS
