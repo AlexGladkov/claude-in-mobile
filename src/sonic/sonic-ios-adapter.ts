@@ -20,50 +20,28 @@ export class SonicIosAdapter implements PlatformAdapter {
   }
 
   /**
-   * Convert relative coordinates (0-1000) to absolute pixels.
-   * Reference: /autospecter/autospecter/new_agents/tools/device/pos_adapter.py
+   * Ensure screen size is initialized by reading screenshot dimensions.
+   * Called automatically before coordinate conversion.
    */
-  private convertRelativeToAbsolute(xPos: number, yPos: number): { x: number; y: number } {
-    if (this.screenWidth === 0 || this.screenHeight === 0) {
-      throw new Error("Screen size not initialized. Call getScreenSize() first.");
-    }
-    const absX = Math.round(xPos / 1000 * this.screenWidth);
-    const absY = Math.round(yPos / 1000 * this.screenHeight);
-    return { x: absX, y: absY };
-  }
-
-  /**
-   * Get screen size from screenshot.
-   * Caches the result for coordinate conversion.
-   */
-  async getScreenSize(): Promise<{ width: number; height: number }> {
+  private async ensureScreenSize(): Promise<void> {
     if (this.screenWidth > 0 && this.screenHeight > 0) {
-      return { width: this.screenWidth, height: this.screenHeight };
+      return;
     }
-    // Get size from screenshot
     const buf = await this.getScreenshotBufferAsync();
     const size = await import("../utils/image.js").then(m => m.getImageDimensions(buf));
     this.screenWidth = size.width;
     this.screenHeight = size.height;
-    return { width: this.screenWidth, height: this.screenHeight };
   }
 
   /**
-   * Tap at relative coordinates (0-1000 range).
-   * Automatically converts to absolute pixels.
+   * Convert relative coordinates (0-1000) to absolute pixels.
+   * Reference: /autospecter/autospecter/new_agents/tools/device/pos_adapter.py
    */
-  async tapRelative(x: number, y: number): Promise<void> {
-    const { x: absX, y: absY } = this.convertRelativeToAbsolute(x, y);
-    await this.tap(absX, absY);
-  }
-
-  /**
-   * Swipe from relative coordinates to relative coordinates (0-1000 range).
-   */
-  async swipeRelative(x1: number, y1: number, x2: number, y2: number, durationMs?: number): Promise<void> {
-    const start = this.convertRelativeToAbsolute(x1, y1);
-    const end = this.convertRelativeToAbsolute(x2, y2);
-    await this.swipe(start.x, start.y, end.x, end.y, durationMs);
+  private async toAbsolute(xPos: number, yPos: number): Promise<{ x: number; y: number }> {
+    await this.ensureScreenSize();
+    const absX = Math.round(xPos / 1000 * this.screenWidth);
+    const absY = Math.round(yPos / 1000 * this.screenHeight);
+    return { x: absX, y: absY };
   }
 
   async connect(): Promise<void> {
@@ -81,27 +59,35 @@ export class SonicIosAdapter implements PlatformAdapter {
   getSelectedDeviceId(): string { return this.selectedDeviceId; }
   autoDetectDevice(): Device | undefined { return undefined; }
 
-  // Core actions
+  // Core actions - Sonic receives relative coordinates (0-1000) and converts to absolute
   async tap(x: number, y: number, _targetPid?: number): Promise<void> {
-    this.client.send({ type: "debug", detail: "tap", point: `${x},${y}` });
+    const { x: absX, y: absY } = await this.toAbsolute(x, y);
+    this.client.send({ type: "debug", detail: "tap", point: `${absX},${absY}` });
   }
 
   async doubleTap(x: number, y: number): Promise<void> {
-    this.client.send({ type: "debug", detail: "tap", point: `${x},${y}` });
+    const { x: absX, y: absY } = await this.toAbsolute(x, y);
+    this.client.send({ type: "debug", detail: "tap", point: `${absX},${absY}` });
     await new Promise(r => setTimeout(r, 100));
-    this.client.send({ type: "debug", detail: "tap", point: `${x},${y}` });
+    this.client.send({ type: "debug", detail: "tap", point: `${absX},${absY}` });
   }
 
   async longPress(x: number, y: number): Promise<void> {
-    this.client.send({ type: "debug", detail: "longPress", point: `${x},${y}` });
+    const { x: absX, y: absY } = await this.toAbsolute(x, y);
+    this.client.send({ type: "debug", detail: "longPress", point: `${absX},${absY}` });
   }
 
   async swipe(x1: number, y1: number, x2: number, y2: number, _durationMs?: number): Promise<void> {
-    this.client.send({ type: "debug", detail: "swipe", pointA: `${x1},${y1}`, pointB: `${x2},${y2}` });
+    const start = await this.toAbsolute(x1, y1);
+    const end = await this.toAbsolute(x2, y2);
+    this.client.send({ type: "debug", detail: "swipe", pointA: `${start.x},${start.y}`, pointB: `${end.x},${end.y}` });
   }
 
   async swipeDirection(direction: "up" | "down" | "left" | "right"): Promise<void> {
-    const cx = 540, cy = 960, delta = 600;
+    await this.ensureScreenSize();
+    const cx = this.screenWidth / 2;
+    const cy = this.screenHeight / 2;
+    const delta = Math.min(this.screenWidth, this.screenHeight) * 0.3;
     const dirs = {
       up:    [cx, cy + delta, cx, cy - delta],
       down:  [cx, cy - delta, cx, cy + delta],
@@ -109,7 +95,9 @@ export class SonicIosAdapter implements PlatformAdapter {
       right: [cx - delta, cy, cx + delta, cy],
     };
     const [x1, y1, x2, y2] = dirs[direction];
-    await this.swipe(x1, y1, x2, y2);
+    // swipe() expects relative coordinates (0-1000), so convert back
+    const toRel = (v: number, max: number) => Math.round(v / max * 1000);
+    await this.swipe(toRel(x1, this.screenWidth), toRel(y1, this.screenHeight), toRel(x2, this.screenWidth), toRel(y2, this.screenHeight));
   }
 
   async inputText(text: string, _targetPid?: number): Promise<void> {
