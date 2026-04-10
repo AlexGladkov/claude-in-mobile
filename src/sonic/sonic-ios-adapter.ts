@@ -20,25 +20,11 @@ export class SonicIosAdapter implements PlatformAdapter {
   }
 
   /**
-   * Ensure screen size is initialized by reading screenshot dimensions.
-   * Called automatically before coordinate conversion.
-   */
-  private async ensureScreenSize(): Promise<void> {
-    if (this.screenWidth > 0 && this.screenHeight > 0) {
-      return;
-    }
-    const buf = await this.getScreenshotBufferAsync();
-    const size = await import("../utils/image.js").then(m => m.getImageDimensions(buf));
-    this.screenWidth = size.width;
-    this.screenHeight = size.height;
-  }
-
-  /**
    * Convert relative coordinates (0-1000) to absolute pixels.
+   * Screen size is initialized in connect().
    * Reference: /autospecter/autospecter/new_agents/tools/device/pos_adapter.py
    */
-  private async toAbsolute(xPos: number, yPos: number): Promise<{ x: number; y: number }> {
-    await this.ensureScreenSize();
+  private toAbsolute(xPos: number, yPos: number): { x: number; y: number } {
     const absX = Math.round(xPos / 1000 * this.screenWidth);
     const absY = Math.round(yPos / 1000 * this.screenHeight);
     return { x: absX, y: absY };
@@ -47,6 +33,11 @@ export class SonicIosAdapter implements PlatformAdapter {
   async connect(): Promise<void> {
     const { agentHost, agentPort, key, token } = this.conn;
     await this.client.connect(`ws://${agentHost}:${agentPort}/websockets/ios/${key}/${this.udId}/${token}`);
+    // Initialize screen size once at connection time
+    const buf = await this.getScreenshotBufferAsync();
+    const size = await import("../utils/image.js").then(m => m.getImageDimensions(buf));
+    this.screenWidth = size.width;
+    this.screenHeight = size.height;
   }
 
   async dispose(): Promise<void> {
@@ -61,30 +52,29 @@ export class SonicIosAdapter implements PlatformAdapter {
 
   // Core actions - Sonic receives relative coordinates (0-1000) and converts to absolute
   async tap(x: number, y: number, _targetPid?: number): Promise<void> {
-    const { x: absX, y: absY } = await this.toAbsolute(x, y);
+    const { x: absX, y: absY } = this.toAbsolute(x, y);
     this.client.send({ type: "debug", detail: "tap", point: `${absX},${absY}` });
   }
 
   async doubleTap(x: number, y: number): Promise<void> {
-    const { x: absX, y: absY } = await this.toAbsolute(x, y);
+    const { x: absX, y: absY } = this.toAbsolute(x, y);
     this.client.send({ type: "debug", detail: "tap", point: `${absX},${absY}` });
     await new Promise(r => setTimeout(r, 100));
     this.client.send({ type: "debug", detail: "tap", point: `${absX},${absY}` });
   }
 
   async longPress(x: number, y: number): Promise<void> {
-    const { x: absX, y: absY } = await this.toAbsolute(x, y);
+    const { x: absX, y: absY } = this.toAbsolute(x, y);
     this.client.send({ type: "debug", detail: "longPress", point: `${absX},${absY}` });
   }
 
   async swipe(x1: number, y1: number, x2: number, y2: number, _durationMs?: number): Promise<void> {
-    const start = await this.toAbsolute(x1, y1);
-    const end = await this.toAbsolute(x2, y2);
+    const start = this.toAbsolute(x1, y1);
+    const end = this.toAbsolute(x2, y2);
     this.client.send({ type: "debug", detail: "swipe", pointA: `${start.x},${start.y}`, pointB: `${end.x},${end.y}` });
   }
 
   async swipeDirection(direction: "up" | "down" | "left" | "right"): Promise<void> {
-    await this.ensureScreenSize();
     const cx = this.screenWidth / 2;
     const cy = this.screenHeight / 2;
     const delta = Math.min(this.screenWidth, this.screenHeight) * 0.3;
