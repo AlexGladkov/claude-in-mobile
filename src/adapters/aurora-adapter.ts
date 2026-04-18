@@ -144,6 +144,25 @@ export class AuroraAdapter implements PlatformAdapter {
     throw new Error("Permission management is not supported for Aurora platform");
   }
 
+  // ============ Viewport ============
+
+  async getViewportSize(): Promise<{ width: number; height: number }> {
+    try {
+      const output = this.client.shell("wm size");
+      const match = output.match(/(\d+)x(\d+)/);
+      if (match) {
+        return { width: parseInt(match[1]), height: parseInt(match[2]) };
+      }
+    } catch {
+      // ignore — fallback to screenshot dimensions
+    }
+    // Fallback: get size from screenshot
+    const { Jimp } = await import("jimp");
+    const buffer = this.client.screenshotRaw();
+    const image = await Jimp.read(buffer);
+    return { width: image.width, height: image.height };
+  }
+
   // ============ System ============
 
   shell(command: string): string {

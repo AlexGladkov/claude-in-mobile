@@ -143,4 +143,40 @@ export const deviceTools: ToolDefinition[] = [
       return { text: `Current target: ${target} (${status})` };
     },
   },
+  {
+    tool: {
+      name: "device_viewport",
+      description:
+        "Get the viewport/screen size of the active device in device pixels. Also shows current screenshot scaling info. Useful for understanding coordinate space and layout dimensions.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          platform: {
+            type: "string",
+            enum: ["android", "ios", "desktop", "aurora", "browser"],
+            description: "Target platform. If not specified, uses the active target.",
+          },
+        },
+      },
+    },
+    handler: async (args, ctx) => {
+      const platform = args.platform as Platform | undefined;
+      const size = await ctx.deviceManager.getViewportSize(platform);
+
+      let result = `Viewport: ${size.width}x${size.height} (device pixels)`;
+
+      const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
+      const scale = ctx.screenshotScaleMap.get(currentPlatform);
+      if (scale && (scale.scaleX !== 1 || scale.scaleY !== 1)) {
+        const imgW = Math.round(size.width / scale.scaleX);
+        const imgH = Math.round(size.height / scale.scaleY);
+        result += `\nScreenshot scale: ${scale.scaleX.toFixed(2)}x ${scale.scaleY.toFixed(2)}x (image coords are auto-scaled on tap)`;
+        result += `\nScreenshot image: ${imgW}x${imgH} -> device: ${size.width}x${size.height}`;
+      } else {
+        result += `\nScreenshot scale: 1:1 (no scaling active)`;
+      }
+
+      return { text: result };
+    },
+  },
 ];

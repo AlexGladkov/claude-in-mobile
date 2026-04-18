@@ -191,6 +191,13 @@ export class DesktopAdapter implements PlatformAdapter {
     throw new Error("Permission management is not supported for desktop platform");
   }
 
+  // ============ Viewport ============
+
+  async getViewportSize(): Promise<{ width: number; height: number }> {
+    this.ensureRunning();
+    return this.client.getScreenSize();
+  }
+
   // ============ System ============
 
   shell(command: string): string {

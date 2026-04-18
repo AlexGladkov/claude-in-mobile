@@ -126,6 +126,12 @@ registerAliases({
   // file (aurora)
   "push_file": "file_push",
   "pull_file": "file_pull",
+  // viewport
+  "get_viewport_size": "device_viewport",
+  "screen_size": "device_viewport",
+  "viewport_size": "device_viewport",
+  "get_viewport": "device_viewport",
+  "get_resolution": "device_viewport",
   // LLM misnaming helpers
   "press_button": "input_key",
   "type_text": "input_text",

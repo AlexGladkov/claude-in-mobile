@@ -152,6 +152,17 @@ export class BrowserAdapter implements PlatformAdapter {
     throw new Error("resetPermissions is not supported for browser platform.");
   }
 
+  // -- Viewport --
+  async getViewportSize(): Promise<{ width: number; height: number }> {
+    const session = this.getActiveSession();
+    const { result } = await session.cdp.Runtime.evaluate({
+      expression: `JSON.stringify({width: window.innerWidth, height: window.innerHeight})`,
+      returnByValue: true,
+    });
+    const parsed = JSON.parse(result.value as string);
+    return { width: parsed.width, height: parsed.height };
+  }
+
   // -- System (stub) --
   shell(_cmd: string): string {
     throw new Error("shell is not supported for browser platform.");

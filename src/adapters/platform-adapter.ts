@@ -80,6 +80,11 @@ export interface PlatformAdapter {
   revokePermission(packageOrBundleId: string, permission: string): string;
   resetPermissions(packageOrBundleId: string): string;
 
+  // ============ Viewport ============
+
+  /** Get the viewport/screen size of the active device in device pixels. */
+  getViewportSize(): Promise<{ width: number; height: number }>;
+
   // ============ System ============
 
   shell(command: string): string;

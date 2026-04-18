@@ -152,6 +152,12 @@ export class IosAdapter implements PlatformAdapter {
     return `Reset permissions for ${bundleId}`;
   }
 
+  // ============ Viewport ============
+
+  async getViewportSize(): Promise<{ width: number; height: number }> {
+    return this.client.getViewportSize();
+  }
+
   // ============ System ============
 
   shell(command: string): string {

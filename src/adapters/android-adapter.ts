@@ -165,6 +165,12 @@ export class AndroidAdapter implements PlatformAdapter {
     return `Reset permissions for ${packageName}`;
   }
 
+  // ============ Viewport ============
+
+  async getViewportSize(): Promise<{ width: number; height: number }> {
+    return this.client.getScreenSize();
+  }
+
   // ============ System ============
 
   shell(command: string): string {

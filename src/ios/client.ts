@@ -405,6 +405,22 @@ export class IosClient {
   }
 
   /**
+   * Get viewport size from WDA, with fallback to screenshot dimensions.
+   */
+  async getViewportSize(): Promise<{ width: number; height: number }> {
+    try {
+      const wdaClient = await this.ensureWDA();
+      return await wdaClient.getWindowSize();
+    } catch {
+      // Fallback: get size from screenshot
+      const { Jimp } = await import("jimp");
+      const buffer = this.screenshotRaw();
+      const image = await Jimp.read(buffer);
+      return { width: image.width, height: image.height };
+    }
+  }
+
+  /**
    * Open URL in simulator
    */
   openUrl(url: string): void {

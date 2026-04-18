@@ -371,6 +371,13 @@ export class DeviceManager {
     return adapter.shell(command);
   }
 
+  // ============ Viewport ============
+
+  async getViewportSize(platform?: Platform): Promise<{ width: number; height: number }> {
+    const adapter = this.getAdapter(platform);
+    return adapter.getViewportSize();
+  }
+
   // ============ Raw client accessors (used by tools directly) ============
 
   getAndroidClient(): AdbClient {
