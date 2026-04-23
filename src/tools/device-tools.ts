@@ -6,7 +6,7 @@ export const deviceTools: ToolDefinition[] = [
   {
     tool: {
       name: "device_list",
-      description: "List all connected Android devices/emulators and iOS simulators",
+      description: "List connected devices and emulators",
       inputSchema: {
         type: "object",
         properties: {
@@ -84,13 +84,13 @@ export const deviceTools: ToolDefinition[] = [
   {
     tool: {
       name: "device_set",
-      description: "Select which device to use for subsequent commands",
+      description: "Select active device for commands",
       inputSchema: {
         type: "object",
         properties: {
           deviceId: {
             type: "string",
-            description: "Device ID from list_devices",
+            description: "Device ID from device(action:'list')",
           },
           platform: {
             type: "string",
@@ -110,7 +110,7 @@ export const deviceTools: ToolDefinition[] = [
   {
     tool: {
       name: "device_set_target",
-      description: "Switch the active target between Android, iOS, Desktop, and Aurora platforms",
+      description: "Switch active platform (android/ios/desktop/aurora/browser)",
       inputSchema: {
         type: "object",
         properties: {
@@ -132,7 +132,7 @@ export const deviceTools: ToolDefinition[] = [
   {
     tool: {
       name: "device_get_target",
-      description: "Get the current active target and its status",
+      description: "Get current active platform and status",
       inputSchema: {
         type: "object",
         properties: {},

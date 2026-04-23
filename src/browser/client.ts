@@ -1,5 +1,6 @@
 import { createRequire } from "module";
-import type { BrowserSession, BrowserOpenOptions, BrowserClickOptions, BrowserFillOptions, BrowserNavigateOptions } from "./types.js";
+import type { BrowserSession, BrowserOpenOptions, BrowserClickOptions, BrowserFillOptions, BrowserNavigateOptions, LaunchedChrome } from "./types.js";
+import type { CDPClientInterface, CDPAccessibilityNode } from "./cdp-types.js";
 import { BLOCKED_URL_PROTOCOLS, DEFAULT_SESSION } from "./types.js";
 import { SessionManager } from "./session-manager.js";
 
@@ -60,7 +61,7 @@ export class BrowserClient {
       chromeFlags.push("--no-sandbox", "--disable-dev-shm-usage");
     }
 
-    let chrome: any;
+    let chrome: LaunchedChrome;
     try {
       chrome = await chromeLauncher.launch({
         chromeFlags,
@@ -68,8 +69,9 @@ export class BrowserClient {
         port: 0, // auto-select free port
         logLevel: "silent",
       });
-    } catch (err: any) {
-      if (err.message?.includes("not found") || err.code === "ENOENT") {
+    } catch (err: unknown) {
+      const errObj = err as { message?: string; code?: string };
+      if (errObj.message?.includes("not found") || errObj.code === "ENOENT") {
         throw new Error(
           "Chrome/Chromium not found. Install Google Chrome or set CHROME_PATH environment variable."
         );
@@ -81,7 +83,7 @@ export class BrowserClient {
     this.sessionManager.writePidFile(session, chrome.process.pid ?? 0);
     this.sessionManager.writeLockFile(session);
 
-    let cdp: any;
+    let cdp: CDPClientInterface;
     try {
       cdp = await CDP({ port: chrome.port });
     } catch (err) {
@@ -123,7 +125,7 @@ export class BrowserClient {
     return browserSession;
   }
 
-  private async navigateToUrl(cdp: any, url: string): Promise<void> {
+  private async navigateToUrl(cdp: CDPClientInterface, url: string): Promise<void> {
     const { Page } = cdp;
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error(`Navigation timeout for ${url}`)), 30000);
@@ -163,7 +165,7 @@ export class BrowserClient {
   async getSnapshot(session: BrowserSession): Promise<string> {
     const { cdp } = session;
 
-    let axNodes: any[];
+    let axNodes: CDPAccessibilityNode[];
     try {
       const result = await cdp.Accessibility.getFullAXTree();
       axNodes = result.nodes ?? [];
@@ -182,7 +184,8 @@ export class BrowserClient {
       "searchbox", "scrollbar", "columnheader", "rowheader",
     ]);
 
-    const formatValue = (v: any) => (v?.type === "string" || v?.type === "computedString") ? v.value : undefined;
+    const formatValue = (v: { type: string; value?: string } | undefined) =>
+      (v?.type === "string" || v?.type === "computedString") ? v.value : undefined;
 
     // Build flat snapshot list
     const snapshotLines: string[] = [];
@@ -218,7 +221,7 @@ export class BrowserClient {
 
       const value = formatValue(node.value);
       const valueStr = value ? ` value="${value}"` : "";
-      const disabled = node.properties?.find((p: any) => p.name === "disabled")?.value?.value ? " [disabled]" : "";
+      const disabled = node.properties?.find(p => p.name === "disabled")?.value?.value ? " [disabled]" : "";
 
       snapshotLines.push(`${role} "${name}"${ref}${valueStr}${disabled}`);
     }
@@ -227,13 +230,13 @@ export class BrowserClient {
     let title = "";
     try {
       const { result } = await cdp.Runtime.evaluate({ expression: "document.title", returnByValue: true });
-      title = result.value ?? "";
+      title = (result.value as string) ?? "";
     } catch {}
 
     // Update session URL
     try {
       const { result } = await cdp.Runtime.evaluate({ expression: "location.href", returnByValue: true });
-      if (result.value) session.url = result.value;
+      if (result.value) session.url = result.value as string;
     } catch {}
 
     const header = `[${title || "Untitled"}] ${session.url}\n\n`;
@@ -243,7 +246,7 @@ export class BrowserClient {
     return header + body + hint;
   }
 
-  private async buildSelector(cdp: any, nodeId: number): Promise<string> {
+  private async buildSelector(cdp: CDPClientInterface, nodeId: number): Promise<string> {
     try {
       const { object } = await cdp.DOM.resolveNode({ nodeId });
       const { result } = await cdp.Runtime.callFunctionOn({
@@ -268,7 +271,7 @@ export class BrowserClient {
         }`,
         returnByValue: true,
       });
-      return result.value ?? "";
+      return (result.value as string) ?? "";
     } catch {
       return "";
     }
@@ -277,7 +280,7 @@ export class BrowserClient {
   async resolveRef(session: BrowserSession, ref: string): Promise<{ nodeId?: number; selector: string; label: string }> {
     const entry = session.refMap.get(ref);
     if (!entry) {
-      throw new Error(`Ref "${ref}" not found. Available: ${Array.from(session.refMap.keys()).join(", ") || "none"}. Run browser_snapshot first.`);
+      throw new Error(`Ref "${ref}" not found. Available: ${Array.from(session.refMap.keys()).join(", ") || "none"}. Run browser(action:'snapshot') first.`);
     }
 
     // Try backendNodeId first
@@ -296,11 +299,11 @@ export class BrowserClient {
     }
 
     throw new Error(
-      `Ref "${ref}" is stale (element no longer in DOM). Last known: ${entry.label}. Run browser_snapshot to get fresh refs.`
+      `Ref "${ref}" is stale (element no longer in DOM). Last known: ${entry.label}. Run browser(action:'snapshot') to get fresh refs.`
     );
   }
 
-  private async getCoordinates(cdp: any, nodeId: number): Promise<{ x: number; y: number }> {
+  private async getCoordinates(cdp: CDPClientInterface, nodeId: number): Promise<{ x: number; y: number }> {
     const { model } = await cdp.DOM.getBoxModel({ nodeId });
     if (!model) throw new Error("Could not get element bounding box");
     const [x1, y1, x2, , , , , y4] = model.content;
@@ -310,7 +313,7 @@ export class BrowserClient {
     };
   }
 
-  private async findNodeBySelector(cdp: any, selector: string): Promise<number | null> {
+  private async findNodeBySelector(cdp: CDPClientInterface, selector: string): Promise<number | null> {
     try {
       const { root } = await cdp.DOM.getDocument({ depth: 0 });
       const { nodeId } = await cdp.DOM.querySelector({ nodeId: root.nodeId, selector });
@@ -320,7 +323,7 @@ export class BrowserClient {
     }
   }
 
-  private async findNodeByText(cdp: any, text: string): Promise<{ x: number; y: number } | null> {
+  private async findNodeByText(cdp: CDPClientInterface, text: string): Promise<{ x: number; y: number } | null> {
     try {
       const { result } = await cdp.Runtime.evaluate({
         expression: `(function() {
@@ -336,7 +339,7 @@ export class BrowserClient {
         returnByValue: true,
       });
       if (result.value) {
-        return JSON.parse(result.value);
+        return JSON.parse(result.value as string);
       }
     } catch {}
     return null;
@@ -391,9 +394,9 @@ export class BrowserClient {
 
     try {
       const { result } = await cdp.Runtime.evaluate({ expression: "location.href", returnByValue: true });
-      newUrl = result.value;
+      newUrl = result.value as string | undefined;
       navigated = newUrl !== prevUrl;
-      if (navigated) session.url = newUrl!;
+      if (navigated && newUrl) session.url = newUrl;
     } catch {}
 
     return { navigated, newUrl };

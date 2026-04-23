@@ -6,4 +6,7 @@ dist/
 *.local
 cli/target/
 cli/*.tar.gz
+cli/claude-in-mobile
+cli/claude-in-mobile-*
+!cli/claude-in-mobile*.rs
 docs/plans/

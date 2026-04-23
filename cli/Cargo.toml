@@ -1,6 +1,6 @@
 [package]
 name = "claude-in-mobile"
-version = "2.13.2"
+version = "3.4.0"
 edition = "2021"
 description = "Fast native CLI for mobile device automation (Android/iOS/Aurora/Desktop)"
 authors = ["defendend", "Alex Gladkov"]
@@ -17,6 +17,8 @@ ab_glyph = "0.2"
 base64 = "0.22"
 colored = "2.0"
 regex = "1.10"
+reqwest = { version = "0.12", features = ["blocking", "json", "multipart", "rustls-tls"], default-features = false }
+rsa = { version = "0.9", features = ["pem", "sha2"] }
 
 [profile.release]
 opt-level = 3

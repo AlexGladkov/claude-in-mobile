@@ -1,13 +1,29 @@
 /**
- * AuroraAdapter — wraps AuroraClient and implements PlatformAdapter.
+ * AuroraAdapter -- wraps AuroraClient.
+ *
+ * Implements:
+ *   - CorePlatformAdapter
+ *   - AppManagementAdapter
+ *   - ShellAdapter
+ *   - SyncScreenshotAdapter
+ *
+ * Does NOT implement PermissionAdapter -- Aurora OS does not support
+ * runtime permission management.
  */
 
-import type { PlatformAdapter } from "./platform-adapter.js";
+import type {
+  CorePlatformAdapter,
+  AppManagementAdapter,
+  ShellAdapter,
+  SyncScreenshotAdapter,
+} from "./platform-adapter.js";
 import type { Device } from "../device-manager.js";
 import { auroraClient as defaultAuroraClient, AuroraClient } from "../aurora/index.js";
 import { compressScreenshot, type CompressOptions } from "../utils/image.js";
 
-export class AuroraAdapter implements PlatformAdapter {
+export class AuroraAdapter
+  implements CorePlatformAdapter, AppManagementAdapter, ShellAdapter, SyncScreenshotAdapter
+{
   readonly platform = "aurora" as const;
   private client: AuroraClient;
 
@@ -15,7 +31,7 @@ export class AuroraAdapter implements PlatformAdapter {
     this.client = client ?? defaultAuroraClient;
   }
 
-  /** Raw client access — needed by tools that call getAuroraClient(). */
+  /** Raw client access -- needed by tools that call getAuroraClient(). */
   getClient(): AuroraClient {
     return this.client;
   }
@@ -116,7 +132,7 @@ export class AuroraAdapter implements PlatformAdapter {
     return this.client.getUiHierarchy();
   }
 
-  // ============ App management ============
+  // ============ App management (AppManagementAdapter) ============
 
   launchApp(packageName: string): string {
     return this.client.launchApp(packageName);
@@ -130,21 +146,7 @@ export class AuroraAdapter implements PlatformAdapter {
     return this.client.installApp(path);
   }
 
-  // ============ Permissions ============
-
-  grantPermission(_pkg: string, _perm: string): string {
-    throw new Error("Permission management is not supported for Aurora platform");
-  }
-
-  revokePermission(_pkg: string, _perm: string): string {
-    throw new Error("Permission management is not supported for Aurora platform");
-  }
-
-  resetPermissions(_pkg: string): string {
-    throw new Error("Permission management is not supported for Aurora platform");
-  }
-
-  // ============ System ============
+  // ============ Shell / Logs (ShellAdapter) ============
 
   shell(command: string): string {
     return this.client.shell(command);
@@ -162,6 +164,8 @@ export class AuroraAdapter implements PlatformAdapter {
   clearLogs(): string {
     return this.client.clearLogs();
   }
+
+  // ============ System info ============
 
   async getSystemInfo(): Promise<string> {
     return this.client.getSystemInfo();

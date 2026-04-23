@@ -76,7 +76,7 @@ export class GradleLauncher {
 
       // Deduplicate and sort
       return [...new Set(tasks)].sort();
-    } catch (error: any) {
+    } catch {
       // Fallback: check common task names directly
       const commonTasks: string[] = [];
 

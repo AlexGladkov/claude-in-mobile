@@ -184,9 +184,9 @@ export class DesktopClient extends EventEmitter {
       // Wait for ready signal or timeout
       await this.waitForReady(10000);
 
-    } catch (error: any) {
+    } catch (error: unknown) {
       this.state.status = "stopped";
-      this.state.lastError = error.message;
+      this.state.lastError = error instanceof Error ? error.message : String(error);
       throw error;
     }
   }
@@ -598,7 +598,7 @@ export class DesktopClient extends EventEmitter {
    */
   launchApp(packageName: string): string {
     // Desktop doesn't have package-based launch
-    return `Desktop platform doesn't support package launch. Use launch_desktop_app to start a Compose Desktop project.`;
+    return `Desktop platform doesn't support package launch. Use desktop(action:'launch') to start a Compose Desktop project.`;
   }
 
   /**

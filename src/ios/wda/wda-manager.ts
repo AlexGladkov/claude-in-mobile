@@ -20,8 +20,9 @@ export class WDAManager {
       try {
         await client.ensureSession(deviceId);
         return client;
-      } catch (error: any) {
-        console.error("WDA client failed, relaunching:", error.message);
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error);
+        console.error("WDA client failed, relaunching:", msg);
         // Clean up failed instance
         const instance = this.instances.get(deviceId);
         if (instance) {
@@ -117,10 +118,12 @@ export class WDAManager {
           stdio: "pipe",
         }
       );
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const e = error as { stderr?: Buffer | string; stdout?: Buffer | string; message?: string };
+      const detail = e.stderr?.toString() || e.stdout?.toString() || e.message || String(error);
       throw new Error(
         "Failed to build WebDriverAgent.\n\n" +
-          `${error.stderr?.toString() || error.stdout?.toString() || error.message}\n\n` +
+          `${detail}\n\n` +
           "Troubleshooting:\n" +
           "1. Install Xcode: https://apps.apple.com/app/xcode/id497799835\n" +
           "2. Install command line tools: xcode-select --install\n" +

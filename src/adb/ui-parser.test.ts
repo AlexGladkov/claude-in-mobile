@@ -472,7 +472,10 @@ describe("formatUiTree", () => {
 
   it("respects maxElements", () => {
     const tree = formatUiTree(elements, { showAll: true, maxElements: 2 });
-    expect(tree.split("\n").length).toBe(2);
+    const lines = tree.split("\n");
+    // 2 element lines + 1 truncation notice line
+    expect(lines.length).toBe(3);
+    expect(lines[2]).toContain("showing 2 of");
   });
 
   it("returns 'No UI elements found' for empty array", () => {

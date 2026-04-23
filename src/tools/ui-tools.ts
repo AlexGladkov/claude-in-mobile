@@ -1,5 +1,4 @@
 import type { ToolDefinition } from "./registry.js";
-import type { ToolContext } from "./context.js";
 import type { Platform } from "../device-manager.js";
 import {
   parseUiHierarchy,
@@ -9,16 +8,17 @@ import {
   analyzeScreen,
   findBestMatch,
   formatScreenAnalysis,
-  desktopHierarchyToUiElements,
   UiElement,
 } from "../adb/ui-parser.js";
 import { DeviceNotFoundError, DeviceOfflineError, AdbNotInstalledError } from "../errors.js";
+import { getUiElements } from "./helpers/get-elements.js";
+import { getString, getNumber, getBoolean, requireString } from "./helpers/args-parser.js";
 
 export const uiTools: ToolDefinition[] = [
   {
     tool: {
       name: "ui_tree",
-      description: "Get the current UI hierarchy (accessibility tree). PREFERRED over screen_capture — text-based, ~10x cheaper in tokens. Shows all interactive elements with their text, IDs, and coordinates. Use this first for navigation, finding elements, and inspecting screen state. Note: Limited on iOS.",
+      description: "Get UI hierarchy (accessibility tree). Shows elements, text, IDs, coordinates.",
       inputSchema: {
         type: "object",
         properties: {
@@ -37,11 +37,12 @@ export const uiTools: ToolDefinition[] = [
           const tree = JSON.parse(json);
           const formatted = ctx.formatIOSUITree(tree);
           return { text: formatted };
-        } catch (error: any) {
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message : String(error);
           return {
             text: `iOS UI inspection requires WebDriverAgent.\n\n` +
                   `Install: npm install -g appium && appium driver install xcuitest\n\n` +
-                  `Error: ${error.message}`
+                  `Error: ${msg}`
           };
         }
       }
@@ -49,22 +50,34 @@ export const uiTools: ToolDefinition[] = [
       const xml = await ctx.deviceManager.getUiHierarchyAsync(platform);
 
       if (currentPlatform === "desktop") {
-        return { text: xml };
+        const { truncateOutput } = await import("../utils/truncate.js");
+        return { text: truncateOutput(xml, { maxChars: 15_000 }) };
       }
 
       // Android: parse XML and format
       const parsedElements = parseUiHierarchy(xml);
       ctx.setCachedElements("android", parsedElements);
-      const tree = formatUiTree(parsedElements, {
-        showAll: args.showAll as boolean,
-      });
+      const showAll = getBoolean(args, "showAll");
+      const compact = getBoolean(args, "compact");
+      const tree = formatUiTree(parsedElements, { showAll, compact });
+
+      // Dedup cache: if identical output within 2s, return short notice
+      const cacheKey = `android:${showAll}:${compact}`;
+      const cached = ctx.lastUiTreeMap.get(cacheKey);
+      const now = Date.now();
+      if (cached && cached.text === tree && (now - cached.timestamp) < 2000) {
+        const ago = now - cached.timestamp;
+        return { text: `UI unchanged (cached ${ago}ms ago). ${parsedElements.length} elements.` };
+      }
+      ctx.lastUiTreeMap.set(cacheKey, { text: tree, timestamp: now });
+
       return { text: tree };
     },
   },
   {
     tool: {
       name: "ui_find",
-      description: "Find UI elements by text, resource ID, or other criteria. Android: resourceId, className. iOS: label (accessibility id)",
+      description: "Find UI elements by text, resourceId, className, or label",
       inputSchema: {
         type: "object",
         properties: {
@@ -86,10 +99,10 @@ export const uiTools: ToolDefinition[] = [
         try {
           const iosClient = ctx.deviceManager.getIosClient();
           const elements = await iosClient.findElements({
-            text: args.text as string,
-            label: args.label as string,
-            type: args.className as string,
-            visible: args.visible as boolean
+            text: getString(args, "text"),
+            label: getString(args, "label"),
+            type: getString(args, "className"),
+            visible: typeof args.visible === "boolean" ? args.visible : undefined,
           });
 
           if (elements.length === 0) {
@@ -101,23 +114,22 @@ export const uiTools: ToolDefinition[] = [
           ).join('\n');
 
           return { text: `Found ${elements.length} element(s):\n${list}` };
-        } catch (error: any) {
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message : String(error);
           return {
-            text: `Find element failed: ${error.message}\n\n` +
+            text: `Find element failed: ${msg}\n\n` +
                   `Make sure WebDriverAgent is installed (see get_ui error for details)`
           };
         }
       }
 
-      const xml = await ctx.deviceManager.getUiHierarchyAsync("android");
-      const parsedEls = parseUiHierarchy(xml);
-      ctx.setCachedElements("android", parsedEls);
+      const { elements: parsedEls } = await getUiElements(ctx, "android");
 
       const found = findElements(parsedEls, {
-        text: args.text as string | undefined,
-        resourceId: args.resourceId as string | undefined,
-        className: args.className as string | undefined,
-        clickable: args.clickable as boolean | undefined,
+        text: getString(args, "text"),
+        resourceId: getString(args, "resourceId"),
+        className: getString(args, "className"),
+        clickable: typeof args.clickable === "boolean" ? args.clickable : undefined,
       });
 
       if (found.length === 0) {
@@ -131,13 +143,12 @@ export const uiTools: ToolDefinition[] = [
   {
     tool: {
       name: "ui_find_tap",
-      description: "Smart tap by element description. Uses fuzzy matching to find the best element by text, content description, or resource ID, then taps it. More reliable than exact text matching. (Android only)",
+      description: "Fuzzy tap by natural language element description (Android only)",
       inputSchema: {
         type: "object",
         properties: {
           description: { type: "string", description: "Natural language description of the element to tap, e.g., 'submit button', 'settings', 'back'" },
           minConfidence: { type: "number", description: "Minimum confidence score (0-100) to accept a match (default: 30)", default: 30 },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
         },
         required: ["description"],
       },
@@ -147,20 +158,18 @@ export const uiTools: ToolDefinition[] = [
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
 
       if (currentPlatform !== "android") {
-        return { text: "find_and_tap is only available for Android. Use tap with coordinates for iOS/Desktop." };
+        return { text: "ui(action:'find_tap') is only available for Android. Use tap with coordinates for iOS/Desktop." };
       }
 
-      const description = args.description as string;
-      const minConfidence = (args.minConfidence as number) ?? 30;
+      const description = requireString(args, "description");
+      const minConfidence = getNumber(args, "minConfidence") ?? 30;
 
-      const xml = await ctx.deviceManager.getUiHierarchyAsync("android");
-      const tapElements = parseUiHierarchy(xml);
-      ctx.setCachedElements("android", tapElements);
+      const { elements: tapElements } = await getUiElements(ctx, "android");
 
       const match = findBestMatch(tapElements, description);
 
       if (!match) {
-        return { text: `No element found matching "${description}". Try using get_ui or analyze_screen to see available elements.` };
+        return { text: `No element found matching "${description}". Try using ui(action:'tree') or ui(action:'analyze') to see available elements.` };
       }
 
       if (match.confidence < minConfidence) {
@@ -183,7 +192,7 @@ export const uiTools: ToolDefinition[] = [
   {
     tool: {
       name: "ui_tap_text",
-      description: "Tap an element by its text content using Accessibility API. Does NOT move cursor - perfect for background automation. (Desktop/macOS only)",
+      description: "Tap element by text via Accessibility API (Desktop/macOS only)",
       inputSchema: {
         type: "object",
         properties: {
@@ -199,17 +208,14 @@ export const uiTools: ToolDefinition[] = [
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
 
       if (currentPlatform !== "desktop") {
-        return { text: "tap_by_text is only available for Desktop (macOS). Use find_and_tap for Android or tap with coordinates for iOS." };
+        return { text: "ui(action:'tap_text') is only available for Desktop (macOS). Use ui(action:'find_tap') for Android or input(action:'tap') with coordinates for iOS." };
       }
 
-      const text = args.text as string;
-      const pid = args.pid as number;
-      const exactMatch = (args.exactMatch as boolean) ?? false;
+      const text = requireString(args, "text");
+      const pid = getNumber(args, "pid");
+      const exactMatch = getBoolean(args, "exactMatch");
 
-      if (!text) {
-        return { text: "Missing required parameter: text" };
-      }
-      if (!pid) {
+      if (pid === undefined) {
         return { text: "Missing required parameter: pid. Use get_window_info to find the process ID." };
       }
 
@@ -217,12 +223,12 @@ export const uiTools: ToolDefinition[] = [
 
       if (result.success) {
         return {
-          text: `✅ Tapped "${text}" (element: ${result.elementRole ?? "unknown"})\n` +
+          text: `OK: Tapped "${text}" (element: ${result.elementRole ?? "unknown"})\n` +
                 `Cursor was NOT moved - background automation successful.`
         };
       } else {
         return {
-          text: `❌ Failed to tap "${text}": ${result.error}`
+          text: `FAIL: Failed to tap "${text}": ${result.error}`
         };
       }
     },
@@ -230,7 +236,7 @@ export const uiTools: ToolDefinition[] = [
   {
     tool: {
       name: "ui_analyze",
-      description: "Get structured analysis of the current screen without taking a screenshot. Returns buttons, input fields, text content, scrollable areas, screen title, dialog detection, and navigation state. Much cheaper than screenshot for understanding screen layout.",
+      description: "Structured screen analysis: buttons, inputs, text, scrollable areas, dialogs",
       inputSchema: {
         type: "object",
         properties: {
@@ -244,39 +250,37 @@ export const uiTools: ToolDefinition[] = [
       let screenElements: UiElement[] = [];
       let activity: string | undefined;
 
-      if (currentPlatform === "android" || !currentPlatform) {
-        const xml = await ctx.deviceManager.getUiHierarchyAsync("android");
-        screenElements = parseUiHierarchy(xml);
-        ctx.setCachedElements("android", screenElements);
-
-        try {
-          activity = ctx.deviceManager.getAndroidClient().getCurrentActivity();
-        } catch (actErr: any) {
-          console.error(`[analyze_screen] Could not get current activity: ${actErr?.message}`);
-        }
-      } else if (currentPlatform === "ios") {
-        try {
-          const json = await ctx.deviceManager.getUiHierarchy("ios");
-          const tree = JSON.parse(json);
-          screenElements = ctx.iosTreeToUiElements(tree);
-          ctx.setCachedElements("ios", screenElements);
-        } catch (error: any) {
+      try {
+        const result = await getUiElements(ctx, currentPlatform);
+        screenElements = result.elements;
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error);
+        if (currentPlatform === "ios") {
           return {
             text: `iOS UI inspection requires WebDriverAgent.\n\n` +
                   `Install: npm install -g appium && appium driver install xcuitest\n\n` +
-                  `Error: ${error.message}`
+                  `Error: ${msg}`
           };
         }
-      } else if (currentPlatform === "desktop") {
-        try {
-          const hierarchyText = await ctx.deviceManager.getUiHierarchyAsync("desktop");
-          screenElements = desktopHierarchyToUiElements(hierarchyText);
-          ctx.setCachedElements("desktop", screenElements);
-        } catch (error: any) {
-          return { text: `Desktop UI hierarchy not available: ${error.message}` };
+        if (currentPlatform === "desktop") {
+          return { text: `Desktop UI hierarchy not available: ${msg}` };
         }
-      } else {
-        return { text: `analyze_screen is not supported for platform: ${currentPlatform}` };
+        throw error;
+      }
+
+      if (currentPlatform === "android" || !currentPlatform) {
+        try {
+          activity = ctx.deviceManager.getAndroidClient().getCurrentActivity();
+        } catch (actErr: unknown) {
+          const actMsg = actErr instanceof Error ? actErr.message : String(actErr);
+          console.error(`[analyze_screen] Could not get current activity: ${actMsg}`);
+        }
+      }
+
+      if (!currentPlatform || !["android", "ios", "desktop"].includes(currentPlatform)) {
+        if (currentPlatform) {
+          return { text: `ui(action:'analyze') is not supported for platform: ${currentPlatform}` };
+        }
       }
 
       const analysis = analyzeScreen(screenElements, activity);
@@ -286,7 +290,7 @@ export const uiTools: ToolDefinition[] = [
   {
     tool: {
       name: "ui_wait",
-      description: "Wait for a UI element to appear. Polls the UI hierarchy until the element is found or timeout. Much more reliable than manual wait(ms) for animations and loading.",
+      description: "Wait for UI element to appear (polling with timeout)",
       inputSchema: {
         type: "object",
         properties: {
@@ -302,30 +306,21 @@ export const uiTools: ToolDefinition[] = [
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
-      const timeout = (args.timeout as number) ?? 5000;
-      const interval = (args.interval as number) ?? 500;
-      const searchText = args.text as string | undefined;
-      const searchId = args.resourceId as string | undefined;
-      const searchClass = args.className as string | undefined;
+      const timeout = getNumber(args, "timeout") ?? 5000;
+      const interval = getNumber(args, "interval") ?? 500;
+      const searchText = getString(args, "text");
+      const searchId = getString(args, "resourceId");
+      const searchClass = getString(args, "className");
 
       if (!searchText && !searchId && !searchClass) {
         return { text: "Provide at least one search criteria: text, resourceId, or className" };
       }
 
       const startTime = Date.now();
-      let lastElements: UiElement[] = [];
 
       while (Date.now() - startTime < timeout) {
         try {
-          if (currentPlatform === "android") {
-            const xml = await ctx.deviceManager.getUiHierarchyAsync("android");
-            lastElements = parseUiHierarchy(xml);
-            ctx.setCachedElements("android", lastElements);
-          } else if (currentPlatform === "ios") {
-            const json = await ctx.deviceManager.getUiHierarchyAsync("ios");
-            const tree = JSON.parse(json);
-            lastElements = ctx.iosTreeToUiElements(tree);
-          }
+          const { elements: lastElements } = await getUiElements(ctx, currentPlatform);
 
           const found = findElements(lastElements, {
             text: searchText,
@@ -340,7 +335,7 @@ export const uiTools: ToolDefinition[] = [
                     (found.length > 1 ? `(${found.length} total matches)` : "")
             };
           }
-        } catch (pollErr: any) {
+        } catch (pollErr: unknown) {
           if (pollErr instanceof DeviceNotFoundError || pollErr instanceof DeviceOfflineError || pollErr instanceof AdbNotInstalledError) {
             throw pollErr;
           }
@@ -355,7 +350,7 @@ export const uiTools: ToolDefinition[] = [
   {
     tool: {
       name: "ui_assert_visible",
-      description: "Assert that a UI element is visible on screen. Returns pass/fail without taking a screenshot. Much cheaper than visual verification.",
+      description: "Assert element is visible on screen (pass/fail)",
       inputSchema: {
         type: "object",
         properties: {
@@ -368,23 +363,14 @@ export const uiTools: ToolDefinition[] = [
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
-      const searchText = args.text as string | undefined;
-      const searchId = args.resourceId as string | undefined;
+      const searchText = getString(args, "text");
+      const searchId = getString(args, "resourceId");
 
       if (!searchText && !searchId) {
         return { text: "Provide text or resourceId to assert" };
       }
 
-      let elements: UiElement[] = [];
-      if (currentPlatform === "android") {
-        const xml = await ctx.deviceManager.getUiHierarchyAsync("android");
-        elements = parseUiHierarchy(xml);
-        ctx.setCachedElements("android", elements);
-      } else if (currentPlatform === "ios") {
-        const json = await ctx.deviceManager.getUiHierarchyAsync("ios");
-        const tree = JSON.parse(json);
-        elements = ctx.iosTreeToUiElements(tree);
-      }
+      const { elements } = await getUiElements(ctx, currentPlatform);
 
       const found = findElements(elements, {
         text: searchText,
@@ -392,15 +378,15 @@ export const uiTools: ToolDefinition[] = [
       });
 
       if (found.length > 0) {
-        return { text: `PASS: Element visible — ${formatElement(found[0])}` };
+        return { text: `PASS: Element visible -- ${formatElement(found[0])}` };
       }
-      return { text: `FAIL: Element not visible (text=${searchText ?? ""}, resourceId=${searchId ?? ""})` };
+      return { text: `FAIL: Element not visible (text=${searchText ?? ""}, resourceId=${searchId ?? ""})`, isError: true };
     },
   },
   {
     tool: {
       name: "ui_assert_gone",
-      description: "Assert that a UI element does NOT exist on screen. Useful for verifying elements were removed, dialogs dismissed, etc.",
+      description: "Assert element does NOT exist on screen (pass/fail)",
       inputSchema: {
         type: "object",
         properties: {
@@ -413,23 +399,14 @@ export const uiTools: ToolDefinition[] = [
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
-      const searchText = args.text as string | undefined;
-      const searchId = args.resourceId as string | undefined;
+      const searchText = getString(args, "text");
+      const searchId = getString(args, "resourceId");
 
       if (!searchText && !searchId) {
         return { text: "Provide text or resourceId to assert absence" };
       }
 
-      let elements: UiElement[] = [];
-      if (currentPlatform === "android") {
-        const xml = await ctx.deviceManager.getUiHierarchyAsync("android");
-        elements = parseUiHierarchy(xml);
-        ctx.setCachedElements("android", elements);
-      } else if (currentPlatform === "ios") {
-        const json = await ctx.deviceManager.getUiHierarchyAsync("ios");
-        const tree = JSON.parse(json);
-        elements = ctx.iosTreeToUiElements(tree);
-      }
+      const { elements } = await getUiElements(ctx, currentPlatform);
 
       const found = findElements(elements, {
         text: searchText,
@@ -439,7 +416,7 @@ export const uiTools: ToolDefinition[] = [
       if (found.length === 0) {
         return { text: `PASS: Element not present (text=${searchText ?? ""}, resourceId=${searchId ?? ""})` };
       }
-      return { text: `FAIL: Element exists — ${formatElement(found[0])}` };
+      return { text: `FAIL: Element exists -- ${formatElement(found[0])}`, isError: true };
     },
   },
 ];

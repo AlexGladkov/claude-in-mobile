@@ -3,6 +3,8 @@ import { stat } from "fs/promises";
 import { Readable } from "stream";
 import { createSign } from "crypto";
 import type { StoreClient, UploadResult } from "./store-client.js";
+import { AbstractStoreClient } from "./base-client.js";
+import { sanitizeErrorMessage } from "../utils/sanitize.js";
 
 const BASE = "https://public-api.rustore.ru/public/v1";
 const AUTH_URL = "https://public-api.rustore.ru/public/auth";
@@ -105,9 +107,18 @@ function createJwt(credentials: RuStoreCredentials): string {
   return `${signingInput}.${signature}`;
 }
 
-export class RuStoreClient implements StoreClient {
+export class RuStoreClient extends AbstractStoreClient implements StoreClient {
   private tokenCache: TokenCache | null = null;
   private drafts = new Map<string, DraftState>();
+
+  protected get apiErrorPrefix(): string {
+    return "RuStore API";
+  }
+
+  /** RuStore uses "Public-Token" header instead of "Authorization: Bearer" */
+  protected override authHeader(token: string): Record<string, string> {
+    return { "Public-Token": token };
+  }
 
   // ── Auth ─────────────────────────────────────────────────────────────────────
 
@@ -128,7 +139,7 @@ export class RuStoreClient implements StoreClient {
     });
 
     if (!res.ok) {
-      const text = await res.text();
+      const text = sanitizeErrorMessage((await res.text()).slice(0, 200));
       throw new Error(`RuStore auth failed ${res.status}: ${text}`);
     }
 
@@ -143,26 +154,6 @@ export class RuStoreClient implements StoreClient {
       expiresAt: Date.now() + ttlMs,
     };
     return this.tokenCache.token;
-  }
-
-  // ── API helpers ──────────────────────────────────────────────────────────────
-
-  private async api<T>(method: string, url: string, token: string, body?: unknown): Promise<T> {
-    const res = await fetch(url, {
-      method,
-      headers: {
-        "Public-Token": token,
-        "Content-Type": "application/json",
-      },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`RuStore API ${res.status} ${method} ${url}: ${text}`);
-    }
-    if (res.status === 204 || res.headers.get("content-length") === "0") return {} as T;
-    return res.json() as Promise<T>;
   }
 
   private async createDraftVersion(packageName: string, token: string): Promise<number> {
@@ -197,7 +188,7 @@ export class RuStoreClient implements StoreClient {
 
     const formData = new FormData();
     const webStream = Readable.toWeb(createReadStream(filePath)) as ReadableStream<Uint8Array>;
-    const blob = new Blob([await streamToBuffer(webStream)], { type: "application/octet-stream" });
+    const blob = new Blob([await this.streamToBuffer(webStream)], { type: "application/octet-stream" });
     formData.append("file", blob, fileName);
 
     const uploadUrl =
@@ -214,7 +205,7 @@ export class RuStoreClient implements StoreClient {
     });
 
     if (!res.ok) {
-      const text = await res.text();
+      const text = sanitizeErrorMessage((await res.text()).slice(0, 200));
       // Clean up orphaned draft
       await this.deleteDraft(packageName, versionId, token);
       throw new Error(`RuStore: APK/AAB upload failed ${res.status}: ${text}`);
@@ -339,15 +330,3 @@ export class RuStoreClient implements StoreClient {
   }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-async function streamToBuffer(stream: ReadableStream<Uint8Array>): Promise<Buffer> {
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-  }
-  return Buffer.concat(chunks);
-}

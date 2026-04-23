@@ -1,21 +1,16 @@
 import type { ToolDefinition } from "./registry.js";
 import { RuStoreClient } from "../store/rustore.js";
+import { validatePackageName, validatePath } from "../utils/sanitize.js";
+import { ValidationError } from "../errors.js";
+import { createLazySingleton } from "../utils/lazy.js";
 
-let _client: RuStoreClient | null = null;
-
-function client(): RuStoreClient {
-  if (!_client) _client = new RuStoreClient();
-  return _client;
-}
+const client = createLazySingleton(() => new RuStoreClient());
 
 export const ruStoreTools: ToolDefinition[] = [
   {
     tool: {
       name: "rustore_upload",
-      description:
-        "Upload APK or AAB to RuStore. Automatically creates a new version draft and uploads the file. " +
-        "Requires RUSTORE_KEY_JSON (JSON with companyId, keyId, privateKey) or " +
-        "RUSTORE_COMPANY_ID + RUSTORE_KEY_ID + RUSTORE_PRIVATE_KEY environment variables.",
+      description: "Upload APK/AAB to RuStore. Requires RUSTORE_KEY_JSON env.",
       inputSchema: {
         type: "object",
         properties: {
@@ -26,6 +21,8 @@ export const ruStoreTools: ToolDefinition[] = [
       },
     },
     handler: async (args) => {
+      validatePackageName(args.packageName as string);
+      validatePath(args.filePath as string, "filePath");
       const result = await client().upload(
         args.packageName as string,
         args.filePath as string
@@ -40,9 +37,7 @@ export const ruStoreTools: ToolDefinition[] = [
   {
     tool: {
       name: "rustore_set_notes",
-      description:
-        "Set what's new notes for the current RuStore version draft. " +
-        "Call once per language. Max 500 characters.",
+      description: "Set what's new for RuStore draft",
       inputSchema: {
         type: "object",
         properties: {
@@ -57,9 +52,10 @@ export const ruStoreTools: ToolDefinition[] = [
       },
     },
     handler: async (args) => {
+      validatePackageName(args.packageName as string);
       const text = args.text as string;
       if (text.length > 500) {
-        return { text: `Error: what's new text exceeds 500 characters (${text.length})` };
+        throw new ValidationError(`What's new text exceeds 500 characters (${text.length}).`);
       }
       await client().setReleaseNotes(
         args.packageName as string,
@@ -72,10 +68,7 @@ export const ruStoreTools: ToolDefinition[] = [
   {
     tool: {
       name: "rustore_submit",
-      description:
-        "Send the current RuStore version draft for moderation. " +
-        "Note: publication is not immediate — it requires passing the RuStore moderation process, " +
-        "which may take 1–3 business days.",
+      description: "Submit RuStore draft for moderation",
       inputSchema: {
         type: "object",
         properties: {
@@ -85,6 +78,7 @@ export const ruStoreTools: ToolDefinition[] = [
       },
     },
     handler: async (args) => {
+      validatePackageName(args.packageName as string);
       await client().submit(args.packageName as string);
       return {
         text:
@@ -96,7 +90,7 @@ export const ruStoreTools: ToolDefinition[] = [
   {
     tool: {
       name: "rustore_get_versions",
-      description: "Get list of versions and their statuses for an app in RuStore.",
+      description: "Get version list from RuStore",
       inputSchema: {
         type: "object",
         properties: {
@@ -106,6 +100,7 @@ export const ruStoreTools: ToolDefinition[] = [
       },
     },
     handler: async (args) => {
+      validatePackageName(args.packageName as string);
       const result = await client().getReleases(args.packageName as string);
       return { text: result };
     },
@@ -113,9 +108,7 @@ export const ruStoreTools: ToolDefinition[] = [
   {
     tool: {
       name: "rustore_discard",
-      description:
-        "Delete the current RuStore version draft without submitting. " +
-        "Use to cancel an upload and start over.",
+      description: "Delete RuStore version draft",
       inputSchema: {
         type: "object",
         properties: {
@@ -125,6 +118,7 @@ export const ruStoreTools: ToolDefinition[] = [
       },
     },
     handler: async (args) => {
+      validatePackageName(args.packageName as string);
       await client().discard!(args.packageName as string);
       return { text: `RuStore draft deleted for ${args.packageName}` };
     },

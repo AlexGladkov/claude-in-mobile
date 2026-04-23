@@ -14,7 +14,7 @@ export class DeviceNotFoundError extends MobileError {
   constructor(deviceId?: string) {
     super(
       deviceId
-        ? `Device not found: ${deviceId}. Run list_devices to see connected devices.`
+        ? `Device not found: ${deviceId}. Use device(action:'list') to see connected devices.`
         : "No device connected. Connect a device or start an emulator.",
       "DEVICE_NOT_FOUND"
     );
@@ -58,9 +58,9 @@ export class PermissionDeniedError extends MobileError {
 }
 
 export class CommandTimeoutError extends MobileError {
-  constructor(command: string, timeoutMs: number) {
+  constructor(_command: string, timeoutMs: number) {
     super(
-      `Command timed out after ${timeoutMs}ms: ${command}`,
+      `Command timed out after ${timeoutMs}ms`,
       "COMMAND_TIMEOUT"
     );
   }
@@ -78,7 +78,7 @@ export class WdaNotInstalledError extends MobileError {
 export class ElementNotFoundError extends MobileError {
   constructor(criteria: string) {
     super(
-      `Element not found: ${criteria}. Use get_ui or analyze_screen to see available elements.`,
+      `Element not found: ${criteria}. Use ui(action:'tree') or ui(action:'analyze') to see available elements.`,
       "ELEMENT_NOT_FOUND"
     );
   }
@@ -105,7 +105,7 @@ export class BrowserSecurityError extends MobileError {
 export class BrowserSessionNotFoundError extends MobileError {
   constructor(session: string, active: string[]) {
     super(
-      `Browser session "${session}" not found.${active.length > 0 ? ` Active sessions: ${active.join(", ")}.` : ""} Use browser_open to start a session.`,
+      `Browser session "${session}" not found.${active.length > 0 ? ` Active sessions: ${active.join(", ")}.` : ""} Use browser(action:'open') to start a session.`,
       "BROWSER_SESSION_NOT_FOUND"
     );
   }
@@ -114,7 +114,7 @@ export class BrowserSessionNotFoundError extends MobileError {
 export class BrowserNoSessionError extends MobileError {
   constructor() {
     super(
-      "No active browser session. Call browser_open(url) to start.",
+      "No active browser session. Call browser(action:'open', url:...) to start.",
       "BROWSER_NO_SESSION"
     );
   }
@@ -123,7 +123,7 @@ export class BrowserNoSessionError extends MobileError {
 export class BrowserRefNotFoundError extends MobileError {
   constructor(ref: string, lastKnown?: string) {
     super(
-      `Ref "${ref}" is stale or not found${lastKnown ? ` (was: ${lastKnown})` : ""}. Call browser_snapshot to get fresh refs.`,
+      `Ref "${ref}" is stale or not found${lastKnown ? ` (was: ${lastKnown})` : ""}. Call browser(action:'snapshot') to get fresh refs.`,
       "BROWSER_REF_NOT_FOUND"
     );
   }
@@ -136,6 +136,38 @@ export class ChromeNotInstalledError extends MobileError {
       "CHROME_NOT_INSTALLED"
     );
   }
+}
+
+export class ModuleNotLoadedError extends MobileError {
+  constructor(moduleName: string) {
+    super(
+      `Module "${moduleName}" is not loaded. Use device(action:'enable_module', module:'${moduleName}') to enable it.`,
+      "MODULE_NOT_LOADED"
+    );
+  }
+}
+
+export class UnknownActionError extends MobileError {
+  constructor(tool: string, action: string, validActions: string[]) {
+    super(
+      `Unknown action "${action}" for ${tool}. Valid: ${validActions.join(", ")}`,
+      "UNKNOWN_ACTION"
+    );
+  }
+}
+
+export class ValidationError extends MobileError {
+  constructor(message: string) {
+    super(message, "VALIDATION_ERROR");
+  }
+}
+
+const RETRYABLE_CODES = new Set([
+  "DEVICE_OFFLINE", "COMMAND_TIMEOUT", "ADB_ERROR", "BROWSER_REF_NOT_FOUND",
+]);
+
+export function isRetryable(error: unknown): boolean {
+  return error instanceof MobileError && RETRYABLE_CODES.has(error.code);
 }
 
 /**
@@ -160,7 +192,8 @@ export function classifyAdbError(stderr: string, command: string): MobileError {
     return new CommandTimeoutError(command, 0);
   }
 
-  return new MobileError(`ADB command failed: ${command}\n${stderr}`, "ADB_ERROR");
+  const cmdType = command.replace(/^adb\s+(-s\s+\S+\s+)?/, "").split(/\s+/)[0] ?? "unknown";
+  return new MobileError(`ADB ${cmdType} failed: ${stderr.trim().slice(0, 200)}`, "ADB_ERROR");
 }
 
 /**
@@ -179,5 +212,6 @@ export function classifySimctlError(stderr: string, command: string): MobileErro
     return new CommandTimeoutError(command, 0);
   }
 
-  return new MobileError(`simctl command failed: ${command}\n${stderr}`, "SIMCTL_ERROR");
+  const cmdType = command.replace(/^xcrun\s+simctl\s+/, "").split(/\s+/)[0] ?? "unknown";
+  return new MobileError(`simctl ${cmdType} failed: ${stderr.trim().slice(0, 200)}`, "SIMCTL_ERROR");
 }

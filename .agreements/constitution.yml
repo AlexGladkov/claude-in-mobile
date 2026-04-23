@@ -1,0 +1,27 @@
+governance:
+    voters:
+        - role: maintainers
+    quorum:
+        type: majority
+        threshold: 0
+    forbid_self_approval: true
+    allow_vote_change: false
+    proposal_ttl_days: 30
+    per_rule_overrides: {}
+    exceptions:
+        require_approval: false
+identity:
+    allowed_domains:
+        - example.com
+    require_signed_commits: false
+roles:
+    maintainers:
+        members:
+            - email: alexgladkov@icloud.com
+llm:
+    provider: deepseek
+    endpoint: ""
+    model: deepseek-chat
+    prompts:
+        check_system: ""
+        propose_system: ""

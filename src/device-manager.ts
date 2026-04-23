@@ -1,13 +1,23 @@
 /**
- * DeviceManager — thin orchestrator that delegates to platform adapters.
+ * DeviceManager -- thin orchestrator that delegates to platform adapters.
  *
  * Refactored from a 715-line God Object into a ~230-line routing layer.
  * All platform-specific logic lives in src/adapters/*.
  *
- * FIX #8: auto-detect device when no deviceId is selected — see getAdapter().
+ * ISP: The adapters map stores CorePlatformAdapter (the universal contract).
+ * Capability-specific operations (app management, permissions, shell) use
+ * type guards to narrow before calling.
+ *
+ * FIX #8: auto-detect device when no deviceId is selected -- see getAdapter().
  */
 
-import type { PlatformAdapter } from "./adapters/platform-adapter.js";
+import type { CorePlatformAdapter } from "./adapters/platform-adapter.js";
+import {
+  hasAppManagement,
+  hasPermissions,
+  hasShell,
+  hasSyncScreenshot,
+} from "./adapters/platform-adapter.js";
 import { AndroidAdapter } from "./adapters/android-adapter.js";
 import { IosAdapter } from "./adapters/ios-adapter.js";
 import { DesktopAdapter } from "./adapters/desktop-adapter.js";
@@ -39,7 +49,7 @@ export class DeviceManager {
   private auroraAdapter: AuroraAdapter;
   private browserAdapter: BrowserAdapter;
 
-  private adapters: Map<Platform, PlatformAdapter>;
+  private adapters: Map<Platform, CorePlatformAdapter>;
   private activeDevice?: Device;
   private activeTarget: Platform = "android";
   private webViewInspector?: WebViewInspector;
@@ -60,7 +70,7 @@ export class DeviceManager {
     this.auroraAdapter = new AuroraAdapter();
     this.browserAdapter = new BrowserAdapter();
 
-    this.adapters = new Map<Platform, PlatformAdapter>([
+    this.adapters = new Map<Platform, CorePlatformAdapter>([
       ["android", this.androidAdapter],
       ["ios", this.iosAdapter],
       ["desktop", this.desktopAdapter],
@@ -83,20 +93,20 @@ export class DeviceManager {
    * This ensures commands work after a server restart without requiring
    * an explicit set_device call.
    */
-  private getAdapter(platform?: Platform): PlatformAdapter {
+  private getAdapter(platform?: Platform): CorePlatformAdapter {
     const target = platform ?? this.activeTarget;
     const adapter = this.adapters.get(target);
     if (!adapter) {
       throw new Error(`Unknown platform: ${target}`);
     }
 
-    // Desktop and Browser return immediately — the adapter itself guards state
+    // Desktop and Browser return immediately -- the adapter itself guards state
     // where needed (actions, screenshots, UI). Logs/clearLogs work even when stopped.
     if (target === "desktop" || target === "browser") {
       return adapter;
     }
 
-    // FIX #8 — auto-detect device when none is selected.
+    // FIX #8 -- auto-detect device when none is selected.
     // After a server restart the in-memory deviceId is lost, so we probe
     // the platform for a connected device before the command runs.
     if (!adapter.getSelectedDeviceId()) {
@@ -187,7 +197,7 @@ export class DeviceManager {
     // Handle desktop special case
     if (deviceId === "desktop" || platform === "desktop") {
       if (!this.desktopAdapter.isRunning()) {
-        throw new Error("Desktop app is not running. Use launch_desktop_app first.");
+        throw new Error("Desktop app is not running. Use desktop(action:'launch') first.");
       }
       this.activeTarget = "desktop";
       return {
@@ -260,6 +270,9 @@ export class DeviceManager {
 
   screenshotRaw(platform?: Platform): string {
     const adapter = this.getAdapter(platform);
+    if (!hasSyncScreenshot(adapter)) {
+      throw new Error(`screenshotRaw is not supported for ${adapter.platform}. Use screenshotAsync.`);
+    }
     return adapter.screenshotRaw();
   }
 
@@ -318,20 +331,37 @@ export class DeviceManager {
     await adapter.pressKey(key, targetPid);
   }
 
+  // ============ App management (guarded by type guard) ============
+
   launchApp(packageOrBundleId: string, platform?: Platform): string {
     const adapter = this.getAdapter(platform);
+    if (!hasAppManagement(adapter)) {
+      throw new Error(`App management is not supported for ${adapter.platform}. ${
+        adapter.platform === "browser" ? "Use browser_open instead." : ""
+      }`);
+    }
     return adapter.launchApp(packageOrBundleId);
   }
 
   stopApp(packageOrBundleId: string, platform?: Platform): void {
     const adapter = this.getAdapter(platform);
+    if (!hasAppManagement(adapter)) {
+      throw new Error(`App management is not supported for ${adapter.platform}. ${
+        adapter.platform === "browser" ? "Use browser_close instead." : ""
+      }`);
+    }
     adapter.stopApp(packageOrBundleId);
   }
 
   installApp(path: string, platform?: Platform): string {
     const adapter = this.getAdapter(platform);
+    if (!hasAppManagement(adapter)) {
+      throw new Error(`App installation is not supported for ${adapter.platform}.`);
+    }
     return adapter.installApp(path);
   }
+
+  // ============ Permissions (guarded by type guard) ============
 
   grantPermission(
     packageOrBundleId: string,
@@ -339,6 +369,12 @@ export class DeviceManager {
     platform?: Platform,
   ): string {
     const adapter = this.getAdapter(platform);
+    if (!hasPermissions(adapter)) {
+      throw new Error(
+        `Permission management is not supported for ${adapter.platform}. ` +
+        `Supported platforms: android, ios.`
+      );
+    }
     return adapter.grantPermission(packageOrBundleId, permission);
   }
 
@@ -348,13 +384,27 @@ export class DeviceManager {
     platform?: Platform,
   ): string {
     const adapter = this.getAdapter(platform);
+    if (!hasPermissions(adapter)) {
+      throw new Error(
+        `Permission management is not supported for ${adapter.platform}. ` +
+        `Supported platforms: android, ios.`
+      );
+    }
     return adapter.revokePermission(packageOrBundleId, permission);
   }
 
   resetPermissions(packageOrBundleId: string, platform?: Platform): string {
     const adapter = this.getAdapter(platform);
+    if (!hasPermissions(adapter)) {
+      throw new Error(
+        `Permission management is not supported for ${adapter.platform}. ` +
+        `Supported platforms: android, ios.`
+      );
+    }
     return adapter.resetPermissions(packageOrBundleId);
   }
+
+  // ============ UI ============
 
   async getUiHierarchy(platform?: Platform): Promise<string> {
     const adapter = this.getAdapter(platform);
@@ -366,8 +416,13 @@ export class DeviceManager {
     return adapter.getUiHierarchy();
   }
 
+  // ============ Shell (guarded by type guard) ============
+
   shell(command: string, platform?: Platform): string {
     const adapter = this.getAdapter(platform);
+    if (!hasShell(adapter)) {
+      throw new Error(`Shell is not supported for ${adapter.platform}.`);
+    }
     return adapter.shell(command);
   }
 
@@ -408,7 +463,7 @@ export class DeviceManager {
     return adapter.getScreenshotBufferAsync();
   }
 
-  // ============ Logs & System ============
+  // ============ Logs & System (guarded by type guard) ============
 
   getLogs(
     options: {
@@ -420,6 +475,9 @@ export class DeviceManager {
     } = {},
   ): string {
     const adapter = this.getAdapter(options.platform);
+    if (!hasShell(adapter)) {
+      throw new Error(`Logs are not supported for ${adapter.platform}.`);
+    }
     return adapter.getLogs({
       level: options.level,
       tag: options.tag,
@@ -430,6 +488,9 @@ export class DeviceManager {
 
   clearLogs(platform?: Platform): string {
     const adapter = this.getAdapter(platform);
+    if (!hasShell(adapter)) {
+      throw new Error(`Logs are not supported for ${adapter.platform}.`);
+    }
     return adapter.clearLogs();
   }
 

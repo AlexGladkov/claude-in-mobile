@@ -1,11 +1,15 @@
 import type { ToolDefinition } from "./registry.js";
 import { compressScreenshot } from "../utils/image.js";
+import { truncateOutput } from "../utils/truncate.js";
+import { validateUrl } from "../utils/sanitize.js";
+import { getString, requireString, getBoolean } from "./helpers/args-parser.js";
+import { BrowserNoSessionError } from "../errors.js";
 
 export const browserTools: ToolDefinition[] = [
   {
     tool: {
       name: "browser_open",
-      description: "Open a URL in a browser session. Returns an accessibility snapshot of the loaded page.",
+      description: "Open URL in browser session",
       inputSchema: {
         type: "object",
         properties: {
@@ -17,11 +21,13 @@ export const browserTools: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
+      const url = requireString(args, "url");
+      validateUrl(url);
       const adapter = ctx.deviceManager.getBrowserAdapter();
       const text = await adapter.open({
-        url: args.url as string,
-        session: args.session as string | undefined,
-        headless: args.headless as boolean | undefined,
+        url,
+        session: getString(args, "session"),
+        headless: typeof args.headless === "boolean" ? args.headless : undefined,
       });
       return { text };
     },
@@ -29,7 +35,7 @@ export const browserTools: ToolDefinition[] = [
   {
     tool: {
       name: "browser_close",
-      description: "Close a browser session and release resources.",
+      description: "Close browser session",
       inputSchema: {
         type: "object",
         properties: {
@@ -38,15 +44,15 @@ export const browserTools: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
-      await ctx.deviceManager.getBrowserAdapter().closeSession(args.session as string | undefined);
-      const session = args.session ?? "all";
-      return { text: `Browser session "${session}" closed.` };
+      const session = getString(args, "session");
+      await ctx.deviceManager.getBrowserAdapter().closeSession(session);
+      return { text: `Browser session "${session ?? "all"}" closed.` };
     },
   },
   {
     tool: {
       name: "browser_list_sessions",
-      description: "List active browser sessions.",
+      description: "List active browser sessions",
       inputSchema: { type: "object", properties: {} },
     },
     handler: async (_args, ctx) => {
@@ -58,7 +64,7 @@ export const browserTools: ToolDefinition[] = [
   {
     tool: {
       name: "browser_navigate",
-      description: "Navigate to a URL, or go back/forward/reload in the current session.",
+      description: "Navigate to URL or go back/forward/reload",
       inputSchema: {
         type: "object",
         properties: {
@@ -69,10 +75,14 @@ export const browserTools: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
+      const url = getString(args, "url");
+      if (url) {
+        validateUrl(url);
+      }
       const text = await ctx.deviceManager.getBrowserAdapter().navigate({
-        url: args.url as string | undefined,
-        action: args.action as "back" | "forward" | "reload" | undefined,
-        session: args.session as string | undefined,
+        url,
+        action: getString(args, "action") as "back" | "forward" | "reload" | undefined,
+        session: getString(args, "session"),
       });
       return { text };
     },
@@ -80,11 +90,11 @@ export const browserTools: ToolDefinition[] = [
   {
     tool: {
       name: "browser_click",
-      description: "Click an element in the browser. Use ref from browser_snapshot (preferred), CSS selector, or visible text.",
+      description: "Click element by ref, selector, or text",
       inputSchema: {
         type: "object",
         properties: {
-          ref: { type: "string", description: "Ref from browser_snapshot (e.g. 'e1'). Fastest and most reliable." },
+          ref: { type: "string", description: "Ref from browser(action:'snapshot') (e.g. 'e1'). Fastest and most reliable." },
           selector: { type: "string", description: "CSS selector" },
           text: { type: "string", description: "Visible text content of element to click" },
           session: { type: "string", description: "Session name. Default: 'default'" },
@@ -93,10 +103,10 @@ export const browserTools: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       const text = await ctx.deviceManager.getBrowserAdapter().clickElement({
-        ref: args.ref as string | undefined,
-        selector: args.selector as string | undefined,
-        text: args.text as string | undefined,
-        session: args.session as string | undefined,
+        ref: getString(args, "ref"),
+        selector: getString(args, "selector"),
+        text: getString(args, "text"),
+        session: getString(args, "session"),
       });
       return { text };
     },
@@ -104,11 +114,11 @@ export const browserTools: ToolDefinition[] = [
   {
     tool: {
       name: "browser_fill",
-      description: "Fill an input field with a value.",
+      description: "Fill input field with value",
       inputSchema: {
         type: "object",
         properties: {
-          ref: { type: "string", description: "Ref from browser_snapshot (e.g. 'e2')" },
+          ref: { type: "string", description: "Ref from browser(action:'snapshot') (e.g. 'e2')" },
           selector: { type: "string", description: "CSS selector of input field" },
           value: { type: "string", description: "Value to enter" },
           session: { type: "string", description: "Session name. Default: 'default'" },
@@ -119,21 +129,22 @@ export const browserTools: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
+      const value = requireString(args, "value");
       await ctx.deviceManager.getBrowserAdapter().fillField({
-        ref: args.ref as string | undefined,
-        selector: args.selector as string | undefined,
-        value: args.value as string,
-        session: args.session as string | undefined,
-        clear: args.clear as boolean | undefined,
-        pressEnter: args.pressEnter as boolean | undefined,
+        ref: getString(args, "ref"),
+        selector: getString(args, "selector"),
+        value,
+        session: getString(args, "session"),
+        clear: typeof args.clear === "boolean" ? args.clear : undefined,
+        pressEnter: typeof args.pressEnter === "boolean" ? args.pressEnter : undefined,
       });
-      return { text: `Filled field with value: "${args.value}"` };
+      return { text: `Filled field with value: "${value}"` };
     },
   },
   {
     tool: {
       name: "browser_fill_form",
-      description: "Fill multiple form fields at once. Optionally submit the form.",
+      description: "Fill multiple form fields at once",
       inputSchema: {
         type: "object",
         properties: {
@@ -158,18 +169,19 @@ export const browserTools: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       const fields = args.fields as Array<{ ref?: string; selector?: string; value: string }>;
+      const submit = typeof args.submit === "boolean" ? args.submit : undefined;
       await ctx.deviceManager.getBrowserAdapter().fillForm({
         fields,
-        submit: args.submit as boolean | undefined,
-        session: args.session as string | undefined,
+        submit,
+        session: getString(args, "session"),
       });
-      return { text: `Filled ${fields.length} field(s)${args.submit ? " and submitted." : "."}` };
+      return { text: `Filled ${fields.length} field(s)${submit ? " and submitted." : "."}` };
     },
   },
   {
     tool: {
       name: "browser_press_key",
-      description: "Press a keyboard key in the browser. Supported: Enter, Tab, Escape, Backspace, Delete, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, End, PageUp, PageDown, Space.",
+      description: "Press keyboard key in browser",
       inputSchema: {
         type: "object",
         properties: {
@@ -181,16 +193,17 @@ export const browserTools: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       const adapter = ctx.deviceManager.getBrowserAdapter();
-      const session = adapter.sessionManager.getSession(args.session as string | undefined);
-      if (!session) throw new Error("No active browser session. Use browser_open first.");
-      await adapter.client.pressKey(session, args.key as string);
-      return { text: `Pressed key: ${args.key}` };
+      const session = adapter.sessionManager.getSession(getString(args, "session"));
+      if (!session) throw new BrowserNoSessionError();
+      const key = requireString(args, "key");
+      await adapter.client.pressKey(session, key);
+      return { text: `Pressed key: ${key}` };
     },
   },
   {
     tool: {
       name: "browser_snapshot",
-      description: "Get accessibility snapshot of the current page with ref-ids for interactive elements. Use refs with browser_click and browser_fill.",
+      description: "Get accessibility snapshot with element refs",
       inputSchema: {
         type: "object",
         properties: {
@@ -199,14 +212,14 @@ export const browserTools: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
-      const text = await ctx.deviceManager.getBrowserAdapter().snapshot(args.session as string | undefined);
-      return { text };
+      const text = await ctx.deviceManager.getBrowserAdapter().snapshot(getString(args, "session"));
+      return { text: truncateOutput(text, { maxChars: 15_000 }) };
     },
   },
   {
     tool: {
       name: "browser_screenshot",
-      description: "Take a screenshot of the current browser page.",
+      description: "Take browser page screenshot",
       inputSchema: {
         type: "object",
         properties: {
@@ -217,21 +230,22 @@ export const browserTools: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       const adapter = ctx.deviceManager.getBrowserAdapter();
+      const fullPage = typeof args.fullPage === "boolean" ? args.fullPage : undefined;
       const buffer = await adapter.screenshotBrowser(
-        args.session as string | undefined,
-        args.fullPage as boolean | undefined
+        getString(args, "session"),
+        fullPage,
       );
       const compressed = await compressScreenshot(buffer, {});
       return {
         image: { data: compressed.data, mimeType: compressed.mimeType },
-        text: `Screenshot taken${args.fullPage ? " (full page)" : ""}.`,
+        text: `Screenshot taken${fullPage ? " (full page)" : ""}.`,
       };
     },
   },
   {
     tool: {
       name: "browser_evaluate",
-      description: "Execute JavaScript in the browser page and return the result.",
+      description: "Execute JavaScript in browser page",
       inputSchema: {
         type: "object",
         properties: {
@@ -242,17 +256,18 @@ export const browserTools: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
+      const expression = requireString(args, "expression");
       const text = await ctx.deviceManager.getBrowserAdapter().evaluateJs(
-        args.expression as string,
-        args.session as string | undefined
+        expression,
+        getString(args, "session"),
       );
-      return { text };
+      return { text: truncateOutput(text) };
     },
   },
   {
     tool: {
       name: "browser_wait_for_selector",
-      description: "Wait for an element to appear on the page.",
+      description: "Wait for element to appear on page",
       inputSchema: {
         type: "object",
         properties: {
@@ -265,19 +280,20 @@ export const browserTools: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
+      const selector = requireString(args, "selector");
       await ctx.deviceManager.getBrowserAdapter().waitForSelector(
-        args.selector as string,
-        args.timeout as number | undefined,
-        args.state as "attached" | "visible" | undefined,
-        args.session as string | undefined
+        selector,
+        typeof args.timeout === "number" ? args.timeout : undefined,
+        getString(args, "state") as "attached" | "visible" | undefined,
+        getString(args, "session"),
       );
-      return { text: `Element "${args.selector}" found.` };
+      return { text: `Element "${selector}" found.` };
     },
   },
   {
     tool: {
       name: "browser_clear_session",
-      description: "Delete all stored data for a browser session (cookies, localStorage, etc.). The session will be closed.",
+      description: "Delete all stored data for a session",
       inputSchema: {
         type: "object",
         properties: {
@@ -287,8 +303,9 @@ export const browserTools: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
-      await ctx.deviceManager.getBrowserAdapter().clearSessionData(args.session as string);
-      return { text: `Session "${args.session}" data cleared.` };
+      const session = requireString(args, "session");
+      await ctx.deviceManager.getBrowserAdapter().clearSessionData(session);
+      return { text: `Session "${session}" data cleared.` };
     },
   },
 ];

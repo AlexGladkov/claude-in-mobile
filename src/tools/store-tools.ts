@@ -1,18 +1,16 @@
 import type { ToolDefinition } from "./registry.js";
 import { GooglePlayClient } from "../store/google-play.js";
+import { validatePackageName, validatePath } from "../utils/sanitize.js";
+import { ValidationError } from "../errors.js";
+import { createLazySingleton } from "../utils/lazy.js";
 
-let _client: GooglePlayClient | null = null;
-
-function client(): GooglePlayClient {
-  if (!_client) _client = new GooglePlayClient();
-  return _client;
-}
+const client = createLazySingleton(() => new GooglePlayClient());
 
 export const storeTools: ToolDefinition[] = [
   {
     tool: {
       name: "store_upload",
-      description: "Upload APK or AAB to Google Play. Creates a release draft. Returns the version code. Requires GOOGLE_PLAY_KEY_FILE or GOOGLE_PLAY_SERVICE_ACCOUNT_JSON env var.",
+      description: "Upload APK/AAB to Google Play. Requires GOOGLE_PLAY_KEY_FILE env.",
       inputSchema: {
         type: "object",
         properties: {
@@ -23,6 +21,8 @@ export const storeTools: ToolDefinition[] = [
       },
     },
     handler: async (args) => {
+      validatePackageName(args.packageName as string);
+      validatePath(args.filePath as string, "filePath");
       const result = await client().upload(args.packageName as string, args.filePath as string);
       return { text: `Uploaded. Version code: ${result.versionCode}\nDraft is open — call store_set_notes and store_submit to publish.` };
     },
@@ -30,7 +30,7 @@ export const storeTools: ToolDefinition[] = [
   {
     tool: {
       name: "store_set_notes",
-      description: "Set release notes (what's new) for the current release draft. Call once per language. Max 500 characters.",
+      description: "Set release notes for Google Play draft (per language, max 500 chars)",
       inputSchema: {
         type: "object",
         properties: {
@@ -42,9 +42,10 @@ export const storeTools: ToolDefinition[] = [
       },
     },
     handler: async (args) => {
+      validatePackageName(args.packageName as string);
       const text = args.text as string;
       if (text.length > 500) {
-        return { text: `Error: release notes exceed 500 characters (${text.length})` };
+        throw new ValidationError(`Release notes exceed 500 characters (${text.length}).`);
       }
       await client().setReleaseNotes(args.packageName as string, args.language as string, text);
       return { text: `Release notes set for ${args.language} (${text.length}/500 chars)` };
@@ -53,7 +54,7 @@ export const storeTools: ToolDefinition[] = [
   {
     tool: {
       name: "store_submit",
-      description: "Publish the current release draft to a track. Commits the edit to Google Play.",
+      description: "Publish release draft to Google Play track",
       inputSchema: {
         type: "object",
         properties: {
@@ -73,6 +74,7 @@ export const storeTools: ToolDefinition[] = [
       },
     },
     handler: async (args) => {
+      validatePackageName(args.packageName as string);
       const rollout = Math.min(1.0, Math.max(0.01, (args.rollout as number) ?? 1.0));
       await client().submit(args.packageName as string, args.track as string, rollout);
       const pct = rollout === 1.0 ? "100%" : `${(rollout * 100).toFixed(0)}%`;
@@ -82,7 +84,7 @@ export const storeTools: ToolDefinition[] = [
   {
     tool: {
       name: "store_promote",
-      description: "Promote the latest release from one track to another (e.g., internal → alpha → beta → production).",
+      description: "Promote release between Google Play tracks",
       inputSchema: {
         type: "object",
         properties: {
@@ -102,6 +104,7 @@ export const storeTools: ToolDefinition[] = [
       },
     },
     handler: async (args) => {
+      validatePackageName(args.packageName as string);
       await client().promote(args.packageName as string, args.fromTrack as string, args.toTrack as string);
       return { text: `Promoted latest release: ${args.fromTrack} → ${args.toTrack}` };
     },
@@ -109,7 +112,7 @@ export const storeTools: ToolDefinition[] = [
   {
     tool: {
       name: "store_get_releases",
-      description: "Get current releases across all tracks (or a specific track) for an app.",
+      description: "Get current releases across Google Play tracks",
       inputSchema: {
         type: "object",
         properties: {
@@ -124,6 +127,7 @@ export const storeTools: ToolDefinition[] = [
       },
     },
     handler: async (args) => {
+      validatePackageName(args.packageName as string);
       const result = await client().getReleases(
         args.packageName as string,
         args.track as string | undefined
@@ -134,7 +138,7 @@ export const storeTools: ToolDefinition[] = [
   {
     tool: {
       name: "store_halt_rollout",
-      description: "Halt an in-progress staged rollout. Use when a release has issues and you need to stop distribution.",
+      description: "Halt staged rollout on Google Play",
       inputSchema: {
         type: "object",
         properties: {
@@ -149,6 +153,7 @@ export const storeTools: ToolDefinition[] = [
       },
     },
     handler: async (args) => {
+      validatePackageName(args.packageName as string);
       await client().haltRollout(args.packageName as string, args.track as string);
       return { text: `Rollout halted on ${args.track} track` };
     },
@@ -156,7 +161,7 @@ export const storeTools: ToolDefinition[] = [
   {
     tool: {
       name: "store_discard",
-      description: "Discard the current release draft without publishing. Use to start over after store_upload.",
+      description: "Discard Google Play release draft",
       inputSchema: {
         type: "object",
         properties: {
@@ -166,6 +171,7 @@ export const storeTools: ToolDefinition[] = [
       },
     },
     handler: async (args) => {
+      validatePackageName(args.packageName as string);
       await client().discard(args.packageName as string);
       return { text: `Release draft discarded for ${args.packageName}` };
     },

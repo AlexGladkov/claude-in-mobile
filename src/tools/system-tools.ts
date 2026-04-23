@@ -1,17 +1,17 @@
 import type { ToolDefinition } from "./registry.js";
 import type { ToolContext } from "./context.js";
 import type { Platform } from "../device-manager.js";
+import { truncateOutput } from "../utils/truncate.js";
+import { validateShellCommand, validateUrl, sanitizeForShell } from "../utils/sanitize.js";
 
 export const systemTools: ToolDefinition[] = [
   {
     tool: {
       name: "system_activity",
-      description: "Get the currently active app/activity (Android only)",
+      description: "Get current foreground activity (Android only)",
       inputSchema: {
         type: "object",
-        properties: {
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-        },
+        properties: {},
       },
     },
     handler: async (args, ctx) => {
@@ -19,7 +19,7 @@ export const systemTools: ToolDefinition[] = [
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
 
       if (currentPlatform !== "android") {
-        return { text: "get_current_activity is only available for Android." };
+        return { text: "activity is only available for Android." };
       }
 
       const activity = ctx.deviceManager.getAndroidClient().getCurrentActivity();
@@ -29,7 +29,7 @@ export const systemTools: ToolDefinition[] = [
   {
     tool: {
       name: "system_shell",
-      description: "Execute shell command. ADB shell for Android, simctl for iOS",
+      description: "Execute shell command on device",
       inputSchema: {
         type: "object",
         properties: {
@@ -41,14 +41,16 @@ export const systemTools: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
-      const output = ctx.deviceManager.shell(args.command as string, platform);
-      return { text: output || "(no output)" };
+      const command = args.command as string;
+      validateShellCommand(command);
+      const output = ctx.deviceManager.shell(command, platform);
+      return { text: truncateOutput(output || "(no output)") };
     },
   },
   {
     tool: {
       name: "system_wait",
-      description: "Wait for specified duration",
+      description: "Wait for specified duration (ms)",
       inputSchema: {
         type: "object",
         properties: {
@@ -80,7 +82,8 @@ export const systemTools: ToolDefinition[] = [
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
       const url = args.url as string;
 
-      const sanitizedUrl = url.replace(/'/g, "'\\''");
+      validateUrl(url);
+      const sanitizedUrl = sanitizeForShell(url);
 
       if (currentPlatform === "android") {
         ctx.deviceManager.getAndroidClient().shell(`am start -a android.intent.action.VIEW -d '${sanitizedUrl}'`);
@@ -95,7 +98,7 @@ export const systemTools: ToolDefinition[] = [
   {
     tool: {
       name: "system_logs",
-      description: "Get device logs (logcat for Android, system log for iOS). Useful for debugging app issues, crashes, and errors.",
+      description: "Get device logs with optional filters",
       inputSchema: {
         type: "object",
         properties: {
@@ -113,10 +116,10 @@ export const systemTools: ToolDefinition[] = [
         platform,
         level: args.level as string | undefined,
         tag: args.tag as string | undefined,
-        lines: (args.lines as number) ?? 100,
+        lines: Math.min((args.lines as number) ?? 100, 500),
         package: args.package as string | undefined,
       });
-      return { text: logs || "(no logs)" };
+      return { text: truncateOutput(logs || "(no logs)", { maxLines: 500 }) };
     },
   },
   {
@@ -125,9 +128,7 @@ export const systemTools: ToolDefinition[] = [
       description: "Clear device log buffer (Android only)",
       inputSchema: {
         type: "object",
-        properties: {
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-        },
+        properties: {},
       },
     },
     handler: async (args, ctx) => {
@@ -139,7 +140,7 @@ export const systemTools: ToolDefinition[] = [
   {
     tool: {
       name: "system_info",
-      description: "Get device system info: battery level, memory usage (Android only)",
+      description: "Get battery and memory info",
       inputSchema: {
         type: "object",
         properties: {
@@ -156,12 +157,10 @@ export const systemTools: ToolDefinition[] = [
   {
     tool: {
       name: "system_webview",
-      description: "Inspect WebView content in the current Android app via Chrome DevTools Protocol. Lists available WebView pages with their URLs and titles. (Android only)",
+      description: "Inspect WebView via Chrome DevTools Protocol (Android only)",
       inputSchema: {
         type: "object",
-        properties: {
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-        },
+        properties: {},
       },
     },
     handler: async (args, ctx) => {
@@ -169,7 +168,7 @@ export const systemTools: ToolDefinition[] = [
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
 
       if (currentPlatform !== "android") {
-        return { text: "get_webview is only available for Android." };
+        return { text: "webview is only available for Android." };
       }
 
       try {
@@ -191,8 +190,9 @@ export const systemTools: ToolDefinition[] = [
         }
 
         return { text: output };
-      } catch (error: any) {
-        return { text: `WebView inspection failed: ${error.message}` };
+      } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : String(error);
+        return { text: `WebView inspection failed: ${msg}` };
       }
     },
   },
