@@ -1,6 +1,7 @@
 import { execSync, exec, execFile } from "child_process";
 import { promisify } from "util";
 import { classifyAdbError } from "../errors.js";
+import { validatePackageName, validatePermission, validateDeviceId, validateLogTag, validateLogTimestamp } from "../utils/sanitize.js";
 
 const execAsyncCmd = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -18,6 +19,9 @@ export class AdbClient {
   private deviceId?: string;
 
   constructor(deviceId?: string) {
+    if (deviceId) {
+      validateDeviceId(deviceId);
+    }
     this.deviceId = deviceId;
   }
 
@@ -36,11 +40,12 @@ export class AdbClient {
         timeout: EXEC_TIMEOUT_MS,
         maxBuffer: 50 * 1024 * 1024 // 50MB for screenshots
       }).trim();
-    } catch (error: any) {
-      if (error.killed === true || error.signal === "SIGTERM") {
+    } catch (error: unknown) {
+      const e = error as { killed?: boolean; signal?: string; stderr?: Buffer | string; message?: string };
+      if (e.killed === true || e.signal === "SIGTERM") {
         throw new Error(`ADB command timed out after ${EXEC_TIMEOUT_MS}ms: ${fullCommand}. Device may be disconnected or screen locked.`);
       }
-      throw classifyAdbError(error.stderr?.toString() ?? error.message, fullCommand);
+      throw classifyAdbError(e.stderr?.toString() ?? e.message ?? String(error), fullCommand);
     }
   }
 
@@ -54,11 +59,12 @@ export class AdbClient {
         timeout: EXEC_RAW_TIMEOUT_MS,
         maxBuffer: 50 * 1024 * 1024
       });
-    } catch (error: any) {
-      if (error.killed === true || error.signal === "SIGTERM") {
+    } catch (error: unknown) {
+      const e = error as { killed?: boolean; signal?: string; stderr?: Buffer | string; message?: string };
+      if (e.killed === true || e.signal === "SIGTERM") {
         throw new Error(`ADB command timed out after ${EXEC_RAW_TIMEOUT_MS}ms: ${fullCommand}. Device may be disconnected or screen locked.`);
       }
-      throw classifyAdbError(error.stderr?.toString() ?? error.message, fullCommand);
+      throw classifyAdbError(e.stderr?.toString() ?? e.message ?? String(error), fullCommand);
     }
   }
 
@@ -73,11 +79,12 @@ export class AdbClient {
         maxBuffer: 50 * 1024 * 1024
       });
       return stdout.trim();
-    } catch (error: any) {
-      if (error.killed === true || error.signal === "SIGTERM") {
+    } catch (error: unknown) {
+      const e = error as { killed?: boolean; signal?: string; stderr?: Buffer | string; message?: string };
+      if (e.killed === true || e.signal === "SIGTERM") {
         throw new Error(`ADB command timed out after ${EXEC_TIMEOUT_MS}ms: ${fullCommand}. Device may be disconnected or screen locked.`);
       }
-      throw classifyAdbError(error.stderr?.toString() ?? error.message, fullCommand);
+      throw classifyAdbError(e.stderr?.toString() ?? e.message ?? String(error), fullCommand);
     }
   }
 
@@ -93,14 +100,15 @@ export class AdbClient {
       const { stdout } = await execFileAsync("adb", args, {
         timeout: EXEC_RAW_TIMEOUT_MS,
         maxBuffer: 50 * 1024 * 1024,
-        encoding: "buffer" as any,
+        encoding: "buffer" as BufferEncoding,
       });
       return stdout as unknown as Buffer;
-    } catch (error: any) {
-      if (error.killed === true || error.signal === "SIGTERM") {
+    } catch (error: unknown) {
+      const e = error as { killed?: boolean; signal?: string; stderr?: Buffer | string; message?: string };
+      if (e.killed === true || e.signal === "SIGTERM") {
         throw new Error(`ADB command timed out after ${EXEC_RAW_TIMEOUT_MS}ms: ${fullCommand}. Device may be disconnected or screen locked.`);
       }
-      throw classifyAdbError(error.stderr?.toString() ?? error.message, fullCommand);
+      throw classifyAdbError(e.stderr?.toString() ?? e.message ?? String(error), fullCommand);
     }
   }
 
@@ -131,6 +139,7 @@ export class AdbClient {
    * Set active device
    */
   setDevice(deviceId: string): void {
+    validateDeviceId(deviceId);
     this.deviceId = deviceId;
   }
 
@@ -259,6 +268,7 @@ export class AdbClient {
   inputText(text: string): void {
     // Escape special characters for shell
     const escaped = text
+      .replace(/[\n\r]/g, "")
       .replace(/\\/g, "\\\\")
       .replace(/"/g, '\\"')
       .replace(/'/g, "\\'")
@@ -346,6 +356,7 @@ export class AdbClient {
    * Launch app by package name
    */
   launchApp(packageName: string): string {
+    validatePackageName(packageName);
     // Try to get launch activity
     try {
       const output = this.exec(`shell cmd package resolve-activity --brief ${packageName}`);
@@ -367,6 +378,7 @@ export class AdbClient {
    * Stop app
    */
   stopApp(packageName: string): void {
+    validatePackageName(packageName);
     this.exec(`shell am force-stop ${packageName}`);
   }
 
@@ -374,6 +386,7 @@ export class AdbClient {
    * Clear app data
    */
   clearAppData(packageName: string): void {
+    validatePackageName(packageName);
     this.exec(`shell pm clear ${packageName}`);
   }
 
@@ -381,6 +394,8 @@ export class AdbClient {
    * Grant runtime permission to app
    */
   grantPermission(packageName: string, permission: string): void {
+    validatePackageName(packageName);
+    validatePermission(permission);
     this.exec(`shell pm grant ${packageName} ${permission}`);
   }
 
@@ -388,6 +403,8 @@ export class AdbClient {
    * Revoke runtime permission from app
    */
   revokePermission(packageName: string, permission: string): void {
+    validatePackageName(packageName);
+    validatePermission(permission);
     this.exec(`shell pm revoke ${packageName} ${permission}`);
   }
 
@@ -395,6 +412,7 @@ export class AdbClient {
    * Reset all permissions for app (clears app data)
    */
   resetPermissions(packageName: string): void {
+    validatePackageName(packageName);
     this.exec(`shell pm reset-permissions ${packageName}`);
   }
 
@@ -409,6 +427,7 @@ export class AdbClient {
    * Uninstall app
    */
   uninstallApp(packageName: string): string {
+    validatePackageName(packageName);
     return this.exec(`uninstall ${packageName}`);
   }
 
@@ -445,7 +464,7 @@ export class AdbClient {
       }
 
       return "unknown";
-    } catch (error: any) {
+    } catch {
       // Try alternative method
       try {
         const output = this.exec("shell dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'");
@@ -503,6 +522,7 @@ export class AdbClient {
 
     // Filter by tag
     if (options.tag) {
+      validateLogTag(options.tag);
       cmd += ` -s ${options.tag}`;
     }
 
@@ -513,6 +533,7 @@ export class AdbClient {
 
     // Filter by time (e.g., "01-01 00:00:00.000")
     if (options.since) {
+      validateLogTimestamp(options.since);
       cmd += ` -t "${options.since}"`;
     }
 
@@ -557,6 +578,7 @@ export class AdbClient {
    */
   getMemoryInfo(packageName?: string): string {
     if (packageName) {
+      validatePackageName(packageName);
       return this.exec(`shell dumpsys meminfo ${packageName}`);
     }
     return this.exec("shell cat /proc/meminfo | head -20");

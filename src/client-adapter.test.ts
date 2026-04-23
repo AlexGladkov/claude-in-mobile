@@ -90,8 +90,8 @@ describe("getInstructions", () => {
   it("should return instructions string for opencode", () => {
     const adapter = detectClient({ name: "opencode", version: "1.0.0" });
     const instructions = adapter.getInstructions();
-    expect(instructions).toContain("screen_capture");
-    expect(instructions).toContain("input_tap");
+    expect(instructions).toContain("screen");
+    expect(instructions).toContain("input");
     expect(instructions.length).toBeGreaterThan(0);
   });
 

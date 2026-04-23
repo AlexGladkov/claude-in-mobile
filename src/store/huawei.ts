@@ -2,6 +2,8 @@ import { existsSync, createReadStream } from "fs";
 import { stat } from "fs/promises";
 import { Readable } from "stream";
 import type { StoreClient, UploadResult } from "./store-client.js";
+import { AbstractStoreClient } from "./base-client.js";
+import { sanitizeErrorMessage } from "../utils/sanitize.js";
 
 const OAUTH_URL = "https://connect-api.cloud.huawei.com/api/oauth2/v1/token";
 const BASE = "https://connect-api.cloud.huawei.com/api/publish/v2";
@@ -61,10 +63,14 @@ function buildCredentials(): { clientId: string; clientSecret: string } {
   return { clientId, clientSecret };
 }
 
-export class HuaweiAppGalleryClient implements StoreClient {
+export class HuaweiAppGalleryClient extends AbstractStoreClient implements StoreClient {
   private tokenCache: TokenCache | null = null;
   private appIdCache = new Map<string, string>();
   private drafts = new Map<string, DraftState>();
+
+  protected get apiErrorPrefix(): string {
+    return "Huawei API";
+  }
 
   // ── Auth ─────────────────────────────────────────────────────────────────────
 
@@ -88,7 +94,7 @@ export class HuaweiAppGalleryClient implements StoreClient {
     });
 
     if (!res.ok) {
-      const text = await res.text();
+      const text = sanitizeErrorMessage((await res.text()).slice(0, 200));
       throw new Error(`Huawei OAuth failed ${res.status}: ${text}`);
     }
 
@@ -102,26 +108,6 @@ export class HuaweiAppGalleryClient implements StoreClient {
       expiresAt: now + data.expires_in * 1000,
     };
     return this.tokenCache.token;
-  }
-
-  // ── API helpers ──────────────────────────────────────────────────────────────
-
-  private async api<T>(method: string, url: string, token: string, body?: unknown): Promise<T> {
-    const res = await fetch(url, {
-      method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Huawei API ${res.status} ${method} ${url}: ${text}`);
-    }
-    if (res.status === 204 || res.headers.get("content-length") === "0") return {} as T;
-    return res.json() as Promise<T>;
   }
 
   private async getAppId(packageName: string, token: string): Promise<string> {
@@ -178,7 +164,7 @@ export class HuaweiAppGalleryClient implements StoreClient {
     // Step 2: Upload file via multipart/form-data
     const formData = new FormData();
     const webStream = Readable.toWeb(createReadStream(filePath)) as ReadableStream<Uint8Array>;
-    const blob = new Blob([await streamToBuffer(webStream)], { type: "application/octet-stream" });
+    const blob = new Blob([await this.streamToBuffer(webStream)], { type: "application/octet-stream" });
     formData.append("file", blob, fileName);
     formData.append("token", urlData.authCode);
 
@@ -188,7 +174,7 @@ export class HuaweiAppGalleryClient implements StoreClient {
     });
 
     if (!uploadRes.ok) {
-      const text = await uploadRes.text();
+      const text = sanitizeErrorMessage((await uploadRes.text()).slice(0, 200));
       throw new Error(`Huawei: file upload failed ${uploadRes.status}: ${text}`);
     }
 
@@ -286,17 +272,6 @@ export class HuaweiAppGalleryClient implements StoreClient {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-async function streamToBuffer(stream: ReadableStream<Uint8Array>): Promise<Buffer> {
-  const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-  }
-  return Buffer.concat(chunks);
-}
 
 function formatReleaseState(state: number): string {
   const states: Record<number, string> = {

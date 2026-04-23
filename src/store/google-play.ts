@@ -2,6 +2,8 @@ import { GoogleAuth } from "google-auth-library";
 import { existsSync, createReadStream } from "fs";
 import { stat } from "fs/promises";
 import { Readable } from "stream";
+import { AbstractStoreClient } from "./base-client.js";
+import { sanitizeErrorMessage } from "../utils/sanitize.js";
 
 const BASE = "https://androidpublisher.googleapis.com/androidpublisher/v3";
 const UPLOAD_BASE = "https://androidpublisher.googleapis.com/upload/androidpublisher/v3";
@@ -32,15 +34,25 @@ function buildAuth(): GoogleAuth {
     return new GoogleAuth({ keyFile, scopes: SCOPES });
   }
   if (keyContent) {
-    return new GoogleAuth({ credentials: JSON.parse(keyContent), scopes: SCOPES });
+    let credentials: Record<string, unknown>;
+    try {
+      credentials = JSON.parse(keyContent);
+    } catch {
+      throw new Error("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON is not valid JSON. Check the environment variable.");
+    }
+    return new GoogleAuth({ credentials, scopes: SCOPES });
   }
   // Will fail on first use with a clear message
   return new GoogleAuth({ scopes: SCOPES });
 }
 
-export class GooglePlayClient {
+export class GooglePlayClient extends AbstractStoreClient {
   private auth = buildAuth();
   private activeEdits = new Map<string, EditState>();
+
+  protected get apiErrorPrefix(): string {
+    return "Google Play API";
+  }
 
   private async token(): Promise<string> {
     const client = await this.auth.getClient();
@@ -51,24 +63,6 @@ export class GooglePlayClient {
       );
     }
     return res.token;
-  }
-
-  private async api<T>(method: string, url: string, token: string, body?: unknown): Promise<T> {
-    const res = await fetch(url, {
-      method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
-    });
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Google Play API ${res.status} ${method} ${url.split("/edits")[0]}: ${text}`);
-    }
-    if (res.status === 204 || res.headers.get("content-length") === "0") return {} as T;
-    return res.json() as Promise<T>;
   }
 
   private async ensureEdit(packageName: string): Promise<EditState> {
@@ -113,7 +107,7 @@ export class GooglePlayClient {
     );
 
     if (!initiateRes.ok) {
-      const text = await initiateRes.text();
+      const text = sanitizeErrorMessage((await initiateRes.text()).slice(0, 200));
       throw new Error(`Upload initiation failed ${initiateRes.status}: ${text}`);
     }
 
@@ -135,7 +129,7 @@ export class GooglePlayClient {
     });
 
     if (!uploadRes.ok) {
-      const text = await uploadRes.text();
+      const text = sanitizeErrorMessage((await uploadRes.text()).slice(0, 200));
       throw new Error(`Upload failed ${uploadRes.status}: ${text}`);
     }
 

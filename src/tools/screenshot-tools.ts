@@ -28,7 +28,7 @@ export const screenshotTools: ToolDefinition[] = [
   {
     tool: {
       name: "screen_capture",
-      description: "Take a screenshot of the device screen. FALLBACK ONLY — prefer ui_tree for inspecting UI elements (text-based, ~10x cheaper). Use screen_capture only when: visual layout verification is needed, ui_tree fails, or you need to confirm something visually. Images are auto-compressed. Use diff mode to only see what changed (saves 60-80% tokens).",
+      description: "Take screenshot. Auto-compressed. Use diff=true to see only changes.",
       inputSchema: {
         type: "object",
         properties: {
@@ -85,10 +85,18 @@ export const screenshotTools: ToolDefinition[] = [
       const diffMode = args.diff === true;
       const stableMode = args.waitForStable === true;
       const diffThreshold = (args.diffThreshold as number) ?? 30;
+
+      // Resolve preset to concrete values (explicit params override preset)
+      const presetValues: Record<string, { maxWidth: number; maxHeight: number; quality: number }> = {
+        low: { maxWidth: 270, maxHeight: 480, quality: 40 },
+        medium: { maxWidth: 540, maxHeight: 960, quality: 55 },
+        high: { maxWidth: 810, maxHeight: 1440, quality: 70 },
+      };
+      const preset = presetValues[args.preset as string] ?? undefined;
       const compressOptions = {
-        maxWidth: args.maxWidth as number | undefined,
-        maxHeight: args.maxHeight as number | undefined,
-        quality: args.quality as number | undefined,
+        maxWidth: (args.maxWidth as number | undefined) ?? preset?.maxWidth,
+        maxHeight: (args.maxHeight as number | undefined) ?? preset?.maxHeight,
+        quality: (args.quality as number | undefined) ?? preset?.quality,
         monitorIndex: args.monitorIndex as number | undefined,
       };
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform() ?? "android";
@@ -169,7 +177,7 @@ export const screenshotTools: ToolDefinition[] = [
   {
     tool: {
       name: "screen_annotate",
-      description: "Take a screenshot with colored bounding boxes and numbered labels overlaid on UI elements. Green = clickable, Red = non-clickable. Returns annotated image + element index. Useful for visual understanding of UI layout. Android and iOS only.",
+      description: "Screenshot with numbered bounding boxes on UI elements (Android/iOS)",
       inputSchema: {
         type: "object",
         properties: {
@@ -200,7 +208,7 @@ export const screenshotTools: ToolDefinition[] = [
       const platform = args.platform as Platform | undefined;
       const currentPlat = platform ?? ctx.deviceManager.getCurrentPlatform();
       if (currentPlat === "desktop" || currentPlat === "aurora") {
-        return { text: `annotate_screenshot is not supported for ${currentPlat} platform. Use screenshot + get_ui instead.` };
+        return { text: `screen(action:'annotate') is not supported for ${currentPlat} platform. Use screen(action:'capture') + ui(action:'tree') instead.` };
       }
 
       const pngBuffer = await ctx.deviceManager.getScreenshotBufferAsync(currentPlat);
@@ -237,16 +245,23 @@ export const screenshotTools: ToolDefinition[] = [
         quality: args.quality as number | undefined,
       });
 
-      const elementsList = annotResult.elements
+      const maxAnnotElements = 100;
+      const totalAnnotElements = annotResult.elements.length;
+      const displayElements = annotResult.elements.slice(0, maxAnnotElements);
+      const elementsList = displayElements
         .map(el => `  ${el.index}: ${el.clickable ? "[clickable] " : ""}${el.label} @ (${el.center.x}, ${el.center.y})`)
         .join("\n");
+
+      const truncNotice = totalAnnotElements > maxAnnotElements
+        ? `\n(showing ${maxAnnotElements} of ${totalAnnotElements} elements)`
+        : "";
 
       return {
         image: {
           data: annotResult.image.data,
           mimeType: annotResult.image.mimeType,
         },
-        text: `Annotated ${annotResult.elements.length} elements:\n${elementsList}`,
+        text: `Annotated ${totalAnnotElements} elements:\n${elementsList}${truncNotice}`,
       };
     },
   },

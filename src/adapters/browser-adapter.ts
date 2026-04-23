@@ -1,4 +1,11 @@
-import type { PlatformAdapter } from "./platform-adapter.js";
+/**
+ * BrowserAdapter -- implements CorePlatformAdapter only.
+ *
+ * Browser has no concept of app management, permissions, or shell access.
+ * Those capabilities are NOT implemented here -- no more "not supported" throws.
+ */
+
+import type { CorePlatformAdapter } from "./platform-adapter.js";
 import type { Platform, Device } from "../device-manager.js";
 import type { CompressOptions } from "../utils/image.js";
 import { BrowserClient } from "../browser/client.js";
@@ -22,7 +29,7 @@ const VIRTUAL_BROWSER_DEVICE: Device = {
   isSimulator: false,
 };
 
-export class BrowserAdapter implements PlatformAdapter {
+export class BrowserAdapter implements CorePlatformAdapter {
   readonly platform: Platform = "browser";
 
   readonly sessionManager: SessionManager;
@@ -86,7 +93,7 @@ export class BrowserAdapter implements PlatformAdapter {
       expression: `JSON.stringify({w: window.innerWidth, h: window.innerHeight})`,
       returnByValue: true,
     });
-    const { w = 800, h = 600 } = JSON.parse(result.value ?? "{}");
+    const { w = 800, h = 600 } = JSON.parse((result.value as string) ?? "{}");
     const cx = w / 2, cy = h / 2;
     const offset = Math.min(w, h) * 0.3;
     const dirs: Record<string, number[]> = {
@@ -121,47 +128,12 @@ export class BrowserAdapter implements PlatformAdapter {
     return this.client.screenshot(this.getActiveSession(), false);
   }
 
-  screenshotRaw(): string {
-    throw new Error("screenshotRaw not supported for browser platform. Use screenshotAsync.");
-  }
-
   // -- UI --
   async getUiHierarchy(): Promise<string> {
     return this.client.getSnapshot(this.getActiveSession());
   }
 
-  // -- App management (not supported) --
-  launchApp(_pkg: string): string {
-    throw new Error("launchApp is not supported for browser platform. Use browser_open.");
-  }
-  stopApp(_pkg: string): void {
-    throw new Error("stopApp is not supported for browser platform. Use browser_close.");
-  }
-  installApp(_path: string): string {
-    throw new Error("installApp is not supported for browser platform.");
-  }
-
-  // -- Permissions (not supported) --
-  grantPermission(_pkg: string, _perm: string): string {
-    throw new Error("grantPermission is not supported for browser platform.");
-  }
-  revokePermission(_pkg: string, _perm: string): string {
-    throw new Error("revokePermission is not supported for browser platform.");
-  }
-  resetPermissions(_pkg: string): string {
-    throw new Error("resetPermissions is not supported for browser platform.");
-  }
-
-  // -- System (stub) --
-  shell(_cmd: string): string {
-    throw new Error("shell is not supported for browser platform.");
-  }
-  getLogs(_opts: any): string {
-    return "(Browser console logs not implemented. Use browser_evaluate to inspect page.)";
-  }
-  clearLogs(): string {
-    return "OK";
-  }
+  // -- System info --
   async getSystemInfo(): Promise<string> {
     const sessions = this.sessionManager.listSessions();
     return JSON.stringify({ platform: "browser", activeSessions: sessions.length, sessions }, null, 2);
@@ -221,7 +193,7 @@ export class BrowserAdapter implements PlatformAdapter {
       return `Clicked -> navigated to ${newUrl}\n\n${snapshot}`;
     }
 
-    return `Clicked successfully. Use browser_snapshot to see changes.`;
+    return `Clicked successfully. Use browser(action:'snapshot') to see changes.`;
   }
 
   async fillField(options: BrowserFillOptions): Promise<void> {

@@ -1,12 +1,13 @@
 import type { ToolDefinition } from "./registry.js";
 import type { ToolContext } from "./context.js";
 import type { Platform } from "../device-manager.js";
+import { validatePackageName, validatePermission } from "../utils/sanitize.js";
 
 export const permissionTools: ToolDefinition[] = [
   {
     tool: {
       name: "permission_grant",
-      description: "Grant a permission to an app. Android: runtime permissions (e.g., android.permission.CAMERA). iOS: privacy services (e.g., camera, microphone, photos, location, contacts, calendar, reminders)",
+      description: "Grant app permission (Android runtime / iOS privacy)",
       inputSchema: {
         type: "object",
         properties: {
@@ -19,6 +20,8 @@ export const permissionTools: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      validatePackageName(args.package as string);
+      validatePermission(args.permission as string);
       const result = ctx.deviceManager.grantPermission(
         args.package as string,
         args.permission as string,
@@ -30,7 +33,7 @@ export const permissionTools: ToolDefinition[] = [
   {
     tool: {
       name: "permission_revoke",
-      description: "Revoke a permission from an app. Android: runtime permissions. iOS: privacy services",
+      description: "Revoke app permission",
       inputSchema: {
         type: "object",
         properties: {
@@ -43,6 +46,8 @@ export const permissionTools: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      validatePackageName(args.package as string);
+      validatePermission(args.permission as string);
       const result = ctx.deviceManager.revokePermission(
         args.package as string,
         args.permission as string,
@@ -54,7 +59,7 @@ export const permissionTools: ToolDefinition[] = [
   {
     tool: {
       name: "permission_reset",
-      description: "Reset all permissions for an app. Android: resets runtime permissions. iOS: resets all privacy settings",
+      description: "Reset all permissions for an app",
       inputSchema: {
         type: "object",
         properties: {
@@ -66,6 +71,7 @@ export const permissionTools: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      validatePackageName(args.package as string);
       const result = ctx.deviceManager.resetPermissions(
         args.package as string,
         platform

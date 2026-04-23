@@ -1,11 +1,12 @@
 import type { ToolDefinition } from "./registry.js";
 import type { ToolContext } from "./context.js";
+import { validatePath, validateJvmArg } from "../utils/sanitize.js";
 
 export const desktopTools: ToolDefinition[] = [
   {
     tool: {
       name: "desktop_launch",
-      description: "Start desktop automation. Optionally also launches a Compose Desktop application via Gradle.",
+      description: "Start desktop automation, optionally launch Compose Desktop app",
       inputSchema: {
         type: "object",
         properties: {
@@ -16,6 +17,14 @@ export const desktopTools: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
+      if (args.projectPath) {
+        validatePath(args.projectPath as string, "projectPath");
+      }
+      if (args.jvmArgs) {
+        for (const arg of args.jvmArgs as string[]) {
+          validateJvmArg(arg);
+        }
+      }
       const result = await ctx.deviceManager.launchDesktopApp({
         projectPath: args.projectPath as string | undefined,
         task: args.task as string | undefined,
@@ -27,7 +36,7 @@ export const desktopTools: ToolDefinition[] = [
   {
     tool: {
       name: "desktop_stop",
-      description: "Stop the running desktop application",
+      description: "Stop running desktop application",
       inputSchema: {
         type: "object",
         properties: {},
@@ -41,7 +50,7 @@ export const desktopTools: ToolDefinition[] = [
   {
     tool: {
       name: "desktop_windows",
-      description: "Get information about desktop windows (Desktop only)",
+      description: "Get desktop window info",
       inputSchema: {
         type: "object",
         properties: {},
@@ -49,7 +58,7 @@ export const desktopTools: ToolDefinition[] = [
     },
     handler: async (_args, ctx) => {
       if (!ctx.deviceManager.isDesktopRunning()) {
-        return { text: "Desktop app is not running. Use launch_desktop_app first." };
+        return { text: "Desktop app is not running. Use desktop(action:'launch') first." };
       }
       const windowInfo = await ctx.deviceManager.getDesktopClient().getWindowInfo();
       if (windowInfo.windows.length === 0) {
@@ -67,18 +76,18 @@ export const desktopTools: ToolDefinition[] = [
   {
     tool: {
       name: "desktop_focus",
-      description: "Focus a specific desktop window (Desktop only)",
+      description: "Focus a desktop window",
       inputSchema: {
         type: "object",
         properties: {
-          windowId: { type: "string", description: "Window ID from get_window_info" },
+          windowId: { type: "string", description: "Window ID from desktop(action:'windows')" },
         },
         required: ["windowId"],
       },
     },
     handler: async (args, ctx) => {
       if (!ctx.deviceManager.isDesktopRunning()) {
-        return { text: "Desktop app is not running. Use launch_desktop_app first." };
+        return { text: "Desktop app is not running. Use desktop(action:'launch') first." };
       }
       await ctx.deviceManager.getDesktopClient().focusWindow(args.windowId as string);
       return { text: `Focused window: ${args.windowId}` };
@@ -87,7 +96,7 @@ export const desktopTools: ToolDefinition[] = [
   {
     tool: {
       name: "desktop_resize",
-      description: "Resize a desktop window (Desktop only)",
+      description: "Resize a desktop window",
       inputSchema: {
         type: "object",
         properties: {
@@ -100,7 +109,7 @@ export const desktopTools: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       if (!ctx.deviceManager.isDesktopRunning()) {
-        return { text: "Desktop app is not running. Use launch_desktop_app first." };
+        return { text: "Desktop app is not running. Use desktop(action:'launch') first." };
       }
       await ctx.deviceManager.getDesktopClient().resizeWindow(
         args.width as number,
@@ -113,7 +122,7 @@ export const desktopTools: ToolDefinition[] = [
   {
     tool: {
       name: "clipboard_get",
-      description: "Get clipboard text content (Desktop only)",
+      description: "Get clipboard text (Desktop only)",
       inputSchema: {
         type: "object",
         properties: {},
@@ -121,7 +130,7 @@ export const desktopTools: ToolDefinition[] = [
     },
     handler: async (_args, ctx) => {
       if (!ctx.deviceManager.isDesktopRunning()) {
-        return { text: "Desktop app is not running. Use launch_desktop_app first." };
+        return { text: "Desktop app is not running. Use desktop(action:'launch') first." };
       }
       const clipboardText = await ctx.deviceManager.getDesktopClient().getClipboard();
       return { text: clipboardText || "(empty)" };
@@ -130,7 +139,7 @@ export const desktopTools: ToolDefinition[] = [
   {
     tool: {
       name: "clipboard_set",
-      description: "Set clipboard text content (Desktop only)",
+      description: "Set clipboard text (Desktop only)",
       inputSchema: {
         type: "object",
         properties: {
@@ -141,7 +150,7 @@ export const desktopTools: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       if (!ctx.deviceManager.isDesktopRunning()) {
-        return { text: "Desktop app is not running. Use launch_desktop_app first." };
+        return { text: "Desktop app is not running. Use desktop(action:'launch') first." };
       }
       await ctx.deviceManager.getDesktopClient().setClipboard(args.text as string);
       return { text: "Clipboard set" };
@@ -150,7 +159,7 @@ export const desktopTools: ToolDefinition[] = [
   {
     tool: {
       name: "desktop_performance",
-      description: "Get memory and CPU usage metrics (Desktop only)",
+      description: "Get memory and CPU metrics (Desktop only)",
       inputSchema: {
         type: "object",
         properties: {},
@@ -158,7 +167,7 @@ export const desktopTools: ToolDefinition[] = [
     },
     handler: async (_args, ctx) => {
       if (!ctx.deviceManager.isDesktopRunning()) {
-        return { text: "Desktop app is not running. Use launch_desktop_app first." };
+        return { text: "Desktop app is not running. Use desktop(action:'launch') first." };
       }
       const metrics = await ctx.deviceManager.getDesktopClient().getPerformanceMetrics();
       let result = "Performance metrics:\n";
@@ -172,7 +181,7 @@ export const desktopTools: ToolDefinition[] = [
   {
     tool: {
       name: "desktop_monitors",
-      description: "Get list of all connected monitors with their dimensions and positions (Desktop only, multi-monitor support)",
+      description: "List connected monitors (Desktop only)",
       inputSchema: {
         type: "object",
         properties: {},
@@ -180,7 +189,7 @@ export const desktopTools: ToolDefinition[] = [
     },
     handler: async (_args, ctx) => {
       if (!ctx.deviceManager.isDesktopRunning()) {
-        return { text: "Desktop app is not running. Use launch_desktop_app first." };
+        return { text: "Desktop app is not running. Use desktop(action:'launch') first." };
       }
       const monitors = await ctx.deviceManager.getDesktopClient().getMonitors();
       if (monitors.length === 0) {

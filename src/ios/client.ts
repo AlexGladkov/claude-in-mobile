@@ -4,6 +4,7 @@ import { join } from "path";
 import { readFileSync, unlinkSync } from "fs";
 import { WDAManager, WDAClient, WDAElement, WDARect } from "./wda/index.js";
 import { classifySimctlError } from "../errors.js";
+import { validateDeviceId } from "../utils/sanitize.js";
 
 const EXEC_TIMEOUT_MS = 15_000;      // 15s for text commands
 
@@ -55,11 +56,12 @@ export class IosClient {
         timeout: EXEC_TIMEOUT_MS,
         maxBuffer: 50 * 1024 * 1024
       }).trim();
-    } catch (error: any) {
-      if (error.killed === true || error.signal === "SIGTERM") {
+    } catch (error: unknown) {
+      const e = error as { killed?: boolean; signal?: string; stderr?: Buffer | string; message?: string };
+      if (e.killed === true || e.signal === "SIGTERM") {
         throw new Error(`simctl command timed out after ${EXEC_TIMEOUT_MS}ms: ${fullCommand}. Simulator may be unresponsive.`);
       }
-      throw classifySimctlError(error.stderr?.toString() ?? error.message, fullCommand);
+      throw classifySimctlError(e.stderr?.toString() ?? e.message ?? String(error), fullCommand);
     }
   }
 
@@ -81,7 +83,7 @@ export class IosClient {
     for (const [runtime, deviceList] of Object.entries(data.devices)) {
       if (!Array.isArray(deviceList)) continue;
 
-      for (const device of deviceList as any[]) {
+      for (const device of deviceList as Array<{ isAvailable?: boolean; udid: string; name: string; state: string }>) {
         // Only include available devices
         if (device.isAvailable) {
           devices.push({
@@ -109,6 +111,7 @@ export class IosClient {
    * Set active device
    */
   setDevice(deviceId: string): void {
+    validateDeviceId(deviceId);
     if (this.deviceId !== deviceId) {
       this.wdaClient = undefined;
     }
@@ -166,12 +169,13 @@ export class IosClient {
     try {
       const wdaClient = await this.ensureWDA();
       await wdaClient.tapByCoordinates(x, y);
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
       throw new Error(
         `Tap requires WebDriverAgent.\n\n` +
         `Install: npm install -g appium && appium driver install xcuitest\n` +
         `Or set WDA_PATH environment variable.\n\n` +
-        `Error: ${error.message}`
+        `Error: ${msg}`
       );
     }
   }
@@ -183,12 +187,13 @@ export class IosClient {
     try {
       const wdaClient = await this.ensureWDA();
       await wdaClient.swipe(x1, y1, x2, y2, durationMs);
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
       throw new Error(
         `Swipe requires WebDriverAgent.\n\n` +
         `Install: npm install -g appium && appium driver install xcuitest\n` +
         `Or set WDA_PATH environment variable.\n\n` +
-        `Error: ${error.message}`
+        `Error: ${msg}`
       );
     }
   }
@@ -200,12 +205,13 @@ export class IosClient {
     try {
       const wdaClient = await this.ensureWDA();
       await wdaClient.longPress(x, y, durationMs);
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
       throw new Error(
         `Long press requires WebDriverAgent.\n\n` +
         `Install: npm install -g appium && appium driver install xcuitest\n` +
         `Or set WDA_PATH environment variable.\n\n` +
-        `Error: ${error.message}`
+        `Error: ${msg}`
       );
     }
   }
@@ -316,12 +322,13 @@ export class IosClient {
       const wdaClient = await this.ensureWDA();
       const tree = await wdaClient.getAccessibleSource();
       return JSON.stringify(tree, null, 2);
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
       throw new Error(
         `WebDriverAgent required for iOS UI inspection.\n\n` +
         `Install: npm install -g appium && appium driver install xcuitest\n` +
         `Or set WDA_PATH environment variable.\n\n` +
-        `Error: ${error.message}`
+        `Error: ${msg}`
       );
     }
   }
@@ -415,8 +422,9 @@ export class IosClient {
         timeout: EXEC_TIMEOUT_MS,
         maxBuffer: 50 * 1024 * 1024
       });
-    } catch (error: any) {
-      throw classifySimctlError(error.stderr?.toString() ?? error.message, `simctl openurl ${url}`);
+    } catch (error: unknown) {
+      const e = error as { stderr?: Buffer | string; message?: string };
+      throw classifySimctlError(e.stderr?.toString() ?? e.message ?? String(error), `simctl openurl ${url}`);
     }
   }
 
@@ -482,7 +490,7 @@ export class IosClient {
       }
 
       return output;
-    } catch (error: any) {
+    } catch {
       // Fallback: try system log
       try {
         return execSync(

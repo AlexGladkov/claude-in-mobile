@@ -1,13 +1,28 @@
 /**
- * AndroidAdapter — wraps AdbClient and implements PlatformAdapter.
+ * AndroidAdapter -- wraps AdbClient.
+ *
+ * Implements all capability interfaces:
+ *   - CorePlatformAdapter
+ *   - AppManagementAdapter
+ *   - PermissionAdapter
+ *   - ShellAdapter
+ *   - SyncScreenshotAdapter
  */
 
-import type { PlatformAdapter } from "./platform-adapter.js";
+import type {
+  CorePlatformAdapter,
+  AppManagementAdapter,
+  PermissionAdapter,
+  ShellAdapter,
+  SyncScreenshotAdapter,
+} from "./platform-adapter.js";
 import type { Device } from "../device-manager.js";
 import { AdbClient } from "../adb/client.js";
 import { compressScreenshot, type CompressOptions } from "../utils/image.js";
 
-export class AndroidAdapter implements PlatformAdapter {
+export class AndroidAdapter
+  implements CorePlatformAdapter, AppManagementAdapter, PermissionAdapter, ShellAdapter, SyncScreenshotAdapter
+{
   readonly platform = "android" as const;
   private client: AdbClient;
   private _selectedDeviceId: string | undefined;
@@ -17,7 +32,7 @@ export class AndroidAdapter implements PlatformAdapter {
     this._selectedDeviceId = this.client.getDeviceId();
   }
 
-  /** Raw client access — needed by tools that call getAndroidClient(). */
+  /** Raw client access -- needed by tools that call getAndroidClient(). */
   getClient(): AdbClient {
     return this.client;
   }
@@ -134,7 +149,7 @@ export class AndroidAdapter implements PlatformAdapter {
     return this.client.getUiHierarchyAsync();
   }
 
-  // ============ App management ============
+  // ============ App management (AppManagementAdapter) ============
 
   launchApp(packageName: string): string {
     return this.client.launchApp(packageName);
@@ -148,7 +163,7 @@ export class AndroidAdapter implements PlatformAdapter {
     return this.client.installApk(path);
   }
 
-  // ============ Permissions ============
+  // ============ Permissions (PermissionAdapter) ============
 
   grantPermission(packageName: string, permission: string): string {
     this.client.grantPermission(packageName, permission);
@@ -165,7 +180,7 @@ export class AndroidAdapter implements PlatformAdapter {
     return `Reset permissions for ${packageName}`;
   }
 
-  // ============ System ============
+  // ============ Shell / Logs (ShellAdapter) ============
 
   shell(command: string): string {
     return this.client.shell(command);
@@ -189,6 +204,8 @@ export class AndroidAdapter implements PlatformAdapter {
     this.client.clearLogs();
     return "Logcat buffer cleared";
   }
+
+  // ============ System info ============
 
   async getSystemInfo(): Promise<string> {
     const battery = this.client.getBatteryInfo();

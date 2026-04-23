@@ -1,38 +1,39 @@
 /**
- * Platform adapter interface — the contract every platform must implement.
+ * Platform adapter interfaces -- segregated by capability (ISP).
  *
- * Each adapter wraps a low-level client (AdbClient, IosClient, DesktopClient, AuroraClient)
- * and exposes a uniform API that DeviceManager delegates to.
+ * Instead of a single monolithic PlatformAdapter that forces Browser and
+ * Desktop to throw "not supported" for mobile-only features, the contract
+ * is split into focused interfaces:
+ *
+ *   CorePlatformAdapter   -- universal: every platform implements this
+ *   AppManagementAdapter  -- launchApp / stopApp / installApp
+ *   PermissionAdapter     -- grant / revoke / reset permissions
+ *   ShellAdapter          -- shell / logs / clearLogs
+ *
+ * Each concrete adapter implements only the interfaces it actually supports.
+ * Consumers use type guards (`hasAppManagement`, `hasPermissions`, etc.)
+ * to narrow before calling capability-specific methods.
+ *
+ * The legacy `PlatformAdapter` type alias is preserved for backward
+ * compatibility -- it is the intersection of all capability interfaces.
  */
 
 import type { Platform, Device } from "../device-manager.js";
 import type { CompressOptions } from "../utils/image.js";
 
-export interface PlatformAdapter {
+// ============ Core -- every adapter MUST implement ============
+
+export interface CorePlatformAdapter {
   /** Which platform this adapter serves. */
   readonly platform: Platform;
 
-  // ============ Device management ============
-
-  /** List all devices available on this platform. */
+  // -- Device management --
   listDevices(): Device[];
-
-  /** Set the active device by ID. */
   selectDevice(deviceId: string): void;
-
-  /** Return the currently selected device ID, if any. */
   getSelectedDeviceId(): string | undefined;
-
-  /**
-   * Attempt to auto-detect a usable device.
-   * Returns a Device if one can be found, undefined otherwise.
-   * This is the FIX for bug #8: after server restart the deviceId is lost
-   * and subsequent commands fail because no device is selected.
-   */
   autoDetectDevice(): Device | undefined;
 
-  // ============ Core actions ============
-
+  // -- Core interaction --
   tap(x: number, y: number, targetPid?: number): Promise<void>;
   doubleTap(x: number, y: number, intervalMs?: number): Promise<void>;
   longPress(x: number, y: number, durationMs?: number): Promise<void>;
@@ -41,57 +42,98 @@ export interface PlatformAdapter {
   inputText(text: string, targetPid?: number): Promise<void>;
   pressKey(key: string, targetPid?: number): Promise<void>;
 
-  // ============ Screenshot ============
-
-  /**
-   * Take a screenshot and return compressed result.
-   * The adapter is responsible for delegating to its client appropriately.
-   */
+  // -- Screenshot --
   screenshotAsync(
     compress: boolean,
     options?: CompressOptions & { monitorIndex?: number },
   ): Promise<{ data: string; mimeType: string }>;
-
-  /**
-   * Return raw screenshot as PNG Buffer (for annotation, diff etc.).
-   * Throws if the platform does not support raw buffer extraction.
-   */
   getScreenshotBufferAsync(): Promise<Buffer>;
 
-  /**
-   * Take screenshot and return base64 (legacy sync path).
-   * Not all platforms support this; those that don't should throw.
-   */
-  screenshotRaw(): string;
-
-  // ============ UI ============
-
+  // -- UI --
   getUiHierarchy(): Promise<string>;
 
-  // ============ App management ============
+  // -- System info --
+  getSystemInfo(): Promise<string>;
+}
 
+// ============ App management capability ============
+
+export interface AppManagementAdapter {
   launchApp(packageOrBundleId: string): string;
   stopApp(packageOrBundleId: string): void;
   installApp(path: string): string;
+}
 
-  // ============ Permissions ============
+// ============ Permission management capability ============
 
+export interface PermissionAdapter {
   grantPermission(packageOrBundleId: string, permission: string): string;
   revokePermission(packageOrBundleId: string, permission: string): string;
   resetPermissions(packageOrBundleId: string): string;
+}
 
-  // ============ System ============
+// ============ Shell / logs capability ============
 
+export interface ShellAdapter {
   shell(command: string): string;
-
   getLogs(options: {
     level?: string;
     tag?: string;
     lines?: number;
     package?: string;
   }): string;
-
   clearLogs(): string;
-
-  getSystemInfo(): Promise<string>;
 }
+
+// ============ Legacy sync screenshot (Android / iOS / Aurora only) ============
+
+export interface SyncScreenshotAdapter {
+  screenshotRaw(): string;
+}
+
+// ============ Type guards ============
+
+export function hasAppManagement(adapter: CorePlatformAdapter): adapter is CorePlatformAdapter & AppManagementAdapter {
+  return (
+    "launchApp" in adapter &&
+    "stopApp" in adapter &&
+    "installApp" in adapter
+  );
+}
+
+export function hasPermissions(adapter: CorePlatformAdapter): adapter is CorePlatformAdapter & PermissionAdapter {
+  return (
+    "grantPermission" in adapter &&
+    "revokePermission" in adapter &&
+    "resetPermissions" in adapter
+  );
+}
+
+export function hasShell(adapter: CorePlatformAdapter): adapter is CorePlatformAdapter & ShellAdapter {
+  return (
+    "shell" in adapter &&
+    "getLogs" in adapter &&
+    "clearLogs" in adapter
+  );
+}
+
+export function hasSyncScreenshot(adapter: CorePlatformAdapter): adapter is CorePlatformAdapter & SyncScreenshotAdapter {
+  return "screenshotRaw" in adapter;
+}
+
+// ============ Backward-compatible union ============
+
+/**
+ * Legacy full interface -- the intersection of ALL capabilities.
+ *
+ * Existing code that imports `PlatformAdapter` still compiles, but new
+ * code should prefer `CorePlatformAdapter` and narrow with type guards.
+ *
+ * @deprecated Prefer `CorePlatformAdapter` with capability type guards.
+ */
+export type PlatformAdapter =
+  CorePlatformAdapter &
+  AppManagementAdapter &
+  PermissionAdapter &
+  ShellAdapter &
+  SyncScreenshotAdapter;

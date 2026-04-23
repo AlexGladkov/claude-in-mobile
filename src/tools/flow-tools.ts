@@ -1,32 +1,37 @@
 import type { ToolDefinition } from "./registry.js";
+import { getRegisteredToolNames } from "./registry.js";
 import type { ToolContext } from "./context.js";
 import type { Platform } from "../device-manager.js";
 import { findElements } from "../adb/ui-parser.js";
-import { DeviceNotFoundError, DeviceOfflineError, AdbNotInstalledError } from "../errors.js";
+import { DeviceNotFoundError, DeviceOfflineError, AdbNotInstalledError, ValidationError, MobileError } from "../errors.js";
 import { MAX_RECURSION_DEPTH } from "./context.js";
+import { truncateOutput } from "../utils/truncate.js";
 
-// Flow Engine constants
-const FLOW_ALLOWED_ACTIONS = new Set([
-  // v3.1+ canonical names
-  "input_tap", "input_double_tap", "input_swipe", "input_text", "input_key",
-  "system_wait", "ui_wait", "system_open_url",
-  "screen_capture", "ui_analyze", "ui_assert_visible", "ui_assert_gone",
-  "ui_find_tap", "ui_find", "clipboard_select", "clipboard_copy", "clipboard_paste",
-  // v3.0 backward compat aliases (still accepted in flows)
-  "tap", "double_tap", "swipe", "press_key", "wait", "wait_for_element",
-  "screenshot", "analyze_screen", "assert_visible", "assert_not_exists",
-  "find_and_tap", "find_element", "open_url",
-  "select_text", "copy_text", "paste_text",
-  // browser (unchanged)
-  "browser_click", "browser_fill", "browser_snapshot", "browser_screenshot",
-  "browser_navigate", "browser_press_key", "browser_wait_for_selector",
+// Actions explicitly blocked from flow execution (security-sensitive).
+// Everything else registered in the registry is allowed.
+const FLOW_BLOCKED_ACTIONS = new Set([
+  "system_shell",
   "browser_evaluate",
 ]);
+
+/**
+ * Check whether an action is allowed in flow_batch / flow_run / flow_parallel.
+ *
+ * Strategy: blocklist instead of allowlist. Any registered tool or alias is
+ * allowed unless it is in FLOW_BLOCKED_ACTIONS. This eliminates the need
+ * to maintain a 50+ entry hardcoded allowlist that goes stale with every
+ * new tool or alias.
+ */
+function isFlowActionAllowed(actionName: string): boolean {
+  if (FLOW_BLOCKED_ACTIONS.has(actionName)) return false;
+  return getRegisteredToolNames().has(actionName);
+}
 
 const FLOW_MAX_STEPS = 20;
 const BATCH_MAX_COMMANDS = 50;
 const FLOW_MAX_DURATION = 60000;
 const FLOW_MAX_REPEAT = 10;
+const PARALLEL_MAX_DEVICES = 10;
 
 interface FlowStep {
   action: string;
@@ -60,7 +65,7 @@ export const flowTools: ToolDefinition[] = [
   {
     tool: {
       name: "flow_batch",
-      description: "Execute multiple commands in a single MCP round-trip. Commands run sequentially on the server. 2-4x faster than individual tool calls for multi-step automation.",
+      description: "Execute multiple commands in one round-trip",
       inputSchema: {
         type: "object",
         properties: {
@@ -90,11 +95,21 @@ export const flowTools: ToolDefinition[] = [
       const stopOnError = args.stopOnError !== false;
 
       if (!commands || commands.length === 0) {
-        return { text: "No commands provided" };
+        throw new ValidationError("No commands provided.");
       }
 
       if (commands.length > BATCH_MAX_COMMANDS) {
-        return { text: `Too many commands (${commands.length}). Maximum is ${BATCH_MAX_COMMANDS}.` };
+        throw new ValidationError(`Too many commands (${commands.length}). Maximum is ${BATCH_MAX_COMMANDS}.`);
+      }
+
+      // Validate all actions are allowed before executing any
+      for (const cmd of commands) {
+        if (!isFlowActionAllowed(cmd.name)) {
+          throw new MobileError(
+            `Action "${cmd.name}" is not allowed in flow_batch. Use only safe actions.`,
+            "FLOW_SECURITY"
+          );
+        }
       }
 
       const results: Array<{ command: string; success: boolean; result: string }> = [];
@@ -106,9 +121,10 @@ export const flowTools: ToolDefinition[] = [
             ? (result as { text: string }).text
             : JSON.stringify(result);
 
-          results.push({ command: cmd.name, success: true, result: text });
-        } catch (error: any) {
-          results.push({ command: cmd.name, success: false, result: error.message });
+          results.push({ command: cmd.name, success: true, result: truncateOutput(text, { maxChars: 500, maxLines: 20 }) });
+        } catch (error: unknown) {
+          const msg = error instanceof Error ? error.message : String(error);
+          results.push({ command: cmd.name, success: false, result: msg });
           if (stopOnError) {
             break;
           }
@@ -130,7 +146,7 @@ export const flowTools: ToolDefinition[] = [
   {
     tool: {
       name: "flow_run",
-      description: "Execute a multi-step automation flow in a single round-trip. Supports conditional logic (if_not_found), loops (repeat), and error handling (on_error). Much more efficient than individual tool calls for sequences. Max 20 steps, 60s timeout.",
+      description: "Multi-step automation flow with conditionals, loops, error handling. Max 20 steps.",
       inputSchema: {
         type: "object",
         properties: {
@@ -139,7 +155,7 @@ export const flowTools: ToolDefinition[] = [
             items: {
               type: "object",
               properties: {
-                action: { type: "string", description: "Tool name: input_tap, input_swipe, input_text, input_key, system_wait, ui_wait, screen_capture, ui_analyze, ui_assert_visible, ui_assert_gone, ui_find_tap, ui_find, system_open_url" },
+                action: { type: "string", description: "Any registered tool name except system_shell and browser_evaluate" },
                 args: { type: "object", description: "Tool arguments" },
                 if_not_found: { type: "string", enum: ["skip", "scroll_down", "scroll_up", "fail"], description: "Fallback when element not found (for tap/find actions)" },
                 repeat: {
@@ -175,16 +191,19 @@ export const flowTools: ToolDefinition[] = [
       const currentPlatform = (platform ?? ctx.deviceManager.getCurrentPlatform()) as string;
 
       if (!steps || steps.length === 0) {
-        return { text: "No steps provided" };
+        throw new ValidationError("No steps provided.");
       }
       if (steps.length > FLOW_MAX_STEPS) {
-        return { text: `Too many steps (${steps.length}). Maximum is ${FLOW_MAX_STEPS}.` };
+        throw new ValidationError(`Too many steps (${steps.length}). Maximum is ${FLOW_MAX_STEPS}.`);
       }
 
       // Validate all actions are allowed
       for (const step of steps) {
-        if (!FLOW_ALLOWED_ACTIONS.has(step.action)) {
-          return { text: `Action "${step.action}" is not allowed in flows. Allowed: ${[...FLOW_ALLOWED_ACTIONS].join(", ")}` };
+        if (!isFlowActionAllowed(step.action)) {
+          throw new MobileError(
+            `Action "${step.action}" is not allowed in flows. Use only safe actions.`,
+            "FLOW_SECURITY"
+          );
         }
       }
 
@@ -247,16 +266,17 @@ export const flowTools: ToolDefinition[] = [
                   const found = findElements(elements, { text: untilNotFound });
                   if (found.length === 0) break;
                 }
-              } catch (condErr: any) {
+              } catch (condErr: unknown) {
                 if (condErr instanceof DeviceNotFoundError || condErr instanceof DeviceOfflineError || condErr instanceof AdbNotInstalledError) {
                   throw condErr;
                 }
               }
               await new Promise(resolve => setTimeout(resolve, 300));
             }
-          } catch (error: any) {
+          } catch (error: unknown) {
             const durationMs = Date.now() - stepStart;
-            const isNotFound = error.message?.includes("not found") || error.message?.includes("No element");
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            const isNotFound = errorMessage.includes("not found") || errorMessage.includes("No element");
 
             if (isNotFound && step.if_not_found) {
               if (step.if_not_found === "skip") {
@@ -279,10 +299,11 @@ export const flowTools: ToolDefinition[] = [
                     durationMs: Date.now() - stepStart,
                   };
                   break;
-                } catch (retryErr: any) {
+                } catch (retryErr: unknown) {
+                  const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
                   lastStepResult = {
                     step: i + 1, action: step.action, label: step.label,
-                    success: false, message: `${retryErr.message} (after ${step.if_not_found})`,
+                    success: false, message: `${retryMsg} (after ${step.if_not_found})`,
                     durationMs: Date.now() - stepStart,
                   };
                   if (onError === "stop") break;
@@ -291,7 +312,7 @@ export const flowTools: ToolDefinition[] = [
               } else {
                 lastStepResult = {
                   step: i + 1, action: step.action, label: step.label,
-                  success: false, message: error.message, durationMs,
+                  success: false, message: errorMessage, durationMs,
                 };
               }
               break;
@@ -305,7 +326,7 @@ export const flowTools: ToolDefinition[] = [
 
             lastStepResult = {
               step: i + 1, action: step.action, label: step.label,
-              success: false, message: error.message, durationMs,
+              success: false, message: errorMessage, durationMs,
             };
 
             if (onError === "stop") {
@@ -325,6 +346,78 @@ export const flowTools: ToolDefinition[] = [
       }
 
       return { text: formatFlowResults(results, Date.now() - flowStart) };
+    },
+  },
+  {
+    tool: {
+      name: "flow_parallel",
+      description: "Run same action on multiple devices in parallel. Uses Promise.allSettled for concurrent execution.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          action: { type: "string", description: "Tool name to execute on each device" },
+          args: { type: "object", description: "Arguments for the action (deviceId will be injected per device)" },
+          devices: {
+            type: "array",
+            items: { type: "string" },
+            description: "Array of device IDs to target. Use device(action:'list') to get available devices.",
+          },
+        },
+        required: ["action", "devices"],
+      },
+    },
+    handler: async (args, ctx, _depth = 0) => {
+      if (_depth! > MAX_RECURSION_DEPTH) {
+        throw new Error(`Maximum recursion depth (${MAX_RECURSION_DEPTH}) exceeded. Nested flow calls are limited to prevent stack overflow.`);
+      }
+
+      const action = args.action as string;
+      const actionArgs = (args.args ?? {}) as Record<string, unknown>;
+      const devices = args.devices as string[];
+
+      if (!devices || devices.length === 0) {
+        throw new ValidationError("No devices specified.");
+      }
+
+      if (devices.length > PARALLEL_MAX_DEVICES) {
+        throw new ValidationError(`Too many devices (${devices.length}). Maximum is ${PARALLEL_MAX_DEVICES}.`);
+      }
+
+      if (!isFlowActionAllowed(action)) {
+        throw new MobileError(
+          `Action "${action}" is not allowed in parallel flows. Use only safe actions.`,
+          "FLOW_SECURITY"
+        );
+      }
+
+      // Run on each device by injecting deviceId into args.
+      // This avoids mutating the shared global device state which would
+      // cause race conditions with concurrent Promise.allSettled execution.
+      const results = await Promise.allSettled(
+        devices.map(async (deviceId) => {
+          const result = await ctx.handleTool(action, { ...actionArgs, deviceId }, (_depth ?? 0) + 1);
+          return { deviceId, result };
+        })
+      );
+
+      const lines: string[] = [`Parallel: ${action} on ${devices.length} devices`];
+
+      for (const r of results) {
+        if (r.status === "fulfilled") {
+          const { deviceId, result } = r.value;
+          const text = typeof result === "object" && result !== null && "text" in result
+            ? (result as { text: string }).text
+            : JSON.stringify(result);
+          lines.push(`  ${deviceId}: OK — ${truncateOutput(text, { maxChars: 200, maxLines: 5 })}`);
+        } else {
+          lines.push(`  ???: FAIL — ${r.reason?.message ?? String(r.reason)}`);
+        }
+      }
+
+      const failed = results.filter(r => r.status === "rejected").length;
+      lines.push(`\n${devices.length - failed}/${devices.length} OK`);
+
+      return { text: lines.join("\n") };
     },
   },
 ];

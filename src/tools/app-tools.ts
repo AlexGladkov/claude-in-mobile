@@ -1,12 +1,13 @@
 import type { ToolDefinition } from "./registry.js";
 import type { ToolContext } from "./context.js";
 import type { Platform } from "../device-manager.js";
+import { validatePackageName, validatePath } from "../utils/sanitize.js";
 
 export const appTools: ToolDefinition[] = [
   {
     tool: {
       name: "app_launch",
-      description: "Launch an app by package name (Android) or bundle ID (iOS)",
+      description: "Launch app by package name or bundle ID",
       inputSchema: {
         type: "object",
         properties: {
@@ -18,6 +19,7 @@ export const appTools: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      validatePackageName(args.package as string);
       const result = ctx.deviceManager.launchApp(args.package as string, platform);
       return { text: result };
     },
@@ -37,6 +39,7 @@ export const appTools: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      validatePackageName(args.package as string);
       ctx.deviceManager.stopApp(args.package as string, platform);
       return { text: `Stopped: ${args.package}` };
     },
@@ -44,7 +47,7 @@ export const appTools: ToolDefinition[] = [
   {
     tool: {
       name: "app_install",
-      description: "Install an app. APK for Android, .app bundle for iOS simulator",
+      description: "Install APK (Android) or .app bundle (iOS)",
       inputSchema: {
         type: "object",
         properties: {
@@ -56,6 +59,7 @@ export const appTools: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      validatePath(args.path as string, "install_path");
       const result = ctx.deviceManager.installApp(args.path as string, platform);
       return { text: result };
     },
@@ -63,7 +67,7 @@ export const appTools: ToolDefinition[] = [
   {
     tool: {
       name: "app_list",
-      description: "List installed applications on Aurora OS device",
+      description: "List installed apps (Aurora only)",
       inputSchema: {
         type: "object",
         properties: {

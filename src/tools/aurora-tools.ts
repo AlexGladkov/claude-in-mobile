@@ -1,5 +1,6 @@
 import type { ToolDefinition } from "./registry.js";
 import type { ToolContext } from "./context.js";
+import { validatePath } from "../utils/sanitize.js";
 
 export const auroraTools: ToolDefinition[] = [
   {
@@ -17,6 +18,8 @@ export const auroraTools: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
+      validatePath(args.localPath as string, "localPath");
+      validatePath(args.remotePath as string, "remotePath");
       const result = await ctx.deviceManager.getAuroraClient().pushFile(
         args.localPath as string,
         args.remotePath as string
@@ -39,6 +42,7 @@ export const auroraTools: ToolDefinition[] = [
       },
     },
     handler: async (args, ctx) => {
+      validatePath(args.remotePath as string, "remotePath");
       const buffer = await ctx.deviceManager.getAuroraClient().pullFile(
         args.remotePath as string,
         args.localPath as string | undefined

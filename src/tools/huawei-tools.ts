@@ -1,20 +1,16 @@
 import type { ToolDefinition } from "./registry.js";
 import { HuaweiAppGalleryClient } from "../store/huawei.js";
+import { validatePackageName, validatePath } from "../utils/sanitize.js";
+import { ValidationError } from "../errors.js";
+import { createLazySingleton } from "../utils/lazy.js";
 
-let _client: HuaweiAppGalleryClient | null = null;
-
-function client(): HuaweiAppGalleryClient {
-  if (!_client) _client = new HuaweiAppGalleryClient();
-  return _client;
-}
+const client = createLazySingleton(() => new HuaweiAppGalleryClient());
 
 export const huaweiTools: ToolDefinition[] = [
   {
     tool: {
       name: "huawei_upload",
-      description:
-        "Upload APK or AAB to Huawei AppGallery Connect. Creates a release draft. Returns the fileId. " +
-        "Requires HUAWEI_CLIENT_ID and HUAWEI_CLIENT_SECRET environment variables.",
+      description: "Upload APK/AAB to Huawei AppGallery. Requires HUAWEI_CLIENT_ID env.",
       inputSchema: {
         type: "object",
         properties: {
@@ -25,6 +21,8 @@ export const huaweiTools: ToolDefinition[] = [
       },
     },
     handler: async (args) => {
+      validatePackageName(args.packageName as string);
+      validatePath(args.filePath as string, "filePath");
       const result = await client().upload(
         args.packageName as string,
         args.filePath as string
@@ -39,9 +37,7 @@ export const huaweiTools: ToolDefinition[] = [
   {
     tool: {
       name: "huawei_set_notes",
-      description:
-        "Set release notes (what's new) for the current Huawei AppGallery draft. " +
-        "Call once per language. Max 500 characters.",
+      description: "Set release notes for Huawei AppGallery draft",
       inputSchema: {
         type: "object",
         properties: {
@@ -56,9 +52,10 @@ export const huaweiTools: ToolDefinition[] = [
       },
     },
     handler: async (args) => {
+      validatePackageName(args.packageName as string);
       const text = args.text as string;
       if (text.length > 500) {
-        return { text: `Error: release notes exceed 500 characters (${text.length})` };
+        throw new ValidationError(`Release notes exceed 500 characters (${text.length}).`);
       }
       await client().setReleaseNotes(
         args.packageName as string,
@@ -71,9 +68,7 @@ export const huaweiTools: ToolDefinition[] = [
   {
     tool: {
       name: "huawei_submit",
-      description:
-        "Submit the current Huawei AppGallery draft for review and publishing. " +
-        "Commits the upload and triggers the AppGallery review process.",
+      description: "Submit Huawei AppGallery draft for review",
       inputSchema: {
         type: "object",
         properties: {
@@ -83,6 +78,7 @@ export const huaweiTools: ToolDefinition[] = [
       },
     },
     handler: async (args) => {
+      validatePackageName(args.packageName as string);
       await client().submit(args.packageName as string);
       return { text: `Submitted to Huawei AppGallery for review: ${args.packageName}` };
     },
@@ -90,7 +86,7 @@ export const huaweiTools: ToolDefinition[] = [
   {
     tool: {
       name: "huawei_get_releases",
-      description: "Get current release information for an app in Huawei AppGallery Connect.",
+      description: "Get release info from Huawei AppGallery",
       inputSchema: {
         type: "object",
         properties: {
@@ -100,6 +96,7 @@ export const huaweiTools: ToolDefinition[] = [
       },
     },
     handler: async (args) => {
+      validatePackageName(args.packageName as string);
       const result = await client().getReleases(args.packageName as string);
       return { text: result };
     },

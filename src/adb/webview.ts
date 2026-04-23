@@ -110,9 +110,9 @@ export class WebViewInspector {
       }
 
       return await response.json() as WebViewTarget[];
-    } catch (error: any) {
+    } catch (error: unknown) {
       clearTimeout(timeout);
-      if (error.name === "AbortError") {
+      if (error instanceof Error && error.name === "AbortError") {
         throw new Error("WebView CDP connection timed out. Is the WebView active?");
       }
       throw error;
@@ -153,7 +153,7 @@ export class WebViewInspector {
         url: target.url,
         type: target.type,
       }, null, 2);
-    } catch (error: any) {
+    } catch (error: unknown) {
       clearTimeout(timeout);
       throw error;
     }

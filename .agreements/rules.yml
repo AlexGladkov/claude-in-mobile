@@ -1,0 +1,10 @@
+rules:
+    - id: example_rule
+      description: 'Example: forbid TODO comments in production code'
+      type: diff_pattern_forbidden
+      config:
+        forbidden_regexes:
+            - TODO
+        only_in_paths:
+            - src/**
+      severity: warning

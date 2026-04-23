@@ -22,9 +22,10 @@ export class WDAClient {
         // Verify session is still valid
         await this.request("GET", `/session/${this.sessionId}`);
         return;
-      } catch (error: any) {
+      } catch (error: unknown) {
         // Session is invalid, clear it
-        console.error("WDA session invalid, recreating:", error.message);
+        const msg = error instanceof Error ? error.message : String(error);
+        console.error("WDA session invalid, recreating:", msg);
         this.sessionId = null;
       }
     }
@@ -260,7 +261,7 @@ export class WDAClient {
   private async request(
     method: string,
     path: string,
-    body?: any
+    body?: unknown
   ): Promise<any> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.operationTimeout);
@@ -284,7 +285,7 @@ export class WDAClient {
         );
       }
 
-      const data: any = await response.json();
+      const data = await response.json() as { status?: number; value?: { message?: string; sessionId?: string }; sessionId?: string };
 
       if (data.status !== undefined && data.status !== 0) {
         throw new Error(
@@ -293,10 +294,10 @@ export class WDAClient {
       }
 
       return data;
-    } catch (error: any) {
+    } catch (error: unknown) {
       clearTimeout(timeout);
 
-      if (error.name === "AbortError") {
+      if (error instanceof Error && error.name === "AbortError") {
         throw new Error(
           `WebDriverAgent request timed out after ${this.operationTimeout}ms`
         );

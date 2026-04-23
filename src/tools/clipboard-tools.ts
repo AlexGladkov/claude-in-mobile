@@ -20,12 +20,10 @@ export const clipboardTools: ToolDefinition[] = [
   {
     tool: {
       name: "clipboard_select",
-      description: "Select all text in the currently focused input field (Android only)",
+      description: "Select all text in focused field (Android only)",
       inputSchema: {
         type: "object",
-        properties: {
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-        },
+        properties: {},
       },
     },
     handler: async (args, ctx) => {
@@ -38,12 +36,10 @@ export const clipboardTools: ToolDefinition[] = [
   {
     tool: {
       name: "clipboard_copy",
-      description: "Select all text and copy to clipboard (Android only)",
+      description: "Select all and copy to clipboard (Android only)",
       inputSchema: {
         type: "object",
-        properties: {
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-        },
+        properties: {},
       },
     },
     handler: async (args, ctx) => {
@@ -58,13 +54,12 @@ export const clipboardTools: ToolDefinition[] = [
   {
     tool: {
       name: "clipboard_paste",
-      description: "Paste clipboard content into focused field. Optionally find a field by text or resource ID and tap to focus it first (Android only)",
+      description: "Paste clipboard into focused field (Android only)",
       inputSchema: {
         type: "object",
         properties: {
           fieldText: { type: "string", description: "Find input field by text and tap to focus before pasting" },
           fieldId: { type: "string", description: "Find input field by resource ID and tap to focus before pasting" },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
         },
       },
     },
@@ -101,12 +96,10 @@ export const clipboardTools: ToolDefinition[] = [
   {
     tool: {
       name: "clipboard_get_android",
-      description: "Read clipboard text from Android device (requires API 29+ or clipper app)",
+      description: "Read clipboard text from Android device",
       inputSchema: {
         type: "object",
-        properties: {
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-        },
+        properties: {},
       },
     },
     handler: async (args, ctx) => {

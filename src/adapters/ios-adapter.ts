@@ -1,13 +1,28 @@
 /**
- * IosAdapter — wraps IosClient and implements PlatformAdapter.
+ * IosAdapter -- wraps IosClient.
+ *
+ * Implements all capability interfaces:
+ *   - CorePlatformAdapter
+ *   - AppManagementAdapter
+ *   - PermissionAdapter
+ *   - ShellAdapter
+ *   - SyncScreenshotAdapter
  */
 
-import type { PlatformAdapter } from "./platform-adapter.js";
+import type {
+  CorePlatformAdapter,
+  AppManagementAdapter,
+  PermissionAdapter,
+  ShellAdapter,
+  SyncScreenshotAdapter,
+} from "./platform-adapter.js";
 import type { Device } from "../device-manager.js";
 import { IosClient } from "../ios/client.js";
 import { compressScreenshot, type CompressOptions } from "../utils/image.js";
 
-export class IosAdapter implements PlatformAdapter {
+export class IosAdapter
+  implements CorePlatformAdapter, AppManagementAdapter, PermissionAdapter, ShellAdapter, SyncScreenshotAdapter
+{
   readonly platform = "ios" as const;
   private client: IosClient;
   private _selectedDeviceId: string | undefined;
@@ -17,7 +32,7 @@ export class IosAdapter implements PlatformAdapter {
     this._selectedDeviceId = this.client.getDeviceId();
   }
 
-  /** Raw client access — needed by tools that call getIosClient(). */
+  /** Raw client access -- needed by tools that call getIosClient(). */
   getClient(): IosClient {
     return this.client;
   }
@@ -121,7 +136,7 @@ export class IosAdapter implements PlatformAdapter {
     return this.client.getUiHierarchy();
   }
 
-  // ============ App management ============
+  // ============ App management (AppManagementAdapter) ============
 
   launchApp(bundleId: string): string {
     return this.client.launchApp(bundleId);
@@ -135,7 +150,7 @@ export class IosAdapter implements PlatformAdapter {
     return this.client.installApp(path);
   }
 
-  // ============ Permissions ============
+  // ============ Permissions (PermissionAdapter) ============
 
   grantPermission(bundleId: string, service: string): string {
     this.client.grantPermission(bundleId, service);
@@ -152,7 +167,7 @@ export class IosAdapter implements PlatformAdapter {
     return `Reset permissions for ${bundleId}`;
   }
 
-  // ============ System ============
+  // ============ Shell / Logs (ShellAdapter) ============
 
   shell(command: string): string {
     return this.client.shell(command);
@@ -174,6 +189,8 @@ export class IosAdapter implements PlatformAdapter {
   clearLogs(): string {
     return this.client.clearLogs();
   }
+
+  // ============ System info ============
 
   async getSystemInfo(): Promise<string> {
     return "System info is only available for Android and Aurora devices.";

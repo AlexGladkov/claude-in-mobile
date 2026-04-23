@@ -1,17 +1,25 @@
 /**
- * DesktopAdapter — wraps DesktopClient and implements PlatformAdapter.
+ * DesktopAdapter -- wraps DesktopClient.
  *
- * Desktop is special: it has a single "virtual" device that is present only
- * when the companion app is running.  Many PlatformAdapter methods that
- * don't apply to desktop throw descriptive errors or return no-op values.
+ * Implements:
+ *   - CorePlatformAdapter (universal)
+ *   - AppManagementAdapter (launchApp / stopApp / installApp)
+ *   - ShellAdapter (shell / logs)
+ *
+ * Does NOT implement PermissionAdapter or SyncScreenshotAdapter
+ * because desktop has no concept of runtime permissions or sync screenshots.
  */
 
-import type { PlatformAdapter } from "./platform-adapter.js";
+import type {
+  CorePlatformAdapter,
+  AppManagementAdapter,
+  ShellAdapter,
+} from "./platform-adapter.js";
 import type { Device } from "../device-manager.js";
 import { DesktopClient } from "../desktop/client.js";
 import type { LaunchOptions } from "../desktop/types.js";
 
-export class DesktopAdapter implements PlatformAdapter {
+export class DesktopAdapter implements CorePlatformAdapter, AppManagementAdapter, ShellAdapter {
   readonly platform = "desktop" as const;
   private client: DesktopClient;
 
@@ -19,7 +27,7 @@ export class DesktopAdapter implements PlatformAdapter {
     this.client = client ?? new DesktopClient();
   }
 
-  /** Raw client access — needed by tools that call getDesktopClient(). */
+  /** Raw client access -- needed by tools that call getDesktopClient(). */
   getClient(): DesktopClient {
     return this.client;
   }
@@ -43,7 +51,7 @@ export class DesktopAdapter implements PlatformAdapter {
   }
 
   selectDevice(_deviceId: string): void {
-    // Desktop has no notion of device selection — it's always "desktop".
+    // Desktop has no notion of device selection -- it's always "desktop".
     // No-op; the important thing is that activeTarget is set in DeviceManager.
   }
 
@@ -85,7 +93,7 @@ export class DesktopAdapter implements PlatformAdapter {
 
   private ensureRunning(): void {
     if (!this.client.isRunning()) {
-      throw new Error("Desktop app is not running. Use launch_desktop_app first.");
+      throw new Error("Desktop app is not running. Use desktop(action:'launch') first.");
     }
   }
 
@@ -151,10 +159,6 @@ export class DesktopAdapter implements PlatformAdapter {
     return Buffer.from(result.base64, "base64");
   }
 
-  screenshotRaw(): string {
-    throw new Error("Use screenshot() for desktop platform");
-  }
-
   // ============ UI ============
 
   async getUiHierarchy(): Promise<string> {
@@ -163,7 +167,7 @@ export class DesktopAdapter implements PlatformAdapter {
     return formatDesktopHierarchy(hierarchy);
   }
 
-  // ============ App management ============
+  // ============ App management (AppManagementAdapter) ============
 
   launchApp(packageName: string): string {
     return this.client.launchApp(packageName);
@@ -177,21 +181,7 @@ export class DesktopAdapter implements PlatformAdapter {
     return "Desktop platform doesn't support app installation";
   }
 
-  // ============ Permissions ============
-
-  grantPermission(_pkg: string, _perm: string): string {
-    throw new Error("Permission management is not supported for desktop platform");
-  }
-
-  revokePermission(_pkg: string, _perm: string): string {
-    throw new Error("Permission management is not supported for desktop platform");
-  }
-
-  resetPermissions(_pkg: string): string {
-    throw new Error("Permission management is not supported for desktop platform");
-  }
-
-  // ============ System ============
+  // ============ Shell / Logs (ShellAdapter) ============
 
   shell(command: string): string {
     return this.client.shell(command);
@@ -213,6 +203,8 @@ export class DesktopAdapter implements PlatformAdapter {
     this.client.clearLogs();
     return "Desktop logs cleared";
   }
+
+  // ============ System info ============
 
   async getSystemInfo(): Promise<string> {
     this.ensureRunning();

@@ -6,15 +6,19 @@ Control your Android phone, emulator, iOS Simulator, Desktop applications, or Au
 
 ## Features
 
-- **Unified API** — Same commands work for Android, iOS, Desktop, and Aurora OS
-- **Smart screenshots** — Auto-compressed for optimal LLM processing (no more oversized images!)
-- **Annotated screenshots** — Screenshots with colored bounding boxes and numbered element labels for visual UI understanding
-- **Permission management** — Grant, revoke, and reset app permissions programmatically (Android runtime permissions, iOS privacy services)
-- **Device logs** — Read logcat/system logs with filters for debugging
-- **UI interactions** — Tap, long press, swipe by coordinates or element text
-- **Text input** — Type into focused fields
-- **App control** — Launch, stop, and install apps
-- **Platform selection** — Explicitly target Android, iOS, Desktop, or Aurora OS
+- **Unified API** — Same commands work for Android, iOS, Desktop, Aurora OS, and Browser
+- **Token-optimized** — 8 meta-tools + 3 optional modules instead of 81 separate tools (~85% token reduction per request)
+- **Dynamic modules** — Browser, Desktop, and Store modules load on demand, keeping the default tool list lean
+- **Browser automation** — Control Chrome/Chromium via CDP: navigate, click, fill forms, evaluate JS, take screenshots
+- **Smart screenshots** — Auto-compressed for optimal LLM processing
+- **Annotated screenshots** — Screenshots with colored bounding boxes and numbered element labels
+- **Security hardened** — Shell injection protection, URL scheme validation, path traversal blocking, input sanitization
+- **Structured errors** — Typed error codes (`[CODE] message`) with auto-retry hints for transient failures
+- **Telemetry** — Per-tool call metrics (count, avg latency, error rate) via `system(action:'metrics')`
+- **Multi-device parallel** — Run the same action on multiple devices simultaneously via `flow_parallel`
+- **Flow engine** — `flow_batch` for sequential commands, `flow_run` for conditional loops, `flow_parallel` for fan-out
+- **Permission management** — Grant, revoke, and reset app permissions (Android runtime, iOS privacy services)
+- **Store management** — Upload builds to Google Play, Huawei AppGallery, and RuStore (optional module)
 - **Desktop support** — Test Compose Multiplatform desktop apps with window management, clipboard, and performance metrics
 
 ## Installation
@@ -205,57 +209,42 @@ claude mcp add --transport stdio mobile -- cmd /c npx claude-in-mobile@latest
 
 ## Available Tools
 
-### Core Tools (All Platforms)
+v3.4.0 consolidates tools into **8 core meta-tools** + **3 optional modules**. Each meta-tool uses an `action` parameter to select the operation. All v3.0/v3.1 tool names still work as backward-compatible aliases.
 
-| Tool | Android | iOS | Desktop | Aurora | Description |
-|------|---------|-----|---------|--------|-------------|
-| `list_devices` | ✅ | ✅ | ✅ | ✅ | List all connected devices |
-| `set_device` | ✅ | ✅ | ✅ | ✅ | Select active device |
-| `screenshot` | ✅ | ✅ | ✅ | ✅ | Take screenshot |
-| `tap` | ✅ | ✅ | ✅ | ⚠️ | Tap at coordinates or by text/label (iOS: WDA required for element tap) |
-| `long_press` | ✅ | ✅ | ✅ | ✅ | Long press gesture |
-| `swipe` | ✅ | ✅ | ✅ | ⚠️ | Swipe in direction or coordinates (requires Python on Aurora) |
-| `input_text` | ✅ | ✅ | ✅ | ❌ | Type text |
-| `press_key` | ✅ | ✅ | ✅ | ✅ | Press hardware buttons |
-| `launch_app` | ✅ | ✅ | ❌ | ✅ | Launch app |
-| `stop_app` | ✅ | ✅ | ❌ | ✅ | Stop app |
-| `install_app` | ✅ | ✅ | ❌ | ✅ | Install APK/.app/.rpm |
-| `list_apps` | ❌ | ❌ | ❌ | ✅ | List installed apps (Aurora only) |
-| `get_ui` | ✅ | ✅ | ✅ | ❌ | Get UI hierarchy (iOS: requires WebDriverAgent) |
-| `find_element` | ✅ | ✅ | ✅ | ❌ | Find elements by text/id/label (iOS: requires WebDriverAgent) |
-| `annotate_screenshot` | ✅ | ✅ | ❌ | ❌ | Screenshot with colored bounding boxes and numbered element labels |
-| `grant_permission` | ✅ | ✅ | ❌ | ❌ | Grant app permission (Android: runtime, iOS: privacy service) |
-| `revoke_permission` | ✅ | ✅ | ❌ | ❌ | Revoke app permission |
-| `reset_permissions` | ✅ | ✅ | ❌ | ❌ | Reset all permissions for an app |
-| `get_current_activity` | ✅ | ❌ | ❌ | ❌ | Get foreground activity |
-| `open_url` | ✅ | ✅ | ❌ | ❌ | Open URL in browser (not yet implemented on Aurora) |
-| `shell` | ✅ | ✅ | ❌ | ✅ | Run shell command |
-| `wait` | ✅ | ✅ | ✅ | ✅ | Wait for duration |
-| `get_logs` | ✅ | ✅ | ❌ | ✅ | Get device logs (logcat/system log) |
-| `clear_logs` | ✅ | ⚠️ | ❌ | ✅ | Clear log buffer |
-| `get_system_info` | ✅ | ❌ | ❌ | ✅ | Battery, memory info |
-| `wait_for_element` | ✅ | ✅ | ❌ | ❌ | Wait for element to appear (polling + timeout) |
-| `assert_visible` | ✅ | ✅ | ❌ | ❌ | Assert element is visible (pass/fail) |
-| `assert_not_exists` | ✅ | ✅ | ❌ | ❌ | Assert element does NOT exist (pass/fail) |
-| `batch_commands` | ✅ | ✅ | ✅ | ✅ | Execute multiple commands in single round-trip |
-| `get_webview` | ✅ | ❌ | ❌ | ❌ | Inspect WebView via Chrome DevTools Protocol |
-| `push_file` | ❌ | ❌ | ❌ | ✅ | Upload file (Aurora only) |
-| `pull_file` | ❌ | ❌ | ❌ | ✅ | Download file (Aurora only) |
+### Core Meta-Tools (always loaded)
 
-### Desktop-Specific Tools
+| Meta-Tool | Actions | Description |
+|-----------|---------|-------------|
+| `device` | `list`, `set`, `set_target`, `get_target`, `enable_module`, `disable_module`, `list_modules` | Device management and module control |
+| `input` | `tap`, `double_tap`, `long_press`, `swipe`, `text`, `key` | Touch/keyboard input |
+| `screen` | `capture`, `annotate` | Screenshots and visual annotation |
+| `ui` | `tree`, `find`, `find_tap`, `tap_text`, `analyze`, `wait`, `assert_visible`, `assert_gone` | UI hierarchy and element interaction |
+| `app` | `launch`, `stop`, `install`, `list` | App lifecycle management |
+| `system` | `activity`, `shell`, `wait`, `open_url`, `logs`, `clear_logs`, `info`, `webview`, `clipboard_*`, `permission_*`, `file_*`, `metrics`, `reset_metrics` | System operations, clipboard, permissions, files, telemetry |
+| `flow_batch` | — | Execute multiple commands in one round-trip |
+| `flow_run` | — | Multi-step automation with conditionals and loops |
+
+### Optional Modules (loaded on demand)
+
+These modules are hidden by default to save tokens. They auto-enable when you call them, or use `device(action:'enable_module', module:'<name>')`.
+
+| Module | Actions | Description |
+|--------|---------|-------------|
+| `browser` | `open`, `close`, `list_sessions`, `navigate`, `click`, `fill`, `fill_form`, `press_key`, `snapshot`, `screenshot`, `evaluate`, `wait_for_selector`, `clear_session` | Chrome/Chromium automation via CDP |
+| `desktop` | `launch`, `stop`, `windows`, `focus`, `resize`, `clipboard_get`, `clipboard_set`, `performance`, `monitors` | Compose Desktop app testing |
+| `store` | `upload`, `set_notes`, `submit`, `get_releases`, `discard`, `promote`, `halt_rollout`, `get_versions` | Google Play, Huawei AppGallery, RuStore publishing |
+
+### Flow Tools
 
 | Tool | Description |
 |------|-------------|
-| `set_target` | Set target platform (android/ios/desktop) |
-| `get_target` | Get current target platform |
-| `launch_desktop_app` | Launch a Compose Desktop application |
-| `stop_desktop_app` | Stop the running desktop application |
-| `get_window_info` | Get desktop window position and size |
-| `focus_window` | Bring desktop window to front |
-| `resize_window` | Resize desktop window |
-| `get_clipboard` | Get system clipboard content |
-| `set_clipboard` | Set system clipboard content |
-| `get_performance_metrics` | Get CPU/memory usage of desktop app |
+| `flow_batch` | Sequential execution of multiple commands in one round-trip (max 50) |
+| `flow_run` | Multi-step flows with `if_not_found`, `repeat`, `on_error` handling (max 20 steps) |
+| `flow_parallel` | Run the same action on multiple devices concurrently via `Promise.allSettled` (max 10 devices) |
+
+### Backward Compatibility
+
+All v3.0/v3.1 tool names work as aliases. For example, `tap` maps to `input(action:'tap')`, `screenshot` maps to `screen(action:'capture')`, `launch_app` maps to `app(action:'launch')`.
 
 > For detailed Desktop API documentation, see [Desktop Specification](docs/SPEC_DESKTOP.md)
 
@@ -356,7 +345,7 @@ Or download from [Releases](https://github.com/AlexGladkov/claude-in-mobile/rele
 - **No dependencies** — no Node.js, no npm, nothing
 - **Use from terminal** — run commands directly, no Claude Code or MCP client needed
 - **Test automation** — write universal `.sh` scripts for any platform without learning platform internals
-- **Token-efficient** — skill documentation loads only when used; MCP loads all tool schemas into every request, which adds up fast over a session
+- **Token-efficient** — skill documentation loads only when used; MCP v3.4.0 reduced schema overhead by ~85% (8 meta-tools vs 81 individual tools)
 - **Fast** — ~5ms command startup (Rust) vs ~500ms (Node.js MCP)
 - **CI/CD ready** — exit codes, stdout/stderr, runs anywhere
 
@@ -445,22 +434,22 @@ xcodebuild test -project WebDriverAgent.xcodeproj \
 ```
 ┌─────────────┐     ┌──────────────────┐     ┌─────────────────┐
 │ Claude Code │────▶│                  │────▶│  Android (ADB)  │
-├─────────────┤     │  Claude Mobile   │     └─────────────────┘
-│  OpenCode   │────▶│   MCP Server     │     ┌─────────────────┐
-├─────────────┤     │                  │────▶│ iOS (simctl+WDA)│
-│   Cursor    │────▶│  (auto-detects   │     └─────────────────┘
-├─────────────┤     │   client via     │     ┌─────────────────┐
-│  Any MCP    │────▶│   MCP protocol)  │────▶│ Desktop (Compose)│
-│   Client    │     │                  │     └─────────────────┘
-└─────────────┘     │                  │     ┌─────────────────┐
-                    │                  │────▶│ Aurora (audb)   │
+├─────────────┤     │  Claude Mobile   │     ├─────────────────┤
+│  OpenCode   │────▶│   MCP Server     │────▶│ iOS (simctl+WDA)│
+├─────────────┤     │                  │     ├─────────────────┤
+│   Cursor    │────▶│  8 meta-tools    │────▶│ Desktop (Compose)│
+├─────────────┤     │  + 3 modules     │     ├─────────────────┤
+│  Any MCP    │────▶│  (auto-detects   │────▶│ Aurora (audb)   │
+│   Client    │     │   client)        │     ├─────────────────┤
+└─────────────┘     │                  │────▶│ Browser (CDP)   │
                     └──────────────────┘     └─────────────────┘
 ```
 
-1. Claude sends commands through MCP protocol
-2. Server routes to appropriate platform (ADB, simctl+WDA, Desktop companion, or audb)
-3. Commands execute on your device or desktop app
+1. Claude sends commands through MCP protocol (8 meta-tools + 3 optional modules)
+2. Server routes to appropriate platform (ADB, simctl+WDA, Desktop, audb, or CDP)
+3. Commands execute on your device, desktop app, or browser
 4. Results (screenshots, UI data, metrics) return to Claude
+5. Dynamic modules auto-enable when first called — no manual setup needed
 
 ## License
 

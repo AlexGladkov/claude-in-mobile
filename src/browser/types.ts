@@ -1,7 +1,16 @@
+import type { CDPClientInterface } from "./cdp-types.js";
+
+/** Minimal interface for chrome-launcher's LaunchedChrome */
+export interface LaunchedChrome {
+  port: number;
+  process: { pid?: number };
+  kill(): Promise<void>;
+}
+
 export interface BrowserSession {
   id: string;
-  chrome: any; // LaunchedChrome from chrome-launcher
-  cdp: any;    // chrome-remote-interface client
+  chrome: LaunchedChrome;
+  cdp: CDPClientInterface;
   port: number;
   profileDir: string;
   refMap: Map<string, RefEntry>;
