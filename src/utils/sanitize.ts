@@ -107,6 +107,40 @@ export function validatePath(path: string, label: string): void {
   }
 }
 
+// V1: Validate baseline/screen name — whitelist regex
+const BASELINE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.\-]{0,127}$/;
+const WINDOWS_RESERVED = new Set(["CON","PRN","AUX","NUL","COM1","COM2","COM3","COM4","COM5","COM6","COM7","COM8","COM9","LPT1","LPT2","LPT3","LPT4","LPT5","LPT6","LPT7","LPT8","LPT9"]);
+
+export function validateBaselineName(name: string, label = "name"): void {
+  if (!name || name.trim().length === 0) {
+    throw new MobileError(`Baseline ${label} must not be empty`, "INVALID_BASELINE_NAME");
+  }
+  if (!BASELINE_NAME_RE.test(name)) {
+    throw new MobileError(
+      `Invalid baseline ${label}: "${name}". Use alphanumeric, hyphens, underscores, dots. 1-128 chars, start with alphanumeric.`,
+      "INVALID_BASELINE_NAME"
+    );
+  }
+  const upper = name.toUpperCase().replace(/\.[^.]*$/, "");
+  if (WINDOWS_RESERVED.has(upper)) {
+    throw new MobileError(`Baseline ${label} "${name}" is a reserved name`, "INVALID_BASELINE_NAME");
+  }
+}
+
+// V2: Ensure resolved path stays within allowed base directory
+import { resolve, sep } from "path";
+
+export function validatePathContainment(filePath: string, baseDir: string): void {
+  const normalizedBase = resolve(baseDir);
+  const normalizedPath = resolve(filePath);
+  if (!normalizedPath.startsWith(normalizedBase + sep) && normalizedPath !== normalizedBase) {
+    throw new MobileError(
+      "Path escape blocked: resolved path is outside allowed directory",
+      "PATH_CONTAINMENT_VIOLATION"
+    );
+  }
+}
+
 // S1: Sanitize error messages — strip tokens, keys, and secrets
 export function sanitizeErrorMessage(msg: string): string {
   return msg

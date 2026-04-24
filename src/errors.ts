@@ -162,8 +162,132 @@ export class ValidationError extends MobileError {
   }
 }
 
+// Visual Regression errors
+
+export class BaselineNotFoundError extends MobileError {
+  constructor(name: string, platform: string) {
+    super(
+      `Baseline "${name}" not found for platform "${platform}". Use visual(action:'baseline_save') to create one.`,
+      "BASELINE_NOT_FOUND"
+    );
+  }
+}
+
+export class BaselineExistsError extends MobileError {
+  constructor(name: string, platform: string) {
+    super(
+      `Baseline "${name}" already exists for platform "${platform}". Use overwrite:true or visual(action:'baseline_update').`,
+      "BASELINE_EXISTS"
+    );
+  }
+}
+
+export class VisualMismatchError extends MobileError {
+  constructor(name: string, platform: string, diffPercent: number, threshold: number) {
+    super(
+      `Visual mismatch: "${name}" (${platform}) — ${diffPercent.toFixed(1)}% diff exceeds ${threshold}% threshold.`,
+      "VISUAL_MISMATCH"
+    );
+  }
+}
+
+export class BaselineCorruptedError extends MobileError {
+  constructor(name: string, reason: string) {
+    super(
+      `Baseline "${name}" corrupted: ${reason}. Use visual(action:'baseline_update') to recreate.`,
+      "BASELINE_CORRUPTED"
+    );
+  }
+}
+
+// Test Scenario Recorder errors
+
+export class RecorderAlreadyActiveError extends MobileError {
+  constructor(currentName: string) {
+    super(
+      `Recording already in progress: "${currentName}". Use recorder(action:'stop') first.`,
+      "RECORDER_ALREADY_ACTIVE"
+    );
+  }
+}
+
+export class RecorderNotActiveError extends MobileError {
+  constructor() {
+    super(
+      "No recording in progress. Use recorder(action:'start') to begin.",
+      "RECORDER_NOT_ACTIVE"
+    );
+  }
+}
+
+export class ScenarioNotFoundError extends MobileError {
+  constructor(name: string, platform: string) {
+    super(
+      `Scenario "${name}" not found for platform "${platform}". Use recorder(action:'list') to see saved scenarios.`,
+      "SCENARIO_NOT_FOUND"
+    );
+  }
+}
+
+export class ScenarioExistsError extends MobileError {
+  constructor(name: string, platform: string) {
+    super(
+      `Scenario "${name}" already exists for platform "${platform}". Use overwrite:true or recorder(action:'delete').`,
+      "SCENARIO_EXISTS"
+    );
+  }
+}
+
+export class ScenarioCorruptedError extends MobileError {
+  constructor(name: string, reason: string) {
+    super(
+      `Scenario "${name}" corrupted: ${reason}. Delete and re-record.`,
+      "SCENARIO_CORRUPTED"
+    );
+  }
+}
+
+// Multi-Device Sync errors
+
+export class SyncGroupNotFoundError extends MobileError {
+  constructor(name: string) {
+    super(
+      `Sync group "${name}" not found. Use sync(action:'list') to see active groups.`,
+      "SYNC_GROUP_NOT_FOUND"
+    );
+  }
+}
+
+export class SyncGroupExistsError extends MobileError {
+  constructor(name: string) {
+    super(
+      `Sync group "${name}" already exists. Use sync(action:'destroy') first or choose a different name.`,
+      "SYNC_GROUP_EXISTS"
+    );
+  }
+}
+
+export class SyncBarrierTimeoutError extends MobileError {
+  constructor(barrierName: string, timeoutMs: number) {
+    super(
+      `Barrier "${barrierName}" timed out after ${timeoutMs}ms. Not all roles reached the barrier in time.`,
+      "SYNC_BARRIER_TIMEOUT"
+    );
+  }
+}
+
+export class SyncRoleNotFoundError extends MobileError {
+  constructor(role: string, group: string) {
+    super(
+      `Role "${role}" not found in sync group "${group}". Use sync(action:'status') to see defined roles.`,
+      "SYNC_ROLE_NOT_FOUND"
+    );
+  }
+}
+
 const RETRYABLE_CODES = new Set([
   "DEVICE_OFFLINE", "COMMAND_TIMEOUT", "ADB_ERROR", "BROWSER_REF_NOT_FOUND",
+  "SYNC_BARRIER_TIMEOUT",
 ]);
 
 export function isRetryable(error: unknown): boolean {

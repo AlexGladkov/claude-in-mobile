@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Jimp } from "jimp";
-import { compressScreenshot, annotateScreenshot, compareScreenshots, cropRegion } from "./image.js";
+import { compressScreenshot, annotateScreenshot, compareScreenshots, cropRegion, generateDiffOverlay } from "./image.js";
 import type { UiElement, Bounds } from "../adb/ui-parser.js";
 
 // ──────────────────────────────────────────────
@@ -304,5 +304,66 @@ describe("cropRegion", () => {
     const img = await Jimp.read(cropped);
     expect(img.width).toBeLessThanOrEqual(50);
     expect(img.height).toBeLessThanOrEqual(50);
+  });
+});
+
+// ──────────────────────────────────────────────
+// generateDiffOverlay
+// ──────────────────────────────────────────────
+
+describe("generateDiffOverlay", () => {
+  it("returns 0% diff for identical images", async () => {
+    const png = await createTestPng(100, 100, 0xff0000ff);
+    const result = await generateDiffOverlay(png, png);
+    expect(result.changePercent).toBe(0);
+    expect(result.changedPixels).toBe(0);
+    expect(result.regions).toEqual([]);
+    expect(result.totalPixels).toBe(10000);
+  });
+
+  it("detects diff between different images", async () => {
+    const red = await createTestPng(100, 100, 0xff0000ff);
+    const green = await createTestPng(100, 100, 0x00ff00ff);
+    const result = await generateDiffOverlay(red, green);
+    expect(result.changePercent).toBeGreaterThan(0);
+    expect(result.changedPixels).toBeGreaterThan(0);
+    expect(result.image).toBeInstanceOf(Buffer);
+  });
+
+  it("returns valid PNG buffer as diff image", async () => {
+    const red = await createTestPng(100, 100, 0xff0000ff);
+    const blue = await createTestPng(100, 100, 0x0000ffff);
+    const result = await generateDiffOverlay(red, blue);
+    // Should be a valid PNG (readable by Jimp)
+    const img = await Jimp.read(result.image);
+    expect(img.width).toBe(100);
+    expect(img.height).toBe(100);
+  });
+
+  it("respects threshold parameter", async () => {
+    const img1 = await createTestPng(100, 100, 0xff0000ff);
+    // Slightly different color
+    const img2 = await createTestPng(100, 100, 0xfe0000ff);
+
+    const sensitive = await generateDiffOverlay(img1, img2, { threshold: 0 });
+    const relaxed = await generateDiffOverlay(img1, img2, { threshold: 50 });
+    expect(relaxed.changedPixels).toBeLessThanOrEqual(sensitive.changedPixels);
+  });
+
+  it("respects ignoreRegions parameter", async () => {
+    const red = await createTestPng(100, 100, 0xff0000ff);
+    const green = await createTestPng(100, 100, 0x00ff00ff);
+
+    const withoutIgnore = await generateDiffOverlay(red, green);
+    const withIgnore = await generateDiffOverlay(red, green, {
+      ignoreRegions: [{ x: 0, y: 0, width: 100, height: 100 }],
+    });
+    expect(withIgnore.changedPixels).toBeLessThan(withoutIgnore.changedPixels);
+  });
+
+  it("totalPixels matches image dimensions", async () => {
+    const png = await createTestPng(200, 150, 0xff0000ff);
+    const result = await generateDiffOverlay(png, png);
+    expect(result.totalPixels).toBe(200 * 150);
   });
 });
