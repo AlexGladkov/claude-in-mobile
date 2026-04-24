@@ -730,6 +730,12 @@ pub enum Commands {
         companion_path: Option<String>,
     },
 
+    /// Configure integrations with AI coding tools
+    Setup {
+        #[command(subcommand)]
+        command: SetupCommands,
+    },
+
     // ===== Store management =====
 
     /// Google Play Store management (upload, submit, promote, etc.)
@@ -748,6 +754,101 @@ pub enum Commands {
     Rustore {
         #[command(subcommand)]
         command: RuStoreCommands,
+    },
+}
+
+// -- Setup subcommands --------------------------------------------------------
+
+#[derive(Subcommand)]
+pub enum SetupCommands {
+    /// Install OpenCode skill files for CLI-based device automation
+    Opencode {
+        /// Install into the current project (.opencode/skills). This is the default.
+        #[arg(long, conflicts_with = "global")]
+        local: bool,
+
+        /// Install globally for the current user (~/.config/opencode/skills)
+        #[arg(long, conflicts_with = "local")]
+        global: bool,
+
+        /// Overwrite existing skill files if they differ
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Install Pi skill files for CLI-based device automation
+    Pi {
+        /// Install into the current project (.pi/skills). This is the default.
+        #[arg(long, conflicts_with = "global")]
+        local: bool,
+
+        /// Install globally for the current user (~/.pi/agent/skills)
+        #[arg(long, conflicts_with = "local")]
+        global: bool,
+
+        /// Overwrite existing skill files if they differ
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Install Qwen Code skill files for CLI-based device automation
+    Qwen {
+        /// Install into the current project (.qwen/skills). This is the default.
+        #[arg(long, conflicts_with = "global")]
+        local: bool,
+
+        /// Install globally for the current user (~/.qwen/skills)
+        #[arg(long, conflicts_with = "local")]
+        global: bool,
+
+        /// Overwrite existing skill files if they differ
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Install Gemini CLI skill files for CLI-based device automation
+    Gemini {
+        /// Install into the current project (.gemini/skills). This is the default.
+        #[arg(long, conflicts_with = "global")]
+        local: bool,
+
+        /// Install globally for the current user (~/.gemini/skills)
+        #[arg(long, conflicts_with = "local")]
+        global: bool,
+
+        /// Overwrite existing skill files if they differ
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Install Codex skill files for CLI-based device automation
+    Codex {
+        /// Install into the current project (.agents/skills). This is the default.
+        #[arg(long, conflicts_with = "global")]
+        local: bool,
+
+        /// Install globally for the current user (~/.agents/skills)
+        #[arg(long, conflicts_with = "local")]
+        global: bool,
+
+        /// Overwrite existing skill files if they differ
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Install Cursor skill files for CLI-based device automation
+    Cursor {
+        /// Install into the current project (.cursor/skills). This is the default.
+        #[arg(long, conflicts_with = "global")]
+        local: bool,
+
+        /// Install globally for the current user (~/.cursor/skills)
+        #[arg(long, conflicts_with = "local")]
+        global: bool,
+
+        /// Overwrite existing skill files if they differ
+        #[arg(long)]
+        force: bool,
     },
 }
 

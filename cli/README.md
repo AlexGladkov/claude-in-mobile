@@ -92,6 +92,183 @@ After installing the plugin, Claude Code can:
 
 ---
 
+## Agent Skill Setup
+
+OpenCode, Pi, Qwen Code, Gemini CLI, Codex, and Cursor can use the same `SKILL.md` command documentation without the Claude Code plugin manifest. Install the CLI first and make sure `claude-in-mobile` is in `PATH`.
+
+### OpenCode
+
+Install into the current project:
+
+```bash
+claude-in-mobile setup opencode
+```
+
+This writes:
+
+```text
+.opencode/skills/claude-in-mobile/SKILL.md
+.opencode/skills/claude-in-mobile/references/platform-support.md
+```
+
+Install globally for the current user:
+
+```bash
+claude-in-mobile setup opencode --global
+```
+
+This writes under:
+
+```text
+~/.config/opencode/skills/claude-in-mobile
+```
+
+If files already exist and differ, the command refuses to overwrite them. Use `--force` to replace existing skill files:
+
+```bash
+claude-in-mobile setup opencode --global --force
+```
+
+Restart OpenCode after installation, then ask it to use the `claude-in-mobile` skill.
+
+### Pi
+
+Install into the current project:
+
+```bash
+claude-in-mobile setup pi
+```
+
+This writes:
+
+```text
+.pi/skills/claude-in-mobile/SKILL.md
+.pi/skills/claude-in-mobile/references/platform-support.md
+```
+
+Install globally for the current user:
+
+```bash
+claude-in-mobile setup pi --global
+```
+
+This writes under:
+
+```text
+~/.pi/agent/skills/claude-in-mobile
+```
+
+If files already exist and differ, the command refuses to overwrite them. Use `--force` to replace existing skill files:
+
+```bash
+claude-in-mobile setup pi --global --force
+```
+
+Restart Pi after installation, then ask it to use the `claude-in-mobile` skill.
+
+### Qwen Code
+
+```bash
+claude-in-mobile setup qwen          # .qwen/skills/claude-in-mobile
+claude-in-mobile setup qwen --global # ~/.qwen/skills/claude-in-mobile
+```
+
+Restart Qwen Code after installation, then ask it to use the `claude-in-mobile` skill.
+
+### Gemini CLI
+
+```bash
+claude-in-mobile setup gemini          # .gemini/skills/claude-in-mobile
+claude-in-mobile setup gemini --global # ~/.gemini/skills/claude-in-mobile
+```
+
+Restart Gemini CLI after installation, then ask it to use the `claude-in-mobile` skill.
+
+### Codex
+
+```bash
+claude-in-mobile setup codex          # .agents/skills/claude-in-mobile
+claude-in-mobile setup codex --global # ~/.agents/skills/claude-in-mobile
+```
+
+Restart Codex after installation, then ask it to use the `claude-in-mobile` skill.
+
+### Cursor
+
+```bash
+claude-in-mobile setup cursor          # .cursor/skills/claude-in-mobile
+claude-in-mobile setup cursor --global # ~/.cursor/skills/claude-in-mobile
+```
+
+Restart Cursor after installation, then ask Agent to use the `claude-in-mobile` skill.
+
+For every setup command, if files already exist and differ, the command refuses to overwrite them. Use `--force` to replace existing skill files.
+
+---
+
+## MCP Setup
+
+Use MCP when you want the Node.js MCP server and native tool calls instead of the standalone CLI skill.
+
+### Claude Code
+
+```bash
+claude mcp add --transport stdio mobile -- npx claude-in-mobile@latest
+```
+
+### Qwen Code
+
+Add to `.qwen/settings.json` or `~/.qwen/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "mobile": {
+      "command": "npx",
+      "args": ["-y", "claude-in-mobile"]
+    }
+  }
+}
+```
+
+### Gemini CLI
+
+Add to `.gemini/settings.json` or `~/.gemini/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "mobile": {
+      "command": "npx",
+      "args": ["-y", "claude-in-mobile"]
+    }
+  }
+}
+```
+
+### Codex
+
+```bash
+codex mcp add mobile -- npx -y claude-in-mobile
+```
+
+### Cursor
+
+Add to `.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "mobile": {
+      "command": "npx",
+      "args": ["-y", "claude-in-mobile"]
+    }
+  }
+}
+```
+
+---
+
 ## What You Get
 
 ### Unified CLI for All Platforms
@@ -211,6 +388,12 @@ Claude reads SKILL.md only when needed — no token overhead in sessions where y
 | **CI/CD friendly** | Yes | Limited |
 | **Offline use** | Yes | Requires MCP connection |
 | **Claude Code integration** | Via plugin/skill | Native MCP tools |
+| **OpenCode integration** | Via `setup opencode` skill | Native MCP tools |
+| **Pi integration** | Via `setup pi` skill | Not supported |
+| **Qwen Code integration** | Via `setup qwen` skill | Native MCP tools |
+| **Gemini CLI integration** | Via `setup gemini` skill | Native MCP tools |
+| **Codex integration** | Via `setup codex` skill | Native MCP tools |
+| **Cursor integration** | Via `setup cursor` skill | Native MCP tools |
 
 **When to use CLI:**
 - Shell scripts, CI/CD pipelines
