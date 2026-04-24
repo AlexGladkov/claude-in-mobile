@@ -11,6 +11,8 @@ import {
   validateLogTag,
   validateLogTimestamp,
   validateJvmArg,
+  validateBaselineName,
+  validatePathContainment,
 } from "./sanitize.js";
 import { MobileError } from "../errors.js";
 
@@ -678,5 +680,113 @@ describe("validateJvmArg", () => {
 
   it("rejects arg with backtick", () => {
     expect(() => validateJvmArg("arg`cmd`")).toThrow(MobileError);
+  });
+});
+
+// ──────────────────────────────────────────────
+// validateBaselineName
+// ──────────────────────────────────────────────
+
+describe("validateBaselineName", () => {
+  it("accepts valid baseline names", () => {
+    expect(() => validateBaselineName("login-screen")).not.toThrow();
+    expect(() => validateBaselineName("dashboard")).not.toThrow();
+    expect(() => validateBaselineName("home_v2")).not.toThrow();
+    expect(() => validateBaselineName("Screen.main")).not.toThrow();
+    expect(() => validateBaselineName("a")).not.toThrow();
+  });
+
+  it("rejects empty string", () => {
+    expect(() => validateBaselineName("")).toThrow(MobileError);
+    try {
+      validateBaselineName("");
+    } catch (e) {
+      expect((e as MobileError).code).toBe("INVALID_BASELINE_NAME");
+    }
+  });
+
+  it("rejects whitespace-only string", () => {
+    expect(() => validateBaselineName("   ")).toThrow(MobileError);
+  });
+
+  it("rejects path traversal attempts", () => {
+    expect(() => validateBaselineName("../evil")).toThrow(MobileError);
+    expect(() => validateBaselineName("a/b")).toThrow(MobileError);
+    expect(() => validateBaselineName("..")).toThrow(MobileError);
+  });
+
+  it("rejects names starting with non-alphanumeric", () => {
+    expect(() => validateBaselineName("-start")).toThrow(MobileError);
+    expect(() => validateBaselineName("_start")).toThrow(MobileError);
+    expect(() => validateBaselineName(".start")).toThrow(MobileError);
+  });
+
+  it("rejects names with special characters", () => {
+    expect(() => validateBaselineName("name with spaces")).toThrow(MobileError);
+    expect(() => validateBaselineName("name;injection")).toThrow(MobileError);
+    expect(() => validateBaselineName("name|pipe")).toThrow(MobileError);
+  });
+
+  it("rejects Windows reserved names", () => {
+    expect(() => validateBaselineName("CON")).toThrow(MobileError);
+    expect(() => validateBaselineName("PRN")).toThrow(MobileError);
+    expect(() => validateBaselineName("NUL")).toThrow(MobileError);
+    expect(() => validateBaselineName("COM1")).toThrow(MobileError);
+    expect(() => validateBaselineName("LPT1")).toThrow(MobileError);
+    // Case insensitive
+    expect(() => validateBaselineName("con")).toThrow(MobileError);
+    expect(() => validateBaselineName("Con.txt")).toThrow(MobileError);
+  });
+
+  it("uses custom label in error message", () => {
+    try {
+      validateBaselineName("", "platform");
+      expect.unreachable("Should have thrown");
+    } catch (e) {
+      expect((e as MobileError).message).toContain("platform");
+    }
+  });
+
+  it("rejects names longer than 128 chars", () => {
+    const longName = "a" + "b".repeat(128);
+    expect(() => validateBaselineName(longName)).toThrow(MobileError);
+  });
+
+  it("accepts name exactly 128 chars", () => {
+    const name = "a" + "b".repeat(127);
+    expect(() => validateBaselineName(name)).not.toThrow();
+  });
+});
+
+// ──────────────────────────────────────────────
+// validatePathContainment
+// ──────────────────────────────────────────────
+
+describe("validatePathContainment", () => {
+  it("allows paths within base directory", () => {
+    expect(() => validatePathContainment("/base/dir/file.png", "/base/dir")).not.toThrow();
+    expect(() => validatePathContainment("/base/dir/sub/file.png", "/base/dir")).not.toThrow();
+  });
+
+  it("allows path equal to base directory", () => {
+    expect(() => validatePathContainment("/base/dir", "/base/dir")).not.toThrow();
+  });
+
+  it("blocks path escape via ..", () => {
+    expect(() => validatePathContainment("/base/dir/../etc/passwd", "/base/dir")).toThrow(MobileError);
+    try {
+      validatePathContainment("/base/dir/../etc/passwd", "/base/dir");
+    } catch (e) {
+      expect((e as MobileError).code).toBe("PATH_CONTAINMENT_VIOLATION");
+    }
+  });
+
+  it("blocks completely different paths", () => {
+    expect(() => validatePathContainment("/other/path/file.png", "/base/dir")).toThrow(MobileError);
+  });
+
+  it("blocks path that is prefix but not child", () => {
+    // /base/directory is NOT inside /base/dir (just shares prefix)
+    expect(() => validatePathContainment("/base/directory/file.png", "/base/dir")).toThrow(MobileError);
   });
 });

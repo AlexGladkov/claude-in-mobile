@@ -31,12 +31,19 @@ import { browserMeta, browserAliases } from "./tools/meta/browser-meta.js";
 import { desktopMeta, desktopAliases } from "./tools/meta/desktop-meta.js";
 import { storeMeta, storeAliases } from "./tools/meta/store-meta.js";
 import { flowMeta, flowAliases } from "./tools/meta/flow-meta.js";
+import { visualMeta, visualAliases } from "./tools/meta/visual-meta.js";
+import { recorderMeta, recorderAliases } from "./tools/meta/recorder-meta.js";
+import { syncMeta, syncAliases } from "./tools/meta/sync-meta.js";
+import { captureStep } from "./tools/recorder-tools.js";
 
 // Dispatch function (needed by batch_commands / run_flow for recursion)
 async function handleTool(name: string, args: Record<string, unknown>, depth: number = 0): Promise<unknown> {
   if (depth > MAX_RECURSION_DEPTH) {
     throw new MobileError(`Maximum recursion depth (${MAX_RECURSION_DEPTH}) exceeded.`, "MAX_RECURSION");
   }
+
+  // Record step if recording is active (no-op if idle, depth>0, or blocklisted)
+  captureStep(name, args, depth);
 
   const resolved = resolveToolCall(name, args);
   if (!resolved) {
@@ -69,7 +76,7 @@ registerTools([
 ]);
 
 // Register optional modules as hidden (loaded on demand via device enable_module)
-registerToolsHidden([browserMeta, desktopMeta, storeMeta]);
+registerToolsHidden([browserMeta, desktopMeta, storeMeta, visualMeta, recorderMeta, syncMeta]);
 
 // Register all backward-compat aliases (v3.1.x canonical names -> meta tools)
 registerAliasesWithDefaults({
@@ -84,6 +91,9 @@ registerAliasesWithDefaults({
   ...desktopAliases,
   ...storeAliases,
   ...flowAliases,
+  ...visualAliases,
+  ...recorderAliases,
+  ...syncAliases,
 
   // v3.0.x backward compat aliases -> meta tools
   // device
