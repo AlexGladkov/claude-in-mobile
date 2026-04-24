@@ -135,9 +135,78 @@ This writes OpenCode skill files to `.opencode/skills/claude-in-mobile` for loca
 
 OpenCode reads `SKILL.md` files directly; the Claude Code plugin manifest in `cli/plugin/.claude-plugin/plugin.json` is not used by OpenCode.
 
-### Cursor
+### Pi
 
-Add to `.cursor/mcp.json`:
+Pi can use the same `SKILL.md` command documentation as an Agent Skill. Install the native CLI first and make sure `claude-in-mobile` is in `PATH`, then install the skill for the current project:
+
+```bash
+claude-in-mobile setup pi
+```
+
+Or install it globally for the current user:
+
+```bash
+claude-in-mobile setup pi --global
+```
+
+This writes Pi skill files to `.pi/skills/claude-in-mobile` for local installs or `~/.pi/agent/skills/claude-in-mobile` for global installs. Restart Pi, then ask it to use the `claude-in-mobile` skill for device automation.
+
+### Other Agent Skills
+
+The same native CLI skill can be installed for other agents that support Agent Skills:
+
+```bash
+claude-in-mobile setup qwen    # .qwen/skills/claude-in-mobile
+claude-in-mobile setup gemini  # .gemini/skills/claude-in-mobile
+claude-in-mobile setup codex   # .agents/skills/claude-in-mobile
+claude-in-mobile setup cursor  # .cursor/skills/claude-in-mobile
+```
+
+Add `--global` to install for the current user instead of the current project. Restart the agent after installation.
+
+### MCP Setup for Agent Clients
+
+Claude Code, Qwen Code, Gemini CLI, Codex, and Cursor can use the Node.js MCP server directly instead of the native CLI skill.
+
+For Claude Code:
+
+```bash
+claude mcp add --transport stdio mobile -- npx claude-in-mobile@latest
+```
+
+For Qwen Code, add this to `.qwen/settings.json` or `~/.qwen/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "mobile": {
+      "command": "npx",
+      "args": ["-y", "claude-in-mobile"]
+    }
+  }
+}
+```
+
+For Gemini CLI, add this to `.gemini/settings.json` or `~/.gemini/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "mobile": {
+      "command": "npx",
+      "args": ["-y", "claude-in-mobile"]
+    }
+  }
+}
+```
+
+For Codex:
+
+```bash
+codex mcp add mobile -- npx -y claude-in-mobile
+```
+
+For Cursor, add this to `.cursor/mcp.json`:
 
 ```json
 {
@@ -423,6 +492,30 @@ claude-in-mobile setup opencode --global # user-wide: ~/.config/opencode/skills/
 ```
 
 After installing, OpenCode can use the native CLI through the `claude-in-mobile` skill. This path does not require Node.js or MCP at runtime.
+
+### Pi Skill
+
+```bash
+claude-in-mobile setup pi          # project-local: .pi/skills/...
+claude-in-mobile setup pi --global # user-wide: ~/.pi/agent/skills/...
+```
+
+After installing, Pi can use the native CLI through the same Agent Skill files.
+
+### Other Agent Skills
+
+```bash
+claude-in-mobile setup qwen           # project-local: .qwen/skills/...
+claude-in-mobile setup qwen --global  # user-wide: ~/.qwen/skills/...
+claude-in-mobile setup gemini         # project-local: .gemini/skills/...
+claude-in-mobile setup gemini --global # user-wide: ~/.gemini/skills/...
+claude-in-mobile setup codex          # project-local: .agents/skills/...
+claude-in-mobile setup codex --global # user-wide: ~/.agents/skills/...
+claude-in-mobile setup cursor         # project-local: .cursor/skills/...
+claude-in-mobile setup cursor --global # user-wide: ~/.cursor/skills/...
+```
+
+These commands install the same `SKILL.md` and references for Qwen Code, Gemini CLI, Codex, and Cursor.
 
 See [cli/README.md](cli/README.md) for full CLI documentation.
 

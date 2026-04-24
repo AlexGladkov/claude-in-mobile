@@ -21,28 +21,113 @@ pub fn run(command: SetupCommands) -> Result<()> {
             global,
             force,
         } => opencode(local, global, force),
+        SetupCommands::Pi {
+            local,
+            global,
+            force,
+        } => pi(local, global, force),
+        SetupCommands::Qwen {
+            local,
+            global,
+            force,
+        } => qwen(local, global, force),
+        SetupCommands::Gemini {
+            local,
+            global,
+            force,
+        } => gemini(local, global, force),
+        SetupCommands::Codex {
+            local,
+            global,
+            force,
+        } => codex(local, global, force),
+        SetupCommands::Cursor {
+            local,
+            global,
+            force,
+        } => cursor(local, global, force),
     }
 }
 
 fn opencode(local: bool, global: bool, force: bool) -> Result<()> {
-    let scope = if global {
-        InstallScope::Global
-    } else {
-        // Default to project-local install. The `local` flag exists for explicitness.
-        let _ = local;
-        InstallScope::Local
-    };
+    install_agent_skill(
+        "OpenCode",
+        &[".opencode", "skills"],
+        &[".config", "opencode", "skills"],
+        local,
+        global,
+        force,
+    )
+}
+
+fn pi(local: bool, global: bool, force: bool) -> Result<()> {
+    install_agent_skill(
+        "Pi",
+        &[".pi", "skills"],
+        &[".pi", "agent", "skills"],
+        local,
+        global,
+        force,
+    )
+}
+
+fn qwen(local: bool, global: bool, force: bool) -> Result<()> {
+    install_agent_skill(
+        "Qwen Code",
+        &[".qwen", "skills"],
+        &[".qwen", "skills"],
+        local,
+        global,
+        force,
+    )
+}
+
+fn gemini(local: bool, global: bool, force: bool) -> Result<()> {
+    install_agent_skill(
+        "Gemini CLI",
+        &[".gemini", "skills"],
+        &[".gemini", "skills"],
+        local,
+        global,
+        force,
+    )
+}
+
+fn codex(local: bool, global: bool, force: bool) -> Result<()> {
+    install_agent_skill(
+        "Codex",
+        &[".agents", "skills"],
+        &[".agents", "skills"],
+        local,
+        global,
+        force,
+    )
+}
+
+fn cursor(local: bool, global: bool, force: bool) -> Result<()> {
+    install_agent_skill(
+        "Cursor",
+        &[".cursor", "skills"],
+        &[".cursor", "skills"],
+        local,
+        global,
+        force,
+    )
+}
+
+fn install_agent_skill(
+    agent_name: &str,
+    local_parts: &[&str],
+    global_parts: &[&str],
+    local: bool,
+    global: bool,
+    force: bool,
+) -> Result<()> {
+    let scope = install_scope(local, global);
 
     let target_dir = match scope {
-        InstallScope::Local => project_root()?
-            .join(".opencode")
-            .join("skills")
-            .join(SKILL_NAME),
-        InstallScope::Global => home_dir()?
-            .join(".config")
-            .join("opencode")
-            .join("skills")
-            .join(SKILL_NAME),
+        InstallScope::Local => append_parts(project_root()?, local_parts).join(SKILL_NAME),
+        InstallScope::Global => append_parts(home_dir()?, global_parts).join(SKILL_NAME),
     };
 
     install_skill(&target_dir, force)?;
@@ -53,11 +138,30 @@ fn opencode(local: bool, global: bool, force: bool) -> Result<()> {
     };
 
     println!(
-        "Installed OpenCode skill ({}) at {}\nRestart OpenCode, then ask it to use the claude-in-mobile skill.",
+        "Installed {} skill ({}) at {}\nRestart {}, then ask it to use the claude-in-mobile skill.",
+        agent_name,
         scope_label,
-        target_dir.display()
+        target_dir.display(),
+        agent_name
     );
     Ok(())
+}
+
+fn append_parts(mut base: PathBuf, parts: &[&str]) -> PathBuf {
+    for part in parts {
+        base.push(part);
+    }
+    base
+}
+
+fn install_scope(local: bool, global: bool) -> InstallScope {
+    if global {
+        InstallScope::Global
+    } else {
+        // Default to project-local install. The `local` flag exists for explicitness.
+        let _ = local;
+        InstallScope::Local
+    }
 }
 
 #[derive(Clone, Copy)]
