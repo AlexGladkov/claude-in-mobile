@@ -34,6 +34,9 @@ import { flowMeta, flowAliases } from "./tools/meta/flow-meta.js";
 import { visualMeta, visualAliases } from "./tools/meta/visual-meta.js";
 import { recorderMeta, recorderAliases } from "./tools/meta/recorder-meta.js";
 import { syncMeta, syncAliases } from "./tools/meta/sync-meta.js";
+import { accessibilityMeta, accessibilityAliases } from "./tools/meta/accessibility-meta.js";
+import { performanceMeta, performanceAliases } from "./tools/meta/performance-meta.js";
+import { autopilotMeta, autopilotAliases } from "./tools/meta/autopilot-meta.js";
 import { captureStep } from "./tools/recorder-tools.js";
 
 // Dispatch function (needed by batch_commands / run_flow for recursion)
@@ -76,7 +79,7 @@ registerTools([
 ]);
 
 // Register optional modules as hidden (loaded on demand via device enable_module)
-registerToolsHidden([browserMeta, desktopMeta, storeMeta, visualMeta, recorderMeta, syncMeta]);
+registerToolsHidden([browserMeta, desktopMeta, storeMeta, visualMeta, recorderMeta, syncMeta, accessibilityMeta, performanceMeta, autopilotMeta]);
 
 // Register all backward-compat aliases (v3.1.x canonical names -> meta tools)
 registerAliasesWithDefaults({
@@ -94,6 +97,31 @@ registerAliasesWithDefaults({
   ...visualAliases,
   ...recorderAliases,
   ...syncAliases,
+  ...accessibilityAliases,
+  ...performanceAliases,
+  ...autopilotAliases,
+
+  // Short aliases for autopilot
+  autopilot_explore: { tool: "autopilot", defaults: { action: "explore" } },
+  autopilot_generate: { tool: "autopilot", defaults: { action: "generate" } },
+  autopilot_heal: { tool: "autopilot", defaults: { action: "heal" } },
+  autopilot_status: { tool: "autopilot", defaults: { action: "status" } },
+  autopilot_tests: { tool: "autopilot", defaults: { action: "tests" } },
+
+  // Short aliases for performance
+  perf_snapshot: { tool: "performance", defaults: { action: "snapshot" } },
+  perf_baseline: { tool: "performance", defaults: { action: "baseline" } },
+  perf_compare: { tool: "performance", defaults: { action: "compare" } },
+  perf_monitor: { tool: "performance", defaults: { action: "monitor" } },
+  perf_crashes: { tool: "performance", defaults: { action: "crashes" } },
+  perf: { tool: "performance", defaults: {} },
+
+  // Short aliases for accessibility
+  a11y_audit: { tool: "accessibility", defaults: { action: "audit" } },
+  a11y_check: { tool: "accessibility", defaults: { action: "check" } },
+  a11y_summary: { tool: "accessibility", defaults: { action: "summary" } },
+  a11y_rules: { tool: "accessibility", defaults: { action: "rules" } },
+  a11y: { tool: "accessibility", defaults: {} },
 
   // v3.0.x backward compat aliases -> meta tools
   // device

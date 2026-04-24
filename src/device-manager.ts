@@ -42,40 +42,46 @@ export interface Device {
   isSimulator: boolean;
 }
 
-export class DeviceManager {
-  private androidAdapter: AndroidAdapter;
-  private iosAdapter: IosAdapter;
-  private desktopAdapter: DesktopAdapter;
-  private auroraAdapter: AuroraAdapter;
-  private browserAdapter: BrowserAdapter;
+export interface DeviceManagerConfig {
+  adapters: Map<Platform, CorePlatformAdapter>;
+  activeTarget?: Platform;
+}
 
+export class DeviceManager {
   private adapters: Map<Platform, CorePlatformAdapter>;
   private activeDevice?: Device;
   private activeTarget: Platform = "android";
   private webViewInspector?: WebViewInspector;
 
-  constructor() {
+  constructor(config?: DeviceManagerConfig) {
+    if (config) {
+      this.adapters = config.adapters;
+      this.activeTarget = config.activeTarget ?? "android";
+      return;
+    }
+
+    // Default: create all 5 adapters (full mode)
     const androidDeviceId = process.env.DEVICE_ID ?? process.env.ANDROID_SERIAL ?? undefined;
     const iosDeviceId = process.env.IOS_DEVICE_ID ?? undefined;
 
-    this.androidAdapter = androidDeviceId
+    const androidAdapter = androidDeviceId
       ? new AndroidAdapter(new AdbClient(androidDeviceId))
       : new AndroidAdapter();
 
-    this.iosAdapter = iosDeviceId
+    const iosAdapter = iosDeviceId
       ? new IosAdapter(new IosClient(iosDeviceId))
       : new IosAdapter();
 
-    this.desktopAdapter = new DesktopAdapter();
-    this.auroraAdapter = new AuroraAdapter();
-    this.browserAdapter = new BrowserAdapter();
+    const desktopAdapter = new DesktopAdapter();
+    const auroraAdapter = new AuroraAdapter();
+    const browserAdapter = new BrowserAdapter();
 
     this.adapters = new Map<Platform, CorePlatformAdapter>([
-      ["android", this.androidAdapter],
-      ["ios", this.iosAdapter],
-      ["desktop", this.desktopAdapter],
-      ["aurora", this.auroraAdapter],
-      ["browser", this.browserAdapter],
+      ["android", androidAdapter],
+      ["ios", iosAdapter],
+      ["desktop", desktopAdapter],
+      ["aurora", auroraAdapter],
+      ["browser", browserAdapter],
     ]);
 
     // If env var specified a device, set it as active target
@@ -129,8 +135,12 @@ export class DeviceManager {
 
   getTarget(): { target: Platform; status: string } {
     if (this.activeTarget === "desktop") {
-      const state = this.desktopAdapter.getState();
-      return { target: "desktop", status: state.status };
+      const desktop = this.adapters.get("desktop");
+      if (desktop instanceof DesktopAdapter) {
+        const state = desktop.getState();
+        return { target: "desktop", status: state.status };
+      }
+      return { target: "desktop", status: "not available" };
     }
 
     const device = this.activeDevice;
@@ -144,7 +154,11 @@ export class DeviceManager {
   // ============ Desktop Specific ============
 
   async launchDesktopApp(options: LaunchOptions): Promise<string> {
-    await this.desktopAdapter.launch(options);
+    const desktop = this.adapters.get("desktop");
+    if (!desktop || !(desktop instanceof DesktopAdapter)) {
+      throw new Error("Desktop adapter is not available in this configuration.");
+    }
+    await desktop.launch(options);
     this.activeTarget = "desktop";
     if (options.projectPath) {
       return `Desktop automation started. Also launching app from ${options.projectPath}`;
@@ -153,26 +167,49 @@ export class DeviceManager {
   }
 
   async stopDesktopApp(): Promise<void> {
-    await this.desktopAdapter.stop();
+    const desktop = this.adapters.get("desktop");
+    if (!desktop || !(desktop instanceof DesktopAdapter)) {
+      throw new Error("Desktop adapter is not available in this configuration.");
+    }
+    await desktop.stop();
   }
 
   async cleanup(): Promise<void> {
-    try { await this.desktopAdapter.stop(); } catch {}
-    try { this.iosAdapter.getClient().cleanup(); } catch {}
+    const desktop = this.adapters.get("desktop");
+    if (desktop instanceof DesktopAdapter) {
+      try { await desktop.stop(); } catch {}
+    }
+    const ios = this.adapters.get("ios");
+    if (ios instanceof IosAdapter) {
+      try { ios.getClient().cleanup(); } catch {}
+    }
     try { this.webViewInspector?.cleanup(); } catch {}
-    try { await this.browserAdapter.cleanup(); } catch {}
+    const browser = this.adapters.get("browser");
+    if (browser instanceof BrowserAdapter) {
+      try { await browser.cleanup(); } catch {}
+    }
   }
 
   getBrowserAdapter(): BrowserAdapter {
-    return this.browserAdapter;
+    const adapter = this.adapters.get("browser");
+    if (!adapter || !(adapter instanceof BrowserAdapter)) {
+      throw new Error("Browser adapter is not available in this configuration.");
+    }
+    return adapter;
   }
 
   getDesktopClient(): DesktopClient {
-    return this.desktopAdapter.getClient();
+    const adapter = this.adapters.get("desktop");
+    if (!adapter || !(adapter instanceof DesktopAdapter)) {
+      throw new Error("Desktop adapter is not available in this configuration.");
+    }
+    return adapter.getClient();
   }
 
   isDesktopRunning(): boolean {
-    return this.desktopAdapter.isRunning();
+    const adapter = this.adapters.get("desktop");
+    if (!adapter || !(adapter instanceof DesktopAdapter)) return false;
+    return adapter.isRunning();
   }
 
   // ============ Device Management ============
@@ -196,7 +233,7 @@ export class DeviceManager {
   setDevice(deviceId: string, platform?: Platform): Device {
     // Handle desktop special case
     if (deviceId === "desktop" || platform === "desktop") {
-      if (!this.desktopAdapter.isRunning()) {
+      if (!this.isDesktopRunning()) {
         throw new Error("Desktop app is not running. Use desktop(action:'launch') first.");
       }
       this.activeTarget = "desktop";
@@ -238,7 +275,7 @@ export class DeviceManager {
   }
 
   getActiveDevice(): Device | undefined {
-    if (this.activeTarget === "desktop" && this.desktopAdapter.isRunning()) {
+    if (this.activeTarget === "desktop" && this.isDesktopRunning()) {
       return {
         id: "desktop",
         name: "Desktop App",
@@ -429,20 +466,32 @@ export class DeviceManager {
   // ============ Raw client accessors (used by tools directly) ============
 
   getAndroidClient(): AdbClient {
-    return this.androidAdapter.getClient();
+    const adapter = this.adapters.get("android");
+    if (!adapter || !(adapter instanceof AndroidAdapter)) {
+      throw new Error("Android adapter is not available in this configuration.");
+    }
+    return adapter.getClient();
   }
 
   getIosClient(): IosClient {
-    return this.iosAdapter.getClient();
+    const adapter = this.adapters.get("ios");
+    if (!adapter || !(adapter instanceof IosAdapter)) {
+      throw new Error("iOS adapter is not available in this configuration.");
+    }
+    return adapter.getClient();
   }
 
   getAuroraClient(): AuroraClient {
-    return this.auroraAdapter.getClient();
+    const adapter = this.adapters.get("aurora");
+    if (!adapter || !(adapter instanceof AuroraAdapter)) {
+      throw new Error("Aurora adapter is not available in this configuration.");
+    }
+    return adapter.getClient();
   }
 
   getWebViewInspector(): WebViewInspector {
     if (!this.webViewInspector) {
-      this.webViewInspector = new WebViewInspector(this.androidAdapter.getClient());
+      this.webViewInspector = new WebViewInspector(this.getAndroidClient());
     }
     return this.webViewInspector;
   }
@@ -498,4 +547,9 @@ export class DeviceManager {
     const adapter = this.getAdapter(platform);
     return adapter.getSystemInfo();
   }
+}
+
+/** Factory for full DeviceManager with all 5 adapters (backward compat). */
+export function createFullDeviceManager(): DeviceManager {
+  return new DeviceManager();
 }

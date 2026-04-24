@@ -285,6 +285,90 @@ export class SyncRoleNotFoundError extends MobileError {
   }
 }
 
+// Accessibility Guardian errors
+
+export class A11yAuditError extends MobileError {
+  constructor(message: string) {
+    super(message, "A11Y_AUDIT_ERROR");
+  }
+}
+
+export class A11yRuleNotFoundError extends MobileError {
+  constructor(ruleId: string) {
+    super(
+      `Accessibility rule "${ruleId}" not found. Use accessibility(action:'rules') to see available rules.`,
+      "A11Y_RULE_NOT_FOUND"
+    );
+  }
+}
+
+// AI Test Autopilot errors
+
+export class ExplorationNotFoundError extends MobileError {
+  constructor(id: string) {
+    super(
+      `Exploration "${id}" not found. Use autopilot(action:'explore') to create one.`,
+      "EXPLORATION_NOT_FOUND"
+    );
+  }
+}
+
+export class ExplorationLimitError extends MobileError {
+  constructor(detail: string) {
+    super(
+      `Exploration limit: ${detail}`,
+      "EXPLORATION_LIMIT"
+    );
+  }
+}
+
+export class HealingFailedError extends MobileError {
+  constructor(detail: string) {
+    super(
+      `Self-healing failed: ${detail}`,
+      "HEALING_FAILED"
+    );
+  }
+}
+
+export class TestGenerationError extends MobileError {
+  constructor(detail: string) {
+    super(
+      `Test generation failed: ${detail}`,
+      "TEST_GENERATION_ERROR"
+    );
+  }
+}
+
+// Performance & Crash Monitor errors
+
+export class PerfBaselineNotFoundError extends MobileError {
+  constructor(name: string, platform: string) {
+    super(
+      `Performance baseline "${name}" not found for ${platform}. Use performance(action:'baseline') to create one.`,
+      "PERF_BASELINE_NOT_FOUND"
+    );
+  }
+}
+
+export class PerfBaselineExistsError extends MobileError {
+  constructor(name: string) {
+    super(
+      `Performance baseline "${name}" already exists. Use overwrite:true to replace.`,
+      "PERF_BASELINE_EXISTS"
+    );
+  }
+}
+
+export class PerfCollectionError extends MobileError {
+  constructor(platform: string, detail: string) {
+    super(
+      `Failed to collect performance metrics on ${platform}: ${detail}`,
+      "PERF_COLLECTION_ERROR"
+    );
+  }
+}
+
 const RETRYABLE_CODES = new Set([
   "DEVICE_OFFLINE", "COMMAND_TIMEOUT", "ADB_ERROR", "BROWSER_REF_NOT_FOUND",
   "SYNC_BARRIER_TIMEOUT",
