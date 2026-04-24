@@ -8,7 +8,7 @@
  *   - context/hints.ts         — action hints & platform element helpers
  */
 
-import { DeviceManager, Platform } from "../device-manager.js";
+import { DeviceManager, createFullDeviceManager, Platform } from "../device-manager.js";
 import type { UiElement } from "../adb/ui-parser.js";
 
 // Re-export submodule symbols so every existing import path keeps working
@@ -38,7 +38,7 @@ import {
 import { iosTreeToUiElements, formatIOSUITree } from "./context/ios-helpers.js";
 
 // Shared device manager singleton
-export const deviceManager = new DeviceManager();
+export const deviceManager = createFullDeviceManager();
 
 // Bound hint functions for the shared deviceManager
 export const generateActionHints = createGenerateActionHints(deviceManager);

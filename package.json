@@ -1,14 +1,65 @@
 {
   "name": "claude-in-mobile",
-  "version": "3.5.0",
+  "version": "3.6.0",
   "description": "MCP server for mobile, desktop and browser automation - Android (ADB), iOS Simulator (simctl), Desktop (Compose), Browser (CDP)",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
     "claude-in-mobile": "dist/index.js"
   },
+  "workspaces": [
+    "packages/*"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./device-manager": {
+      "types": "./dist/device-manager.d.ts",
+      "default": "./dist/device-manager.js"
+    },
+    "./errors": {
+      "types": "./dist/errors.d.ts",
+      "default": "./dist/errors.js"
+    },
+    "./adapters/*": {
+      "types": "./dist/adapters/*.d.ts",
+      "default": "./dist/adapters/*.js"
+    },
+    "./adb/*": {
+      "types": "./dist/adb/*.d.ts",
+      "default": "./dist/adb/*.js"
+    },
+    "./ios/*": {
+      "types": "./dist/ios/*.d.ts",
+      "default": "./dist/ios/*.js"
+    },
+    "./desktop/*": {
+      "types": "./dist/desktop/*.d.ts",
+      "default": "./dist/desktop/*.js"
+    },
+    "./utils/*": {
+      "types": "./dist/utils/*.d.ts",
+      "default": "./dist/utils/*.js"
+    },
+    "./tools/registry": {
+      "types": "./dist/tools/registry.d.ts",
+      "default": "./dist/tools/registry.js"
+    },
+    "./tools/helpers/*": {
+      "types": "./dist/tools/helpers/*.d.ts",
+      "default": "./dist/tools/helpers/*.js"
+    },
+    "./tools/context/*": {
+      "types": "./dist/tools/context/*.d.ts",
+      "default": "./dist/tools/context/*.js"
+    }
+  },
   "scripts": {
     "build": "tsc",
+    "build:lite": "npm run build && npm run build --workspace=packages/lite",
+    "postinstall": "rm -rf node_modules/claude-in-mobile && ln -sf \"$(pwd)\" node_modules/claude-in-mobile 2>/dev/null || true",
     "build:desktop": "cd desktop-companion && ./gradlew installDist",
     "build:all": "npm run build && npm run build:desktop",
     "watch": "tsc --watch",
