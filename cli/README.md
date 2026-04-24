@@ -92,6 +92,45 @@ After installing the plugin, Claude Code can:
 
 ---
 
+## OpenCode Skill Setup
+
+OpenCode can use the same `SKILL.md` command documentation without the Claude Code plugin manifest. Install the CLI first and make sure `claude-in-mobile` is in `PATH`.
+
+Install into the current project:
+
+```bash
+claude-in-mobile setup opencode
+```
+
+This writes:
+
+```text
+.opencode/skills/claude-in-mobile/SKILL.md
+.opencode/skills/claude-in-mobile/references/platform-support.md
+```
+
+Install globally for the current user:
+
+```bash
+claude-in-mobile setup opencode --global
+```
+
+This writes under:
+
+```text
+~/.config/opencode/skills/claude-in-mobile
+```
+
+If files already exist and differ, the command refuses to overwrite them. Use `--force` to replace existing skill files:
+
+```bash
+claude-in-mobile setup opencode --global --force
+```
+
+Restart OpenCode after installation, then ask it to use the `claude-in-mobile` skill.
+
+---
+
 ## What You Get
 
 ### Unified CLI for All Platforms
@@ -211,6 +250,7 @@ Claude reads SKILL.md only when needed — no token overhead in sessions where y
 | **CI/CD friendly** | Yes | Limited |
 | **Offline use** | Yes | Requires MCP connection |
 | **Claude Code integration** | Via plugin/skill | Native MCP tools |
+| **OpenCode integration** | Via `setup opencode` skill | Native MCP tools |
 
 **When to use CLI:**
 - Shell scripts, CI/CD pipelines

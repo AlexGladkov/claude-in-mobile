@@ -70,16 +70,30 @@ claude mcp add --scope user --transport stdio mobile -- npx claude-in-mobile@lat
 
 ### OpenCode
 
-Use the interactive setup:
+Claude Mobile works with OpenCode in two ways:
+
+- **MCP server** — native OpenCode tools backed by the Node.js MCP server.
+- **Native CLI + Agent Skill** — fast Rust CLI commands guided by an OpenCode skill, no Node.js runtime required.
+
+#### Option A: MCP server
+
+Use OpenCode's interactive MCP setup:
 
 ```bash
 opencode mcp add
+```
+
+Choose a local MCP server and use:
+
+```bash
+npx -y claude-in-mobile
 ```
 
 Or add manually to `opencode.json` (project root or `~/.config/opencode/opencode.json`):
 
 ```json
 {
+  "$schema": "https://opencode.ai/config.json",
   "mcp": {
     "mobile": {
       "type": "local",
@@ -89,6 +103,37 @@ Or add manually to `opencode.json` (project root or `~/.config/opencode/opencode
   }
 }
 ```
+
+You can also print this config snippet:
+
+```bash
+npx claude-in-mobile --init opencode
+```
+
+#### Option B: Native CLI + OpenCode skill
+
+Install the native CLI first:
+
+```bash
+brew tap AlexGladkov/claude-in-mobile
+brew install claude-in-mobile
+```
+
+Then install the OpenCode skill for the current project:
+
+```bash
+claude-in-mobile setup opencode
+```
+
+Or install it globally for the current user:
+
+```bash
+claude-in-mobile setup opencode --global
+```
+
+This writes OpenCode skill files to `.opencode/skills/claude-in-mobile` for local installs or `~/.config/opencode/skills/claude-in-mobile` for global installs. Restart OpenCode, then ask it to use the `claude-in-mobile` skill for device automation.
+
+OpenCode reads `SKILL.md` files directly; the Claude Code plugin manifest in `cli/plugin/.claude-plugin/plugin.json` is not used by OpenCode.
 
 ### Cursor
 
@@ -369,6 +414,15 @@ claude plugin install claude-in-mobile@claude-in-mobile
 ```
 
 After installing, Claude Code controls devices with natural language. The skill loads into context only on demand — no token overhead when not in use.
+
+### OpenCode Skill
+
+```bash
+claude-in-mobile setup opencode          # project-local: .opencode/skills/...
+claude-in-mobile setup opencode --global # user-wide: ~/.config/opencode/skills/...
+```
+
+After installing, OpenCode can use the native CLI through the `claude-in-mobile` skill. This path does not require Node.js or MCP at runtime.
 
 See [cli/README.md](cli/README.md) for full CLI documentation.
 

@@ -730,6 +730,12 @@ pub enum Commands {
         companion_path: Option<String>,
     },
 
+    /// Configure integrations with AI coding tools
+    Setup {
+        #[command(subcommand)]
+        command: SetupCommands,
+    },
+
     // ===== Store management =====
 
     /// Google Play Store management (upload, submit, promote, etc.)
@@ -748,6 +754,26 @@ pub enum Commands {
     Rustore {
         #[command(subcommand)]
         command: RuStoreCommands,
+    },
+}
+
+// -- Setup subcommands --------------------------------------------------------
+
+#[derive(Subcommand)]
+pub enum SetupCommands {
+    /// Install OpenCode skill files for CLI-based device automation
+    Opencode {
+        /// Install into the current project (.opencode/skills). This is the default.
+        #[arg(long, conflicts_with = "global")]
+        local: bool,
+
+        /// Install globally for the current user (~/.config/opencode/skills)
+        #[arg(long, conflicts_with = "local")]
+        global: bool,
+
+        /// Overwrite existing skill files if they differ
+        #[arg(long)]
+        force: bool,
     },
 }
 
