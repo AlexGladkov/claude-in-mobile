@@ -4,13 +4,17 @@ import { desktopTools } from "../desktop-tools.js";
 const { meta, aliases: generatedAliases } = createMetaTool({
   name: "desktop",
   description:
-    "Desktop app management: launch, stop, windows, focus, resize, clipboard, performance, monitors",
+    "Desktop app management: launch (Gradle/bundle/attach), stop, windows, focus, resize, clipboard, performance, monitors, get_target_pid",
   tools: desktopTools,
   prefix: "desktop_",
   extraSchema: {
-    projectPath: { type: "string", description: "Path to Gradle project directory (launch)" },
-    task: { type: "string", description: "Gradle task to run (launch)" },
-    jvmArgs: { type: "array", items: { type: "string" }, description: "JVM arguments (launch)" },
+    mode: { type: "string", description: "Launch mode: gradle, bundle, attach, companion-only (launch)" },
+    projectPath: { type: "string", description: "Gradle mode: path to Gradle project directory (launch)" },
+    task: { type: "string", description: "Gradle mode: Gradle task to run (launch)" },
+    jvmArgs: { type: "array", items: { type: "string" }, description: "Gradle mode: JVM arguments (launch)" },
+    bundleId: { type: "string", description: "Bundle mode: macOS bundle ID e.g. com.apple.TextEdit (launch)" },
+    appPath: { type: "string", description: "Bundle mode: absolute path to .app bundle (launch)" },
+    pid: { type: "number", description: "Attach mode: PID of already-running process (launch)" },
     windowId: { type: "string", description: "Window ID (focus, resize)" },
     width: { type: "number", description: "New window width in pixels (resize)" },
     height: { type: "number", description: "New window height in pixels (resize)" },

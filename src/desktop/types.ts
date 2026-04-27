@@ -107,12 +107,29 @@ export interface KeyEventOptions {
   modifiers?: string[]; // "ctrl", "shift", "alt", "meta"
 }
 
-// Launch options
-export interface LaunchOptions {
-  projectPath?: string; // If provided, also launches user's Compose Desktop app via Gradle
-  task?: string; // Gradle task, auto-detected if not specified
+// Launch mode
+export type LaunchMode = "gradle" | "bundle" | "attach" | "companion-only";
+
+// Launch options — discriminated union enforcing mode-specific fields at the type level.
+// The bundle variant is an XOR: at least one of bundleId/appPath must be provided.
+export type LaunchOptions =
+  | { mode: "gradle"; projectPath: string; task?: string; jvmArgs?: string[]; env?: Record<string, string> }
+  | { mode: "bundle"; bundleId: string; appPath?: string; env?: Record<string, string> }
+  | { mode: "bundle"; bundleId?: string; appPath: string; env?: Record<string, string> }
+  | { mode: "attach"; pid: number }
+  | { mode: "companion-only" };
+
+// Flat legacy interface kept for DeviceManager.launchDesktopApp() and external callers.
+// Internally converted to LaunchOptions via normalizeLaunchOptions() in DesktopClient.
+export interface RawLaunchOptions {
+  mode?: LaunchMode;
+  projectPath?: string;
+  task?: string;
   jvmArgs?: string[];
   env?: Record<string, string>;
+  bundleId?: string;
+  appPath?: string;
+  pid?: number;
 }
 
 export interface GradleProject {
@@ -154,10 +171,11 @@ export type DesktopStatus = "stopped" | "starting" | "running" | "crashed";
 
 export interface DesktopState {
   status: DesktopStatus;
-  pid?: number;
+  pid?: number;          // companion process PID
   projectPath?: string;
   crashCount: number;
   lastError?: string;
+  targetPid: number | null;   // native app PID set by bundle/attach mode; null when not set
 }
 
 // Clipboard types

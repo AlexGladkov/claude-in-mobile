@@ -1,22 +1,37 @@
 import type { ToolDefinition } from "./registry.js";
 import type { ToolContext } from "./context.js";
-import { validatePath, validateJvmArg } from "../utils/sanitize.js";
+import { validatePath, validateJvmArg, validateBundleId } from "../utils/sanitize.js";
 
 export const desktopTools: ToolDefinition[] = [
   {
     tool: {
       name: "desktop_launch",
-      description: "Start desktop automation, optionally launch Compose Desktop app",
+      description: "Start desktop automation and optionally launch an app. Supports three modes: 'bundle' (launch a native macOS app by bundle ID or path), 'attach' (attach to an already-running process by PID), 'gradle' (launch a Compose Desktop app via Gradle). If no mode is specified, infers from the provided fields.",
       inputSchema: {
         type: "object",
         properties: {
-          projectPath: { type: "string", description: "Path to the Gradle project directory. If provided, also launches the user's app." },
-          task: { type: "string", description: "Gradle task to run (e.g., ':desktopApp:run'). Auto-detected if not specified." },
-          jvmArgs: { type: "array", items: { type: "string" }, description: "JVM arguments to pass to the app" },
+          mode: {
+            type: "string",
+            enum: ["gradle", "bundle", "attach", "companion-only"],
+            description: "Launch mode. 'bundle': launch native macOS app; 'attach': attach to running process; 'gradle': launch Compose Desktop via Gradle; 'companion-only': start companion only.",
+          },
+          projectPath: { type: "string", description: "Gradle mode: path to the Gradle project directory." },
+          task: { type: "string", description: "Gradle mode: Gradle task to run (auto-detected if not specified)." },
+          jvmArgs: { type: "array", items: { type: "string" }, description: "Gradle mode: JVM arguments to pass to the app." },
+          bundleId: { type: "string", description: "Bundle mode: macOS bundle ID, e.g. 'com.apple.TextEdit'." },
+          appPath: { type: "string", description: "Bundle mode: absolute path to .app bundle, e.g. '/Applications/TextEdit.app'." },
+          pid: { type: "number", description: "Attach mode: PID of an already-running process to attach to." },
+          env: { type: "object", additionalProperties: { type: "string" }, description: "Bundle/Gradle mode: environment variables to set for the launched app (e.g. {RELAY_UITEST_MODE:'1'})." },
         },
       },
     },
     handler: async (args, ctx) => {
+      const mode = args.mode as string | undefined;
+
+      // Boundary format validation (presence/conflict checks are in normalizeLaunchOptions)
+      if (args.bundleId) {
+        validateBundleId(args.bundleId as string);
+      }
       if (args.projectPath) {
         validatePath(args.projectPath as string, "projectPath");
       }
@@ -25,10 +40,16 @@ export const desktopTools: ToolDefinition[] = [
           validateJvmArg(arg);
         }
       }
+
       const result = await ctx.deviceManager.launchDesktopApp({
+        mode: mode as any,
         projectPath: args.projectPath as string | undefined,
         task: args.task as string | undefined,
         jvmArgs: args.jvmArgs as string[] | undefined,
+        bundleId: args.bundleId as string | undefined,
+        appPath: args.appPath as string | undefined,
+        pid: args.pid as number | undefined,
+        env: args.env as Record<string, string> | undefined,
       });
       return { text: result };
     },
@@ -201,6 +222,26 @@ export const desktopTools: ToolDefinition[] = [
         result += `  • Monitor ${m.index}${primary}: ${m.width}x${m.height} at (${m.x}, ${m.y}) - ${m.name}\n`;
       }
       return { text: result.trim() };
+    },
+  },
+  {
+    tool: {
+      name: "desktop_get_target_pid",
+      description: "Get the PID of the native app set by the last desktop_launch (bundle or attach mode). Returns null if no target PID is set.",
+      inputSchema: {
+        type: "object",
+        properties: {},
+      },
+    },
+    handler: async (_args, ctx) => {
+      if (!ctx.deviceManager.isDesktopRunning()) {
+        return { text: "Desktop companion is not running. Use desktop_launch first." };
+      }
+      const pid = ctx.deviceManager.getDesktopClient().getTargetPid();
+      if (pid === null) {
+        return { text: "No target PID set. Use desktop_launch with mode:'bundle' or mode:'attach' to set a target." };
+      }
+      return { text: `Target PID: ${pid}` };
     },
   },
 ];
