@@ -1,7 +1,6 @@
 import type { ToolDefinition } from "./registry.js";
 import type { ToolContext } from "./context.js";
 import { validatePath, validateJvmArg, validateBundleId } from "../utils/sanitize.js";
-import { MobileError } from "../errors.js";
 
 export const desktopTools: ToolDefinition[] = [
   {
@@ -28,29 +27,16 @@ export const desktopTools: ToolDefinition[] = [
     handler: async (args, ctx) => {
       const mode = args.mode as string | undefined;
 
-      // Mode-specific validation
-      if (mode === "bundle" || (!mode && (args.bundleId || args.appPath))) {
-        if (!args.bundleId && !args.appPath) {
-          throw new MobileError(`mode "bundle" requires bundleId or appPath`, "INVALID_LAUNCH_OPTIONS");
-        }
-        if (args.bundleId) {
-          validateBundleId(args.bundleId as string);
-        }
-        if (args.appPath) {
-          validatePath(args.appPath as string, "appPath");
-        }
-      } else if (mode === "attach") {
-        if (args.pid === undefined) {
-          throw new MobileError(`mode "attach" requires pid`, "INVALID_LAUNCH_OPTIONS");
-        }
-      } else if (mode === "gradle" || args.projectPath) {
-        if (args.projectPath) {
-          validatePath(args.projectPath as string, "projectPath");
-        }
-        if (args.jvmArgs) {
-          for (const arg of args.jvmArgs as string[]) {
-            validateJvmArg(arg);
-          }
+      // Boundary format validation (presence/conflict checks are in normalizeLaunchOptions)
+      if (args.bundleId) {
+        validateBundleId(args.bundleId as string);
+      }
+      if (args.projectPath) {
+        validatePath(args.projectPath as string, "projectPath");
+      }
+      if (args.jvmArgs) {
+        for (const arg of args.jvmArgs as string[]) {
+          validateJvmArg(arg);
         }
       }
 

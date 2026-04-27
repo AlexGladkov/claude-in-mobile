@@ -2,7 +2,8 @@
  * Desktop Client - communicates with Kotlin companion app via JSON-RPC
  */
 
-import { ChildProcess, spawn, execSync, execFileSync } from "child_process";
+import { ChildProcess, spawn, execSync, execFileSync, execFile } from "child_process";
+import { promisify } from "util";
 import { EventEmitter } from "events";
 import * as readline from "readline";
 import * as path from "path";
@@ -42,6 +43,8 @@ const MAX_RESTARTS = 3;
 const REQUEST_TIMEOUT = 45000; // 45 seconds (AppleScript can be slow on macOS with many processes)
 const BUNDLE_LAUNCH_POLL_INTERVAL_MS = 100;
 const BUNDLE_LAUNCH_TIMEOUT_MS = 5000;
+
+const execFileAsync = promisify(execFile);
 
 // Get the directory of this module
 const __filename = fileURLToPath(import.meta.url);
@@ -90,12 +93,18 @@ export function normalizeLaunchOptions(raw: RawLaunchOptions): LaunchOptions {
         if (!raw.projectPath) throw new MobileError(`mode "gradle" requires projectPath`, "INVALID_LAUNCH_OPTIONS");
         return { mode: "gradle", projectPath: raw.projectPath, task: raw.task, jvmArgs: raw.jvmArgs, env: raw.env };
       case "bundle":
+        if (!raw.bundleId && !raw.appPath) throw new MobileError(`mode "bundle" requires bundleId or appPath`, "INVALID_LAUNCH_OPTIONS");
         return { mode: "bundle", bundleId: raw.bundleId, appPath: raw.appPath };
       case "attach":
         if (raw.pid === undefined) throw new MobileError(`mode "attach" requires pid`, "INVALID_LAUNCH_OPTIONS");
         return { mode: "attach", pid: raw.pid };
       case "companion-only":
         return { mode: "companion-only" };
+      default:
+        throw new MobileError(
+          `Unknown launch mode: "${raw.mode}". Valid values: gradle, bundle, attach, companion-only`,
+          "INVALID_LAUNCH_OPTIONS"
+        );
     }
   }
 
@@ -152,20 +161,20 @@ function validateAndResolveAppPath(appPath: string): string {
 
 /**
  * Poll AppleScript until the process with the given bundle ID appears, or timeout.
- * All execFileSync calls use argv — no shell, no string interpolation into shell.
- * bundleId is pre-validated by validateBundleId; still safe to embed in AppleScript string
- * because the regex permits only [a-zA-Z0-9.-].
+ * Uses execFileAsync (non-blocking) so the event loop is not held during the 3s osascript call.
+ * bundleId is pre-validated by validateBundleId; regex permits only [a-zA-Z0-9.-].
+ * AppleScript injection prevention relies on this regex — do not relax without re-auditing.
  */
 async function resolvePidByBundleId(bundleId: string): Promise<number> {
   const deadline = Date.now() + BUNDLE_LAUNCH_TIMEOUT_MS;
   while (Date.now() < deadline) {
     try {
-      const result = execFileSync(
+      const { stdout } = await execFileAsync(
         "osascript",
         ["-e", `tell application "System Events" to unix id of first application process whose bundle identifier is "${bundleId}"`],
-        { encoding: "utf-8", timeout: 3000 }
-      ).trim();
-      const pid = parseInt(result, 10);
+        { timeout: 3000 }
+      );
+      const pid = parseInt(stdout.trim(), 10);
       if (pid > 0) return pid;
     } catch {
       // App not yet running — continue polling
@@ -187,14 +196,17 @@ function validateAttachPid(pid: number): void {
     throw new MobileError(`Invalid pid: ${pid}. Must be a positive integer`, "INVALID_PID");
   }
 
-  let uidStr: string;
-  let comm: string;
+  let psOut: string;
   try {
-    uidStr = execFileSync("ps", ["-o", "uid=", "-p", String(pid)], { encoding: "utf-8" }).trim();
-    comm = execFileSync("ps", ["-o", "comm=", "-p", String(pid)], { encoding: "utf-8" }).trim();
+    psOut = execFileSync("ps", ["-o", "uid=,comm=", "-p", String(pid)], { encoding: "utf-8" }).trim();
   } catch {
     throw new MobileError(`Process with pid ${pid} does not exist`, "PROCESS_NOT_FOUND");
   }
+
+  // uid= and comm= are separated by whitespace; comm= may contain spaces — split on first whitespace only
+  const spaceIdx = psOut.search(/\s/);
+  const uidStr = spaceIdx >= 0 ? psOut.slice(0, spaceIdx) : psOut;
+  const comm = spaceIdx >= 0 ? psOut.slice(spaceIdx + 1).trim() : "";
 
   const uid = parseInt(uidStr, 10);
   const currentUid = process.getuid ? process.getuid() : -1;
@@ -236,11 +248,8 @@ class BundleAppLauncher implements AppLaunchStrategy {
   ) {}
 
   async launch(): Promise<number | null> {
+    // Both bundleId and appPath are pre-validated by normalizeLaunchOptions — at least one is set.
     const { bundleId, appPath } = this.opts;
-    if (!bundleId && !appPath) {
-      throw new MobileError(`mode "bundle" requires bundleId or appPath`, "INVALID_LAUNCH_OPTIONS");
-    }
-
     let resolvedBundleId: string;
 
     if (bundleId) {
@@ -405,6 +414,15 @@ export class DesktopClient extends EventEmitter {
       this.state.targetPid = targetPid ?? undefined;
 
     } catch (error: unknown) {
+      // Kill companion if it was spawned before strategy failure (prevents orphan processes)
+      if (this.process && !this.process.killed) {
+        this.process.kill();
+      }
+      if (this.readline) {
+        this.readline.close();
+        this.readline = null;
+      }
+      this.process = null;
       this.state.status = "stopped";
       this.state.lastError = error instanceof Error ? error.message : String(error);
       throw error;
