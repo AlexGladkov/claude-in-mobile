@@ -94,7 +94,11 @@ export function normalizeLaunchOptions(raw: RawLaunchOptions): LaunchOptions {
         return { mode: "gradle", projectPath: raw.projectPath, task: raw.task, jvmArgs: raw.jvmArgs, env: raw.env };
       case "bundle":
         if (!raw.bundleId && !raw.appPath) throw new MobileError(`mode "bundle" requires bundleId or appPath`, "INVALID_LAUNCH_OPTIONS");
-        return { mode: "bundle", bundleId: raw.bundleId, appPath: raw.appPath };
+        // After the check, at least one is defined — split to satisfy the XOR union type
+        if (raw.bundleId) {
+          return { mode: "bundle", bundleId: raw.bundleId, appPath: raw.appPath };
+        }
+        return { mode: "bundle", appPath: raw.appPath! };
       case "attach":
         if (raw.pid === undefined) throw new MobileError(`mode "attach" requires pid`, "INVALID_LAUNCH_OPTIONS");
         return { mode: "attach", pid: raw.pid };
@@ -176,7 +180,15 @@ async function resolvePidByBundleId(bundleId: string): Promise<number> {
       );
       const pid = parseInt(stdout.trim(), 10);
       if (pid > 0) return pid;
-    } catch {
+    } catch (e: any) {
+      const stderr: string = e.stderr ?? "";
+      // Non-transient: permission denial from System Events will never self-resolve
+      if (stderr.includes("Not authorized") || stderr.includes("-1743")) {
+        throw new MobileError(
+          `Accessibility permission denied. Grant access in System Settings → Privacy → Automation.`,
+          "AUTOMATION_PERMISSION_DENIED"
+        );
+      }
       // App not yet running — continue polling
     }
     await new Promise(resolve => setTimeout(resolve, BUNDLE_LAUNCH_POLL_INTERVAL_MS));
@@ -199,8 +211,11 @@ function validateAttachPid(pid: number): void {
   let psOut: string;
   try {
     psOut = execFileSync("ps", ["-o", "uid=,comm=", "-p", String(pid)], { encoding: "utf-8" }).trim();
-  } catch {
-    throw new MobileError(`Process with pid ${pid} does not exist`, "PROCESS_NOT_FOUND");
+  } catch (e: any) {
+    if (e.status === 1) {
+      throw new MobileError(`Process with pid ${pid} does not exist`, "PROCESS_NOT_FOUND");
+    }
+    throw new MobileError(`Failed to inspect pid ${pid}: ${e.message}`, "PS_EXEC_FAILED");
   }
 
   // uid= and comm= are separated by whitespace; comm= may contain spaces — split on first whitespace only
@@ -223,9 +238,12 @@ function validateAttachPid(pid: number): void {
 /** Strategy interface — returns the targetPid of the launched/attached app, or null. */
 interface AppLaunchStrategy {
   launch(): Promise<number | null>;
+  stop(): void;
 }
 
 class GradleAppLauncher implements AppLaunchStrategy {
+  private userAppProcess: ChildProcess | null = null;
+
   constructor(
     private readonly opts: Extract<LaunchOptions, { mode: "gradle" }>,
     private readonly gradleLauncher: GradleLauncher,
@@ -234,14 +252,24 @@ class GradleAppLauncher implements AppLaunchStrategy {
 
   async launch(): Promise<number | null> {
     this.addLog("stdout", `Launching user app from: ${this.opts.projectPath}`);
-    const userAppProcess = this.gradleLauncher.launch(this.opts as any);
-    userAppProcess.stdout?.on("data", (data: Buffer) => this.addLog("stdout", `[UserApp] ${data.toString()}`));
-    userAppProcess.stderr?.on("data", (data: Buffer) => this.addLog("stderr", `[UserApp] ${data.toString()}`));
+    // Spread to satisfy RawLaunchOptions (no as any — structural types are compatible)
+    this.userAppProcess = this.gradleLauncher.launch({ ...this.opts });
+    this.userAppProcess.stdout?.on("data", (data: Buffer) => this.addLog("stdout", `[UserApp] ${data.toString()}`));
+    this.userAppProcess.stderr?.on("data", (data: Buffer) => this.addLog("stderr", `[UserApp] ${data.toString()}`));
     return null;
+  }
+
+  stop(): void {
+    if (this.userAppProcess) {
+      this.gradleLauncher.stop(this.userAppProcess);
+      this.userAppProcess = null;
+    }
   }
 }
 
 class BundleAppLauncher implements AppLaunchStrategy {
+  stop(): void {}
+
   constructor(
     private readonly opts: Extract<LaunchOptions, { mode: "bundle" }>,
     private readonly addLog: (type: LogType, msg: string) => void
@@ -256,14 +284,22 @@ class BundleAppLauncher implements AppLaunchStrategy {
       validateBundleId(bundleId);
       resolvedBundleId = bundleId;
       this.addLog("stdout", `Launching app by bundle ID: ${resolvedBundleId}`);
-      execFileSync("open", ["-b", resolvedBundleId], { timeout: 5000 });
+      try {
+        execFileSync("open", ["-b", resolvedBundleId], { timeout: 5000 });
+      } catch (e: any) {
+        throw new MobileError(`Failed to launch app "${resolvedBundleId}": ${e.message}`, "BUNDLE_LAUNCH_FAILED");
+      }
     } else {
       const resolvedPath = validateAndResolveAppPath(appPath!);
       resolvedBundleId = getBundleIdFromAppPath(resolvedPath);
       validateBundleId(resolvedBundleId);
       this.addLog("stdout", `Launching app: ${resolvedPath} (bundle ID: ${resolvedBundleId})`);
       // Pass the realpath-resolved path to `open` to prevent TOCTOU
-      execFileSync("open", [resolvedPath], { timeout: 5000 });
+      try {
+        execFileSync("open", [resolvedPath], { timeout: 5000 });
+      } catch (e: any) {
+        throw new MobileError(`Failed to launch app at "${resolvedPath}": ${e.message}`, "BUNDLE_LAUNCH_FAILED");
+      }
     }
 
     this.addLog("stdout", `Waiting for app to start (polling every ${BUNDLE_LAUNCH_POLL_INTERVAL_MS}ms)...`);
@@ -284,12 +320,13 @@ class AttachLauncher implements AppLaunchStrategy {
     this.addLog("stdout", `Attaching to existing process with PID ${this.opts.pid}`);
     return this.opts.pid;
   }
+
+  stop(): void {}
 }
 
 class NoOpLauncher implements AppLaunchStrategy {
-  async launch(): Promise<number | null> {
-    return null;
-  }
+  async launch(): Promise<number | null> { return null; }
+  stop(): void {}
 }
 
 /**
@@ -324,6 +361,7 @@ interface PendingRequest {
 
 export class DesktopClient extends EventEmitter {
   private process: ChildProcess | null = null;
+  private activeStrategy: AppLaunchStrategy | null = null;
   private gradleLauncher: GradleLauncher;
   private requestId = 0;
   private pendingRequests = new Map<number, PendingRequest>();
@@ -332,6 +370,7 @@ export class DesktopClient extends EventEmitter {
   private state: DesktopState = {
     status: "stopped",
     crashCount: 0,
+    targetPid: null,
   };
   private lastLaunchOptions: RawLaunchOptions | null = null;
   private readline: readline.Interface | null = null;
@@ -370,6 +409,7 @@ export class DesktopClient extends EventEmitter {
       status: "starting",
       projectPath: normalized.mode === "gradle" ? normalized.projectPath : undefined,
       crashCount: this.state.crashCount,
+      targetPid: null,
     };
 
     try {
@@ -409,9 +449,9 @@ export class DesktopClient extends EventEmitter {
 
       await this.waitForReady(10000);
 
-      const strategy = this.selectStrategy(normalized);
-      const targetPid = await strategy.launch();
-      this.state.targetPid = targetPid ?? undefined;
+      this.activeStrategy = this.selectStrategy(normalized);
+      const targetPid = await this.activeStrategy.launch();
+      this.state.targetPid = targetPid;
 
     } catch (error: unknown) {
       // Kill companion if it was spawned before strategy failure (prevents orphan processes)
@@ -443,7 +483,7 @@ export class DesktopClient extends EventEmitter {
   }
 
   getTargetPid(): number | null {
-    return this.state.targetPid ?? null;
+    return this.state.targetPid;
   }
 
   /**
@@ -482,7 +522,10 @@ export class DesktopClient extends EventEmitter {
       return;
     }
 
-    // Clean up readline
+    // Stop any app process managed by the active strategy (e.g. Gradle child)
+    this.activeStrategy?.stop();
+    this.activeStrategy = null;
+
     if (this.readline) {
       this.readline.close();
       this.readline = null;
@@ -502,6 +545,7 @@ export class DesktopClient extends EventEmitter {
     this.state = {
       status: "stopped",
       crashCount: 0,
+      targetPid: null,
     };
   }
 

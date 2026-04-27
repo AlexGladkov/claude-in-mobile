@@ -110,10 +110,12 @@ export interface KeyEventOptions {
 // Launch mode
 export type LaunchMode = "gradle" | "bundle" | "attach" | "companion-only";
 
-// Launch options — discriminated union enforcing mode-specific fields at the type level
+// Launch options — discriminated union enforcing mode-specific fields at the type level.
+// The bundle variant is an XOR: at least one of bundleId/appPath must be provided.
 export type LaunchOptions =
   | { mode: "gradle"; projectPath: string; task?: string; jvmArgs?: string[]; env?: Record<string, string> }
-  | { mode: "bundle"; bundleId?: string; appPath?: string }
+  | { mode: "bundle"; bundleId: string; appPath?: string }
+  | { mode: "bundle"; bundleId?: string; appPath: string }
   | { mode: "attach"; pid: number }
   | { mode: "companion-only" };
 
@@ -173,7 +175,7 @@ export interface DesktopState {
   projectPath?: string;
   crashCount: number;
   lastError?: string;
-  targetPid?: number;   // native app PID set by bundle/attach mode
+  targetPid: number | null;   // native app PID set by bundle/attach mode; null when not set
 }
 
 // Clipboard types
