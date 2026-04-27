@@ -107,6 +107,27 @@ export function validatePath(path: string, label: string): void {
   }
 }
 
+// C8: Validate macOS bundle ID (reverse-DNS format)
+// Only [a-zA-Z0-9.-] allowed — safe to embed in AppleScript; passed via argv in practice.
+// Segments may start with a digit (Apple allows this in modern bundle IDs).
+// AppleScript injection prevention relies on this regex — do not relax without re-auditing.
+const BUNDLE_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9\-]*(\.[a-zA-Z0-9][a-zA-Z0-9\-]*){1,}$/;
+
+export function validateBundleId(id: string): void {
+  if (!id || id.length > 255) {
+    throw new MobileError(
+      `Invalid bundleId length: must be 1-255 characters`,
+      "INVALID_BUNDLE_ID"
+    );
+  }
+  if (!BUNDLE_ID_RE.test(id)) {
+    throw new MobileError(
+      `Invalid bundleId: "${id}". Expected reverse-DNS format (e.g. com.apple.TextEdit)`,
+      "INVALID_BUNDLE_ID"
+    );
+  }
+}
+
 // V1: Validate baseline/screen name — whitelist regex
 const BASELINE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.\-]{0,127}$/;
 const WINDOWS_RESERVED = new Set(["CON","PRN","AUX","NUL","COM1","COM2","COM3","COM4","COM5","COM6","COM7","COM8","COM9","LPT1","LPT2","LPT3","LPT4","LPT5","LPT6","LPT7","LPT8","LPT9"]);
