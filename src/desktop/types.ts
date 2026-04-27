@@ -114,8 +114,8 @@ export type LaunchMode = "gradle" | "bundle" | "attach" | "companion-only";
 // The bundle variant is an XOR: at least one of bundleId/appPath must be provided.
 export type LaunchOptions =
   | { mode: "gradle"; projectPath: string; task?: string; jvmArgs?: string[]; env?: Record<string, string> }
-  | { mode: "bundle"; bundleId: string; appPath?: string }
-  | { mode: "bundle"; bundleId?: string; appPath: string }
+  | { mode: "bundle"; bundleId: string; appPath?: string; env?: Record<string, string> }
+  | { mode: "bundle"; bundleId?: string; appPath: string; env?: Record<string, string> }
   | { mode: "attach"; pid: number }
   | { mode: "companion-only" };
 

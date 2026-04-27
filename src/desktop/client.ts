@@ -97,9 +97,9 @@ export function normalizeLaunchOptions(raw: RawLaunchOptions): LaunchOptions {
         if (!raw.bundleId && !raw.appPath) throw new MobileError(`mode "bundle" requires bundleId or appPath`, "INVALID_LAUNCH_OPTIONS");
         // After the check, at least one is defined — split to satisfy the XOR union type
         if (raw.bundleId) {
-          return { mode: "bundle", bundleId: raw.bundleId, appPath: raw.appPath };
+          return { mode: "bundle", bundleId: raw.bundleId, appPath: raw.appPath, env: raw.env };
         }
-        return { mode: "bundle", appPath: raw.appPath! };
+        return { mode: "bundle", appPath: raw.appPath!, env: raw.env };
       case "attach":
         if (raw.pid === undefined) throw new MobileError(`mode "attach" requires pid`, "INVALID_LAUNCH_OPTIONS");
         return { mode: "attach", pid: raw.pid };
@@ -278,28 +278,47 @@ class BundleAppLauncher implements AppLaunchStrategy {
 
   async launch(): Promise<number | null> {
     // Both bundleId and appPath are pre-validated by normalizeLaunchOptions — at least one is set.
-    const { bundleId, appPath } = this.opts;
+    const { bundleId, appPath, env } = this.opts;
+    const hasEnv = env && Object.keys(env).length > 0;
     let resolvedBundleId: string;
+    let resolvedPath: string | undefined;
 
     if (bundleId) {
       validateBundleId(bundleId);
       resolvedBundleId = bundleId;
-      this.addLog("stdout", `Launching app by bundle ID: ${resolvedBundleId}`);
-      try {
-        execFileSync("open", ["-b", resolvedBundleId], { timeout: 5000 });
-      } catch (e: any) {
-        throw new MobileError(`Failed to launch app "${resolvedBundleId}": ${e.message}`, "BUNDLE_LAUNCH_FAILED");
-      }
     } else {
-      const resolvedPath = validateAndResolveAppPath(appPath!);
+      resolvedPath = validateAndResolveAppPath(appPath!);
       resolvedBundleId = getBundleIdFromAppPath(resolvedPath);
       validateBundleId(resolvedBundleId);
-      this.addLog("stdout", `Launching app: ${resolvedPath} (bundle ID: ${resolvedBundleId})`);
-      // Pass the realpath-resolved path to `open` to prevent TOCTOU
+    }
+
+    this.addLog("stdout", `Launching app: ${bundleId ?? resolvedPath}${hasEnv ? ` (with env: ${Object.keys(env!).join(", ")})` : ""}`);
+
+    if (hasEnv) {
+      // `open` cannot pass env vars to the launched app — spawn the binary directly.
+      // resolvedPath is always set when env is used with appPath; derive it from bundleId otherwise.
+      const appPath_ = resolvedPath ?? this.getAppPathFromBundleId(resolvedBundleId);
+      const binaryName = execFileSync(
+        "defaults", ["read", `${appPath_}/Contents/Info`, "CFBundleExecutable"],
+        { encoding: "utf-8", timeout: 3000 }
+      ).trim();
+      const binaryPath = `${appPath_}/Contents/MacOS/${binaryName}`;
+      spawn(binaryPath, [], {
+        env: { ...process.env, ...env },
+        detached: true,
+        stdio: "ignore",
+      }).unref();
+    } else {
+      // No env vars needed — use `open` (proper app launch via LaunchServices)
       try {
-        execFileSync("open", [resolvedPath], { timeout: 5000 });
+        if (resolvedPath) {
+          // Pass the realpath-resolved path to `open` to prevent TOCTOU
+          execFileSync("open", [resolvedPath], { timeout: 5000 });
+        } else {
+          execFileSync("open", ["-b", resolvedBundleId], { timeout: 5000 });
+        }
       } catch (e: any) {
-        throw new MobileError(`Failed to launch app at "${resolvedPath}": ${e.message}`, "BUNDLE_LAUNCH_FAILED");
+        throw new MobileError(`Failed to launch app "${bundleId ?? resolvedPath}": ${e.message}`, "BUNDLE_LAUNCH_FAILED");
       }
     }
 
@@ -307,6 +326,19 @@ class BundleAppLauncher implements AppLaunchStrategy {
     const targetPid = await resolvePidByBundleId(resolvedBundleId);
     this.addLog("stdout", `App started with PID ${targetPid}`);
     return targetPid;
+  }
+
+  private getAppPathFromBundleId(bundleId: string): string {
+    try {
+      const result = execFileSync(
+        "osascript", ["-e", `POSIX path of (path to application id "${bundleId}")`],
+        { encoding: "utf-8", timeout: 5000 }
+      ).trim();
+      // Strip trailing slash that osascript adds
+      return result.replace(/\/$/, "");
+    } catch (e: any) {
+      throw new MobileError(`Cannot find app path for bundle ID "${bundleId}": ${e.message}`, "BUNDLE_PATH_NOT_FOUND");
+    }
   }
 }
 

@@ -21,6 +21,7 @@ export const desktopTools: ToolDefinition[] = [
           bundleId: { type: "string", description: "Bundle mode: macOS bundle ID, e.g. 'com.apple.TextEdit'." },
           appPath: { type: "string", description: "Bundle mode: absolute path to .app bundle, e.g. '/Applications/TextEdit.app'." },
           pid: { type: "number", description: "Attach mode: PID of an already-running process to attach to." },
+          env: { type: "object", additionalProperties: { type: "string" }, description: "Bundle/Gradle mode: environment variables to set for the launched app (e.g. {RELAY_UITEST_MODE:'1'})." },
         },
       },
     },
@@ -48,6 +49,7 @@ export const desktopTools: ToolDefinition[] = [
         bundleId: args.bundleId as string | undefined,
         appPath: args.appPath as string | undefined,
         pid: args.pid as number | undefined,
+        env: args.env as Record<string, string> | undefined,
       });
       return { text: result };
     },
