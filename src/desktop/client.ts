@@ -56,6 +56,7 @@ const APP_PATH_ALLOWLIST = [
   "/System/Applications",
   path.join(os.homedir(), "Applications"),
   "/Developer",
+  path.join(os.homedir(), "Library/Developer/Xcode/DerivedData"),
 ];
 
 // System processes that must not be attached to
