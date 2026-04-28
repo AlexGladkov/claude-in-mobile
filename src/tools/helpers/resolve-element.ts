@@ -56,7 +56,7 @@ export async function resolveElementCoordinates(
   ctx: ToolContext,
   currentPlatform: Platform | string | undefined,
 ): Promise<ResolvedCoordinates | null> {
-  // 1. iOS element-based tap (precedence: label > text > coordinates)
+  // 1. iOS element-based resolution (precedence: label > text > coordinates)
   if (currentPlatform === "ios" && (args.label || args.text)) {
     try {
       const iosClient = ctx.deviceManager.getIosClient();
@@ -64,6 +64,17 @@ export async function resolveElementCoordinates(
         text: args.text as string,
         label: args.label as string,
       });
+      // Get element rect for center coordinates (works for tap, long_press, etc.)
+      const rect = await iosClient.getElementRect(element.ELEMENT);
+      if (rect) {
+        return {
+          x: Math.round(rect.x + rect.width / 2),
+          y: Math.round(rect.y + rect.height / 2),
+          description: String(args.label || args.text),
+          fromRawArgs: false,
+        };
+      }
+      // Fallback: tap element directly (if rect unavailable)
       await iosClient.tapElement(element.ELEMENT);
       return {
         x: 0,

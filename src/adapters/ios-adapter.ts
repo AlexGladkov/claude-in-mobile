@@ -102,7 +102,7 @@ export class IosAdapter
   }
 
   async inputText(text: string): Promise<void> {
-    this.client.inputText(text);
+    await this.client.inputText(text);
   }
 
   async pressKey(key: string): Promise<void> {
