@@ -3,6 +3,7 @@ import type { BrowserSession, BrowserOpenOptions, BrowserClickOptions, BrowserFi
 import type { CDPClientInterface, CDPAccessibilityNode } from "./cdp-types.js";
 import { BLOCKED_URL_PROTOCOLS, DEFAULT_SESSION } from "./types.js";
 import { SessionManager } from "./session-manager.js";
+import { BrowserRefNotFoundError } from "../errors.js";
 
 const require = createRequire(import.meta.url);
 
@@ -110,8 +111,9 @@ export class BrowserClient {
       url: "",
     };
 
-    // Invalidate refs on navigation
+    // Preserve stale refs for fallback resolution after navigation
     Page.frameNavigated(() => {
+      browserSession.staleRefMap = new Map(browserSession.refMap);
       browserSession.refMap.clear();
       browserSession.lastRefCounter = 0;
     });
@@ -216,6 +218,7 @@ export class BrowserClient {
           selector,
           backendNodeId: node.backendDOMNodeId ?? 0,
           label: `${role} "${name}"`,
+          textFingerprint: name?.toLowerCase() || undefined,
         });
       }
 
@@ -278,12 +281,18 @@ export class BrowserClient {
   }
 
   async resolveRef(session: BrowserSession, ref: string): Promise<{ nodeId?: number; selector: string; label: string }> {
-    const entry = session.refMap.get(ref);
-    if (!entry) {
-      throw new Error(`Ref "${ref}" not found. Available: ${Array.from(session.refMap.keys()).join(", ") || "none"}. Run browser(action:'snapshot') first.`);
+    let entry = session.refMap.get(ref);
+
+    // Level 2: stale refs from before navigation
+    if (!entry && session.staleRefMap) {
+      entry = session.staleRefMap.get(ref);
     }
 
-    // Try backendNodeId first
+    if (!entry) {
+      throw new BrowserRefNotFoundError(ref);
+    }
+
+    // Level 1: try backendNodeId (works if element still in DOM)
     if (entry.backendNodeId) {
       try {
         const { nodeIds } = await session.cdp.DOM.pushNodesByBackendIdsToFrontend({ backendNodeIds: [entry.backendNodeId] });
@@ -293,14 +302,24 @@ export class BrowserClient {
       } catch {}
     }
 
-    // Fallback to CSS selector
+    // Level 3: try CSS selector
     if (entry.selector) {
-      return { selector: entry.selector, label: entry.label };
+      const nodeId = await this.findNodeBySelector(session.cdp, entry.selector);
+      if (nodeId) {
+        return { nodeId, selector: entry.selector, label: entry.label };
+      }
     }
 
-    throw new Error(
-      `Ref "${ref}" is stale (element no longer in DOM). Last known: ${entry.label}. Run browser(action:'snapshot') to get fresh refs.`
-    );
+    // Level 4: try text search
+    if (entry.textFingerprint) {
+      const coords = await this.findNodeByText(session.cdp, entry.textFingerprint);
+      if (coords) {
+        // Return selector-less result — caller will use coordinates from findNodeByText
+        return { selector: "", label: `${entry.label} (found by text)` };
+      }
+    }
+
+    throw new BrowserRefNotFoundError(ref, entry.label);
   }
 
   private async getCoordinates(cdp: CDPClientInterface, nodeId: number): Promise<{ x: number; y: number }> {

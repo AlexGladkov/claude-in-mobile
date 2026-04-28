@@ -48,6 +48,7 @@ export const interactionTools: ToolDefinition[] = [
 
       const targetPid = getNumber(args, "targetPid");
       await ctx.deviceManager.tap(x, y, platform, targetPid);
+      ctx.invalidateUiTreeCache(currentPlatform ?? undefined);
       let result = `Tapped at (${x}, ${y})`;
       if (getBoolean(args, "hints", true)) {
         result += await ctx.generateActionHints(getString(args, "platform"));
@@ -158,6 +159,7 @@ export const interactionTools: ToolDefinition[] = [
 
       if (direction) {
         await ctx.deviceManager.swipeDirection(direction, platform);
+        ctx.invalidateUiTreeCache(platform ?? ctx.deviceManager.getCurrentPlatform() ?? undefined);
         let result = `Swiped ${direction}`;
         if (getBoolean(args, "hints", true)) {
           result += await ctx.generateActionHints(getString(args, "platform"));
@@ -177,6 +179,7 @@ export const interactionTools: ToolDefinition[] = [
         const p1 = applyScale(x1, y1, currentPlatform ?? undefined, ctx);
         const p2 = applyScale(x2, y2, currentPlatform ?? undefined, ctx);
         await ctx.deviceManager.swipe(p1.x, p1.y, p2.x, p2.y, duration, platform);
+        ctx.invalidateUiTreeCache(currentPlatform ?? undefined);
         let result = `Swiped from (${p1.x}, ${p1.y}) to (${p2.x}, ${p2.y})`;
         if (getBoolean(args, "hints", true)) {
           result += await ctx.generateActionHints(getString(args, "platform"));
@@ -207,6 +210,7 @@ export const interactionTools: ToolDefinition[] = [
       const targetPid = getNumber(args, "targetPid");
       const text = requireString(args, "text");
       await ctx.deviceManager.inputText(text, platform, targetPid);
+      ctx.invalidateUiTreeCache(platform ?? ctx.deviceManager.getCurrentPlatform() ?? undefined);
       let result = `Entered text: "${text}"`;
       if (getBoolean(args, "hints", true)) {
         result += await ctx.generateActionHints(getString(args, "platform"));
@@ -234,6 +238,7 @@ export const interactionTools: ToolDefinition[] = [
       const targetPid = getNumber(args, "targetPid");
       const key = requireString(args, "key");
       await ctx.deviceManager.pressKey(key, platform, targetPid);
+      ctx.invalidateUiTreeCache(platform ?? ctx.deviceManager.getCurrentPlatform() ?? undefined);
       let result = `Pressed key: ${key}`;
       if (getBoolean(args, "hints", true)) {
         result += await ctx.generateActionHints(getString(args, "platform"));

@@ -16,12 +16,14 @@ export interface BrowserSession {
   refMap: Map<string, RefEntry>;
   lastRefCounter: number;
   url: string;
+  staleRefMap?: Map<string, RefEntry>;
 }
 
 export interface RefEntry {
   selector: string;
   backendNodeId: number;
   label: string; // aria label / text for stale ref error
+  textFingerprint?: string; // lowercased text for fallback search
 }
 
 export interface BrowserOpenOptions {

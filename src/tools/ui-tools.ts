@@ -4,6 +4,7 @@ import {
   parseUiHierarchy,
   findElements,
   formatUiTree,
+  formatUiTreeSemantic,
   formatElement,
   analyzeScreen,
   findBestMatch,
@@ -57,13 +58,20 @@ export const uiTools: ToolDefinition[] = [
       // Android: parse XML and format
       const parsedElements = parseUiHierarchy(xml);
       ctx.setCachedElements("android", parsedElements);
+      // Semantic format — grouped by role, ~3x token reduction
+      const format = getString(args, "format");
+      if (format === "semantic") {
+        return { text: formatUiTreeSemantic(parsedElements) };
+      }
+
       const showAll = getBoolean(args, "showAll");
       const compact = getBoolean(args, "compact");
       const tree = formatUiTree(parsedElements, { showAll, compact });
 
       // Dedup cache: if identical output within 2s, return short notice
+      const fresh = getBoolean(args, "fresh");
       const cacheKey = `android:${showAll}:${compact}`;
-      const cached = ctx.lastUiTreeMap.get(cacheKey);
+      const cached = fresh ? undefined : ctx.lastUiTreeMap.get(cacheKey);
       const now = Date.now();
       if (cached && cached.text === tree && (now - cached.timestamp) < 2000) {
         const ago = now - cached.timestamp;

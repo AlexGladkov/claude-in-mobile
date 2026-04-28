@@ -1,9 +1,18 @@
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
 import type { ToolContext } from "./context.js";
+import type { ModuleCategory, ModuleMeta } from "../profiles.js";
 
 export interface ToolDefinition {
   tool: Tool;
   handler: (args: Record<string, unknown>, ctx: ToolContext, depth?: number) => Promise<unknown>;
+}
+
+export interface EnrichedModuleStatus {
+  name: string;
+  status: "loaded" | "available" | "disabled";
+  description?: string;
+  category?: ModuleCategory;
+  actions?: string[];
 }
 
 const toolMap = new Map<string, ToolDefinition>();
@@ -23,6 +32,9 @@ const manuallyDisabled = new Set<string>();
 
 // Lazy module loaders: module name → loader function
 const lazyModules = new Map<string, () => void>();
+
+// Module metadata registry
+const moduleMetadataMap = new Map<string, ModuleMeta>();
 
 // Server reference for sending tool list change notifications
 let notifyToolListChanged: (() => void) | null = null;
@@ -98,19 +110,91 @@ export function loadModule(name: string): boolean {
   return true;
 }
 
-/** Get list of available modules and their status */
-export function getModuleStatus(): Array<{ name: string; status: "loaded" | "available" }> {
-  const result: Array<{ name: string; status: "loaded" | "available" }> = [];
-  // Check which meta tools are visible (loaded) vs hidden (available)
-  for (const [name] of toolMap) {
-    if (hiddenTools.has(name)) {
+/** Register metadata for all modules (called once at startup) */
+export function registerAllModuleMetadata(modules: readonly ModuleMeta[]): void {
+  for (const m of modules) {
+    moduleMetadataMap.set(m.name, m);
+  }
+}
+
+/** Get metadata for a single module */
+export function getModuleMetadata(name: string): ModuleMeta | undefined {
+  return moduleMetadataMap.get(name);
+}
+
+/** Unhide all hideable modules in a category */
+export function unhideByCategory(category: ModuleCategory): string[] {
+  const names: string[] = [];
+  for (const [name, meta] of moduleMetadataMap) {
+    if (meta.category === category && hiddenTools.has(name)) {
+      names.push(name);
+    }
+  }
+  if (names.length > 0) unhideTools(names);
+  return names;
+}
+
+/** Hide all hideable modules in a category (skips always-visible) */
+export function hideByCategory(category: ModuleCategory, alwaysVisible: readonly string[]): string[] {
+  const names: string[] = [];
+  for (const [name, meta] of moduleMetadataMap) {
+    if (meta.category === category && !alwaysVisible.includes(name) && !hiddenTools.has(name)) {
+      names.push(name);
+    }
+  }
+  if (names.length > 0) hideTools(names);
+  return names;
+}
+
+/** Get list of available modules and their status (enriched with metadata) */
+export function getModuleStatus(): EnrichedModuleStatus[] {
+  const result: EnrichedModuleStatus[] = [];
+
+  // All registered tools that have metadata
+  for (const [name, meta] of moduleMetadataMap) {
+    const inRegistry = toolMap.has(name);
+    const isHidden = hiddenTools.has(name);
+    const isDisabled = manuallyDisabled.has(name);
+
+    let status: EnrichedModuleStatus["status"];
+    if (!inRegistry && !lazyModules.has(name)) {
+      status = "available"; // known from metadata but not registered
+    } else if (isDisabled) {
+      status = "disabled";
+    } else if (isHidden) {
+      status = "available";
+    } else if (inRegistry) {
+      status = "loaded";
+    } else {
+      status = "available";
+    }
+
+    result.push({
+      name,
+      status,
+      description: meta.description,
+      category: meta.category,
+      actions: meta.actions,
+    });
+  }
+
+  // Hidden tools without metadata (legacy fallback)
+  for (const name of hiddenTools) {
+    if (!moduleMetadataMap.has(name)) {
+      result.push({
+        name,
+        status: manuallyDisabled.has(name) ? "disabled" : "available",
+      });
+    }
+  }
+
+  // Pending lazy modules without metadata
+  for (const [name] of lazyModules) {
+    if (!moduleMetadataMap.has(name) && !hiddenTools.has(name)) {
       result.push({ name, status: "available" });
     }
   }
-  // Pending lazy modules
-  for (const [name] of lazyModules) {
-    result.push({ name, status: "available" });
-  }
+
   return result;
 }
 
@@ -122,6 +206,7 @@ export function resetRegistry(): void {
   hiddenTools.clear();
   manuallyDisabled.clear();
   lazyModules.clear();
+  moduleMetadataMap.clear();
   notifyToolListChanged = null;
   frozen = false;
 }

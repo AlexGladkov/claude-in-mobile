@@ -2,7 +2,7 @@ import type { ToolDefinition } from "./registry.js";
 import { getRegisteredToolNames } from "./registry.js";
 import type { ToolContext } from "./context.js";
 import type { Platform } from "../device-manager.js";
-import { findElements } from "../adb/ui-parser.js";
+import { findElements, UiElement } from "../adb/ui-parser.js";
 import { DeviceNotFoundError, DeviceOfflineError, AdbNotInstalledError, ValidationError, MobileError } from "../errors.js";
 import { MAX_RECURSION_DEPTH } from "./context.js";
 import { truncateOutput } from "../utils/truncate.js";
@@ -51,14 +51,41 @@ interface FlowStepResult {
   durationMs: number;
 }
 
-function formatFlowResults(results: FlowStepResult[], totalMs: number): string {
+/** Collect brief UI context for diagnostics on flow step failure */
+async function collectFailureDiag(
+  ctx: ToolContext,
+  platform: string,
+  stepIndex: number,
+): Promise<string> {
+  try {
+    const elements = await Promise.race([
+      ctx.getElementsForPlatform(platform),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("diag timeout")), 800)),
+    ]);
+    const interactive = elements.filter(
+      (el: UiElement) => el.clickable || el.scrollable || el.className.includes("EditText"),
+    );
+    const limited = interactive.slice(0, 15);
+    if (limited.length === 0) return "";
+    const lines = limited.map((el: UiElement) => {
+      const label = el.text || el.contentDesc || "";
+      const shortClass = el.className.split(".").pop() ?? "";
+      return `  ${shortClass}${label ? ` "${label}"` : ""} (${el.centerX},${el.centerY})`;
+    });
+    return `\n[DIAG:step${stepIndex}] Available UI:\n${lines.join("\n")}`;
+  } catch {
+    return ""; // silently skip diagnostics
+  }
+}
+
+function formatFlowResults(results: FlowStepResult[], totalMs: number, diagBlock: string = ""): string {
   const lines: string[] = [`Flow completed (${totalMs}ms)`, ""];
   for (const r of results) {
     const label = r.label ? ` (${r.label})` : "";
     const status = r.success ? "OK" : "FAIL";
     lines.push(`${r.step}. ${r.action}${label}: ${status} — ${r.message} (${r.durationMs}ms)`);
   }
-  return lines.join("\n");
+  return lines.join("\n") + diagBlock;
 }
 
 export const flowTools: ToolDefinition[] = [
@@ -331,7 +358,8 @@ export const flowTools: ToolDefinition[] = [
 
             if (onError === "stop") {
               results.push(lastStepResult);
-              return { text: formatFlowResults(results, Date.now() - flowStart) };
+              const diag = await collectFailureDiag(ctx, currentPlatform, i + 1);
+              return { text: formatFlowResults(results, Date.now() - flowStart, diag) };
             }
             break;
           }
@@ -340,12 +368,15 @@ export const flowTools: ToolDefinition[] = [
         if (lastStepResult) {
           results.push(lastStepResult);
           if (!lastStepResult.success && (step.on_error ?? "stop") === "stop") {
-            return { text: formatFlowResults(results, Date.now() - flowStart) };
+            const diag = await collectFailureDiag(ctx, currentPlatform, i + 1);
+            return { text: formatFlowResults(results, Date.now() - flowStart, diag) };
           }
         }
       }
 
-      return { text: formatFlowResults(results, Date.now() - flowStart) };
+      const lastFailed = results.length > 0 && !results[results.length - 1].success;
+      const diag = lastFailed ? await collectFailureDiag(ctx, currentPlatform, results.length) : "";
+      return { text: formatFlowResults(results, Date.now() - flowStart, diag) };
     },
   },
   {
