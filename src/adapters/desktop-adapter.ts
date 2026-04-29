@@ -142,12 +142,32 @@ export class DesktopAdapter implements CorePlatformAdapter, AppManagementAdapter
 
   // ============ Screenshot ============
 
+  /**
+   * Resolve the main window ID for the target process.
+   * Returns undefined if no targetPid or no matching window found.
+   */
+  private async resolveTargetWindowId(): Promise<string | undefined> {
+    const pid = this.client.targetPid;
+    if (!pid) return undefined;
+    try {
+      const info = await this.client.getWindowInfo();
+      // Prefer focused window of target process, fall back to first window
+      const targetWindows = info.windows.filter((w) => w.processId === pid);
+      const focused = targetWindows.find((w) => w.focused);
+      return (focused ?? targetWindows[0])?.id;
+    } catch {
+      return undefined;
+    }
+  }
+
   async screenshotAsync(
     _compress: boolean = true,
     options?: { monitorIndex?: number },
   ): Promise<{ data: string; mimeType: string }> {
     this.ensureRunning();
+    const windowId = await this.resolveTargetWindowId();
     const result = await this.client.screenshotWithMeta({
+      windowId,
       monitorIndex: options?.monitorIndex,
     });
     return { data: result.base64, mimeType: result.mimeType };
@@ -155,7 +175,8 @@ export class DesktopAdapter implements CorePlatformAdapter, AppManagementAdapter
 
   async getScreenshotBufferAsync(): Promise<Buffer> {
     this.ensureRunning();
-    const result = await this.client.screenshotWithMeta({});
+    const windowId = await this.resolveTargetWindowId();
+    const result = await this.client.screenshotWithMeta({ windowId });
     return Buffer.from(result.base64, "base64");
   }
 
@@ -169,7 +190,7 @@ export class DesktopAdapter implements CorePlatformAdapter, AppManagementAdapter
 
   // ============ App management (AppManagementAdapter) ============
 
-  launchApp(packageName: string): string {
+  async launchApp(packageName: string): Promise<string> {
     return this.client.launchApp(packageName);
   }
 

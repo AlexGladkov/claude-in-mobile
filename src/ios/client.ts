@@ -245,12 +245,21 @@ export class IosClient {
   }
 
   /**
-   * Input text using simctl
+   * Input text via WDA (types into the currently focused element)
    */
-  inputText(text: string): void {
-    // Escape for shell
-    const escaped = text.replace(/'/g, "'\\''");
-    this.exec(`io ${this.targetDevice} input text '${escaped}'`);
+  async inputText(text: string): Promise<void> {
+    try {
+      const wdaClient = await this.ensureWDA();
+      await wdaClient.typeText(text);
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Text input requires WebDriverAgent.\n\n` +
+        `Install: npm install -g appium && appium driver install xcuitest\n` +
+        `Or set WDA_PATH environment variable.\n\n` +
+        `Error: ${msg}`
+      );
+    }
   }
 
   /**
@@ -401,6 +410,18 @@ export class IosClient {
     );
 
     return results.filter((r): r is NonNullable<typeof r> => r !== null);
+  }
+
+  /**
+   * Get element rect (position + size) by element ID
+   */
+  async getElementRect(elementId: string): Promise<WDARect | null> {
+    try {
+      const wdaClient = await this.ensureWDA();
+      return await wdaClient.getElementRect(elementId);
+    } catch {
+      return null;
+    }
   }
 
   /**

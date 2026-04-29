@@ -1,24 +1,45 @@
 import type { ToolDefinition } from "./registry.js";
 import type { ToolContext } from "./context.js";
-import { validatePath, validateJvmArg } from "../utils/sanitize.js";
+import { validatePath, validateJvmArg, validateBundleId } from "../utils/sanitize.js";
 
 export const desktopTools: ToolDefinition[] = [
   {
     tool: {
       name: "desktop_launch",
-      description: "Start desktop automation, optionally launch Compose Desktop app",
+      description: "Start desktop automation. Modes: Gradle (projectPath), native macOS app (bundleId/appPath), attach to process (pid), or companion-only (no params).",
       inputSchema: {
         type: "object",
         properties: {
-          projectPath: { type: "string", description: "Path to the Gradle project directory. If provided, also launches the user's app." },
+          projectPath: { type: "string", description: "Path to Gradle project directory. Launches Compose Desktop app." },
           task: { type: "string", description: "Gradle task to run (e.g., ':desktopApp:run'). Auto-detected if not specified." },
           jvmArgs: { type: "array", items: { type: "string" }, description: "JVM arguments to pass to the app" },
+          bundleId: { type: "string", description: "macOS bundle ID (e.g. 'com.apple.TextEdit'). Launches native app." },
+          appPath: { type: "string", description: "Path to .app bundle (e.g. '/Applications/TextEdit.app')" },
+          pid: { type: "number", description: "Attach to running process by PID (no launch)" },
         },
       },
     },
     handler: async (args, ctx) => {
+      // Mutual exclusivity: only one launch mode allowed
+      const modes = [
+        args.projectPath ? "projectPath" : null,
+        (args.bundleId || args.appPath) ? "bundleId/appPath" : null,
+        args.pid ? "pid" : null,
+      ].filter(Boolean);
+      if (modes.length > 1) {
+        return { text: `Error: only one launch mode allowed. Got: ${modes.join(", ")}. Use projectPath OR bundleId/appPath OR pid.` };
+      }
       if (args.projectPath) {
         validatePath(args.projectPath as string, "projectPath");
+      }
+      if (args.appPath) {
+        validatePath(args.appPath as string, "appPath");
+      }
+      if (args.bundleId) {
+        validateBundleId(args.bundleId as string);
+      }
+      if (args.pid !== undefined && (typeof args.pid !== "number" || args.pid <= 0 || !Number.isInteger(args.pid))) {
+        return { text: "Error: pid must be a positive integer" };
       }
       if (args.jvmArgs) {
         for (const arg of args.jvmArgs as string[]) {
@@ -29,6 +50,9 @@ export const desktopTools: ToolDefinition[] = [
         projectPath: args.projectPath as string | undefined,
         task: args.task as string | undefined,
         jvmArgs: args.jvmArgs as string[] | undefined,
+        bundleId: args.bundleId as string | undefined,
+        appPath: args.appPath as string | undefined,
+        pid: args.pid as number | undefined,
       });
       return { text: result };
     },

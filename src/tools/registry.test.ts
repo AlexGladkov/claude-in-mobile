@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { registerTools, registerToolsHidden, registerAliases, registerAliasesWithDefaults, resolveToolCall, getTools, unhideTools, hideTools, getModuleStatus, setToolListChangedNotifier, resetRegistry } from "./registry.js";
+import { registerTools, registerToolsHidden, registerAliases, registerAliasesWithDefaults, resolveToolCall, getTools, unhideTools, hideTools, getModuleStatus, setToolListChangedNotifier, resetRegistry, registerAllModuleMetadata, getModuleMetadata, unhideByCategory, hideByCategory } from "./registry.js";
+import type { EnrichedModuleStatus } from "./registry.js";
+import { MODULE_METADATA, ALWAYS_VISIBLE } from "../profiles.js";
 
 // Minimal mock tools for testing resolution
 const mockSwipeHandler = async () => ({ text: "swiped" });
@@ -303,5 +305,122 @@ describe("auto-enable modules", () => {
 
     resolveToolCall("browser", {});
     expect(notified).toBe(true);
+  });
+});
+
+describe("module metadata", () => {
+  const mockHandler = async () => ({ text: "ok" });
+
+  beforeEach(() => {
+    registerAllModuleMetadata(MODULE_METADATA);
+  });
+
+  it("should register and retrieve module metadata", () => {
+    const meta = getModuleMetadata("input");
+    expect(meta).toBeDefined();
+    expect(meta!.name).toBe("input");
+    expect(meta!.category).toBe("core");
+    expect(meta!.actions.length).toBeGreaterThan(0);
+  });
+
+  it("should return undefined for unknown module metadata", () => {
+    expect(getModuleMetadata("nonexistent")).toBeUndefined();
+  });
+
+  it("should return enriched status with description and category", () => {
+    registerToolsHidden([{
+      tool: { name: "browser", description: "Browser", inputSchema: { type: "object", properties: {} } },
+      handler: mockHandler,
+    }]);
+
+    const statuses = getModuleStatus();
+    const browser = statuses.find(s => s.name === "browser");
+    expect(browser).toBeDefined();
+    expect(browser!.description).toBeTruthy();
+    expect(browser!.category).toBe("platform");
+    expect(browser!.actions).toBeDefined();
+    expect(browser!.status).toBe("available");
+  });
+
+  it("should show disabled status for manually disabled modules", () => {
+    registerTools([{
+      tool: { name: "browser", description: "Browser", inputSchema: { type: "object", properties: {} } },
+      handler: mockHandler,
+    }]);
+    hideTools(["browser"]);
+
+    const statuses = getModuleStatus();
+    const browser = statuses.find(s => s.name === "browser");
+    expect(browser).toBeDefined();
+    expect(browser!.status).toBe("disabled");
+  });
+
+  it("should show loaded status for visible modules", () => {
+    registerTools([{
+      tool: { name: "input", description: "Input", inputSchema: { type: "object", properties: {} } },
+      handler: mockHandler,
+    }]);
+
+    const statuses = getModuleStatus();
+    const input = statuses.find(s => s.name === "input");
+    expect(input).toBeDefined();
+    expect(input!.status).toBe("loaded");
+  });
+});
+
+describe("category operations", () => {
+  const mockHandler = async () => ({ text: "ok" });
+
+  beforeEach(() => {
+    registerAllModuleMetadata(MODULE_METADATA);
+  });
+
+  it("unhideByCategory should unhide all hidden modules in category", () => {
+    registerToolsHidden([
+      { tool: { name: "browser", description: "Browser", inputSchema: { type: "object", properties: {} } }, handler: mockHandler },
+      { tool: { name: "desktop", description: "Desktop", inputSchema: { type: "object", properties: {} } }, handler: mockHandler },
+      { tool: { name: "store", description: "Store", inputSchema: { type: "object", properties: {} } }, handler: mockHandler },
+    ]);
+
+    // All three are "platform" category
+    const enabled = unhideByCategory("platform");
+    expect(enabled).toContain("browser");
+    expect(enabled).toContain("desktop");
+    expect(enabled).toContain("store");
+
+    // Verify they're visible
+    expect(getTools().find(t => t.name === "browser")).toBeDefined();
+    expect(getTools().find(t => t.name === "desktop")).toBeDefined();
+    expect(getTools().find(t => t.name === "store")).toBeDefined();
+  });
+
+  it("unhideByCategory should return empty if no hidden modules in category", () => {
+    registerTools([
+      { tool: { name: "browser", description: "Browser", inputSchema: { type: "object", properties: {} } }, handler: mockHandler },
+    ]);
+
+    const enabled = unhideByCategory("platform");
+    // browser is already visible, so nothing to unhide
+    // desktop/store not registered, so not in hiddenTools
+    expect(enabled).not.toContain("browser");
+  });
+
+  it("hideByCategory should hide visible modules, skip always-visible", () => {
+    registerTools([
+      { tool: { name: "device", description: "Device", inputSchema: { type: "object", properties: {} } }, handler: mockHandler },
+      { tool: { name: "screen", description: "Screen", inputSchema: { type: "object", properties: {} } }, handler: mockHandler },
+      { tool: { name: "input", description: "Input", inputSchema: { type: "object", properties: {} } }, handler: mockHandler },
+    ]);
+
+    // "core" category includes device, screen, input — but device+screen are ALWAYS_VISIBLE
+    const disabled = hideByCategory("core", ALWAYS_VISIBLE);
+    expect(disabled).toContain("input");
+    expect(disabled).not.toContain("device");
+    expect(disabled).not.toContain("screen");
+
+    // input hidden, device/screen still visible
+    expect(getTools().find(t => t.name === "input")).toBeUndefined();
+    expect(getTools().find(t => t.name === "device")).toBeDefined();
+    expect(getTools().find(t => t.name === "screen")).toBeDefined();
   });
 });

@@ -97,6 +97,18 @@ export function validateJvmArg(arg: string): void {
   }
 }
 
+// B1: Validate macOS bundle identifier — alphanumeric, dots, hyphens only
+const BUNDLE_ID_RE = /^[a-zA-Z][a-zA-Z0-9\-.]{1,254}$/;
+
+export function validateBundleId(bundleId: string): void {
+  if (!BUNDLE_ID_RE.test(bundleId)) {
+    throw new MobileError(
+      `Invalid bundle ID: "${bundleId}". Must be alphanumeric with dots/hyphens (e.g. "com.apple.TextEdit").`,
+      "INVALID_BUNDLE_ID"
+    );
+  }
+}
+
 // H1: Block path traversal
 export function validatePath(path: string, label: string): void {
   if (path.includes("..")) {

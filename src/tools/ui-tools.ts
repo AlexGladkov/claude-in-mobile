@@ -4,6 +4,7 @@ import {
   parseUiHierarchy,
   findElements,
   formatUiTree,
+  formatUiTreeSemantic,
   formatElement,
   analyzeScreen,
   findBestMatch,
@@ -57,13 +58,20 @@ export const uiTools: ToolDefinition[] = [
       // Android: parse XML and format
       const parsedElements = parseUiHierarchy(xml);
       ctx.setCachedElements("android", parsedElements);
+      // Semantic format — grouped by role, ~3x token reduction
+      const format = getString(args, "format");
+      if (format === "semantic") {
+        return { text: formatUiTreeSemantic(parsedElements) };
+      }
+
       const showAll = getBoolean(args, "showAll");
       const compact = getBoolean(args, "compact");
       const tree = formatUiTree(parsedElements, { showAll, compact });
 
       // Dedup cache: if identical output within 2s, return short notice
+      const fresh = getBoolean(args, "fresh");
       const cacheKey = `android:${showAll}:${compact}`;
-      const cached = ctx.lastUiTreeMap.get(cacheKey);
+      const cached = fresh ? undefined : ctx.lastUiTreeMap.get(cacheKey);
       const now = Date.now();
       if (cached && cached.text === tree && (now - cached.timestamp) < 2000) {
         const ago = now - cached.timestamp;
@@ -197,10 +205,10 @@ export const uiTools: ToolDefinition[] = [
         type: "object",
         properties: {
           text: { type: "string", description: "Text to search for (partial match, case-insensitive)" },
-          pid: { type: "number", description: "Process ID of the target application. Get from get_window_info." },
+          pid: { type: "number", description: "Process ID of the target application. Get from get_window_info. Optional if a native app was launched/attached." },
           exactMatch: { type: "boolean", description: "If true, requires exact text match (default: false)", default: false },
         },
-        required: ["text", "pid"],
+        required: ["text"],
       },
     },
     handler: async (args, ctx) => {
@@ -214,10 +222,6 @@ export const uiTools: ToolDefinition[] = [
       const text = requireString(args, "text");
       const pid = getNumber(args, "pid");
       const exactMatch = getBoolean(args, "exactMatch");
-
-      if (pid === undefined) {
-        return { text: "Missing required parameter: pid. Use get_window_info to find the process ID." };
-      }
 
       const result = await ctx.deviceManager.getDesktopClient().tapByText(text, pid, exactMatch);
 

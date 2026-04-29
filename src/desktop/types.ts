@@ -109,10 +109,16 @@ export interface KeyEventOptions {
 
 // Launch options
 export interface LaunchOptions {
-  projectPath?: string; // If provided, also launches user's Compose Desktop app via Gradle
+  // Gradle mode — launches Compose Desktop app via Gradle
+  projectPath?: string;
   task?: string; // Gradle task, auto-detected if not specified
   jvmArgs?: string[];
   env?: Record<string, string>;
+  // Native mode — launches macOS .app by bundle ID or path
+  bundleId?: string;   // e.g. "com.apple.TextEdit"
+  appPath?: string;    // e.g. "/Applications/TextEdit.app"
+  // Attach mode — attach to running process by PID
+  pid?: number;
 }
 
 export interface GradleProject {

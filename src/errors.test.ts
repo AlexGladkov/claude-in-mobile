@@ -329,8 +329,8 @@ describe("isRetryable", () => {
     expect(isRetryable(new MobileError("adb failed", "ADB_ERROR"))).toBe(true);
   });
 
-  it("returns true for BROWSER_REF_NOT_FOUND", () => {
-    expect(isRetryable(new BrowserRefNotFoundError("e1"))).toBe(true);
+  it("returns false for BROWSER_REF_NOT_FOUND (handled by stable ref fallback)", () => {
+    expect(isRetryable(new BrowserRefNotFoundError("e1"))).toBe(false);
   });
 
   it("returns false for DEVICE_NOT_FOUND", () => {
@@ -684,9 +684,9 @@ describe("Error subclasses isRetryable consistency", () => {
     expect(err.name).toBe("BrowserSessionNotFoundError");
   });
 
-  it("BrowserRefNotFoundError IS retryable", () => {
+  it("BrowserRefNotFoundError is NOT retryable (handled by stable ref fallback)", () => {
     const err = new BrowserRefNotFoundError("e1");
-    expect(isRetryable(err)).toBe(true);
+    expect(isRetryable(err)).toBe(false);
     expect(err.code).toBe("BROWSER_REF_NOT_FOUND");
     expect(err.name).toBe("BrowserRefNotFoundError");
   });

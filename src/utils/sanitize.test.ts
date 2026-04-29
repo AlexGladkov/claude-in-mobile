@@ -13,6 +13,7 @@ import {
   validateJvmArg,
   validateBaselineName,
   validatePathContainment,
+  validateBundleId,
 } from "./sanitize.js";
 import { MobileError } from "../errors.js";
 
@@ -788,5 +789,48 @@ describe("validatePathContainment", () => {
   it("blocks path that is prefix but not child", () => {
     // /base/directory is NOT inside /base/dir (just shares prefix)
     expect(() => validatePathContainment("/base/directory/file.png", "/base/dir")).toThrow(MobileError);
+  });
+});
+
+// ──────────────────────────────────────────────
+// validateBundleId
+// ──────────────────────────────────────────────
+
+describe("validateBundleId", () => {
+  it("accepts valid bundle IDs", () => {
+    expect(() => validateBundleId("com.apple.TextEdit")).not.toThrow();
+    expect(() => validateBundleId("com.example.my-app")).not.toThrow();
+    expect(() => validateBundleId("org.mozilla.firefox")).not.toThrow();
+    expect(() => validateBundleId("a.b")).not.toThrow();
+  });
+
+  it("rejects empty string", () => {
+    expect(() => validateBundleId("")).toThrow(MobileError);
+  });
+
+  it("rejects bundle ID starting with a number", () => {
+    expect(() => validateBundleId("123.invalid")).toThrow(MobileError);
+  });
+
+  it("rejects bundle ID with shell injection", () => {
+    expect(() => validateBundleId("com.app; rm -rf /")).toThrow(MobileError);
+  });
+
+  it("rejects bundle ID with newline injection", () => {
+    expect(() => validateBundleId("com.app\nmalicious")).toThrow(MobileError);
+  });
+
+  it("rejects bundle ID starting with a dot", () => {
+    expect(() => validateBundleId(".starts.with.dot")).toThrow(MobileError);
+  });
+
+  it("throws with INVALID_BUNDLE_ID code", () => {
+    try {
+      validateBundleId("");
+      expect.unreachable("Should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(MobileError);
+      expect((e as MobileError).code).toBe("INVALID_BUNDLE_ID");
+    }
   });
 });

@@ -26,3 +26,13 @@ export function getCachedElements(platform: string): UiElement[] {
 export function setCachedElements(platform: string, elements: UiElement[]): void {
   cachedElementsMap.set(platform, elements);
 }
+
+export function invalidateUiTreeCache(platform?: string): void {
+  if (platform) {
+    for (const key of lastUiTreeMap.keys()) {
+      if (key.startsWith(platform)) lastUiTreeMap.delete(key);
+    }
+  } else {
+    lastUiTreeMap.clear();
+  }
+}

@@ -229,7 +229,7 @@ export function createLiteTools(): LiteToolDefinition[] {
         },
       },
       handler: async (args, dm) => {
-        const result = dm.launchApp(args.package as string);
+        const result = await dm.launchApp(args.package as string);
         return { text: result };
       },
     },

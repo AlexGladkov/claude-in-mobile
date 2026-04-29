@@ -18,6 +18,7 @@ export {
   lastScreenshotMap,
   lastUiTreeMap,
   screenshotScaleMap,
+  invalidateUiTreeCache,
 } from "./context/shared-state.js";
 
 export {
@@ -34,6 +35,7 @@ import {
   lastScreenshotMap,
   lastUiTreeMap,
   screenshotScaleMap,
+  invalidateUiTreeCache,
 } from "./context/shared-state.js";
 import { iosTreeToUiElements, formatIOSUITree } from "./context/ios-helpers.js";
 
@@ -65,6 +67,7 @@ export interface ToolContext {
   getElementsForPlatform: (plat: string) => Promise<UiElement[]>;
   iosTreeToUiElements: (tree: any) => UiElement[];
   formatIOSUITree: (tree: any, indent?: number) => string;
+  invalidateUiTreeCache: (platform?: string) => void;
   platformParam: typeof platformParam;
   handleTool: (name: string, args: Record<string, unknown>, depth?: number) => Promise<unknown>;
 }
@@ -81,6 +84,7 @@ export function createToolContext(handleTool: ToolContext["handleTool"]): ToolCo
     getElementsForPlatform,
     iosTreeToUiElements,
     formatIOSUITree,
+    invalidateUiTreeCache,
     platformParam,
     handleTool,
   };

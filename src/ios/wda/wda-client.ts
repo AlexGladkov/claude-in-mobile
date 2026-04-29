@@ -177,6 +177,17 @@ export class WDAClient {
     });
   }
 
+  async typeText(text: string): Promise<void> {
+    if (!this.sessionId) {
+      throw new Error("No active WDA session");
+    }
+
+    // WDA-specific endpoint: type into the currently focused element
+    await this.request("POST", `/session/${this.sessionId}/wda/keys`, {
+      value: text.split(""),
+    });
+  }
+
   async getWindowSize(): Promise<{ width: number; height: number }> {
     if (!this.sessionId) {
       throw new Error("No active WDA session");

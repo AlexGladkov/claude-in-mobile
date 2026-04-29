@@ -10,11 +10,14 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
-import { registerTools, registerToolsHidden, registerAliases, registerAliasesWithDefaults, setToolListChangedNotifier, getTools, resolveToolCall, freezeRegistry } from "./tools/registry.js";
+import { registerTools, registerToolsHidden, registerAliases, registerAliasesWithDefaults, registerAllModuleMetadata, setToolListChangedNotifier, getTools, resolveToolCall, freezeRegistry } from "./tools/registry.js";
+import type { ToolDefinition } from "./tools/registry.js";
 import { createToolContext, MAX_RECURSION_DEPTH } from "./tools/context.js";
 import { detectClient, getConfigSnippet, type ClientType } from "./client-adapter.js";
-import { MobileError, isRetryable } from "./errors.js";
+import { MobileError, isRetryable, getRecoveryHints } from "./errors.js";
 import { getGlobalMetrics } from "./utils/metrics.js";
+import { ALWAYS_VISIBLE, PROFILE_VISIBLE, VALID_PROFILES, MODULE_METADATA, ALL_HIDEABLE_MODULES, type MobileProfile } from "./profiles.js";
+import { recordCall, detectAntiPattern } from "./utils/anti-patterns.js";
 
 // Read version from package.json — single source of truth
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -39,7 +42,49 @@ import { performanceMeta, performanceAliases } from "./tools/meta/performance-me
 import { autopilotMeta, autopilotAliases } from "./tools/meta/autopilot-meta.js";
 import { captureStep } from "./tools/recorder-tools.js";
 
+/** Build dynamic MCP instructions based on active profile */
+function buildInstructions(profile: MobileProfile): string {
+  const lines: string[] = [
+    "Mobile, desktop, browser automation + store management.",
+    "",
+    "TOKEN COST (cheapest→expensive): ui(action:'tree',format:'semantic') ~60 tokens | ui(action:'tree',compact:true) ~100 tokens | ui(action:'tree') ~200 tokens | ui(action:'find') ~150 tokens | screen(action:'capture',preset:'low') ~1500 tokens | screen(action:'capture') ~3000 tokens | screen(action:'annotate') ~4000 tokens.",
+    "",
+    "EFFICIENT PATTERNS: 1) ui_tree first — text-based, ~10x cheaper than screenshots. 2) hints are ON by default — input actions return UI diff, no follow-up needed. Set hints:false only for rapid sequences. 3) screen(preset:'low') for quick visual checks. 4) flow(action:'batch')/flow(action:'run') for multi-step sequences (2-4x faster). 5) screen(diff:true) after actions — returns only changes. 6) ui(action:'tree',compact:true) — interactive elements only, shortest format.",
+    "",
+    "ANTI-PATTERNS: 1) screenshot after every tap (use hints instead). 2) ui_tree + screenshot together (pick one). 3) Full ui_tree when you only need one element (use ui(action:'find')). 4) screen(preset:'high') unless user requests visual detail.",
+    "",
+    "ERROR RECOVERY: On errors, [RECOVERY: ...] block contains suggested next tool calls as JSON.",
+  ];
+
+  // Hidden modules hint
+  const hiddenCount = ALL_HIDEABLE_MODULES.length - PROFILE_VISIBLE[profile].length;
+  if (hiddenCount > 0) {
+    lines.push(
+      "",
+      `Optional modules (${hiddenCount} hidden) — device(action:'enable_module',module:'browser') to load. device(action:'enable_module',category:'platform') for batch. device(action:'list_modules') to see all.`,
+    );
+  }
+
+  if (profile === "minimal") {
+    lines.push(
+      "",
+      "MINIMAL profile active — only device+screen loaded. Use device(action:'enable_module') to load modules as needed.",
+    );
+  }
+
+  return lines.join("\n");
+}
+
 // Dispatch function (needed by batch_commands / run_flow for recursion)
+
+/** Retry config for transient errors. Only at depth=0 (top-level MCP calls). */
+const RETRY_CONFIG: Record<string, { maxAttempts: number; delayMs: number[] }> = {
+  DEVICE_OFFLINE: { maxAttempts: 3, delayMs: [300, 900, 2700] },
+  COMMAND_TIMEOUT: { maxAttempts: 2, delayMs: [500, 1500] },
+  ADB_ERROR: { maxAttempts: 2, delayMs: [300, 900] },
+  SYNC_BARRIER_TIMEOUT: { maxAttempts: 2, delayMs: [500, 1500] },
+};
+
 async function handleTool(name: string, args: Record<string, unknown>, depth: number = 0): Promise<unknown> {
   if (depth > MAX_RECURSION_DEPTH) {
     throw new MobileError(`Maximum recursion depth (${MAX_RECURSION_DEPTH}) exceeded.`, "MAX_RECURSION");
@@ -47,39 +92,89 @@ async function handleTool(name: string, args: Record<string, unknown>, depth: nu
 
   // Record step if recording is active (no-op if idle, depth>0, or blocklisted)
   captureStep(name, args, depth);
+  recordCall(name, depth);
 
   const resolved = resolveToolCall(name, args);
   if (!resolved) {
     throw new MobileError(`Unknown tool: ${name}`, "UNKNOWN_TOOL");
   }
 
-  const start = Date.now();
-  try {
-    const result = await resolved.handler(resolved.args, ctx, depth);
-    getGlobalMetrics().record(name, Date.now() - start, false);
-    return result;
-  } catch (error) {
-    getGlobalMetrics().record(name, Date.now() - start, true);
-    throw error;
+  let lastError: unknown;
+  const maxAttempts = depth === 0 ? undefined : 1; // Only retry at top level
+
+  for (let attempt = 1; ; attempt++) {
+    const start = Date.now();
+    try {
+      const result = await resolved.handler(resolved.args, ctx, depth);
+      getGlobalMetrics().record(name, Date.now() - start, false);
+      return result;
+    } catch (error) {
+      getGlobalMetrics().record(name, Date.now() - start, true);
+      lastError = error;
+
+      // Check if retryable and at top level
+      if (depth !== 0) throw error;
+
+      const code = error instanceof MobileError ? error.code : "";
+      const config = RETRY_CONFIG[code];
+      if (!config || attempt >= config.maxAttempts) {
+        // Attach retry count info to error for the catch block in CallToolRequestSchema
+        if (config && error instanceof MobileError) {
+          (error as any)._retryInfo = `Retried: ${attempt}/${config.maxAttempts}`;
+        }
+        throw error;
+      }
+
+      const delay = config.delayMs[attempt - 1] ?? config.delayMs[config.delayMs.length - 1];
+      console.error(`[retry] ${code} on ${name}, attempt ${attempt}/${config.maxAttempts}, waiting ${delay}ms`);
+      await new Promise(r => setTimeout(r, delay));
+    }
   }
 }
 
 // Shared context (wired after handleTool is defined)
 const ctx = createToolContext(handleTool);
 
-// Register core meta tools (always visible)
-registerTools([
-  deviceMeta,
-  inputMeta,
-  screenMeta,
-  uiMeta,
-  appMeta,
-  systemMeta,
-  flowMeta,
-]);
+// Resolve profile from MOBILE_PROFILE env, default "core"
+const rawProfile = process.env.MOBILE_PROFILE ?? "core";
+const activeProfile: MobileProfile = VALID_PROFILES.includes(rawProfile as MobileProfile)
+  ? (rawProfile as MobileProfile)
+  : (() => {
+      console.error(`[profiles] Invalid MOBILE_PROFILE="${rawProfile}". Valid: ${VALID_PROFILES.join(", ")}. Falling back to "core".`);
+      return "core" as MobileProfile;
+    })();
 
-// Register optional modules as hidden (loaded on demand via device enable_module)
-registerToolsHidden([browserMeta, desktopMeta, storeMeta, visualMeta, recorderMeta, syncMeta, accessibilityMeta, performanceMeta, autopilotMeta]);
+// All meta tools by name for lookup
+const allMetaTools: Record<string, ToolDefinition> = {
+  device: deviceMeta, screen: screenMeta,
+  input: inputMeta, ui: uiMeta, app: appMeta, system: systemMeta, flow: flowMeta,
+  browser: browserMeta, desktop: desktopMeta, store: storeMeta,
+  visual: visualMeta, recorder: recorderMeta, sync: syncMeta,
+  accessibility: accessibilityMeta, performance: performanceMeta, autopilot: autopilotMeta,
+};
+
+// Profile-aware registration
+const profileVisible = new Set([...ALWAYS_VISIBLE, ...PROFILE_VISIBLE[activeProfile]]);
+const visibleTools: ToolDefinition[] = [];
+const hiddenToolDefs: ToolDefinition[] = [];
+
+for (const [name, def] of Object.entries(allMetaTools)) {
+  if (profileVisible.has(name)) {
+    visibleTools.push(def);
+  } else {
+    hiddenToolDefs.push(def);
+  }
+}
+
+registerTools(visibleTools);
+if (hiddenToolDefs.length > 0) {
+  registerToolsHidden(hiddenToolDefs);
+}
+
+// Register module metadata catalog
+registerAllModuleMetadata(MODULE_METADATA);
+
+console.error(`[profiles] MOBILE_PROFILE="${activeProfile}" — ${visibleTools.length} visible, ${hiddenToolDefs.length} hidden`);
 
 // Register all backward-compat aliases (v3.1.x canonical names -> meta tools)
 registerAliasesWithDefaults({
@@ -230,17 +325,7 @@ const server = new Server(
     capabilities: {
       tools: { listChanged: true },
     },
-    instructions: [
-      "Mobile, desktop, browser automation + store management.",
-      "",
-      "TOKEN COST (cheapest→expensive): ui(action:'tree') ~200 tokens | ui(action:'tree',compact:true) ~100 tokens | ui(action:'find') ~150 tokens | screen(action:'capture',preset:'low') ~1500 tokens | screen(action:'capture') ~3000 tokens | screen(action:'annotate') ~4000 tokens.",
-      "",
-      "EFFICIENT PATTERNS: 1) ui_tree first — text-based, ~10x cheaper than screenshots. 2) hints are ON by default — input actions return UI diff, no follow-up needed. Set hints:false only for rapid sequences. 3) screen(preset:'low') for quick visual checks. 4) flow(action:'batch')/flow(action:'run') for multi-step sequences (2-4x faster). 5) screen(diff:true) after actions — returns only changes. 6) ui(action:'tree',compact:true) — interactive elements only, shortest format.",
-      "",
-      "ANTI-PATTERNS: 1) screenshot after every tap (use hints instead). 2) ui_tree + screenshot together (pick one). 3) Full ui_tree when you only need one element (use ui(action:'find')). 4) screen(preset:'high') unless user requests visual detail.",
-      "",
-      "Optional modules (browser, desktop, store) hidden by default — device(action:'enable_module',module:'browser') to load.",
-    ].join("\n"),
+    instructions: buildInstructions(activeProfile),
   }
 );
 
@@ -327,11 +412,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       text = text.slice(0, MAX_RESPONSE_CHARS) + `\n\n[truncated, ${remaining} chars remaining]`;
     }
 
+    // Anti-pattern detection (only at top level, not on errors)
+    const hint = detectAntiPattern();
+    const hintBlock = hint ? `\n[HINT: ${hint}]` : "";
+
     return {
       content: [
         {
           type: "text",
-          text: moduleNotice + text,
+          text: moduleNotice + text + hintBlock,
         },
       ],
       ...(handlerIsError ? { isError: true } : {}),
@@ -340,11 +429,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const code = error instanceof MobileError ? error.code : "UNKNOWN";
     const message = error instanceof Error ? error.message : String(error);
     const retryHint = isRetryable(error) ? "\nRetry: yes" : "";
+    const recoveryHints = getRecoveryHints(error);
+    const recoveryBlock = recoveryHints.length > 0
+      ? `\n[RECOVERY: ${JSON.stringify(recoveryHints)}]`
+      : "";
+    const retryInfo = (error as any)?._retryInfo ? `\n${(error as any)._retryInfo}` : "";
     return {
       content: [
         {
           type: "text",
-          text: `[${code}] ${message}${retryHint}`,
+          text: `[${code}] ${message}${retryHint}${retryInfo}${recoveryBlock}`,
         },
       ],
       isError: true,
