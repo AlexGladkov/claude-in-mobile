@@ -160,10 +160,19 @@ export class DeviceManager {
     }
     await desktop.launch(options);
     this.activeTarget = "desktop";
+    const client = desktop.getClient();
     if (options.projectPath) {
       return `Desktop automation started. Also launching app from ${options.projectPath}`;
     }
-    return "Desktop automation started";
+    if (options.bundleId || options.appPath) {
+      const app = options.bundleId || options.appPath;
+      const pid = client.targetPid;
+      return `Desktop automation started. Launched native app: ${app}${pid ? ` (PID: ${pid})` : ""}`;
+    }
+    if (options.pid) {
+      return `Desktop automation started. Attached to process PID: ${options.pid}`;
+    }
+    return "Desktop automation started (companion only)";
   }
 
   async stopDesktopApp(): Promise<void> {
@@ -370,7 +379,7 @@ export class DeviceManager {
 
   // ============ App management (guarded by type guard) ============
 
-  launchApp(packageOrBundleId: string, platform?: Platform): string {
+  async launchApp(packageOrBundleId: string, platform?: Platform): Promise<string> {
     const adapter = this.getAdapter(platform);
     if (!hasAppManagement(adapter)) {
       throw new Error(`App management is not supported for ${adapter.platform}. ${

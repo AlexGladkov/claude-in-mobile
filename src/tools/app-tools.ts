@@ -20,7 +20,7 @@ export const appTools: ToolDefinition[] = [
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
       validatePackageName(args.package as string);
-      const result = ctx.deviceManager.launchApp(args.package as string, platform);
+      const result = await ctx.deviceManager.launchApp(args.package as string, platform);
       return { text: result };
     },
   },

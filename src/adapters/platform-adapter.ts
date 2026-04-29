@@ -59,7 +59,7 @@ export interface CorePlatformAdapter {
 // ============ App management capability ============
 
 export interface AppManagementAdapter {
-  launchApp(packageOrBundleId: string): string;
+  launchApp(packageOrBundleId: string): string | Promise<string>;
   stopApp(packageOrBundleId: string): void;
   installApp(path: string): string;
 }

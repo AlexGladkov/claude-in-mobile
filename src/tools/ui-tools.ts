@@ -205,10 +205,10 @@ export const uiTools: ToolDefinition[] = [
         type: "object",
         properties: {
           text: { type: "string", description: "Text to search for (partial match, case-insensitive)" },
-          pid: { type: "number", description: "Process ID of the target application. Get from get_window_info." },
+          pid: { type: "number", description: "Process ID of the target application. Get from get_window_info. Optional if a native app was launched/attached." },
           exactMatch: { type: "boolean", description: "If true, requires exact text match (default: false)", default: false },
         },
-        required: ["text", "pid"],
+        required: ["text"],
       },
     },
     handler: async (args, ctx) => {
@@ -222,10 +222,6 @@ export const uiTools: ToolDefinition[] = [
       const text = requireString(args, "text");
       const pid = getNumber(args, "pid");
       const exactMatch = getBoolean(args, "exactMatch");
-
-      if (pid === undefined) {
-        return { text: "Missing required parameter: pid. Use get_window_info to find the process ID." };
-      }
 
       const result = await ctx.deviceManager.getDesktopClient().tapByText(text, pid, exactMatch);
 
