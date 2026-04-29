@@ -1,6 +1,6 @@
 # Claude Mobile
 
-MCP server for mobile and desktop automation — Android (via ADB), iOS Simulator (via simctl), Desktop (Compose Multiplatform), and Aurora OS (via audb). Like [Claude in Chrome](https://www.anthropic.com/news/claude-for-chrome) but for mobile devices and desktop apps.
+MCP server for mobile and desktop automation — Android (via ADB), iOS Simulator (via simctl), Desktop (any macOS app), and Aurora OS (via audb). Like [Claude in Chrome](https://www.anthropic.com/news/claude-for-chrome) but for mobile devices and desktop apps.
 
 Control your Android phone, emulator, iOS Simulator, Desktop applications, or Aurora OS device with natural language through Claude.
 
@@ -19,7 +19,7 @@ Control your Android phone, emulator, iOS Simulator, Desktop applications, or Au
 - **Flow engine** — `flow_batch` for sequential commands, `flow_run` for conditional loops, `flow_parallel` for fan-out
 - **Permission management** — Grant, revoke, and reset app permissions (Android runtime, iOS privacy services)
 - **Store management** — Upload builds to Google Play, Huawei AppGallery, and RuStore (optional module)
-- **Desktop support** — Test Compose Multiplatform desktop apps with window management, clipboard, and performance metrics
+- **Desktop support** — Test any macOS app (SwiftUI, AppKit, Electron, Compose) with window management, clipboard, and performance metrics
 
 ## Installation
 
@@ -200,7 +200,8 @@ claude mcp add --transport stdio mobile -- cmd /c npx claude-in-mobile@latest
 ### Desktop
 - macOS (Windows/Linux support planned)
 - JDK 17+ for building the Desktop companion
-- Compose Multiplatform desktop application to test
+- Any macOS application (SwiftUI, AppKit, Electron, Compose) — launch by `bundleId`, `.app` path, or attach by PID
+- Accessibility permissions required: System Settings → Privacy & Security → Accessibility
 
 ### Aurora OS
 - audb CLI installed and in PATH (`cargo install audb-client`)
@@ -209,7 +210,7 @@ claude mcp add --transport stdio mobile -- cmd /c npx claude-in-mobile@latest
 
 ## Available Tools
 
-v3.4.0 consolidates tools into **8 core meta-tools** + **3 optional modules**. Each meta-tool uses an `action` parameter to select the operation. All v3.0/v3.1 tool names still work as backward-compatible aliases.
+v3.7.0 provides **8 core meta-tools** + **3 optional modules**. Each meta-tool uses an `action` parameter to select the operation. All v3.0/v3.1 tool names still work as backward-compatible aliases.
 
 ### Core Meta-Tools (always loaded)
 
@@ -231,7 +232,7 @@ These modules are hidden by default to save tokens. They auto-enable when you ca
 | Module | Actions | Description |
 |--------|---------|-------------|
 | `browser` | `open`, `close`, `list_sessions`, `navigate`, `click`, `fill`, `fill_form`, `press_key`, `snapshot`, `screenshot`, `evaluate`, `wait_for_selector`, `clear_session` | Chrome/Chromium automation via CDP |
-| `desktop` | `launch`, `stop`, `windows`, `focus`, `resize`, `clipboard_get`, `clipboard_set`, `performance`, `monitors` | Compose Desktop app testing |
+| `desktop` | `launch`, `stop`, `windows`, `focus`, `resize`, `clipboard_get`, `clipboard_set`, `performance`, `monitors` | Desktop app testing (any macOS app: SwiftUI, AppKit, Electron, Compose) |
 | `store` | `upload`, `set_notes`, `submit`, `get_releases`, `discard`, `promote`, `halt_rollout`, `get_versions` | Google Play, Huawei AppGallery, RuStore publishing |
 
 ### Flow Tools
