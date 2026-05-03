@@ -1,6 +1,7 @@
 import { execSync, exec, execFile } from "child_process";
 import { promisify } from "util";
 import { classifyAdbError } from "../errors.js";
+import { resolveAdbPath, quoteAdbPath } from "./resolver.js";
 import { validatePackageName, validatePermission, validateDeviceId, validateLogTag, validateLogTimestamp } from "../utils/sanitize.js";
 
 const execAsyncCmd = promisify(exec);
@@ -8,6 +9,11 @@ const execFileAsync = promisify(execFile);
 
 const EXEC_TIMEOUT_MS = 15_000;      // 15s for text commands
 const EXEC_RAW_TIMEOUT_MS = 30_000;  // 30s for binary (screenshots)
+
+/** Resolved adb binary path, quoted for safe shell inclusion. Throws if adb not found. */
+function adbCmd(): string {
+  return quoteAdbPath(resolveAdbPath());
+}
 
 export interface Device {
   id: string;
@@ -33,7 +39,7 @@ export class AdbClient {
    * Execute ADB command and return stdout as string
    */
   exec(command: string): string {
-    const fullCommand = `adb ${this.deviceFlag} ${command}`;
+    const fullCommand = `${adbCmd()} ${this.deviceFlag} ${command}`;
     try {
       return execSync(fullCommand, {
         encoding: "utf-8",
@@ -53,7 +59,7 @@ export class AdbClient {
    * Execute ADB command and return raw bytes (for screenshots)
    */
   execRaw(command: string): Buffer {
-    const fullCommand = `adb ${this.deviceFlag} ${command}`;
+    const fullCommand = `${adbCmd()} ${this.deviceFlag} ${command}`;
     try {
       return execSync(fullCommand, {
         timeout: EXEC_RAW_TIMEOUT_MS,
@@ -72,7 +78,7 @@ export class AdbClient {
    * Execute ADB command async (non-blocking)
    */
   async execAsync(command: string): Promise<string> {
-    const fullCommand = `adb ${this.deviceFlag} ${command}`;
+    const fullCommand = `${adbCmd()} ${this.deviceFlag} ${command}`;
     try {
       const { stdout } = await execAsyncCmd(fullCommand, {
         timeout: EXEC_TIMEOUT_MS,
@@ -95,9 +101,10 @@ export class AdbClient {
     const args = this.deviceId
       ? ["-s", this.deviceId, ...command.split(/\s+/)]
       : command.split(/\s+/);
-    const fullCommand = `adb ${args.join(" ")}`;
+    const adbBin = resolveAdbPath();
+    const fullCommand = `${quoteAdbPath(adbBin)} ${args.join(" ")}`;
     try {
-      const { stdout } = await execFileAsync("adb", args, {
+      const { stdout } = await execFileAsync(adbBin, args, {
         timeout: EXEC_RAW_TIMEOUT_MS,
         maxBuffer: 50 * 1024 * 1024,
         encoding: "buffer" as BufferEncoding,
@@ -116,7 +123,7 @@ export class AdbClient {
    * Get list of connected devices
    */
   getDevices(): Device[] {
-    const output = execSync("adb devices -l", { encoding: "utf-8", timeout: EXEC_TIMEOUT_MS });
+    const output = execSync(`${adbCmd()} devices -l`, { encoding: "utf-8", timeout: EXEC_TIMEOUT_MS });
     const lines = output.split("\n").slice(1); // Skip header
 
     return lines

@@ -223,12 +223,26 @@ export class DeviceManager {
 
   // ============ Device Management ============
 
-  getAllDevices(): Device[] {
+  /**
+   * Aggregate device list across adapters. Captures structural errors (e.g.
+   * ADB_NOT_INSTALLED) per-platform so callers can surface root cause instead of
+   * an empty list. Returns devices found and a parallel `errors` array.
+   */
+  getAllDevicesWithErrors(): { devices: Device[]; errors: { platform: Platform; error: Error }[] } {
     const devices: Device[] = [];
-    for (const adapter of this.adapters.values()) {
-      devices.push(...adapter.listDevices());
+    const errors: { platform: Platform; error: Error }[] = [];
+    for (const [platform, adapter] of this.adapters.entries()) {
+      try {
+        devices.push(...adapter.listDevices());
+      } catch (e) {
+        errors.push({ platform, error: e instanceof Error ? e : new Error(String(e)) });
+      }
     }
-    return devices;
+    return { devices, errors };
+  }
+
+  getAllDevices(): Device[] {
+    return this.getAllDevicesWithErrors().devices;
   }
 
   getDevices(platform?: Platform): Device[] {
@@ -255,7 +269,7 @@ export class DeviceManager {
       };
     }
 
-    const devices = this.getAllDevices();
+    const { devices, errors } = this.getAllDevicesWithErrors();
 
     // Find device by ID
     let device = devices.find((d) => d.id === deviceId);
@@ -270,6 +284,12 @@ export class DeviceManager {
     }
 
     if (!device) {
+      // If a target platform's adapter failed structurally (e.g. ADB_NOT_INSTALLED), surface
+      // that — `Device not found` is misleading when the real cause is the toolchain itself.
+      const relevant = platform
+        ? errors.find((e) => e.platform === platform)
+        : errors[0];
+      if (relevant) throw relevant.error;
       throw new Error(`Device not found: ${deviceId}`);
     }
 

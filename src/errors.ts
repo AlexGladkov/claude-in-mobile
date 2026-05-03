@@ -22,11 +22,14 @@ export class DeviceNotFoundError extends MobileError {
 }
 
 export class AdbNotInstalledError extends MobileError {
-  constructor() {
-    super(
-      "ADB is not installed or not in PATH.\n\nInstall Android SDK or run: brew install android-platform-tools",
-      "ADB_NOT_INSTALLED"
-    );
+  constructor(triedPaths?: string[]) {
+    const base = "ADB is not installed or not found.";
+    const install = "Install Android SDK or run: brew install android-platform-tools (macOS) / install Android Studio (Windows/Linux)";
+    const hint = "Or set ADB_PATH=/path/to/adb to point at a specific binary.";
+    const probed = triedPaths && triedPaths.length > 0
+      ? `\n\nProbed locations:\n${triedPaths.join("\n")}`
+      : "";
+    super(`${base}\n\n${install}\n${hint}${probed}`, "ADB_NOT_INSTALLED");
   }
 }
 
