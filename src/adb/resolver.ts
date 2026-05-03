@@ -48,11 +48,23 @@ function buildCandidates(): { path: string; source: string }[] {
   // 3. Platform defaults — where Android Studio installs the SDK by default
   const home = homedir();
   if (isWin) {
-    // %LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe
+    // %LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe — Android Studio default (per-user)
     const localAppData = process.env.LOCALAPPDATA ?? join(home, "AppData", "Local");
     candidates.push({
       path: join(localAppData, "Android", "Sdk", "platform-tools", adbBinary),
       source: "LOCALAPPDATA/Android/Sdk",
+    });
+    // Visual Studio's bundled Android SDK (Xamarin/MAUI workload installs here, system-wide).
+    // Different folder naming from Android Studio: "android-sdk" (lowercase + hyphen) vs "Sdk".
+    const programFilesX86 = process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
+    candidates.push({
+      path: join(programFilesX86, "Android", "android-sdk", "platform-tools", adbBinary),
+      source: "Program Files (x86)/Android/android-sdk (Visual Studio)",
+    });
+    const programFiles = process.env.ProgramFiles ?? "C:\\Program Files";
+    candidates.push({
+      path: join(programFiles, "Android", "android-sdk", "platform-tools", adbBinary),
+      source: "Program Files/Android/android-sdk",
     });
   } else if (platform() === "darwin") {
     candidates.push({

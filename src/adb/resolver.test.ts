@@ -85,6 +85,26 @@ describe("resolveAdbPath", () => {
     expect(resolveAdbPath()).toBe("adb");
   });
 
+  if (isWin) {
+    it("detects Visual Studio bundled SDK at Program Files (x86)", () => {
+      const programFilesX86 = process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
+      const expected = join(programFilesX86, "Android", "android-sdk", "platform-tools", adbBin);
+      mockExists.mockImplementation((p) => p === expected);
+
+      expect(resolveAdbPath()).toBe(expected);
+    });
+
+    it("prefers ANDROID_HOME over Visual Studio default location", () => {
+      process.env.ANDROID_HOME = "C:\\custom-sdk";
+      const customAdb = join("C:\\custom-sdk", "platform-tools", adbBin);
+      const programFilesX86 = process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
+      const vsAdb = join(programFilesX86, "Android", "android-sdk", "platform-tools", adbBin);
+      mockExists.mockImplementation((p) => p === customAdb || p === vsAdb);
+
+      expect(resolveAdbPath()).toBe(customAdb);
+    });
+  }
+
   it("throws AdbNotInstalledError listing all probed paths when nothing works", () => {
     mockExists.mockReturnValue(false);
     mockExec.mockImplementation(() => {
