@@ -18,6 +18,7 @@ import type {
 } from "./platform-adapter.js";
 import type { Device } from "../device-manager.js";
 import { AdbClient } from "../adb/client.js";
+import { MobileError } from "../errors.js";
 import { compressScreenshot, type CompressOptions } from "../utils/image.js";
 
 export class AndroidAdapter
@@ -49,7 +50,12 @@ export class AndroidAdapter
         state: d.state,
         isSimulator: d.id.startsWith("emulator"),
       }));
-    } catch {
+    } catch (e) {
+      // Propagate when the cause is structural (adb not installed) — silently swallowing
+      // sends users hunting for cable/auth problems when the real fix is `ADB_PATH=...`.
+      // Transient failures (offline daemon, permission denied) still return [] so callers
+      // can degrade gracefully.
+      if (e instanceof MobileError && e.code === "ADB_NOT_INSTALLED") throw e;
       return [];
     }
   }
