@@ -184,8 +184,20 @@ claude mcp add --transport stdio mobile -- cmd /c npx claude-in-mobile@latest
 ## Requirements
 
 ### Android
-- ADB installed and in PATH
+- ADB installed (PATH or auto-discovered SDK location — see below)
 - Connected Android device (USB debugging enabled) or emulator
+
+**ADB binary discovery** — tried in this order:
+1. `ADB_PATH` env var (explicit override, e.g. `ADB_PATH=/path/to/adb`)
+2. `ANDROID_HOME/platform-tools/adb[.exe]`
+3. `ANDROID_SDK_ROOT/platform-tools/adb[.exe]`
+4. Android Studio default install location:
+   - **Windows:** `%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe`
+   - **macOS:** `~/Library/Android/sdk/platform-tools/adb`
+   - **Linux:** `~/Android/Sdk/platform-tools/adb`
+5. `adb` from `PATH` (works out of the box for `brew install android-platform-tools`)
+
+If none of these resolve, `device(action:'list')` throws `[ADB_NOT_INSTALLED]` listing the paths it tried — set `ADB_PATH` to point at your binary.
 
 ### iOS
 - macOS with Xcode installed
