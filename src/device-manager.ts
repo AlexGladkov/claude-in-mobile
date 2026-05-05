@@ -29,7 +29,7 @@ import { IosClient } from "./ios/client.js";
 import { DesktopClient } from "./desktop/client.js";
 import type { AuroraClient } from "./aurora/index.js";
 import type { CompressOptions } from "./utils/image.js";
-import type { LaunchOptions } from "./desktop/types.js";
+import type { RawLaunchOptions } from "./desktop/types.js";
 import { WebViewInspector } from "./adb/webview.js";
 
 export type Platform = "android" | "ios" | "desktop" | "aurora" | "browser";
@@ -153,24 +153,22 @@ export class DeviceManager {
 
   // ============ Desktop Specific ============
 
-  async launchDesktopApp(options: LaunchOptions): Promise<string> {
+  async launchDesktopApp(options: RawLaunchOptions): Promise<string> {
     const desktop = this.adapters.get("desktop");
     if (!desktop || !(desktop instanceof DesktopAdapter)) {
       throw new Error("Desktop adapter is not available in this configuration.");
     }
     await desktop.launch(options);
     this.activeTarget = "desktop";
-    const client = desktop.getClient();
+    if (options.mode === "bundle") {
+      const target = options.bundleId ?? options.appPath ?? "app";
+      return `Desktop automation started. App launched: ${target}`;
+    }
+    if (options.mode === "attach" && options.pid !== undefined) {
+      return `Desktop automation started. Attached to process PID ${options.pid}`;
+    }
     if (options.projectPath) {
       return `Desktop automation started. Also launching app from ${options.projectPath}`;
-    }
-    if (options.bundleId || options.appPath) {
-      const app = options.bundleId || options.appPath;
-      const pid = client.targetPid;
-      return `Desktop automation started. Launched native app: ${app}${pid ? ` (PID: ${pid})` : ""}`;
-    }
-    if (options.pid) {
-      return `Desktop automation started. Attached to process PID: ${options.pid}`;
     }
     return "Desktop automation started (companion only)";
   }

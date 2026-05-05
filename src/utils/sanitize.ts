@@ -97,24 +97,33 @@ export function validateJvmArg(arg: string): void {
   }
 }
 
-// B1: Validate macOS bundle identifier — alphanumeric, dots, hyphens only
-const BUNDLE_ID_RE = /^[a-zA-Z][a-zA-Z0-9\-.]{1,254}$/;
-
-export function validateBundleId(bundleId: string): void {
-  if (!BUNDLE_ID_RE.test(bundleId)) {
-    throw new MobileError(
-      `Invalid bundle ID: "${bundleId}". Must be alphanumeric with dots/hyphens (e.g. "com.apple.TextEdit").`,
-      "INVALID_BUNDLE_ID"
-    );
-  }
-}
-
 // H1: Block path traversal
 export function validatePath(path: string, label: string): void {
   if (path.includes("..")) {
     throw new MobileError(
       `Path traversal blocked in ${label}: paths must not contain ".."`,
       "PATH_TRAVERSAL_BLOCKED"
+    );
+  }
+}
+
+// C8: Validate macOS bundle ID (reverse-DNS format)
+// Only [a-zA-Z0-9.-] allowed — safe to embed in AppleScript; passed via argv in practice.
+// Segments may start with a digit (Apple allows this in modern bundle IDs).
+// AppleScript injection prevention relies on this regex — do not relax without re-auditing.
+const BUNDLE_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9\-]*(\.[a-zA-Z0-9][a-zA-Z0-9\-]*){1,}$/;
+
+export function validateBundleId(id: string): void {
+  if (!id || id.length > 255) {
+    throw new MobileError(
+      `Invalid bundleId length: must be 1-255 characters`,
+      "INVALID_BUNDLE_ID"
+    );
+  }
+  if (!BUNDLE_ID_RE.test(id)) {
+    throw new MobileError(
+      `Invalid bundleId: "${id}". Expected reverse-DNS format (e.g. com.apple.TextEdit)`,
+      "INVALID_BUNDLE_ID"
     );
   }
 }

@@ -5,7 +5,7 @@
 import { execSync, spawn, ChildProcess } from "child_process";
 import * as path from "path";
 import * as fs from "fs";
-import type { GradleProject, LaunchOptions } from "./types.js";
+import type { GradleProject, RawLaunchOptions } from "./types.js";
 
 // Known desktop run task patterns
 const DESKTOP_TASK_PATTERNS = [
@@ -128,7 +128,7 @@ export class GradleLauncher {
    * Launch desktop app via Gradle
    * Returns the spawned process
    */
-  launch(options: LaunchOptions): ChildProcess {
+  launch(options: RawLaunchOptions): ChildProcess {
     const { projectPath, task, jvmArgs = [], env = {} } = options;
 
     if (!projectPath) {

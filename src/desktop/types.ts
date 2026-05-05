@@ -107,17 +107,28 @@ export interface KeyEventOptions {
   modifiers?: string[]; // "ctrl", "shift", "alt", "meta"
 }
 
-// Launch options
-export interface LaunchOptions {
-  // Gradle mode — launches Compose Desktop app via Gradle
+// Launch mode
+export type LaunchMode = "gradle" | "bundle" | "attach" | "companion-only";
+
+// Launch options — discriminated union enforcing mode-specific fields at the type level.
+// The bundle variant is an XOR: at least one of bundleId/appPath must be provided.
+export type LaunchOptions =
+  | { mode: "gradle"; projectPath: string; task?: string; jvmArgs?: string[]; env?: Record<string, string> }
+  | { mode: "bundle"; bundleId: string; appPath?: string; env?: Record<string, string> }
+  | { mode: "bundle"; bundleId?: string; appPath: string; env?: Record<string, string> }
+  | { mode: "attach"; pid: number }
+  | { mode: "companion-only" };
+
+// Flat legacy interface kept for DeviceManager.launchDesktopApp() and external callers.
+// Internally converted to LaunchOptions via normalizeLaunchOptions() in DesktopClient.
+export interface RawLaunchOptions {
+  mode?: LaunchMode;
   projectPath?: string;
-  task?: string; // Gradle task, auto-detected if not specified
+  task?: string;
   jvmArgs?: string[];
   env?: Record<string, string>;
-  // Native mode — launches macOS .app by bundle ID or path
-  bundleId?: string;   // e.g. "com.apple.TextEdit"
-  appPath?: string;    // e.g. "/Applications/TextEdit.app"
-  // Attach mode — attach to running process by PID
+  bundleId?: string;
+  appPath?: string;
   pid?: number;
 }
 
@@ -160,10 +171,11 @@ export type DesktopStatus = "stopped" | "starting" | "running" | "crashed";
 
 export interface DesktopState {
   status: DesktopStatus;
-  pid?: number;
+  pid?: number;          // companion process PID
   projectPath?: string;
   crashCount: number;
   lastError?: string;
+  targetPid: number | null;   // native app PID set by bundle/attach mode; null when not set
 }
 
 // Clipboard types

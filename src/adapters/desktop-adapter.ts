@@ -17,7 +17,7 @@ import type {
 } from "./platform-adapter.js";
 import type { Device } from "../device-manager.js";
 import { DesktopClient } from "../desktop/client.js";
-import type { LaunchOptions } from "../desktop/types.js";
+import type { RawLaunchOptions } from "../desktop/types.js";
 
 export class DesktopAdapter implements CorePlatformAdapter, AppManagementAdapter, ShellAdapter {
   readonly platform = "desktop" as const;
@@ -81,7 +81,7 @@ export class DesktopAdapter implements CorePlatformAdapter, AppManagementAdapter
     return this.client.getState();
   }
 
-  async launch(options: LaunchOptions): Promise<void> {
+  async launch(options: RawLaunchOptions): Promise<void> {
     await this.client.launch(options);
   }
 
