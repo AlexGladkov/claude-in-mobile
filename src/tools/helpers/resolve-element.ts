@@ -20,6 +20,8 @@ export interface ResolvedCoordinates {
   fromRawArgs: boolean;
   /** If iOS element-based tap was performed directly (no coordinates needed) */
   iosTapDone?: boolean;
+  /** WDA element ID — available when rect lookup failed but element was found */
+  elementId?: string;
 }
 
 /**
@@ -74,14 +76,14 @@ export async function resolveElementCoordinates(
           fromRawArgs: false,
         };
       }
-      // Fallback: tap element directly (if rect unavailable)
-      await iosClient.tapElement(element.ELEMENT);
+      // Rect unavailable — return element ID so callers can act on element directly
       return {
         x: 0,
         y: 0,
         description: String(args.label || args.text),
         fromRawArgs: false,
         iosTapDone: true,
+        elementId: element.ELEMENT,
       };
     } catch (_error: any) {
       throw new ElementNotFoundError(String(args.label || args.text));

@@ -34,9 +34,17 @@ export const interactionTools: ToolDefinition[] = [
         throw new ValidationError("Please provide x,y coordinates, text, resourceId, label, or index.");
       }
 
-      // iOS element-based tap already performed by resolveElementCoordinates
+      // iOS element-based resolution — tap via element ID when rect was unavailable
       if (resolved.iosTapDone) {
-        return { text: `Tapped element: ${resolved.description}` };
+        if (resolved.elementId) {
+          const iosClient = ctx.deviceManager.getIosClient();
+          await iosClient.tapElement(resolved.elementId);
+        }
+        let result = `Tapped element: ${resolved.description}`;
+        if (getBoolean(args, "hints", true)) {
+          result += await ctx.generateActionHints(getString(args, "platform"));
+        }
+        return { text: result };
       }
 
       let { x, y } = resolved;
@@ -102,12 +110,13 @@ export const interactionTools: ToolDefinition[] = [
   {
     tool: {
       name: "input_long_press",
-      description: "Long press at coordinates or on element by text",
+      description: "Long press at coordinates or on element by text/label",
       inputSchema: {
         type: "object",
         properties: {
           x: { type: "number", description: "X coordinate" },
           y: { type: "number", description: "Y coordinate" },
+          label: { type: "string", description: "iOS only: Accessibility label (most reliable)" },
           text: { type: "string", description: "Find element by text (Android only)" },
           duration: { type: "number", description: "Duration in milliseconds (default: 1000)", default: 1000 },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
@@ -122,7 +131,25 @@ export const interactionTools: ToolDefinition[] = [
       const resolved = await resolveElementCoordinates(args, ctx, currentPlatform);
 
       if (!resolved) {
-        throw new ValidationError("Please provide x,y coordinates or text.");
+        throw new ValidationError("Please provide x,y coordinates, text, or label.");
+      }
+
+      // iOS element-based long press via WDA actions on element coordinates
+      if (resolved.iosTapDone) {
+        if (resolved.elementId) {
+          // Use element center via WDA long press at (0,0) won't work — re-fetch rect or use coordinate-based approach
+          // Since element was found but rect failed, perform long press via WDA actions at element
+          const iosClient = ctx.deviceManager.getIosClient();
+          // Try getting rect one more time directly through WDA
+          const rect = await iosClient.getElementRect(resolved.elementId);
+          if (rect) {
+            const cx = Math.round(rect.x + rect.width / 2);
+            const cy = Math.round(rect.y + rect.height / 2);
+            await ctx.deviceManager.longPress(cx, cy, duration, platform);
+            return { text: `Long pressed element: ${resolved.description} at (${cx}, ${cy}) for ${duration}ms` };
+          }
+        }
+        throw new ValidationError(`Could not resolve coordinates for element: ${resolved.description}`);
       }
 
       let { x, y } = resolved;
