@@ -4,6 +4,7 @@
 //! to the appropriate handler in [`device`] or [`store`].
 
 mod device;
+mod setup;
 mod store;
 
 use anyhow::Result;
@@ -338,6 +339,9 @@ pub fn run(command: Commands) -> Result<()> {
         Commands::ResizeWindow { window_id, width, height, companion_path } => {
             device::resize_window(&window_id, width, height, companion_path.as_deref())
         }
+
+        // -- Setup commands ---------------------------------------------------
+        Commands::Setup { command } => setup::run(command),
 
         // -- Store commands ---------------------------------------------------
         Commands::Store { command } => store::google_play(command),
