@@ -109,9 +109,9 @@ export function validatePath(path: string, label: string): void {
 
 // C8: Validate macOS bundle ID (reverse-DNS format)
 // Only [a-zA-Z0-9.-] allowed — safe to embed in AppleScript; passed via argv in practice.
-// Segments may start with a digit (Apple allows this in modern bundle IDs).
+// First character of each segment must be a letter (reverse-DNS convention).
 // AppleScript injection prevention relies on this regex — do not relax without re-auditing.
-const BUNDLE_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9\-]*(\.[a-zA-Z0-9][a-zA-Z0-9\-]*){1,}$/;
+const BUNDLE_ID_RE = /^[a-zA-Z][a-zA-Z0-9\-]*(\.[a-zA-Z][a-zA-Z0-9\-]*){1,}$/;
 
 export function validateBundleId(id: string): void {
   if (!id || id.length > 255) {

@@ -182,8 +182,24 @@ export class WDAClient {
       throw new Error("No active WDA session");
     }
 
-    // WDA-specific endpoint: type into the currently focused element
-    await this.request("POST", `/session/${this.sessionId}/wda/keys`, {
+    // Try WDA-specific /wda/keys first (works on some WDA builds)
+    try {
+      await this.request("POST", `/session/${this.sessionId}/wda/keys`, {
+        value: text.split(""),
+      });
+      return;
+    } catch {
+      // Fall through to W3C active element setValue
+    }
+
+    // Fallback: W3C standard — find active/focused element and setValue
+    const activeEl = await this.request("GET", `/session/${this.sessionId}/element/active`);
+    const elementId = activeEl?.value?.ELEMENT ?? activeEl?.value?.element ?? activeEl?.ELEMENT;
+    if (!elementId) {
+      throw new Error("No focused element found for text input. Tap a text field first.");
+    }
+    await this.request("POST", `/session/${this.sessionId}/element/${elementId}/value`, {
+      text,
       value: text.split(""),
     });
   }

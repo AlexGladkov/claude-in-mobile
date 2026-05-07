@@ -261,8 +261,8 @@ end tell"#,
 pub fn input_text(text: &str, simulator: Option<&str>) -> Result<()> {
     let udid = get_simulator_udid(simulator)?;
 
-    // Try simctl io type first
-    let output = simctl_exec(&["io", &udid, "type", text]);
+    // Try simctl io sendKeyboardInput (iOS 14+ simulator)
+    let output = simctl_exec(&["io", &udid, "sendKeyboardInput", text]);
 
     if let Ok(out) = output {
         if out.status.success() {

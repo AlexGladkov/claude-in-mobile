@@ -1,5 +1,6 @@
 import type { ToolDefinition } from "./registry.js";
 import type { ToolContext } from "./context.js";
+import type { LaunchMode } from "../desktop/types.js";
 import { validatePath, validateJvmArg, validateBundleId } from "../utils/sanitize.js";
 
 export const desktopTools: ToolDefinition[] = [
@@ -38,9 +39,6 @@ export const desktopTools: ToolDefinition[] = [
       if (args.appPath) {
         validatePath(args.appPath as string, "appPath");
       }
-      if (args.bundleId) {
-        validateBundleId(args.bundleId as string);
-      }
       if (args.pid !== undefined && (typeof args.pid !== "number" || args.pid <= 0 || !Number.isInteger(args.pid))) {
         return { text: "Error: pid must be a positive integer" };
       }
@@ -51,7 +49,7 @@ export const desktopTools: ToolDefinition[] = [
       }
 
       const result = await ctx.deviceManager.launchDesktopApp({
-        mode: mode as any,
+        mode: mode as LaunchMode | undefined,
         projectPath: args.projectPath as string | undefined,
         task: args.task as string | undefined,
         jvmArgs: args.jvmArgs as string[] | undefined,
@@ -97,7 +95,7 @@ export const desktopTools: ToolDefinition[] = [
       let result = "Desktop windows:\n";
       for (const w of windowInfo.windows) {
         const focused = w.focused ? " [FOCUSED]" : "";
-        const pid = (w as any).processId ? ` PID:${(w as any).processId}` : "";
+        const pid = w.processId ? ` PID:${w.processId}` : "";
         result += `  • ${w.id} - ${w.title}${focused}${pid} (${w.bounds.width}x${w.bounds.height})\n`;
       }
       return { text: result.trim() };

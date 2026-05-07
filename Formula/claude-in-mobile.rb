@@ -1,7 +1,7 @@
 class ClaudeInMobile < Formula
   desc "Fast native CLI for mobile device automation (Android/iOS/Aurora/Desktop)"
   homepage "https://github.com/AlexGladkov/claude-in-mobile"
-  version "3.7.0"
+  version "3.8.0"
   license "MIT"
 
   on_macos do
