@@ -755,6 +755,9 @@ pub enum Commands {
         #[command(subcommand)]
         command: RuStoreCommands,
     },
+
+    /// Check all tool dependencies and print green/red status for each platform
+    Doctor,
 }
 
 // -- Setup subcommands --------------------------------------------------------

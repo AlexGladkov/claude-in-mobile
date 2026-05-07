@@ -4,6 +4,7 @@
 //! to the appropriate handler in [`device`] or [`store`].
 
 mod device;
+mod doctor;
 mod setup;
 mod store;
 
@@ -347,5 +348,8 @@ pub fn run(command: Commands) -> Result<()> {
         Commands::Store { command } => store::google_play(command),
         Commands::Huawei { command } => store::huawei(command),
         Commands::Rustore { command } => store::rustore(command),
+
+        // -- Doctor -----------------------------------------------------------
+        Commands::Doctor => doctor::run(),
     }
 }
