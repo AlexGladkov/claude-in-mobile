@@ -4,6 +4,7 @@
  */
 
 export class MobileError extends Error {
+  retryInfo?: string;
   constructor(message: string, public readonly code: string) {
     super(message);
     this.name = this.constructor.name;

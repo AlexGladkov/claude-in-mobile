@@ -18,6 +18,7 @@ import type {
 } from "./platform-adapter.js";
 import type { Device } from "../device-manager.js";
 import { IosClient } from "../ios/client.js";
+import { MobileError } from "../errors.js";
 import { compressScreenshot, type CompressOptions } from "../utils/image.js";
 
 export class IosAdapter
@@ -49,7 +50,8 @@ export class IosAdapter
         state: d.state,
         isSimulator: d.isSimulator,
       }));
-    } catch {
+    } catch (e) {
+      if (e instanceof MobileError && e.code === "SIMCTL_NOT_INSTALLED") throw e;
       return [];
     }
   }
@@ -106,7 +108,7 @@ export class IosAdapter
   }
 
   async pressKey(key: string): Promise<void> {
-    this.client.pressKey(key);
+    await this.client.pressKey(key);
   }
 
   // ============ Screenshot ============

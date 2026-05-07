@@ -123,8 +123,7 @@ export class GooglePlayClient extends AbstractStoreClient {
         "Content-Type": "application/octet-stream",
         "Content-Length": String(fileSize),
       },
-      // @ts-ignore — duplex required for streaming body in Node.js fetch
-      duplex: "half",
+      duplex: "half" as const,
       body: Readable.toWeb(createReadStream(filePath)),
     });
 

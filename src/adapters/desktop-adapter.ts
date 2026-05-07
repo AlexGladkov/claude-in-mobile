@@ -17,7 +17,7 @@ import type {
 } from "./platform-adapter.js";
 import type { Device } from "../device-manager.js";
 import { DesktopClient } from "../desktop/client.js";
-import type { RawLaunchOptions } from "../desktop/types.js";
+import type { RawLaunchOptions, UiHierarchy } from "../desktop/types.js";
 
 export class DesktopAdapter implements CorePlatformAdapter, AppManagementAdapter, ShellAdapter {
   readonly platform = "desktop" as const;
@@ -241,7 +241,7 @@ export class DesktopAdapter implements CorePlatformAdapter, AppManagementAdapter
 /**
  * Format desktop UI hierarchy as text
  */
-function formatDesktopHierarchy(hierarchy: any): string {
+function formatDesktopHierarchy(hierarchy: UiHierarchy): string {
   const lines: string[] = [];
 
   lines.push(`Scale Factor: ${hierarchy.scaleFactor}`);

@@ -120,7 +120,7 @@ async function handleTool(name: string, args: Record<string, unknown>, depth: nu
       if (!config || attempt >= config.maxAttempts) {
         // Attach retry count info to error for the catch block in CallToolRequestSchema
         if (config && error instanceof MobileError) {
-          (error as any)._retryInfo = `Retried: ${attempt}/${config.maxAttempts}`;
+          error.retryInfo = `Retried: ${attempt}/${config.maxAttempts}`;
         }
         throw error;
       }
@@ -433,7 +433,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const recoveryBlock = recoveryHints.length > 0
       ? `\n[RECOVERY: ${JSON.stringify(recoveryHints)}]`
       : "";
-    const retryInfo = (error as any)?._retryInfo ? `\n${(error as any)._retryInfo}` : "";
+    const retryInfo = error instanceof MobileError && error.retryInfo ? `\n${error.retryInfo}` : "";
     return {
       content: [
         {

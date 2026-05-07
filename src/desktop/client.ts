@@ -456,7 +456,16 @@ export class DesktopClient extends EventEmitter {
         stdio: ["pipe", "pipe", "pipe"],
         env: {
           ...process.env,
-          JAVA_HOME: process.env.JAVA_HOME || execSync("/usr/libexec/java_home -v 21 2>/dev/null || /usr/libexec/java_home 2>/dev/null || echo ''").toString().trim(),
+          JAVA_HOME: process.env.JAVA_HOME || (() => {
+            if (process.platform !== "darwin") return "";
+            try {
+              return execFileSync("/usr/libexec/java_home", ["-v", "21"], { encoding: "utf-8", timeout: 3000 }).trim();
+            } catch {
+              try {
+                return execFileSync("/usr/libexec/java_home", [], { encoding: "utf-8", timeout: 3000 }).trim();
+              } catch { return ""; }
+            }
+          })(),
         },
       });
       this.state.pid = this.process.pid;
@@ -955,6 +964,3 @@ export class DesktopClient extends EventEmitter {
     throw new Error("Shell commands not supported for desktop. Use native APIs.");
   }
 }
-
-// Export singleton instance
-export const desktopClient = new DesktopClient();
