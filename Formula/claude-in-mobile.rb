@@ -7,11 +7,11 @@ class ClaudeInMobile < Formula
   on_macos do
     on_arm do
       url "https://github.com/AlexGladkov/claude-in-mobile/releases/download/v#{version}/claude-in-mobile-#{version}-darwin-arm64.tar.gz"
-      sha256 "c293df2a0b5558c1b9c63a5bb42fea25514dfc4d003f3c7d089b77e1b841577f"
+      sha256 "6c5340c8f7e7c9ba50bf5a6836a9da263d0fe16f115461f1d6cf6e9b9b10579b"
     end
     on_intel do
       url "https://github.com/AlexGladkov/claude-in-mobile/releases/download/v#{version}/claude-in-mobile-#{version}-darwin-x86_64.tar.gz"
-      sha256 "fc9d0df6009dac9ecdc24e1c99eec46e40b88a9c9bbe4521c83c5951230c3d46"
+      sha256 "38d727b2e00992c9e4e2aff71fa2db4bcf4ea49d37abfe7600e82384e3092c94"
     end
   end
 
