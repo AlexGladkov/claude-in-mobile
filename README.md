@@ -21,6 +21,19 @@ Control your Android phone, emulator, iOS Simulator, Desktop applications, or Au
 - **Store management** — Upload builds to Google Play, Huawei AppGallery, and RuStore (optional module)
 - **Desktop support** — Test any macOS app (SwiftUI, AppKit, Electron, Compose) with window management, clipboard, and performance metrics
 
+## Quality Engineering
+
+Advanced testing and monitoring capabilities built into Claude Mobile:
+
+| Feature | Description | Usage |
+|---------|-------------|-------|
+| **Accessibility Auditing** | WCAG 2.2 compliance checks: missing labels, insufficient touch targets (48px minimum), focus order validation, duplicate descriptions | `accessibility(action:'audit')` |
+| **Visual Regression Testing** | Baseline screenshot capture and pixel-level diff detection for detecting unintended visual changes | `visual(action:'baseline_save')`, `visual(action:'compare')` |
+| **Test Scenario Recorder** | Record user interactions (taps, swipes, text input) and replay them without writing code. No-code test creation | `recorder(action:'start')`, `recorder(action:'stop')`, `recorder(action:'play')` |
+| **Multi-Device Sync** | Barrier-based synchronization for coordinated parallel testing across multiple devices. Ensures all devices reach checkpoints simultaneously | `sync(action:'create')`, `sync(action:'barrier')` |
+| **App Autopilot** | Autonomous app exploration using BFS/DFS strategies with self-healing locators. Auto-adapts to UI changes | `autopilot(action:'explore')` |
+| **Performance Monitor** | Real-time memory, CPU, and FPS tracking during test execution with per-operation snapshots | `performance(action:'start')`, `performance(action:'snapshot')` |
+
 ## Installation
 
 ### Native CLI via Homebrew (macOS)
@@ -28,6 +41,12 @@ Control your Android phone, emulator, iOS Simulator, Desktop applications, or Au
 ```bash
 brew tap AlexGladkov/claude-in-mobile https://github.com/AlexGladkov/claude-in-mobile
 brew install claude-in-mobile
+```
+
+After installation, verify all dependencies are configured:
+
+```bash
+claude-in-mobile doctor    # Check ADB, Xcode, WebDriverAgent, and other requirements
 ```
 
 The CLI wraps all device automation tools plus store management (Google Play, Huawei AppGallery, RuStore):
