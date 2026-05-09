@@ -8,12 +8,20 @@ export const interactionTools: ToolDefinition[] = [
   {
     tool: {
       name: "input_tap",
-      description: "Tap by coordinates, text, resourceId, label, or element index",
+      description:
+        "Tap by coordinates, text, resourceId, label, or element index.\n\n" +
+        "COORDINATE SPACE: raw x/y are interpreted in the **last captured screenshot's pixel space** and " +
+        "auto-scaled to device coordinates before dispatch. If no screen(action:'capture') has been called yet, " +
+        "the scale defaults to 1× (i.e., x/y are treated as device coords). The resolution from the most recent " +
+        "screenshot is used — capturing at preset='low' (270×480) then tapping with x/y from that image works " +
+        "transparently. Coordinates returned by ui(action:'find') and ui(action:'tree') are ALREADY device " +
+        "coordinates from uiautomator; passing them as raw x/y when a low-res screenshot is the most recent " +
+        "capture will OVER-SCALE them. Prefer index/text/resourceId for ui_*-sourced taps to avoid this pitfall.",
       inputSchema: {
         type: "object",
         properties: {
-          x: { type: "number", description: "X coordinate to tap" },
-          y: { type: "number", description: "Y coordinate to tap" },
+          x: { type: "number", description: "X coordinate (screenshot pixel space — see tool description)" },
+          y: { type: "number", description: "Y coordinate (screenshot pixel space — see tool description)" },
           text: { type: "string", description: "Android: Element text. iOS: Element name (less reliable than label)" },
           label: { type: "string", description: "iOS only: Accessibility label (most reliable)" },
           resourceId: { type: "string", description: "Find element with this resource ID and tap it (Android only)" },
@@ -67,12 +75,12 @@ export const interactionTools: ToolDefinition[] = [
   {
     tool: {
       name: "input_double_tap",
-      description: "Double tap by coordinates, text, resourceId, or index",
+      description: "Double tap by coordinates, text, resourceId, or index. Raw x/y are screenshot-space and auto-scaled to device coordinates — see input_tap description for full coordinate space rules.",
       inputSchema: {
         type: "object",
         properties: {
-          x: { type: "number", description: "X coordinate to tap" },
-          y: { type: "number", description: "Y coordinate to tap" },
+          x: { type: "number", description: "X coordinate (screenshot pixel space)" },
+          y: { type: "number", description: "Y coordinate (screenshot pixel space)" },
           text: { type: "string", description: "Find element by text and double tap it (Android only)" },
           resourceId: { type: "string", description: "Find element with this resource ID and double tap it (Android only)" },
           index: { type: "number", description: "Double tap element by index from ui(action:'tree') output (Android only)" },
@@ -110,12 +118,12 @@ export const interactionTools: ToolDefinition[] = [
   {
     tool: {
       name: "input_long_press",
-      description: "Long press at coordinates or on element by text/label",
+      description: "Long press at coordinates or on element by text/label. Raw x/y are screenshot-space and auto-scaled to device coordinates — see input_tap description for full coordinate space rules.",
       inputSchema: {
         type: "object",
         properties: {
-          x: { type: "number", description: "X coordinate" },
-          y: { type: "number", description: "Y coordinate" },
+          x: { type: "number", description: "X coordinate (screenshot pixel space)" },
+          y: { type: "number", description: "Y coordinate (screenshot pixel space)" },
           label: { type: "string", description: "iOS only: Accessibility label (most reliable)" },
           text: { type: "string", description: "Find element by text (Android only)" },
           duration: { type: "number", description: "Duration in milliseconds (default: 1000)", default: 1000 },
@@ -165,15 +173,15 @@ export const interactionTools: ToolDefinition[] = [
   {
     tool: {
       name: "input_swipe",
-      description: "Swipe by direction or custom coordinates",
+      description: "Swipe by direction or custom coordinates. Raw x1/y1/x2/y2 are screenshot-space and auto-scaled to device coordinates — see input_tap description for full coordinate space rules.",
       inputSchema: {
         type: "object",
         properties: {
           direction: { type: "string", enum: ["up", "down", "left", "right"], description: "Swipe direction" },
-          x1: { type: "number", description: "Start X (for custom swipe)" },
-          y1: { type: "number", description: "Start Y (for custom swipe)" },
-          x2: { type: "number", description: "End X (for custom swipe)" },
-          y2: { type: "number", description: "End Y (for custom swipe)" },
+          x1: { type: "number", description: "Start X (screenshot pixel space)" },
+          y1: { type: "number", description: "Start Y (screenshot pixel space)" },
+          x2: { type: "number", description: "End X (screenshot pixel space)" },
+          y2: { type: "number", description: "End Y (screenshot pixel space)" },
           duration: { type: "number", description: "Duration in ms (default: 300)", default: 300 },
           hints: { type: "boolean", description: "Return hints about what changed after the action (new/gone elements, suggestions). Eliminates need for follow-up screen(action:'capture')/ui(action:'tree').", default: true },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },

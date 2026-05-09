@@ -288,6 +288,17 @@ claude-in-mobile input android "hello world"
 claude-in-mobile ui-dump android | grep "Login"
 ```
 
+#### Coordinate space (raw `x`/`y` in tap / swipe / long_press)
+
+When you call an input tool with raw `x`/`y` (or `x1`/`y1`/`x2`/`y2` for swipe), the values are interpreted in **the most recent screenshot's pixel space** and auto-scaled to device coordinates before dispatch. The scale comes from the last `screen_capture` call: e.g., capture at `preset='low'` (270×480) on a 1080×2400 device sets a 4× factor, so `tap(135, 240)` becomes `tap(540, 960)` on the device.
+
+This is convenient for the common flow `screen_capture → reason about pixel → tap`, but has two gotchas worth knowing:
+
+- **Coordinates from `ui_find` / `ui_tree` are device coordinates**, not screenshot coordinates. They come from `uiautomator` which always reports in device space. If the most recent screenshot was at a low preset, passing those device coords as raw `x`/`y` will over-scale them. Prefer `index`, `text`, or `resourceId` for ui-sourced taps to avoid the issue entirely.
+- **No screenshot taken yet?** Then there's no scale stored, and raw `x`/`y` are passed through 1:1 as device coords.
+
+The cleanest mental model: *raw coords match whatever pixel space you're looking at on screen* (your last screenshot). For everything else, use the resolver fields (`index`, `text`, `resourceId`, `label`).
+
 ---
 
 ### iOS
