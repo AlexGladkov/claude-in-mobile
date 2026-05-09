@@ -2,7 +2,7 @@ import type { ToolDefinition } from "./registry.js";
 import type { ToolContext } from "./context.js";
 import type { Platform } from "../device-manager.js";
 import { truncateOutput } from "../utils/truncate.js";
-import { validateShellCommand, validateUrl, sanitizeForShell } from "../utils/sanitize.js";
+import { validateShellCommand, validateUrl, sanitizeForShell, validatePackageName } from "../utils/sanitize.js";
 
 export const systemTools: ToolDefinition[] = [
   {
@@ -135,6 +135,64 @@ export const systemTools: ToolDefinition[] = [
       const platform = args.platform as Platform | undefined;
       const result = ctx.deviceManager.clearLogs(platform);
       return { text: result };
+    },
+  },
+  {
+    tool: {
+      name: "system_pid_of",
+      description: "Get the PID of a running app process by package name (Android only). Returns 0 when the package is not running. Useful for verifying app launch / crash detection without parsing the full ps output.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          package: { type: "string", description: "Package name, e.g., com.android.settings" },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+        },
+        required: ["package"],
+      },
+    },
+    handler: async (args, ctx) => {
+      const platform = args.platform as Platform | undefined;
+      const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
+      if (currentPlatform !== "android") {
+        return { text: "system_pid_of is only available for Android." };
+      }
+      const pkg = args.package as string;
+      validatePackageName(pkg);
+      // pidof -s returns single PID (first match); empty output if not running.
+      // Package name is whitelist-validated, no shell injection vector.
+      const raw = ctx.deviceManager.shell(`pidof -s ${pkg}`, platform).trim();
+      const pid = raw === "" ? 0 : parseInt(raw, 10);
+      if (Number.isNaN(pid) || pid <= 0) {
+        return { text: `0 (not running)` };
+      }
+      return { text: `${pid}` };
+    },
+  },
+  {
+    tool: {
+      name: "system_is_running",
+      description: "Check whether an app process is currently running by package name (Android only). Returns 'true' or 'false'. Convenience wrapper around system_pid_of for quick assertions.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          package: { type: "string", description: "Package name, e.g., com.android.settings" },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+        },
+        required: ["package"],
+      },
+    },
+    handler: async (args, ctx) => {
+      const platform = args.platform as Platform | undefined;
+      const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
+      if (currentPlatform !== "android") {
+        return { text: "system_is_running is only available for Android." };
+      }
+      const pkg = args.package as string;
+      validatePackageName(pkg);
+      const raw = ctx.deviceManager.shell(`pidof -s ${pkg}`, platform).trim();
+      const pid = raw === "" ? 0 : parseInt(raw, 10);
+      const running = !Number.isNaN(pid) && pid > 0;
+      return { text: running ? `true (pid=${pid})` : "false" };
     },
   },
   {
