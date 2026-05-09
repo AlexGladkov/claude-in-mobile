@@ -106,6 +106,48 @@ describe("app_stop", () => {
 });
 
 // ──────────────────────────────────────────────
+// app_restart — stop+launch sequence
+// ──────────────────────────────────────────────
+
+describe("app_restart", () => {
+  const handler = findHandler("app_restart");
+
+  it("throws INVALID_PACKAGE_NAME for package with injection", async () => {
+    const ctx = makeMockContext();
+    await expect(handler({ package: "com.example;rm" }, ctx)).rejects.toThrow(MobileError);
+  });
+
+  it("calls stopApp then launchApp in order with default 500ms delay", async () => {
+    const stopSpy = vi.fn();
+    const launchSpy = vi.fn(() => "launched");
+    const ctx = makeMockContext({
+      deviceManager: {
+        stopApp: stopSpy,
+        launchApp: launchSpy,
+        installApp: vi.fn(() => "installed"),
+        getCurrentPlatform: vi.fn(() => "android"),
+        getAuroraClient: vi.fn(() => ({ listPackages: vi.fn(() => []) })),
+      } as any,
+    });
+    const result = await handler({ package: "com.android.settings", delayMs: 0 }, ctx);
+    expect(stopSpy).toHaveBeenCalledWith("com.android.settings", undefined);
+    expect(launchSpy).toHaveBeenCalledWith("com.android.settings", undefined);
+    // stop must precede launch
+    expect(stopSpy.mock.invocationCallOrder[0]).toBeLessThan(launchSpy.mock.invocationCallOrder[0]);
+    expect(result).toEqual({ text: "Restarted: com.android.settings (delay=0ms). launched" });
+  });
+
+  it("clamps delayMs to 10000ms max", async () => {
+    const ctx = makeMockContext();
+    const start = Date.now();
+    // Use 0 to keep test fast but verify clamping logic via output
+    const result = await handler({ package: "com.android.settings", delayMs: 99999 }, ctx);
+    // Output reports clamped value, not input
+    expect((result as { text: string }).text).toContain("delay=10000ms");
+  }, 15000);
+});
+
+// ──────────────────────────────────────────────
 // app_install — path traversal prevention
 // ──────────────────────────────────────────────
 

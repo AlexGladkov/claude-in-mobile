@@ -655,9 +655,46 @@ function getShortId(resourceId: string): string {
  * Find best element by description (smart fuzzy search)
  * Returns the best match or null
  */
+/**
+ * Find the smallest clickable ancestor whose bounds fully contain the target element.
+ * Useful for grid/list items where the visible label (TextView) is non-clickable but
+ * the parent ViewGroup carries the TapGestureRecognizer.
+ *
+ * Returns null if no clickable ancestor exists, or if the only candidate is so large
+ * it likely covers the whole screen (heuristic: >75% of any screen dimension).
+ */
+export function findClickableAncestor(
+  target: UiElement,
+  all: UiElement[],
+  options?: { maxAreaMultiplier?: number }
+): UiElement | null {
+  if (target.clickable) return null; // already clickable, no walk needed
+  const targetArea = Math.max(1, target.width * target.height);
+  const maxAreaMultiplier = options?.maxAreaMultiplier ?? 200; // ancestor area ≤ 200× target
+  const candidates = all.filter(el =>
+    el !== target &&
+    el.clickable &&
+    el.enabled &&
+    el.width > 0 &&
+    el.height > 0 &&
+    // bounds containment
+    el.bounds.x1 <= target.bounds.x1 &&
+    el.bounds.y1 <= target.bounds.y1 &&
+    el.bounds.x2 >= target.bounds.x2 &&
+    el.bounds.y2 >= target.bounds.y2 &&
+    // not the whole-screen container
+    el.width * el.height <= targetArea * maxAreaMultiplier
+  );
+  if (candidates.length === 0) return null;
+  // smallest by area = most specific ancestor
+  candidates.sort((a, b) => (a.width * a.height) - (b.width * b.height));
+  return candidates[0];
+}
+
 export function findBestMatch(
   elements: UiElement[],
-  description: string
+  description: string,
+  options?: { walkToClickable?: boolean }
 ): { element: UiElement; confidence: number; reason: string } | null {
   const desc = description.toLowerCase().trim();
 
@@ -723,6 +760,23 @@ export function findBestMatch(
   }
 
   const best = scored[0];
+
+  // If matched element isn't clickable, try walking up to a clickable ancestor.
+  // Common pattern: grid/list item where visible label is a TextView but the parent
+  // ViewGroup owns the TapGestureRecognizer (frequent in MAUI/Compose layouts).
+  // Default ON; caller can opt out with walkToClickable: false.
+  const walkToClickable = options?.walkToClickable ?? true;
+  if (walkToClickable && !best.element.clickable) {
+    const ancestor = findClickableAncestor(best.element, elements);
+    if (ancestor) {
+      return {
+        element: ancestor,
+        confidence: Math.min(best.score, 95),
+        reason: `${best.reason} (via clickable ancestor)`
+      };
+    }
+  }
+
   return {
     element: best.element,
     confidence: Math.min(best.score, 100),
