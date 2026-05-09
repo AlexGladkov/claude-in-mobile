@@ -151,12 +151,13 @@ export const uiTools: ToolDefinition[] = [
   {
     tool: {
       name: "ui_find_tap",
-      description: "Fuzzy tap by natural language element description (Android only)",
+      description: "Fuzzy tap by natural language element description (Android only). When the matched element is a non-clickable label (common in grid/list items where the parent ViewGroup owns the gesture), walks up to the smallest containing clickable ancestor by default — set walkToClickable=false to tap the matched element directly.",
       inputSchema: {
         type: "object",
         properties: {
           description: { type: "string", description: "Natural language description of the element to tap, e.g., 'submit button', 'settings', 'back'" },
           minConfidence: { type: "number", description: "Minimum confidence score (0-100) to accept a match (default: 30)", default: 30 },
+          walkToClickable: { type: "boolean", description: "If matched element is non-clickable (e.g., a TextView label), walk up to the smallest containing clickable ancestor. Default true. Set false to tap the matched element directly even if non-clickable (rare).", default: true },
         },
         required: ["description"],
       },
@@ -171,10 +172,11 @@ export const uiTools: ToolDefinition[] = [
 
       const description = requireString(args, "description");
       const minConfidence = getNumber(args, "minConfidence") ?? 30;
+      const walkToClickable = typeof args.walkToClickable === "boolean" ? args.walkToClickable : true;
 
       const { elements: tapElements } = await getUiElements(ctx, "android");
 
-      const match = findBestMatch(tapElements, description);
+      const match = findBestMatch(tapElements, description, { walkToClickable });
 
       if (!match) {
         return { text: `No element found matching "${description}". Try using ui(action:'tree') or ui(action:'analyze') to see available elements.` };

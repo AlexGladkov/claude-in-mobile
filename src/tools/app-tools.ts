@@ -66,6 +66,34 @@ export const appTools: ToolDefinition[] = [
   },
   {
     tool: {
+      name: "app_restart",
+      description: "Force-stop then re-launch an app. Common pattern for clearing in-memory state without uninstall.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          package: { type: "string", description: "Package name (Android) or bundle ID (iOS)" },
+          delayMs: { type: "number", description: "Delay between stop and launch in ms (default: 500). Useful so OS releases resources.", default: 500 },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+        },
+        required: ["package"],
+      },
+    },
+    handler: async (args, ctx) => {
+      const platform = args.platform as Platform | undefined;
+      const pkg = args.package as string;
+      validatePackageName(pkg);
+      const delayMs = Math.max(0, Math.min((args.delayMs as number) ?? 500, 10_000));
+
+      ctx.deviceManager.stopApp(pkg, platform);
+      if (delayMs > 0) {
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+      const launchResult = await ctx.deviceManager.launchApp(pkg, platform);
+      return { text: `Restarted: ${pkg} (delay=${delayMs}ms). ${launchResult}` };
+    },
+  },
+  {
+    tool: {
       name: "app_list",
       description: "List installed apps (Aurora only)",
       inputSchema: {
