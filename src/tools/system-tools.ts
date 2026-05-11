@@ -2,7 +2,7 @@ import type { ToolDefinition } from "./registry.js";
 import type { ToolContext } from "./context.js";
 import type { Platform } from "../device-manager.js";
 import { truncateOutput } from "../utils/truncate.js";
-import { validateShellCommand, validateUrl, sanitizeForShell } from "../utils/sanitize.js";
+import { validateShellCommand, validateUrl, sanitizeForShell, validatePackageName } from "../utils/sanitize.js";
 
 export const systemTools: ToolDefinition[] = [
   {
@@ -124,6 +124,90 @@ export const systemTools: ToolDefinition[] = [
   },
   {
     tool: {
+      name: "system_wait_log",
+      description: "Wait until a regex pattern appears in device logs. Polls the log buffer at regular intervals; returns the matching line(s) plus optional context, or times out. Use after an action to wait for a known marker (e.g., 'NavigationCompleted', a custom Debug.WriteLine tag) instead of fixed system_wait + system_logs polling. Android only.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          pattern: { type: "string", description: "JavaScript regex pattern matched against each log line. Inline flags like (?i) are NOT supported — use the caseSensitive option for case-insensitive matching." },
+          caseSensitive: { type: "boolean", description: "Case-sensitive matching (default: true). Set false for case-insensitive.", default: true },
+          timeoutMs: { type: "number", description: "Max wait in ms (default: 10000, max: 30000)", default: 10000 },
+          pollIntervalMs: { type: "number", description: "Polling interval in ms (default: 250, min: 100)", default: 250 },
+          contextLines: { type: "number", description: "Extra lines after each match to return for context (default: 0, max: 20)", default: 0 },
+          level: { type: "string", description: "Pre-filter by log level. Android: V/D/I/W/E/F" },
+          tag: { type: "string", description: "Pre-filter by tag (Android only)" },
+          package: { type: "string", description: "Pre-filter by package" },
+          clearFirst: { type: "boolean", description: "Clear log buffer before polling so only new lines are scanned. Default false (scan from current buffer head).", default: false },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+        },
+        required: ["pattern"],
+      },
+    },
+    handler: async (args, ctx) => {
+      const platform = args.platform as Platform | undefined;
+      const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
+      if (currentPlatform !== "android") {
+        return { text: "system_wait_log is only available for Android." };
+      }
+
+      const patternStr = args.pattern as string;
+      if (!patternStr || typeof patternStr !== "string") {
+        return { text: "pattern is required and must be a non-empty string." };
+      }
+      const caseSensitive = (args.caseSensitive as boolean) ?? true;
+      let regex: RegExp;
+      try {
+        regex = new RegExp(patternStr, caseSensitive ? "" : "i");
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { text: `Invalid regex pattern: ${msg}` };
+      }
+
+      const timeoutMs = Math.max(0, Math.min((args.timeoutMs as number) ?? 10000, 30_000));
+      const pollIntervalMs = Math.max(100, Math.min((args.pollIntervalMs as number) ?? 250, timeoutMs || 30_000));
+      const contextLines = Math.max(0, Math.min((args.contextLines as number) ?? 0, 20));
+      const clearFirst = (args.clearFirst as boolean) ?? false;
+
+      if (clearFirst) {
+        try { ctx.deviceManager.clearLogs(platform); } catch { /* best-effort */ }
+      }
+
+      const filterArgs = {
+        platform,
+        level: args.level as string | undefined,
+        tag: args.tag as string | undefined,
+        lines: 500,
+        package: args.package as string | undefined,
+      };
+      const seen = new Set<string>();
+      const start = Date.now();
+      while (true) {
+        let dump = "";
+        try { dump = ctx.deviceManager.getLogs(filterArgs); } catch { /* keep looping */ }
+        const lines = dump.split(/\r?\n/);
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
+          if (!line || seen.has(line)) continue;
+          seen.add(line);
+          if (regex.test(line)) {
+            const elapsed = Date.now() - start;
+            const context = contextLines > 0
+              ? lines.slice(i + 1, i + 1 + contextLines).filter(Boolean).join("\n")
+              : "";
+            return {
+              text: `Match found after ${elapsed}ms:\n${line}${context ? `\n${context}` : ""}`,
+            };
+          }
+        }
+        if (Date.now() - start >= timeoutMs) {
+          return { text: `Timeout after ${timeoutMs}ms — pattern not found. Scanned ${seen.size} unique lines.` };
+        }
+        await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+      }
+    },
+  },
+  {
+    tool: {
       name: "system_clear_logs",
       description: "Clear device log buffer (Android only)",
       inputSchema: {
@@ -135,6 +219,64 @@ export const systemTools: ToolDefinition[] = [
       const platform = args.platform as Platform | undefined;
       const result = ctx.deviceManager.clearLogs(platform);
       return { text: result };
+    },
+  },
+  {
+    tool: {
+      name: "system_pid_of",
+      description: "Get the PID of a running app process by package name (Android only). Returns 0 when the package is not running. Useful for verifying app launch / crash detection without parsing the full ps output.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          package: { type: "string", description: "Package name, e.g., com.android.settings" },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+        },
+        required: ["package"],
+      },
+    },
+    handler: async (args, ctx) => {
+      const platform = args.platform as Platform | undefined;
+      const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
+      if (currentPlatform !== "android") {
+        return { text: "system_pid_of is only available for Android." };
+      }
+      const pkg = args.package as string;
+      validatePackageName(pkg);
+      // pidof -s returns single PID (first match); empty output if not running.
+      // Package name is whitelist-validated, no shell injection vector.
+      const raw = ctx.deviceManager.shell(`pidof -s ${pkg}`, platform).trim();
+      const pid = raw === "" ? 0 : parseInt(raw, 10);
+      if (Number.isNaN(pid) || pid <= 0) {
+        return { text: `0 (not running)` };
+      }
+      return { text: `${pid}` };
+    },
+  },
+  {
+    tool: {
+      name: "system_is_running",
+      description: "Check whether an app process is currently running by package name (Android only). Returns 'true' or 'false'. Convenience wrapper around system_pid_of for quick assertions.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          package: { type: "string", description: "Package name, e.g., com.android.settings" },
+          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+        },
+        required: ["package"],
+      },
+    },
+    handler: async (args, ctx) => {
+      const platform = args.platform as Platform | undefined;
+      const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
+      if (currentPlatform !== "android") {
+        return { text: "system_is_running is only available for Android." };
+      }
+      const pkg = args.package as string;
+      validatePackageName(pkg);
+      const raw = ctx.deviceManager.shell(`pidof -s ${pkg}`, platform).trim();
+      const pid = raw === "" ? 0 : parseInt(raw, 10);
+      const running = !Number.isNaN(pid) && pid > 0;
+      return { text: running ? `true (pid=${pid})` : "false" };
     },
   },
   {

@@ -5,6 +5,7 @@ import {
   findByResourceId,
   findByClassName,
   findClickable,
+  findClickableAncestor,
   findElements,
   findBestMatch,
   analyzeScreen,
@@ -337,6 +338,118 @@ describe("findBestMatch", () => {
     // The "Forgot password?" link is disabled
     const result = findBestMatch(elements, "Forgot password?");
     expect(result).toBeNull();
+  });
+});
+
+// ──────────────────────────────────────────────
+// findClickableAncestor
+// ──────────────────────────────────────────────
+
+describe("findClickableAncestor", () => {
+  // Pattern common in MAUI/Compose: visible TextView is non-clickable, but the
+  // parent ViewGroup at the same/larger bounds carries the gesture handler.
+  const textChild = makeTestElement({
+    text: "Products",
+    clickable: false,
+    bounds: { x1: 360, y1: 920, x2: 470, y2: 970 },
+  });
+  const clickableParent = makeTestElement({
+    className: "android.view.ViewGroup",
+    clickable: true,
+    bounds: { x1: 320, y1: 760, x2: 510, y2: 980 },
+  });
+  const screenRoot = makeTestElement({
+    className: "android.widget.FrameLayout",
+    clickable: true,
+    bounds: { x1: 0, y1: 0, x2: 1080, y2: 2400 },
+  });
+
+  it("returns null when target is itself clickable", () => {
+    const target = makeTestElement({ text: "OK", clickable: true });
+    const result = findClickableAncestor(target, [target, clickableParent]);
+    expect(result).toBeNull();
+  });
+
+  it("finds smallest clickable ancestor that contains target bounds", () => {
+    const result = findClickableAncestor(textChild, [textChild, clickableParent, screenRoot]);
+    expect(result).not.toBeNull();
+    expect(result).toBe(clickableParent);
+  });
+
+  it("ignores ancestor candidates that don't contain target bounds", () => {
+    const otherClickable = makeTestElement({
+      clickable: true,
+      bounds: { x1: 0, y1: 0, x2: 100, y2: 100 }, // far from target
+    });
+    const result = findClickableAncestor(textChild, [textChild, otherClickable]);
+    expect(result).toBeNull();
+  });
+
+  it("rejects screen-root containers via maxAreaMultiplier heuristic", () => {
+    // Only candidate is the full-screen container — far larger than target × 200
+    const result = findClickableAncestor(textChild, [textChild, screenRoot]);
+    expect(result).toBeNull();
+  });
+
+  it("accepts large containers when maxAreaMultiplier is loosened", () => {
+    const result = findClickableAncestor(textChild, [textChild, screenRoot], { maxAreaMultiplier: 100_000 });
+    expect(result).toBe(screenRoot);
+  });
+
+  it("returns null when no clickable ancestors at all", () => {
+    const result = findClickableAncestor(textChild, [textChild]);
+    expect(result).toBeNull();
+  });
+
+  it("ignores disabled clickable ancestors", () => {
+    const disabledParent = { ...clickableParent, enabled: false };
+    const result = findClickableAncestor(textChild, [textChild, disabledParent]);
+    expect(result).toBeNull();
+  });
+});
+
+// ──────────────────────────────────────────────
+// findBestMatch — walkToClickable behavior
+// ──────────────────────────────────────────────
+
+describe("findBestMatch walkToClickable", () => {
+  const textChild = makeTestElement({
+    text: "Products",
+    clickable: false,
+    bounds: { x1: 360, y1: 920, x2: 470, y2: 970 },
+  });
+  const clickableParent = makeTestElement({
+    className: "android.view.ViewGroup",
+    clickable: true,
+    bounds: { x1: 320, y1: 760, x2: 510, y2: 980 },
+  });
+
+  it("walks up to clickable ancestor by default when match is non-clickable", () => {
+    const result = findBestMatch([textChild, clickableParent], "Products");
+    expect(result).not.toBeNull();
+    expect(result!.element).toBe(clickableParent);
+    expect(result!.reason).toContain("via clickable ancestor");
+  });
+
+  it("returns matched element when walkToClickable is false", () => {
+    const result = findBestMatch([textChild, clickableParent], "Products", { walkToClickable: false });
+    expect(result).not.toBeNull();
+    expect(result!.element).toBe(textChild);
+    expect(result!.reason).not.toContain("via clickable ancestor");
+  });
+
+  it("returns matched element directly when it is itself clickable", () => {
+    const directButton = makeTestElement({ text: "Save", clickable: true });
+    const result = findBestMatch([directButton], "Save");
+    expect(result).not.toBeNull();
+    expect(result!.element).toBe(directButton);
+    expect(result!.reason).not.toContain("via clickable ancestor");
+  });
+
+  it("falls back to original match when no clickable ancestor exists", () => {
+    const result = findBestMatch([textChild], "Products");
+    expect(result).not.toBeNull();
+    expect(result!.element).toBe(textChild);
   });
 });
 
