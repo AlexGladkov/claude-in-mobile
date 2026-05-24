@@ -8,9 +8,10 @@ import { interactiveLabelsRule } from "../a11y/rules/interactive-labels.js";
 import { focusOrderRule } from "../a11y/rules/focus-order.js";
 import { duplicateDescriptionsRule } from "../a11y/rules/duplicate-descriptions.js";
 import { stateDescriptionRule } from "../a11y/rules/state-description.js";
-import { calculateScore } from "../a11y/score.js";
-import { formatAuditReport, formatAuditSummary } from "../a11y/formatter.js";
-import type { A11yReport } from "../a11y/types.js";
+import { calculateScore, calculateRelativeScore, calculateCategoryScores, generateActionItems } from "../a11y/score.js";
+import { formatAuditReport, formatAuditSummary, formatCategoryBreakdown, formatActionItems } from "../a11y/formatter.js";
+import type { A11yReport, A11yRuleResult, A11yCategoryScore } from "../a11y/types.js";
+import { getCategoryForRule, RULE_CATEGORIES, CATEGORY_ORDER } from "../a11y/categories.js";
 import { ValidationError, A11yRuleNotFoundError } from "../errors.js";
 
 // ── Helpers ──
@@ -88,7 +89,7 @@ function mockCtx(): ToolContext {
 describe("missing-label rule", () => {
   it("detects clickable element without label", () => {
     const el = makeElement({ clickable: true, text: "", contentDesc: "" });
-    const issues = missingLabelRule.run([el]);
+    const { issues } = missingLabelRule.run([el]);
     expect(issues).toHaveLength(1);
     expect(issues[0].ruleId).toBe("missing-label");
     expect(issues[0].severity).toBe("critical");
@@ -96,19 +97,19 @@ describe("missing-label rule", () => {
 
   it("passes when element has text", () => {
     const el = makeElement({ clickable: true, text: "Login" });
-    const issues = missingLabelRule.run([el]);
+    const { issues } = missingLabelRule.run([el]);
     expect(issues).toHaveLength(0);
   });
 
   it("passes when element has contentDesc", () => {
     const el = makeElement({ clickable: true, contentDesc: "Menu" });
-    const issues = missingLabelRule.run([el]);
+    const { issues } = missingLabelRule.run([el]);
     expect(issues).toHaveLength(0);
   });
 
   it("skips non-clickable elements", () => {
     const el = makeElement({ clickable: false, text: "", contentDesc: "" });
-    const issues = missingLabelRule.run([el]);
+    const { issues } = missingLabelRule.run([el]);
     expect(issues).toHaveLength(0);
   });
 
@@ -119,7 +120,7 @@ describe("missing-label rule", () => {
       contentDesc: "",
       className: "android.widget.LinearLayout",
     });
-    const issues = missingLabelRule.run([el]);
+    const { issues } = missingLabelRule.run([el]);
     expect(issues).toHaveLength(0);
   });
 
@@ -130,7 +131,7 @@ describe("missing-label rule", () => {
       text: "",
       contentDesc: "",
     });
-    const issues = missingLabelRule.run([el]);
+    const { issues } = missingLabelRule.run([el]);
     expect(issues).toHaveLength(1);
     expect(issues[0].message).toContain("Password");
   });
@@ -142,7 +143,7 @@ describe("missing-label rule", () => {
       text: "",
       contentDesc: "Password field",
     });
-    const issues = missingLabelRule.run([el]);
+    const { issues } = missingLabelRule.run([el]);
     expect(issues).toHaveLength(0);
   });
 });
@@ -155,7 +156,7 @@ describe("touch-target rule", () => {
       height: 30,
       bounds: { x1: 0, y1: 0, x2: 30, y2: 30 },
     });
-    const issues = touchTargetRule.run([el]);
+    const { issues } = touchTargetRule.run([el]);
     expect(issues).toHaveLength(1);
     expect(issues[0].ruleId).toBe("touch-target");
     expect(issues[0].message).toContain("30x30");
@@ -168,7 +169,7 @@ describe("touch-target rule", () => {
       height: 48,
       bounds: { x1: 0, y1: 0, x2: 48, y2: 48 },
     });
-    const issues = touchTargetRule.run([el]);
+    const { issues } = touchTargetRule.run([el]);
     expect(issues).toHaveLength(0);
   });
 
@@ -179,7 +180,7 @@ describe("touch-target rule", () => {
       height: 0,
       bounds: { x1: 0, y1: 0, x2: 0, y2: 0 },
     });
-    const issues = touchTargetRule.run([el]);
+    const { issues } = touchTargetRule.run([el]);
     expect(issues).toHaveLength(0);
   });
 });
@@ -191,7 +192,7 @@ describe("interactive-labels rule", () => {
       className: "android.widget.ImageButton",
       contentDesc: "",
     });
-    const issues = interactiveLabelsRule.run([el]);
+    const { issues } = interactiveLabelsRule.run([el]);
     expect(issues).toHaveLength(1);
     expect(issues[0].ruleId).toBe("interactive-labels");
   });
@@ -202,7 +203,7 @@ describe("interactive-labels rule", () => {
       className: "android.widget.ImageView",
       contentDesc: "Profile picture",
     });
-    const issues = interactiveLabelsRule.run([el]);
+    const { issues } = interactiveLabelsRule.run([el]);
     expect(issues).toHaveLength(0);
   });
 
@@ -212,7 +213,7 @@ describe("interactive-labels rule", () => {
       className: "android.widget.Button",
       contentDesc: "",
     });
-    const issues = interactiveLabelsRule.run([el]);
+    const { issues } = interactiveLabelsRule.run([el]);
     expect(issues).toHaveLength(0);
   });
 });
@@ -220,14 +221,14 @@ describe("interactive-labels rule", () => {
 describe("focus-order rule", () => {
   it("detects clickable but not focusable", () => {
     const el = makeElement({ clickable: true, focusable: false });
-    const issues = focusOrderRule.run([el]);
+    const { issues } = focusOrderRule.run([el]);
     expect(issues).toHaveLength(1);
     expect(issues[0].ruleId).toBe("focus-order");
   });
 
   it("passes when clickable and focusable", () => {
     const el = makeElement({ clickable: true, focusable: true });
-    const issues = focusOrderRule.run([el]);
+    const { issues } = focusOrderRule.run([el]);
     expect(issues).toHaveLength(0);
   });
 });
@@ -236,7 +237,7 @@ describe("duplicate-descriptions rule", () => {
   it("detects duplicate contentDesc", () => {
     const el1 = makeElement({ index: 0, contentDesc: "Star" });
     const el2 = makeElement({ index: 1, contentDesc: "Star" });
-    const issues = duplicateDescriptionsRule.run([el1, el2]);
+    const { issues } = duplicateDescriptionsRule.run([el1, el2]);
     expect(issues).toHaveLength(2);
     expect(issues[0].ruleId).toBe("duplicate-descriptions");
   });
@@ -244,14 +245,14 @@ describe("duplicate-descriptions rule", () => {
   it("skips short contentDesc (<=1 char)", () => {
     const el1 = makeElement({ index: 0, contentDesc: "X" });
     const el2 = makeElement({ index: 1, contentDesc: "X" });
-    const issues = duplicateDescriptionsRule.run([el1, el2]);
+    const { issues } = duplicateDescriptionsRule.run([el1, el2]);
     expect(issues).toHaveLength(0);
   });
 
   it("passes when all descriptions are unique", () => {
     const el1 = makeElement({ index: 0, contentDesc: "Edit" });
     const el2 = makeElement({ index: 1, contentDesc: "Delete" });
-    const issues = duplicateDescriptionsRule.run([el1, el2]);
+    const { issues } = duplicateDescriptionsRule.run([el1, el2]);
     expect(issues).toHaveLength(0);
   });
 });
@@ -263,7 +264,7 @@ describe("state-description rule", () => {
       text: "",
       contentDesc: "",
     });
-    const issues = stateDescriptionRule.run([el]);
+    const { issues } = stateDescriptionRule.run([el]);
     expect(issues).toHaveLength(1);
     expect(issues[0].ruleId).toBe("state-description");
   });
@@ -273,7 +274,7 @@ describe("state-description rule", () => {
       checkable: true,
       text: "Enable notifications",
     });
-    const issues = stateDescriptionRule.run([el]);
+    const { issues } = stateDescriptionRule.run([el]);
     expect(issues).toHaveLength(0);
   });
 });
@@ -286,7 +287,7 @@ describe("calculateScore", () => {
   });
 
   it("returns 85 for one critical issue", () => {
-    const issues = missingLabelRule.run([
+    const { issues } = missingLabelRule.run([
       makeElement({ clickable: true, text: "", contentDesc: "" }),
     ]);
     expect(calculateScore(issues)).toBe(85);
@@ -305,14 +306,14 @@ describe("calculateScore", () => {
         bounds: { x1: 0, y1: 0, x2: 20, y2: 20 },
       }),
     ]);
-    expect(calculateScore([...critical, ...serious])).toBe(77);
+    expect(calculateScore([...critical.issues, ...serious.issues])).toBe(77);
   });
 
   it("clamps to 0 for many issues", () => {
     const elements = Array.from({ length: 20 }, (_, i) =>
       makeElement({ index: i, clickable: true, text: "", contentDesc: "" }),
     );
-    const issues = missingLabelRule.run(elements);
+    const { issues } = missingLabelRule.run(elements);
     expect(calculateScore(issues)).toBe(0);
   });
 });
@@ -580,5 +581,354 @@ describe("input validation", () => {
     await expect(handler({ severity: "ultra" }, ctx)).rejects.toThrow(
       ValidationError,
     );
+  });
+});
+
+// ── Relative scoring tests ──
+
+function makeRuleResult(overrides: Partial<A11yRuleResult>): A11yRuleResult {
+  return {
+    ruleId: "test-rule",
+    category: "labels",
+    applicableCount: 0,
+    passedCount: 0,
+    issues: [],
+    passRate: 1,
+    ...overrides,
+  };
+}
+
+describe("calculateRelativeScore", () => {
+  it("returns 100 for empty ruleResults", () => {
+    expect(calculateRelativeScore([])).toBe(100);
+  });
+
+  it("returns 100 when all rules have 0 applicableCount", () => {
+    const results: A11yRuleResult[] = [
+      makeRuleResult({ ruleId: "a", applicableCount: 0, passRate: 0 }),
+      makeRuleResult({ ruleId: "b", applicableCount: 0, passRate: 0 }),
+    ];
+    expect(calculateRelativeScore(results)).toBe(100);
+  });
+
+  it("returns 100 when all rules have 100% passRate", () => {
+    const results: A11yRuleResult[] = [
+      makeRuleResult({ ruleId: "a", applicableCount: 5, passRate: 1.0 }),
+      makeRuleResult({ ruleId: "b", applicableCount: 10, passRate: 1.0 }),
+    ];
+    expect(calculateRelativeScore(results)).toBe(100);
+  });
+
+  it("returns 50 for single rule with 50% passRate", () => {
+    const results: A11yRuleResult[] = [
+      makeRuleResult({ ruleId: "a", applicableCount: 10, passRate: 0.5 }),
+    ];
+    expect(calculateRelativeScore(results)).toBe(50);
+  });
+
+  it("calculates weighted average by applicableCount for mixed pass rates", () => {
+    // Rule A: 10 applicable, passRate=0.8 => weighted = 8
+    // Rule B: 2 applicable, passRate=1.0 => weighted = 2
+    // Total applicable = 12, weighted sum = 10
+    // Score = (10 / 12) * 100 = 83.33 => rounds to 83
+    const results: A11yRuleResult[] = [
+      makeRuleResult({ ruleId: "a", applicableCount: 10, passedCount: 8, passRate: 0.8 }),
+      makeRuleResult({ ruleId: "b", applicableCount: 2, passedCount: 2, passRate: 1.0 }),
+    ];
+    expect(calculateRelativeScore(results)).toBe(83);
+  });
+});
+
+describe("calculateCategoryScores", () => {
+  it("groups rules by category", () => {
+    const results: A11yRuleResult[] = [
+      makeRuleResult({ ruleId: "missing-label", category: "labels", applicableCount: 5, passRate: 0.8 }),
+      makeRuleResult({ ruleId: "interactive-labels", category: "labels", applicableCount: 3, passRate: 1.0 }),
+      makeRuleResult({ ruleId: "touch-target", category: "touch-targets", applicableCount: 4, passRate: 0.5 }),
+    ];
+    const scores = calculateCategoryScores(results);
+
+    expect(scores).toHaveLength(2);
+    expect(scores[0].category).toBe("labels");
+    expect(scores[0].rules).toHaveLength(2);
+    expect(scores[1].category).toBe("touch-targets");
+    expect(scores[1].rules).toHaveLength(1);
+  });
+
+  it("returns categories in CATEGORY_ORDER", () => {
+    const results: A11yRuleResult[] = [
+      makeRuleResult({ ruleId: "state-description", category: "states", applicableCount: 2, passRate: 1.0 }),
+      makeRuleResult({ ruleId: "missing-label", category: "labels", applicableCount: 3, passRate: 1.0 }),
+      makeRuleResult({ ruleId: "focus-order", category: "focus", applicableCount: 1, passRate: 1.0 }),
+    ];
+    const scores = calculateCategoryScores(results);
+    const categories = scores.map(s => s.category);
+
+    // CATEGORY_ORDER: labels, touch-targets, focus, states
+    // Only labels, focus, states present
+    expect(categories).toEqual(["labels", "focus", "states"]);
+  });
+
+  it("gives score 100 to category with 0 applicable elements", () => {
+    const results: A11yRuleResult[] = [
+      makeRuleResult({ ruleId: "touch-target", category: "touch-targets", applicableCount: 0, passRate: 0 }),
+    ];
+    const scores = calculateCategoryScores(results);
+
+    expect(scores).toHaveLength(1);
+    expect(scores[0].score).toBe(100);
+  });
+
+  it("calculates weighted average within category for mixed rules", () => {
+    // Rule A (labels): 10 applicable, passRate=0.6 => weighted = 6
+    // Rule B (labels): 5 applicable, passRate=1.0 => weighted = 5
+    // Total applicable = 15, weighted sum = 11
+    // Score = (11 / 15) * 100 = 73.33 => rounds to 73
+    const results: A11yRuleResult[] = [
+      makeRuleResult({ ruleId: "missing-label", category: "labels", applicableCount: 10, passRate: 0.6, passedCount: 6 }),
+      makeRuleResult({ ruleId: "interactive-labels", category: "labels", applicableCount: 5, passRate: 1.0, passedCount: 5 }),
+    ];
+    const scores = calculateCategoryScores(results);
+
+    expect(scores).toHaveLength(1);
+    expect(scores[0].score).toBe(73);
+  });
+});
+
+describe("generateActionItems", () => {
+  it("returns empty array when no issues", () => {
+    const results: A11yRuleResult[] = [
+      makeRuleResult({ ruleId: "missing-label", category: "labels", issues: [] }),
+    ];
+    expect(generateActionItems(results)).toEqual([]);
+  });
+
+  it("returns items sorted by severity (critical first)", () => {
+    const results: A11yRuleResult[] = [
+      makeRuleResult({
+        ruleId: "duplicate-descriptions",
+        category: "states",
+        issues: [{
+          ruleId: "duplicate-descriptions", wcag: "1.3.1", severity: "moderate",
+          message: "dup", element: { index: 0, className: "Button", resourceId: "", bounds: { x1: 0, y1: 0, x2: 100, y2: 100 }, centerX: 50, centerY: 50 },
+        }],
+      }),
+      makeRuleResult({
+        ruleId: "missing-label",
+        category: "labels",
+        issues: [{
+          ruleId: "missing-label", wcag: "1.1.1", severity: "critical",
+          message: "no label", element: { index: 1, className: "Button", resourceId: "", bounds: { x1: 0, y1: 0, x2: 100, y2: 100 }, centerX: 50, centerY: 50 },
+        }],
+      }),
+    ];
+    const items = generateActionItems(results);
+
+    expect(items).toHaveLength(2);
+    expect(items[0].severity).toBe("critical");
+    expect(items[0].ruleId).toBe("missing-label");
+    expect(items[1].severity).toBe("moderate");
+    expect(items[1].ruleId).toBe("duplicate-descriptions");
+  });
+
+  it("uses ACTION_TEMPLATES for message content", () => {
+    const results: A11yRuleResult[] = [
+      makeRuleResult({
+        ruleId: "missing-label",
+        category: "labels",
+        issues: [{
+          ruleId: "missing-label", wcag: "1.1.1", severity: "critical",
+          message: "no label", element: { index: 0, className: "Button", resourceId: "", bounds: { x1: 0, y1: 0, x2: 100, y2: 100 }, centerX: 50, centerY: 50 },
+        }],
+      }),
+      makeRuleResult({
+        ruleId: "touch-target",
+        category: "touch-targets",
+        issues: [
+          {
+            ruleId: "touch-target", wcag: "2.5.5", severity: "serious",
+            message: "small", element: { index: 1, className: "Button", resourceId: "", bounds: { x1: 0, y1: 0, x2: 30, y2: 30 }, centerX: 15, centerY: 15 },
+          },
+          {
+            ruleId: "touch-target", wcag: "2.5.5", severity: "serious",
+            message: "small", element: { index: 2, className: "Button", resourceId: "", bounds: { x1: 0, y1: 0, x2: 20, y2: 20 }, centerX: 10, centerY: 10 },
+          },
+        ],
+      }),
+    ];
+    const items = generateActionItems(results);
+
+    expect(items.find(i => i.ruleId === "missing-label")!.message).toContain("Add labels");
+    expect(items.find(i => i.ruleId === "touch-target")!.message).toContain("Fix touch targets");
+  });
+
+  it("uses correct plural vs singular forms", () => {
+    const singleIssue: A11yRuleResult[] = [
+      makeRuleResult({
+        ruleId: "missing-label",
+        category: "labels",
+        issues: [{
+          ruleId: "missing-label", wcag: "1.1.1", severity: "critical",
+          message: "no label", element: { index: 0, className: "Button", resourceId: "", bounds: { x1: 0, y1: 0, x2: 100, y2: 100 }, centerX: 50, centerY: 50 },
+        }],
+      }),
+    ];
+    const singleItems = generateActionItems(singleIssue);
+    expect(singleItems[0].message).toContain("1 clickable element ");
+    expect(singleItems[0].message).not.toContain("elements");
+
+    const multiIssue: A11yRuleResult[] = [
+      makeRuleResult({
+        ruleId: "missing-label",
+        category: "labels",
+        issues: [
+          {
+            ruleId: "missing-label", wcag: "1.1.1", severity: "critical",
+            message: "no label", element: { index: 0, className: "Button", resourceId: "", bounds: { x1: 0, y1: 0, x2: 100, y2: 100 }, centerX: 50, centerY: 50 },
+          },
+          {
+            ruleId: "missing-label", wcag: "1.1.1", severity: "critical",
+            message: "no label", element: { index: 1, className: "Button", resourceId: "", bounds: { x1: 0, y1: 0, x2: 100, y2: 100 }, centerX: 50, centerY: 50 },
+          },
+        ],
+      }),
+    ];
+    const multiItems = generateActionItems(multiIssue);
+    expect(multiItems[0].message).toContain("2 clickable elements");
+  });
+});
+
+// ── Formatter: category breakdown and action items ──
+
+describe("formatCategoryBreakdown", () => {
+  it("formats categories as aligned table with percentage and passed/total", () => {
+    const categories: A11yCategoryScore[] = [
+      {
+        category: "labels",
+        label: "Labels",
+        score: 80,
+        applicableCount: 10,
+        issueCount: 2,
+        rules: [],
+      },
+      {
+        category: "touch-targets",
+        label: "Touch Targets",
+        score: 100,
+        applicableCount: 5,
+        issueCount: 0,
+        rules: [],
+      },
+    ];
+    const text = formatCategoryBreakdown(categories);
+
+    expect(text).toContain("Labels");
+    expect(text).toContain("80%");
+    expect(text).toContain("8/10 passed");
+    expect(text).toContain("Touch Targets");
+    expect(text).toContain("100%");
+    expect(text).toContain("5/5 passed");
+  });
+
+  it("shows percentage and passed/total counts", () => {
+    const categories: A11yCategoryScore[] = [
+      {
+        category: "focus",
+        label: "Focus",
+        score: 50,
+        applicableCount: 4,
+        issueCount: 2,
+        rules: [],
+      },
+    ];
+    const text = formatCategoryBreakdown(categories);
+
+    expect(text).toContain("50%");
+    expect(text).toContain("2/4 passed");
+  });
+});
+
+describe("formatActionItems", () => {
+  it("returns empty string when no items", () => {
+    expect(formatActionItems([])).toBe("");
+  });
+
+  it("formats items with severity and message", () => {
+    const items = [
+      { ruleId: "missing-label", category: "labels" as const, severity: "critical" as const, count: 2, message: "Add labels to 2 clickable elements" },
+    ];
+    const text = formatActionItems(items);
+    expect(text).toContain("ACTION ITEMS:");
+    expect(text).toContain("[critical]");
+    expect(text).toContain("Add labels to 2 clickable elements");
+  });
+});
+
+// ── duplicate-descriptions password skip ──
+
+describe("duplicate-descriptions password skip", () => {
+  it("excludes password elements from duplicate detection", () => {
+    const el1 = makeElement({ index: 0, contentDesc: "Enter password", password: true });
+    const el2 = makeElement({ index: 1, contentDesc: "Enter password", password: false });
+    const { issues } = duplicateDescriptionsRule.run([el1, el2]);
+    // el1 is password => skipped, only el2 remains => no duplicate
+    expect(issues).toHaveLength(0);
+  });
+
+  it("reports duplicates for two non-password elements with same contentDesc", () => {
+    const el1 = makeElement({ index: 0, contentDesc: "Star rating", password: false });
+    const el2 = makeElement({ index: 1, contentDesc: "Star rating", password: false });
+    const { issues } = duplicateDescriptionsRule.run([el1, el2]);
+    expect(issues).toHaveLength(2);
+    expect(issues[0].ruleId).toBe("duplicate-descriptions");
+  });
+});
+
+// ── Severity filter bug fix ──
+
+describe("severity filter bug fix", () => {
+  it("severity filter does not affect score calculation", async () => {
+    // Elements that will fail both missing-label and touch-target rules
+    mockElements = [
+      makeElement({
+        index: 0,
+        clickable: true,
+        text: "",
+        contentDesc: "",
+        focusable: true,
+        width: 30,
+        height: 30,
+        bounds: { x1: 0, y1: 0, x2: 30, y2: 30 },
+      }),
+      makeElement({
+        index: 1,
+        clickable: true,
+        text: "OK",
+        focusable: true,
+        width: 48,
+        height: 48,
+        bounds: { x1: 0, y1: 0, x2: 48, y2: 48 },
+      }),
+    ];
+
+    const handler = accessibilityTools.find(
+      (t) => t.tool.name === "accessibility_audit",
+    )!.handler;
+    const ctx = mockCtx();
+
+    // Run without severity filter
+    const resultAll = (await handler({}, ctx)) as { text: string };
+    // Run with severity filter = critical
+    const resultCritical = (await handler({ severity: "critical" }, ctx)) as { text: string };
+
+    // Extract score from output — format is "(score: NN/100)"
+    const scoreRegex = /score:\s*(\d+)\/100/;
+    const scoreAll = resultAll.text.match(scoreRegex)?.[1];
+    const scoreCritical = resultCritical.text.match(scoreRegex)?.[1];
+
+    expect(scoreAll).toBeDefined();
+    expect(scoreCritical).toBeDefined();
+    // Score must be the same regardless of severity filter
+    expect(scoreAll).toBe(scoreCritical);
   });
 });

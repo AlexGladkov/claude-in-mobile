@@ -2,14 +2,16 @@ import type { ToolDefinition } from "./registry.js";
 import type { Platform } from "../device-manager.js";
 import { getUiElements } from "./helpers/get-elements.js";
 import { ALL_RULES, getRuleById } from "../a11y/rules/index.js";
-import { calculateScore } from "../a11y/score.js";
+import { calculateScore, calculateRelativeScore, calculateCategoryScores, generateActionItems } from "../a11y/score.js";
 import {
   formatAuditReport,
   formatAuditSummary,
   formatRuleList,
   formatRuleDetail,
+  formatDetailedReport,
 } from "../a11y/formatter.js";
-import type { A11yIssue, A11yReport, A11ySeverity } from "../a11y/types.js";
+import type { A11yIssue, A11yReport, A11ySeverity, A11yRuleResult, A11yDetailedReport, A11yCategory } from "../a11y/types.js";
+import { getCategoryForRule } from "../a11y/categories.js";
 import type { UiElement } from "../adb/ui-parser.js";
 import { truncateOutput } from "../utils/truncate.js";
 import { ValidationError, A11yRuleNotFoundError } from "../errors.js";
@@ -44,17 +46,15 @@ function runAudit(
   platform: string,
   standard: string,
   severityFilter?: A11ySeverity,
-): { report: A11yReport; passwordIndices: Set<number> } {
-  // Collect password element indices for redaction
+): { report: A11yDetailedReport; passwordIndices: Set<number> } {
   const passwordIndices = new Set<number>();
   for (const el of elements) {
-    if (el.password) {
-      passwordIndices.add(el.index);
-    }
+    if (el.password) passwordIndices.add(el.index);
   }
 
-  let allIssues: A11yIssue[] = [];
+  const ruleResults: A11yRuleResult[] = [];
   const passedRules: string[] = [];
+  let allIssues: A11yIssue[] = [];
 
   for (const rule of ALL_RULES) {
     if (!rule.platforms.includes(platform as "android" | "ios" | "desktop")) {
@@ -62,20 +62,37 @@ function runAudit(
       continue;
     }
 
-    const issues = rule.run(elements);
-    if (issues.length === 0) {
+    const result = rule.run(elements);
+    const category = getCategoryForRule(rule.id);
+    const passedCount = result.applicableCount - result.issues.length;
+    const passRate = result.applicableCount === 0 ? 1 : passedCount / result.applicableCount;
+
+    ruleResults.push({
+      ruleId: rule.id,
+      category,
+      applicableCount: result.applicableCount,
+      passedCount,
+      issues: result.issues,
+      passRate,
+    });
+
+    if (result.issues.length === 0) {
       passedRules.push(rule.id);
     } else {
-      allIssues.push(...issues);
+      allIssues.push(...result.issues);
     }
   }
 
-  // Apply severity filter if provided
-  if (severityFilter) {
-    allIssues = allIssues.filter((i) => i.severity === severityFilter);
-  }
+  // Calculate scores BEFORE severity filter
+  const score = calculateRelativeScore(ruleResults);
+  const categories = calculateCategoryScores(ruleResults);
+  const actionItems = generateActionItems(ruleResults);
 
-  const score = calculateScore(allIssues);
+  // Apply severity filter for display only
+  let displayIssues = allIssues;
+  if (severityFilter) {
+    displayIssues = allIssues.filter((i) => i.severity === severityFilter);
+  }
 
   const issueCount = {
     critical: allIssues.filter((i) => i.severity === "critical").length,
@@ -85,19 +102,24 @@ function runAudit(
     total: allIssues.length,
   };
 
-  const report: A11yReport = {
+  const report: A11yDetailedReport = {
     platform,
     timestamp: new Date().toISOString(),
     score,
     totalElements: elements.length,
     issueCount,
-    issues: allIssues,
+    issues: displayIssues,
     passedRules,
     standard,
+    categories,
+    ruleResults,
+    actionItems,
   };
 
   return { report, passwordIndices };
 }
+
+const MAX_AUDIT_ELEMENTS = 2000;
 
 export const accessibilityTools: ToolDefinition[] = [
   // 1. audit
@@ -129,6 +151,15 @@ export const accessibilityTools: ToolDefinition[] = [
             description:
               "Compact output: one line per issue, no descriptions (default: false)",
           },
+          detailed: {
+            type: "boolean",
+            description: "Include category breakdown and action items (default: false)",
+          },
+          category: {
+            type: "string",
+            enum: ["labels", "touch-targets", "focus", "states"],
+            description: "Filter to specific category",
+          },
         },
       },
     },
@@ -140,20 +171,43 @@ export const accessibilityTools: ToolDefinition[] = [
       const standard = validateStandard(args.standard);
       const severityFilter = validateSeverityFilter(args.severity);
       const compact = args.compact === true;
+      const detailed = args.detailed === true;
+      const categoryFilter = args.category as A11yCategory | undefined;
 
       const { elements } = await getUiElements(ctx, platform);
+
+      let truncatedNote = "";
+      let auditElements = elements;
+      if (elements.length > MAX_AUDIT_ELEMENTS) {
+        auditElements = elements.slice(0, MAX_AUDIT_ELEMENTS);
+        truncatedNote = `\n\nNote: Screen has ${elements.length} elements, audit limited to first ${MAX_AUDIT_ELEMENTS}.`;
+      }
+
       const { report, passwordIndices } = runAudit(
-        elements,
+        auditElements,
         platform,
         standard,
         severityFilter,
       );
 
-      const text = formatAuditReport(report, { compact, passwordIndices });
+      // Apply category filter if specified
+      let filteredReport = report;
+      if (categoryFilter) {
+        const filteredIssues = report.issues.filter((issue) => {
+          const cat = getCategoryForRule(issue.ruleId);
+          return cat === categoryFilter;
+        });
+        filteredReport = { ...report, issues: filteredIssues };
+      }
+
+      const text = detailed
+        ? formatDetailedReport(filteredReport, { compact, passwordIndices })
+        : formatAuditReport(filteredReport, { compact, passwordIndices });
+
       const hasFail = report.issueCount.critical > 0 || report.score < 100;
 
       return {
-        text: truncateOutput(text),
+        text: truncateOutput(text + truncatedNote),
         ...(hasFail ? { isError: true } : {}),
       };
     },

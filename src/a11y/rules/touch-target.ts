@@ -1,5 +1,5 @@
 import type { UiElement } from "../../adb/ui-parser.js";
-import type { A11yRule, A11yIssue } from "../types.js";
+import type { A11yRule, A11yRuleRunResult, A11yIssue } from "../types.js";
 
 const MIN_TARGET_SIZE = 48;
 
@@ -10,13 +10,16 @@ export const touchTargetRule: A11yRule = {
   severity: "serious",
   description: `Interactive elements must have a minimum touch target size of ${MIN_TARGET_SIZE}x${MIN_TARGET_SIZE}dp.`,
   platforms: ["android", "ios", "desktop"],
-  run(elements: UiElement[]): A11yIssue[] {
+  run(elements: UiElement[]): A11yRuleRunResult {
     const issues: A11yIssue[] = [];
+    let applicableCount = 0;
 
     for (const el of elements) {
       if (!el.clickable) continue;
       // Skip invisible elements
       if (el.width <= 0 || el.height <= 0) continue;
+
+      applicableCount++;
 
       if (el.width < MIN_TARGET_SIZE || el.height < MIN_TARGET_SIZE) {
         issues.push({
@@ -36,6 +39,6 @@ export const touchTargetRule: A11yRule = {
       }
     }
 
-    return issues;
+    return { applicableCount, issues };
   },
 };

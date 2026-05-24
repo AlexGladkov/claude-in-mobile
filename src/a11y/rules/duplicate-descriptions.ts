@@ -1,5 +1,5 @@
 import type { UiElement } from "../../adb/ui-parser.js";
-import type { A11yRule, A11yIssue } from "../types.js";
+import type { A11yRule, A11yRuleRunResult, A11yIssue } from "../types.js";
 
 export const duplicateDescriptionsRule: A11yRule = {
   id: "duplicate-descriptions",
@@ -9,14 +9,19 @@ export const duplicateDescriptionsRule: A11yRule = {
   description:
     "Multiple elements with identical content descriptions confuse screen reader users.",
   platforms: ["android", "ios", "desktop"],
-  run(elements: UiElement[]): A11yIssue[] {
+  run(elements: UiElement[]): A11yRuleRunResult {
     // Group by non-empty contentDesc, exclude short (<=1 char) descriptions
     const groups = new Map<string, UiElement[]>();
+    let applicableCount = 0;
 
     for (const el of elements) {
       const desc = el.contentDesc.trim();
       if (desc.length <= 1) continue;
       if (el.width <= 0 || el.height <= 0) continue;
+      // Skip password elements — security fix M-2
+      if (el.password) continue;
+
+      applicableCount++;
 
       const existing = groups.get(desc);
       if (existing) {
@@ -28,7 +33,7 @@ export const duplicateDescriptionsRule: A11yRule = {
 
     const issues: A11yIssue[] = [];
 
-    for (const [desc, els] of groups) {
+    for (const [, els] of groups) {
       if (els.length <= 1) continue;
 
       // Report each duplicate element
@@ -37,7 +42,7 @@ export const duplicateDescriptionsRule: A11yRule = {
           ruleId: "duplicate-descriptions",
           wcag: "1.3.1",
           severity: "moderate",
-          message: `Duplicate content description "${desc}" shared by ${els.length} elements`,
+          message: `Duplicate content description shared by ${els.length} elements`,
           element: {
             index: el.index,
             className: el.className,
@@ -50,6 +55,6 @@ export const duplicateDescriptionsRule: A11yRule = {
       }
     }
 
-    return issues;
+    return { applicableCount, issues };
   },
 };
