@@ -40,6 +40,10 @@ import { syncMeta, syncAliases } from "./tools/meta/sync-meta.js";
 import { accessibilityMeta, accessibilityAliases } from "./tools/meta/accessibility-meta.js";
 import { performanceMeta, performanceAliases } from "./tools/meta/performance-meta.js";
 import { autopilotMeta, autopilotAliases } from "./tools/meta/autopilot-meta.js";
+import { sandboxMeta, sandboxAliases } from "./tools/meta/sandbox-meta.js";
+import { intentMeta, intentAliases } from "./tools/meta/intent-meta.js";
+import { sensorMeta, sensorAliases } from "./tools/meta/sensor-meta.js";
+import { networkMeta, networkAliases } from "./tools/meta/network-meta.js";
 import { captureStep } from "./tools/recorder-tools.js";
 
 /** Build dynamic MCP instructions based on active profile */
@@ -151,6 +155,7 @@ const allMetaTools: Record<string, ToolDefinition> = {
   browser: browserMeta, desktop: desktopMeta, store: storeMeta,
   visual: visualMeta, recorder: recorderMeta, sync: syncMeta,
   accessibility: accessibilityMeta, performance: performanceMeta, autopilot: autopilotMeta,
+  sandbox: sandboxMeta, intent: intentMeta, sensor: sensorMeta, network: networkMeta,
 };
 
 // Profile-aware registration
@@ -195,6 +200,10 @@ registerAliasesWithDefaults({
   ...accessibilityAliases,
   ...performanceAliases,
   ...autopilotAliases,
+  ...sandboxAliases,
+  ...intentAliases,
+  ...sensorAliases,
+  ...networkAliases,
 
   // Short aliases for autopilot
   autopilot_explore: { tool: "autopilot", defaults: { action: "explore" } },

@@ -1,5 +1,5 @@
 import type { UiElement } from "../../adb/ui-parser.js";
-import type { A11yRule, A11yIssue } from "../types.js";
+import type { A11yRule, A11yRuleRunResult, A11yIssue } from "../types.js";
 
 export const stateDescriptionRule: A11yRule = {
   id: "state-description",
@@ -9,12 +9,15 @@ export const stateDescriptionRule: A11yRule = {
   description:
     "Checkable elements (checkboxes, switches, toggles) must have a text label or content description.",
   platforms: ["android", "ios", "desktop"],
-  run(elements: UiElement[]): A11yIssue[] {
+  run(elements: UiElement[]): A11yRuleRunResult {
     const issues: A11yIssue[] = [];
+    let applicableCount = 0;
 
     for (const el of elements) {
       if (!el.checkable) continue;
       if (el.width <= 0 || el.height <= 0) continue;
+
+      applicableCount++;
 
       const hasText = el.text.trim().length > 0;
       const hasContentDesc = el.contentDesc.trim().length > 0;
@@ -38,6 +41,6 @@ export const stateDescriptionRule: A11yRule = {
       }
     }
 
-    return issues;
+    return { applicableCount, issues };
   },
 };

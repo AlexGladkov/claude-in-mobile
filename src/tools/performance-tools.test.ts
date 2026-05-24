@@ -556,3 +556,249 @@ describe("input validation", () => {
     }).toThrow();
   });
 });
+
+// ── performance_framestats handler tests ──
+
+describe("performance_framestats", () => {
+  function mockCtx(overrides: Record<string, unknown> = {}): ToolContext {
+    return {
+      deviceManager: {
+        getCurrentPlatform: () => "android",
+        getAndroidClient: () => ({
+          getCurrentActivity: () => "com.test.app/.MainActivity",
+          exec: (_cmd: string) => "",
+        }),
+        ...overrides,
+      } as any,
+      getCachedElements: () => [],
+      setCachedElements: () => {},
+      lastScreenshotMap: new Map(),
+      lastUiTreeMap: new Map(),
+      screenshotScaleMap: new Map(),
+      generateActionHints: async () => "",
+      getElementsForPlatform: async () => [],
+      iosTreeToUiElements: () => [],
+      formatIOSUITree: () => "",
+      platformParam: { type: "string", enum: ["android", "ios", "desktop"] },
+      handleTool: async () => ({}),
+    } as ToolContext;
+  }
+
+  const findHandler = (name: string) => {
+    const tool = performanceTools.find((t) => t.tool.name === name);
+    if (!tool) throw new Error(`Tool ${name} not found`);
+    return tool.handler;
+  };
+
+  const handler = findHandler("performance_framestats");
+
+  it("throws ValidationError on non-android platform", async () => {
+    const ctx = mockCtx({ getCurrentPlatform: () => "ios" });
+    await expect(handler({ platform: "ios" }, ctx)).rejects.toThrow(ValidationError);
+  });
+
+  it("rejects invalid package name", async () => {
+    await expect(
+      handler({ platform: "android", packageName: "bad;name" }, mockCtx()),
+    ).rejects.toThrow();
+  });
+
+  it("collects and formats frame stats from HISTOGRAM output", async () => {
+    const gfxOutput = `
+Stats since: 12345ns
+Total frames rendered: 200
+Janky frames: 10 (5.00%)
+Number Missed Vsync: 3
+Number High input latency: 1
+Number Slow UI thread: 4
+Number Slow bitmap uploads: 0
+Number Slow issue draw commands: 2
+Number Frame deadline missed: 0
+HISTOGRAM: 5ms=100 8ms=50 12ms=30 16ms=15 32ms=5
+`;
+    const ctx = mockCtx({
+      getCurrentPlatform: () => "android",
+      getAndroidClient: () => ({
+        getCurrentActivity: () => "com.test.app/.MainActivity",
+        exec: (cmd: string) => {
+          if (cmd.includes("framestats")) return gfxOutput;
+          return "";
+        },
+      }),
+    });
+
+    const result = (await handler({}, ctx)) as { text: string };
+    expect(result.text).toContain("Frame Statistics");
+    expect(result.text).toContain("com.test.app");
+    expect(result.text).toContain("200");
+    expect(result.text).toContain("5.0%");
+    expect(result.text).toContain("p50:");
+    expect(result.text).toContain("p90:");
+    expect(result.text).toContain("Missed Vsync: 3");
+    expect(result.text).toContain("Slow UI thread: 4");
+  });
+
+  it("detects foreground package when packageName not provided", async () => {
+    const ctx = mockCtx({
+      getCurrentPlatform: () => "android",
+      getAndroidClient: () => ({
+        getCurrentActivity: () => "com.auto.detected/.Main",
+        exec: () =>
+          "Total frames rendered: 100\nJanky frames: 2 (2.00%)\nHISTOGRAM: 8ms=80 16ms=20",
+      }),
+    });
+    const result = (await handler({}, ctx)) as { text: string };
+    expect(result.text).toContain("com.auto.detected");
+  });
+
+  it("uses explicit packageName when provided", async () => {
+    const ctx = mockCtx({
+      getCurrentPlatform: () => "android",
+      getAndroidClient: () => ({
+        getCurrentActivity: () => "com.other.app/.Main",
+        exec: (_cmd: string) =>
+          "Total frames rendered: 50\nJanky frames: 1 (2.00%)\nHISTOGRAM: 8ms=50",
+      }),
+    });
+    const result = (await handler({ packageName: "com.explicit.pkg" }, ctx)) as { text: string };
+    expect(result.text).toContain("com.explicit.pkg");
+  });
+
+  it("parses raw per-frame nanosecond data and computes percentiles", async () => {
+    // Android gfxinfo framestats format (15 fields per line):
+    // FLAGS,INTENDED_VSYNC,VSYNC,OLDEST_INPUT_EVENT,NEWEST_INPUT_EVENT,
+    // HANDLE_INPUT_START,ANIMATION_START,PERFORM_TRAVERSALS_START,DRAW_START,
+    // SYNC_QUEUED,SYNC_START,ISSUE_DRAW_START,SWAP_BUFFERS,FRAME_COMPLETED,GPU_COMPLETED
+    //
+    // Regex in parseFrameStats: ^(\d+),(\d+),\d+(?:,\d+){10,},(\d+),(\d+)$
+    //   group1=FLAGS, group2=INTENDED_VSYNC, group3=FRAME_COMPLETED, group4=GPU_COMPLETED
+    //   Needs: FLAGS, INTENDED_VSYNC, VSYNC, then >=10 middle fields, FRAME_COMPLETED, GPU_COMPLETED
+    //   Minimum 15 fields total (13 commas after VSYNC field requires 10+ middle + 2 captured).
+    //
+    // frame time = (FRAME_COMPLETED - INTENDED_VSYNC) / 1_000_000 ms
+    const makeRawLine = (intendedVsync: number, frameTimeMs: number): string => {
+      const frameCompleted = intendedVsync + frameTimeMs * 1_000_000;
+      // 15 fields: FLAGS=0, INTENDED_VSYNC, VSYNC, 10 middle zeros, FRAME_COMPLETED, GPU_COMPLETED
+      return `0,${intendedVsync},${intendedVsync},0,0,0,0,0,0,0,0,0,0,${frameCompleted},${frameCompleted}`;
+    };
+
+    const base = 1_000_000_000;
+    const rawLines = [
+      makeRawLine(base, 5),
+      makeRawLine(base + 16_000_000, 8),
+      makeRawLine(base + 32_000_000, 10),
+      makeRawLine(base + 48_000_000, 12),
+      makeRawLine(base + 64_000_000, 15),
+      makeRawLine(base + 80_000_000, 16),
+      makeRawLine(base + 96_000_000, 20),
+      makeRawLine(base + 112_000_000, 25),
+      makeRawLine(base + 128_000_000, 30),
+      makeRawLine(base + 144_000_000, 50),
+    ];
+
+    const gfxOutput = [
+      "Total frames rendered: 10",
+      "Janky frames: 2 (20.00%)",
+      ...rawLines,
+    ].join("\n");
+
+    const ctx = mockCtx({
+      getCurrentPlatform: () => "android",
+      getAndroidClient: () => ({
+        getCurrentActivity: () => "com.test.app/.MainActivity",
+        exec: (cmd: string) => {
+          if (cmd.includes("framestats")) return gfxOutput;
+          return "";
+        },
+      }),
+    });
+
+    const result = (await handler({ packageName: "com.test.app" }, ctx)) as { text: string };
+    expect(result.text).toContain("p50:");
+    expect(result.text).toContain("p90:");
+    expect(result.text).toContain("p95:");
+    expect(result.text).toContain("p99:");
+    // Sorted frame times: [5,8,10,12,15,16,20,25,30,50]
+    // p50 = index 5 of 10 = 16ms, p90 = index 9 = 50ms
+    expect(result.text).toContain("p50: 16ms");
+    expect(result.text).toContain("p90: 50ms");
+  });
+
+  it("skips raw frames with FLAGS=1 (invalid marker)", async () => {
+    const base = 1_000_000_000;
+    // Must use 15-field format to match parseFrameStats regex
+    const makeRawLine = (flags: number, intendedVsync: number, frameTimeMs: number): string => {
+      const frameCompleted = intendedVsync + frameTimeMs * 1_000_000;
+      return `${flags},${intendedVsync},${intendedVsync},0,0,0,0,0,0,0,0,0,0,${frameCompleted},${frameCompleted}`;
+    };
+
+    const gfxOutput = [
+      "Total frames rendered: 3",
+      "Janky frames: 0 (0.00%)",
+      makeRawLine(1, base, 8),              // FLAGS=1 — should be skipped
+      makeRawLine(0, base + 16_000_000, 8), // valid
+      makeRawLine(1, base + 32_000_000, 8), // FLAGS=1 — should be skipped
+      makeRawLine(0, base + 48_000_000, 8), // valid
+    ].join("\n");
+
+    const ctx = mockCtx({
+      getCurrentPlatform: () => "android",
+      getAndroidClient: () => ({
+        getCurrentActivity: () => "com.test.app/.MainActivity",
+        exec: (cmd: string) => (cmd.includes("framestats") ? gfxOutput : ""),
+      }),
+    });
+
+    const result = (await handler({ packageName: "com.test.app" }, ctx)) as { text: string };
+    // Only 2 valid frames — result should still contain percentile section
+    expect(result.text).toContain("p50:");
+    // Both valid frames are 8ms — p50 should be 8ms
+    expect(result.text).toContain("8ms");
+  });
+
+  it("falls back to zeros when output is empty", async () => {
+    const ctx = mockCtx({
+      getCurrentPlatform: () => "android",
+      getAndroidClient: () => ({
+        getCurrentActivity: () => "com.test.app/.MainActivity",
+        exec: () => "",
+      }),
+    });
+
+    const result = (await handler({ packageName: "com.test.app" }, ctx)) as { text: string };
+    expect(result.text).toContain("Frame Statistics");
+    expect(result.text).toContain("Total frames: 0");
+    expect(result.text).toContain("p50: 0ms");
+  });
+
+  it("formats all jank cause fields in output", async () => {
+    const gfxOutput = `
+Total frames rendered: 300
+Janky frames: 15 (5.00%)
+Number Missed Vsync: 7
+Number High input latency: 2
+Number Slow UI thread: 3
+Number Slow bitmap uploads: 1
+Number Slow issue draw commands: 4
+Number Frame deadline missed: 5
+HISTOGRAM: 8ms=200 16ms=80 32ms=20
+`;
+    const ctx = mockCtx({
+      getCurrentPlatform: () => "android",
+      getAndroidClient: () => ({
+        getCurrentActivity: () => "com.test.app/.MainActivity",
+        exec: (cmd: string) => (cmd.includes("framestats") ? gfxOutput : ""),
+      }),
+    });
+
+    const result = (await handler({ packageName: "com.test.app" }, ctx)) as { text: string };
+    expect(result.text).toContain("Missed Vsync: 7");
+    expect(result.text).toContain("High input latency: 2");
+    expect(result.text).toContain("Slow UI thread: 3");
+    expect(result.text).toContain("Slow bitmap uploads: 1");
+    expect(result.text).toContain("Slow issue draw: 4");
+    expect(result.text).toContain("Frame deadline missed: 5");
+    expect(result.text).toContain("300");
+    expect(result.text).toContain("5.0%");
+  });
+});

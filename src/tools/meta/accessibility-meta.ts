@@ -27,6 +27,15 @@ const { meta, aliases } = createMetaTool({
       type: "boolean",
       description: "Compact output: one line per issue (default: false)",
     },
+    detailed: {
+      type: "boolean",
+      description: "Include category breakdown and action items (audit only, default: false)",
+    },
+    category: {
+      type: "string",
+      enum: ["labels", "touch-targets", "focus", "states"],
+      description: "Filter audit to specific category",
+    },
     text: {
       type: "string",
       description: "Find element by text content (check only)",

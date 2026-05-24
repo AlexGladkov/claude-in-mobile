@@ -83,11 +83,30 @@ export function parseUiHierarchy(xml: string): UiElement[] {
   return elements;
 }
 
+const ATTR_REGEXES: Record<string, RegExp> = {
+  "resource-id": /resource-id="([^"]*)"/,
+  "class": /class="([^"]*)"/,
+  "package": /package="([^"]*)"/,
+  "text": /text="([^"]*)"/,
+  "content-desc": /content-desc="([^"]*)"/,
+  "checkable": /checkable="([^"]*)"/,
+  "checked": /checked="([^"]*)"/,
+  "clickable": /clickable="([^"]*)"/,
+  "enabled": /enabled="([^"]*)"/,
+  "focusable": /focusable="([^"]*)"/,
+  "focused": /focused="([^"]*)"/,
+  "scrollable": /scrollable="([^"]*)"/,
+  "long-clickable": /long-clickable="([^"]*)"/,
+  "password": /password="([^"]*)"/,
+  "selected": /selected="([^"]*)"/,
+};
+
 /**
  * Extract attribute value from node string
  */
 function extractAttr(nodeStr: string, attrName: string): string {
-  const regex = new RegExp(`${attrName}="([^"]*)"`);
+  const regex = ATTR_REGEXES[attrName];
+  if (!regex) return "";
   const match = nodeStr.match(regex);
   return match?.[1] ?? "";
 }

@@ -37,6 +37,7 @@ export const ALL_HIDEABLE_MODULES: readonly string[] = [
   "browser", "desktop", "store",
   "visual", "recorder", "sync",
   "accessibility", "performance", "autopilot",
+  "sandbox", "intent", "sensor", "network",
 ];
 
 // ---------------------------------------------------------------------------
@@ -55,7 +56,7 @@ export const PROFILE_VISIBLE: Record<MobileProfile, readonly string[]> = {
 export const VALID_PROFILES: readonly MobileProfile[] = ["minimal", "core", "android", "web", "full"];
 
 // ---------------------------------------------------------------------------
-// Module metadata catalog — all 16 modules (including always-visible)
+// Module metadata catalog — all 20 modules (including always-visible)
 // ---------------------------------------------------------------------------
 
 export const MODULE_METADATA: readonly ModuleMeta[] = [
@@ -78,12 +79,18 @@ export const MODULE_METADATA: readonly ModuleMeta[] = [
   // Testing modules
   { name: "visual", description: "Visual regression testing — compare screenshots", category: "testing", actions: ["compare", "baseline", "diff", "report"] },
   { name: "accessibility", description: "Accessibility audit — WCAG checks, element validation", category: "testing", actions: ["audit", "check", "summary", "rules"] },
-  { name: "performance", description: "Performance monitoring — snapshots, baselines, crashes", category: "testing", actions: ["snapshot", "baseline", "compare", "monitor", "crashes"] },
+  { name: "performance", description: "Performance monitoring — snapshots, baselines, crashes, framestats", category: "testing", actions: ["snapshot", "baseline", "compare", "monitor", "crashes", "framestats"] },
 
   // Automation modules
   { name: "recorder", description: "Record and replay interaction sequences", category: "automation", actions: ["start", "stop", "play", "list", "delete"] },
   { name: "sync", description: "Multi-device synchronization and coordination", category: "automation", actions: ["pair", "unpair", "broadcast", "status"] },
   { name: "autopilot", description: "AI-driven test generation and self-healing", category: "automation", actions: ["explore", "generate", "heal", "status", "tests"] },
+
+  // Introspection modules
+  { name: "sandbox", description: "App sandbox access — SharedPreferences, SQLite, file operations via run-as", category: "testing", actions: ["prefs_read", "prefs_write", "sqlite_query", "file_list", "file_read"] },
+  { name: "intent", description: "Intent & deep link engine — am start/broadcast with typed extras", category: "platform", actions: ["start", "broadcast", "deeplink", "services"] },
+  { name: "sensor", description: "Sensor & environment simulation — GPS, battery, notifications, thermal", category: "testing", actions: ["location", "battery", "notifications", "thermal"] },
+  { name: "network", description: "Network layer — traffic stats, connectivity, proxy, airplane mode", category: "testing", actions: ["traffic", "connectivity", "proxy", "airplane"] },
 ];
 
 /** Quick lookup: module name -> metadata */

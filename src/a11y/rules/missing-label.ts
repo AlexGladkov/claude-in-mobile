@@ -1,5 +1,5 @@
 import type { UiElement } from "../../adb/ui-parser.js";
-import type { A11yRule, A11yIssue } from "../types.js";
+import type { A11yRule, A11yRuleRunResult, A11yIssue } from "../types.js";
 
 const CONTAINER_PATTERNS = ["Layout", "ViewGroup", "ScrollView"];
 
@@ -15,14 +15,17 @@ export const missingLabelRule: A11yRule = {
   description:
     "Clickable elements must have a text label or content description for screen readers.",
   platforms: ["android", "ios", "desktop"],
-  run(elements: UiElement[]): A11yIssue[] {
+  run(elements: UiElement[]): A11yRuleRunResult {
     const issues: A11yIssue[] = [];
+    let applicableCount = 0;
 
     for (const el of elements) {
       if (!el.clickable) continue;
       if (isContainer(el.className)) continue;
       // Invisible elements are skipped
       if (el.width <= 0 || el.height <= 0) continue;
+
+      applicableCount++;
 
       const hasContentDesc = el.contentDesc.trim().length > 0;
       const hasText = el.text.trim().length > 0;
@@ -67,6 +70,6 @@ export const missingLabelRule: A11yRule = {
       }
     }
 
-    return issues;
+    return { applicableCount, issues };
   },
 };

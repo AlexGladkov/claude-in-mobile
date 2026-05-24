@@ -1,5 +1,5 @@
 import type { UiElement } from "../../adb/ui-parser.js";
-import type { A11yRule, A11yIssue } from "../types.js";
+import type { A11yRule, A11yRuleRunResult, A11yIssue } from "../types.js";
 
 export const focusOrderRule: A11yRule = {
   id: "focus-order",
@@ -9,12 +9,15 @@ export const focusOrderRule: A11yRule = {
   description:
     "Clickable elements should be focusable so they can be reached via keyboard or switch navigation.",
   platforms: ["android", "ios", "desktop"],
-  run(elements: UiElement[]): A11yIssue[] {
+  run(elements: UiElement[]): A11yRuleRunResult {
     const issues: A11yIssue[] = [];
+    let applicableCount = 0;
 
     for (const el of elements) {
       if (!el.clickable) continue;
       if (el.width <= 0 || el.height <= 0) continue;
+
+      applicableCount++;
 
       if (!el.focusable) {
         issues.push({
@@ -34,6 +37,6 @@ export const focusOrderRule: A11yRule = {
       }
     }
 
-    return issues;
+    return { applicableCount, issues };
   },
 };

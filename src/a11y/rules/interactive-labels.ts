@@ -1,5 +1,5 @@
 import type { UiElement } from "../../adb/ui-parser.js";
-import type { A11yRule, A11yIssue } from "../types.js";
+import type { A11yRule, A11yRuleRunResult, A11yIssue } from "../types.js";
 
 export const interactiveLabelsRule: A11yRule = {
   id: "interactive-labels",
@@ -9,8 +9,9 @@ export const interactiveLabelsRule: A11yRule = {
   description:
     "Clickable ImageView and ImageButton elements must have a content description.",
   platforms: ["android", "ios", "desktop"],
-  run(elements: UiElement[]): A11yIssue[] {
+  run(elements: UiElement[]): A11yRuleRunResult {
     const issues: A11yIssue[] = [];
+    let applicableCount = 0;
 
     for (const el of elements) {
       if (!el.clickable) continue;
@@ -20,6 +21,8 @@ export const interactiveLabelsRule: A11yRule = {
         el.className.includes("ImageView") ||
         el.className.includes("ImageButton");
       if (!isImage) continue;
+
+      applicableCount++;
 
       if (el.contentDesc.trim().length === 0) {
         issues.push({
@@ -40,6 +43,6 @@ export const interactiveLabelsRule: A11yRule = {
       }
     }
 
-    return issues;
+    return { applicableCount, issues };
   },
 };
