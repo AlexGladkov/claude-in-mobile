@@ -4,7 +4,7 @@ import { performanceTools } from "../performance-tools.js";
 const { meta, aliases } = createMetaTool({
   name: "performance",
   description:
-    "Performance & Crash Monitor. snapshot: collect current metrics. baseline: save metrics for comparison. compare: PASS/FAIL against baseline. monitor: continuous sampling over duration. crashes: query crash/ANR logs.",
+    "Performance & Crash Monitor. snapshot: collect current metrics. baseline: save metrics for comparison. compare: PASS/FAIL against baseline. monitor: continuous sampling over duration. crashes: query crash/ANR logs. framestats: GPU frame rendering statistics with jank rate and percentiles (Android only).",
   tools: performanceTools,
   prefix: "performance_",
   extraSchema: {
