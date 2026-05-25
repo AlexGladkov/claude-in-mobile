@@ -38,7 +38,7 @@ export const interactionTools: ToolDefinition[] = [
       const deviceId = args.deviceId as string | undefined;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
 
-      const resolved = await resolveElementCoordinates(args, ctx, currentPlatform);
+      const resolved = await resolveElementCoordinates(args, ctx, currentPlatform, deviceId);
 
       if (!resolved) {
         throw new ValidationError("Please provide x,y coordinates, text, resourceId, label, or index.");
@@ -47,7 +47,7 @@ export const interactionTools: ToolDefinition[] = [
       // iOS element-based resolution — tap via element ID when rect was unavailable
       if (resolved.iosTapDone) {
         if (resolved.elementId) {
-          const iosClient = ctx.deviceManager.getIosClient();
+          const iosClient = ctx.deviceManager.getIosClient(deviceId);
           await iosClient.tapElement(resolved.elementId);
         }
         let result = `Tapped element: ${resolved.description}`;
@@ -99,7 +99,7 @@ export const interactionTools: ToolDefinition[] = [
       const interval = getNumber(args, "interval") ?? 100;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
 
-      const resolved = await resolveElementCoordinates(args, ctx, currentPlatform);
+      const resolved = await resolveElementCoordinates(args, ctx, currentPlatform, deviceId);
 
       if (!resolved) {
         throw new ValidationError("Please provide x,y coordinates, text, resourceId, or index.");
@@ -142,7 +142,7 @@ export const interactionTools: ToolDefinition[] = [
       const duration = getNumber(args, "duration") ?? 1000;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
 
-      const resolved = await resolveElementCoordinates(args, ctx, currentPlatform);
+      const resolved = await resolveElementCoordinates(args, ctx, currentPlatform, deviceId);
 
       if (!resolved) {
         throw new ValidationError("Please provide x,y coordinates, text, or label.");
@@ -153,7 +153,7 @@ export const interactionTools: ToolDefinition[] = [
         if (resolved.elementId) {
           // Use element center via WDA long press at (0,0) won't work — re-fetch rect or use coordinate-based approach
           // Since element was found but rect failed, perform long press via WDA actions at element
-          const iosClient = ctx.deviceManager.getIosClient();
+          const iosClient = ctx.deviceManager.getIosClient(deviceId);
           // Try getting rect one more time directly through WDA
           const rect = await iosClient.getElementRect(resolved.elementId);
           if (rect) {

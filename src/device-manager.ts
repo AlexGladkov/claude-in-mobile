@@ -505,20 +505,20 @@ export class DeviceManager {
 
   // ============ Raw client accessors (used by tools directly) ============
 
-  getAndroidClient(): AdbClient {
+  getAndroidClient(deviceId?: string): AdbClient {
     const adapter = this.adapters.get("android");
     if (!adapter || !(adapter instanceof AndroidAdapter)) {
       throw new Error("Android adapter is not available in this configuration.");
     }
-    return adapter.getClient();
+    return adapter.getClient(deviceId);
   }
 
-  getIosClient(): IosClient {
+  getIosClient(deviceId?: string): IosClient {
     const adapter = this.adapters.get("ios");
     if (!adapter || !(adapter instanceof IosAdapter)) {
       throw new Error("iOS adapter is not available in this configuration.");
     }
-    return adapter.getClient();
+    return adapter.getClient(deviceId);
   }
 
   getAuroraClient(): AuroraClient {

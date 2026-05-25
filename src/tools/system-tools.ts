@@ -25,7 +25,7 @@ export const systemTools: ToolDefinition[] = [
         return { text: "activity is only available for Android." };
       }
 
-      const activity = ctx.deviceManager.getAndroidClient().getCurrentActivity();
+      const activity = ctx.deviceManager.getAndroidClient(deviceId).getCurrentActivity();
       return { text: `Current activity: ${activity}` };
     },
   },
@@ -93,9 +93,9 @@ export const systemTools: ToolDefinition[] = [
       const sanitizedUrl = sanitizeForShell(url);
 
       if (currentPlatform === "android") {
-        ctx.deviceManager.getAndroidClient().shell(`am start -a android.intent.action.VIEW -d '${sanitizedUrl}'`);
+        ctx.deviceManager.getAndroidClient(deviceId).shell(`am start -a android.intent.action.VIEW -d '${sanitizedUrl}'`);
       } else if (currentPlatform === "ios") {
-        ctx.deviceManager.getIosClient().openUrl(url);
+        ctx.deviceManager.getIosClient(deviceId).openUrl(url);
       } else {
         return { text: `open_url is not supported for ${currentPlatform} platform. Supported: android, ios.` };
       }

@@ -109,7 +109,7 @@ export const uiTools: ToolDefinition[] = [
 
       if (currentPlatform === "ios") {
         try {
-          const iosClient = ctx.deviceManager.getIosClient();
+          const iosClient = ctx.deviceManager.getIosClient(deviceId);
           const elements = await iosClient.findElements({
             text: getString(args, "text"),
             label: getString(args, "label"),
@@ -286,7 +286,7 @@ export const uiTools: ToolDefinition[] = [
 
       if (currentPlatform === "android" || !currentPlatform) {
         try {
-          activity = ctx.deviceManager.getAndroidClient().getCurrentActivity();
+          activity = ctx.deviceManager.getAndroidClient(deviceId).getCurrentActivity();
         } catch (actErr: unknown) {
           const actMsg = actErr instanceof Error ? actErr.message : String(actErr);
           console.error(`[analyze_screen] Could not get current activity: ${actMsg}`);

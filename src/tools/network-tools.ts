@@ -151,7 +151,7 @@ export const networkTools: ToolDefinition[] = [
         return { text: ANDROID_ONLY_MSG("network_traffic") };
       }
 
-      const adb = ctx.deviceManager.getAndroidClient();
+      const adb = ctx.deviceManager.getAndroidClient(deviceId);
       const pkg = args.package as string | undefined;
 
       // ── Per-app mode ──
@@ -243,7 +243,7 @@ export const networkTools: ToolDefinition[] = [
         return { text: ANDROID_ONLY_MSG("network_connectivity") };
       }
 
-      const adb = ctx.deviceManager.getAndroidClient();
+      const adb = ctx.deviceManager.getAndroidClient(deviceId);
 
       // Limit dumpsys connectivity output — it can be thousands of lines
       const connRaw = adb.shell("dumpsys connectivity 2>/dev/null | head -n 80");
@@ -346,7 +346,7 @@ export const networkTools: ToolDefinition[] = [
         return { text: ANDROID_ONLY_MSG("network_proxy") };
       }
 
-      const adb = ctx.deviceManager.getAndroidClient();
+      const adb = ctx.deviceManager.getAndroidClient(deviceId);
       const host  = args.host  as string  | undefined;
       const port  = args.port  as number  | undefined;
       const clear = args.clear as boolean | undefined;
@@ -416,7 +416,7 @@ export const networkTools: ToolDefinition[] = [
         throw new ValidationError("enabled must be a boolean (true or false).");
       }
 
-      const adb = ctx.deviceManager.getAndroidClient();
+      const adb = ctx.deviceManager.getAndroidClient(deviceId);
       const value = enabled ? "1" : "0";
 
       // Write the setting

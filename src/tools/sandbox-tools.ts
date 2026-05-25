@@ -143,7 +143,7 @@ export const sandboxTools: ToolDefinition[] = [
       const pkg = args.package as string;
       validatePackageName(pkg);
 
-      const adb = ctx.deviceManager.getAndroidClient();
+      const adb = ctx.deviceManager.getAndroidClient(deviceId);
 
       // No file specified — list available preference files first.
       if (!args.file) {
@@ -315,7 +315,7 @@ export const sandboxTools: ToolDefinition[] = [
 
       const type = (args.type as string | undefined) ?? "string";
 
-      const adb = ctx.deviceManager.getAndroidClient();
+      const adb = ctx.deviceManager.getAndroidClient(deviceId);
       const xmlPath = `shared_prefs/${safeFile}.xml`;
 
       // Build sed replacement pattern based on type.
@@ -415,7 +415,7 @@ export const sandboxTools: ToolDefinition[] = [
       // then starting a new string: ' -> '\''
       const shellSafeQuery = query.replace(/'/g, "'\\''");
 
-      const adb = ctx.deviceManager.getAndroidClient();
+      const adb = ctx.deviceManager.getAndroidClient(deviceId);
       const dbRelPath = `databases/${rawDb}`;
       const dbAbsPath = `/data/data/${pkg}/databases/${rawDb}`;
 
@@ -511,7 +511,7 @@ export const sandboxTools: ToolDefinition[] = [
       validatePath(rawPath, "path");
       const safePath = sanitizeForShell(rawPath) || ".";
 
-      const adb = ctx.deviceManager.getAndroidClient();
+      const adb = ctx.deviceManager.getAndroidClient(deviceId);
 
       let output: string;
       try {
@@ -592,7 +592,7 @@ export const sandboxTools: ToolDefinition[] = [
         50_000,
       );
 
-      const adb = ctx.deviceManager.getAndroidClient();
+      const adb = ctx.deviceManager.getAndroidClient(deviceId);
 
       let content: string;
       try {

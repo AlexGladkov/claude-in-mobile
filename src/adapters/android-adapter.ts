@@ -34,8 +34,8 @@ export class AndroidAdapter
   }
 
   /** Raw client access -- needed by tools that call getAndroidClient(). */
-  getClient(): AdbClient {
-    return this.client;
+  getClient(deviceId?: string): AdbClient {
+    return this.clientFor(deviceId);
   }
 
   /** Return a client targeting deviceId without mutating global state. */

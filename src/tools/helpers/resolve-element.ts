@@ -57,11 +57,12 @@ export async function resolveElementCoordinates(
   args: Record<string, unknown>,
   ctx: ToolContext,
   currentPlatform: Platform | string | undefined,
+  deviceId?: string,
 ): Promise<ResolvedCoordinates | null> {
   // 1. iOS element-based resolution (precedence: label > text > coordinates)
   if (currentPlatform === "ios" && (args.label || args.text)) {
     try {
-      const iosClient = ctx.deviceManager.getIosClient();
+      const iosClient = ctx.deviceManager.getIosClient(deviceId);
       const element = await iosClient.findElement({
         text: args.text as string,
         label: args.label as string,
@@ -95,7 +96,7 @@ export async function resolveElementCoordinates(
     const idx = args.index as number;
     let elements = ctx.getCachedElements("android");
     if (elements.length === 0) {
-      const xml = await ctx.deviceManager.getUiHierarchyAsync("android");
+      const xml = await ctx.deviceManager.getUiHierarchyAsync("android", deviceId);
       elements = parseUiHierarchy(xml);
       ctx.setCachedElements("android", elements);
     }
@@ -113,7 +114,7 @@ export async function resolveElementCoordinates(
 
   // 3. Find by text or resourceId (Android only) -- device coords, no scale
   if ((args.text || args.resourceId) && currentPlatform === "android") {
-    const xml = await ctx.deviceManager.getUiHierarchyAsync("android");
+    const xml = await ctx.deviceManager.getUiHierarchyAsync("android", deviceId);
     const elements = parseUiHierarchy(xml);
     ctx.setCachedElements("android", elements);
 

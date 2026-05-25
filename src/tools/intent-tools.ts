@@ -222,7 +222,7 @@ export const intentTools: ToolDefinition[] = [
       if (pkg) parts.push(`-p ${pkg}`);
 
       const command = parts.join(" ");
-      const result = ctx.deviceManager.getAndroidClient().shell(command);
+      const result = ctx.deviceManager.getAndroidClient(deviceId).shell(command);
       return { text: truncateOutput(result || "Activity launched.") };
     },
   },
@@ -305,7 +305,7 @@ export const intentTools: ToolDefinition[] = [
       if (extras.length > 0) parts.push(buildExtrasArgs(extras));
 
       const command = parts.join(" ");
-      const result = ctx.deviceManager.getAndroidClient().shell(command);
+      const result = ctx.deviceManager.getAndroidClient(deviceId).shell(command);
       return { text: truncateOutput(result || "Broadcast sent.") };
     },
   },
@@ -364,7 +364,7 @@ export const intentTools: ToolDefinition[] = [
         if (pkg) parts.push(`-p ${pkg}`);
 
         const command = parts.join(" ");
-        const result = ctx.deviceManager.getAndroidClient().shell(command);
+        const result = ctx.deviceManager.getAndroidClient(deviceId).shell(command);
         return { text: truncateOutput(result || `Deep link opened: ${uri}`) };
       }
 
@@ -373,7 +373,7 @@ export const intentTools: ToolDefinition[] = [
         if (uri.startsWith("http://") || uri.startsWith("https://")) {
           validateUrl(uri);
         }
-        ctx.deviceManager.getIosClient().openUrl(uri);
+        ctx.deviceManager.getIosClient(deviceId).openUrl(uri);
         return { text: `Deep link opened on iOS: ${uri}` };
       }
 
@@ -424,7 +424,7 @@ export const intentTools: ToolDefinition[] = [
         ? `dumpsys activity services ${pkg}`
         : "dumpsys activity services";
 
-      const raw = ctx.deviceManager.getAndroidClient().shell(command);
+      const raw = ctx.deviceManager.getAndroidClient(deviceId).shell(command);
 
       // Parse service entries — each block starts with "ServiceRecord{"
       const lines = (raw ?? "").split("\n");

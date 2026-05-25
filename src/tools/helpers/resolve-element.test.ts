@@ -185,7 +185,7 @@ describe("resolveElementCoordinates — Android with index", () => {
     const ctx = makeCtx({ getCachedElements, setCachedElements, getUiHierarchyAsync });
     const result = await resolveElementCoordinates({ index: 0 }, ctx, "android");
 
-    expect(getUiHierarchyAsync).toHaveBeenCalledWith("android");
+    expect(getUiHierarchyAsync).toHaveBeenCalledWith("android", undefined);
     expect(result).not.toBeNull();
     // bounds [20,10][120,60] => centerX = (20+120)/2 = 70, centerY = (10+60)/2 = 35
     expect(result!.x).toBe(70);
@@ -217,7 +217,7 @@ describe("resolveElementCoordinates — Android with text", () => {
     const ctx = makeCtx({ getUiHierarchyAsync, setCachedElements });
     const result = await resolveElementCoordinates({ text: "Login" }, ctx, "android");
 
-    expect(getUiHierarchyAsync).toHaveBeenCalledWith("android");
+    expect(getUiHierarchyAsync).toHaveBeenCalledWith("android", undefined);
     expect(result).not.toBeNull();
     // centerX = 100, centerY = 50
     expect(result!.x).toBe(100);

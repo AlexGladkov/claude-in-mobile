@@ -34,8 +34,8 @@ export class IosAdapter
   }
 
   /** Raw client access -- needed by tools that call getIosClient(). */
-  getClient(): IosClient {
-    return this.client;
+  getClient(deviceId?: string): IosClient {
+    return this.clientFor(deviceId);
   }
 
   /** Return a client targeting deviceId without mutating global state. */

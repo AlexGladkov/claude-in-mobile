@@ -47,9 +47,10 @@ async function collectSnapshot(
   ctx: Parameters<ToolDefinition["handler"]>[1],
   platform: string,
   packageName?: string,
+  deviceId?: string,
 ): Promise<PerfSnapshot> {
   if (platform === "android") {
-    const adb = ctx.deviceManager.getAndroidClient();
+    const adb = ctx.deviceManager.getAndroidClient(deviceId);
     let pkg = packageName;
     if (!pkg) {
       pkg = detectForegroundPackage(adb);
@@ -163,7 +164,7 @@ export const performanceTools: ToolDefinition[] = [
       const platform = resolvePlatform(args.platform as string | undefined, ctx);
       const packageName = args.packageName as string | undefined;
 
-      const snapshot = await collectSnapshot(ctx, platform, packageName);
+      const snapshot = await collectSnapshot(ctx, platform, packageName, deviceId);
       const text = formatSnapshot(snapshot);
 
       return { text: truncateOutput(text) };
@@ -221,7 +222,7 @@ export const performanceTools: ToolDefinition[] = [
       // Collect multiple samples and average
       const snapshots: PerfSnapshot[] = [];
       for (let i = 0; i < sampleCount; i++) {
-        snapshots.push(await collectSnapshot(ctx, platform, packageName));
+        snapshots.push(await collectSnapshot(ctx, platform, packageName, deviceId));
         if (i < sampleCount - 1) {
           await new Promise((r) => setTimeout(r, 500));
         }
@@ -293,7 +294,7 @@ export const performanceTools: ToolDefinition[] = [
       };
 
       const baseline = await getStore().get(name, platform);
-      const current = await collectSnapshot(ctx, platform, packageName);
+      const current = await collectSnapshot(ctx, platform, packageName, deviceId);
 
       const metrics = buildCompareMetrics(baseline.snapshot, current, thresholds);
       const hasFail = metrics.some((m) => m.status === "FAIL");
@@ -365,7 +366,7 @@ export const performanceTools: ToolDefinition[] = [
 
       while (Date.now() - startTime < duration) {
         try {
-          snapshots.push(await collectSnapshot(ctx, platform, packageName));
+          snapshots.push(await collectSnapshot(ctx, platform, packageName, deviceId));
         } catch (e: unknown) {
           const msg = e instanceof Error ? e.message : String(e);
           warnings.push(`Sample failed: ${msg.slice(0, 100)}`);
@@ -419,7 +420,7 @@ export const performanceTools: ToolDefinition[] = [
       const platform = resolvePlatform(args.platform as string | undefined, ctx);
       const packageName = args.packageName as string | undefined;
 
-      const snapshot = await collectSnapshot(ctx, platform, packageName);
+      const snapshot = await collectSnapshot(ctx, platform, packageName, deviceId);
       const text = formatCrashes(snapshot.crashes, platform);
       const hasCrashes = snapshot.crashes.length > 0;
 
@@ -462,7 +463,7 @@ export const performanceTools: ToolDefinition[] = [
         );
       }
 
-      const adb = ctx.deviceManager.getAndroidClient();
+      const adb = ctx.deviceManager.getAndroidClient(deviceId);
       let pkg = args.packageName as string | undefined;
       if (!pkg) {
         pkg = detectForegroundPackage(adb);
