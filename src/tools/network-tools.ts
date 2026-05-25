@@ -139,11 +139,13 @@ export const networkTools: ToolDefinition[] = [
             description:
               "App package name (e.g. com.example.app). Omit to show global interface totals.",
           },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: [],
       },
     },
     handler: async (args, ctx) => {
+      const deviceId = args.deviceId as string | undefined;
       const platform = ctx.deviceManager.getCurrentPlatform();
       if (platform !== "android") {
         return { text: ANDROID_ONLY_MSG("network_traffic") };
@@ -228,11 +230,14 @@ export const networkTools: ToolDefinition[] = [
         "Get current network connectivity info: active network type (WiFi/Mobile/etc), connection state, IP address, DNS servers, and basic WiFi details (SSID, RSSI). Android only.",
       inputSchema: {
         type: "object",
-        properties: {},
+        properties: {
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
+        },
         required: [],
       },
     },
     handler: async (args, ctx) => {
+      const deviceId = args.deviceId as string | undefined;
       const platform = ctx.deviceManager.getCurrentPlatform();
       if (platform !== "android") {
         return { text: ANDROID_ONLY_MSG("network_connectivity") };
@@ -329,11 +334,13 @@ export const networkTools: ToolDefinition[] = [
             type: "boolean",
             description: "Clear the current proxy setting.",
           },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: [],
       },
     },
     handler: async (args, ctx) => {
+      const deviceId = args.deviceId as string | undefined;
       const platform = ctx.deviceManager.getCurrentPlatform();
       if (platform !== "android") {
         return { text: ANDROID_ONLY_MSG("network_proxy") };
@@ -392,11 +399,13 @@ export const networkTools: ToolDefinition[] = [
             type: "boolean",
             description: "true to enable airplane mode, false to disable it.",
           },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["enabled"],
       },
     },
     handler: async (args, ctx) => {
+      const deviceId = args.deviceId as string | undefined;
       const platform = ctx.deviceManager.getCurrentPlatform();
       if (platform !== "android") {
         return { text: ANDROID_ONLY_MSG("network_airplane") };

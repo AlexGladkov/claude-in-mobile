@@ -128,11 +128,13 @@ export const sandboxTools: ToolDefinition[] = [
             enum: ["android"],
             description: "Target platform. Sandbox access is Android-only.",
           },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["package"],
       },
     },
     handler: async (args, ctx) => {
+      const deviceId = args.deviceId as string | undefined;
       const platform = (args.platform as string | undefined) ?? ctx.deviceManager.getCurrentPlatform();
       if (platform !== "android") {
         return { text: "sandbox_prefs_read is only available on Android.", isError: true };
@@ -280,11 +282,13 @@ export const sandboxTools: ToolDefinition[] = [
             enum: ["android"],
             description: "Target platform. Sandbox access is Android-only.",
           },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["package", "file", "key", "value"],
       },
     },
     handler: async (args, ctx) => {
+      const deviceId = args.deviceId as string | undefined;
       const platform = (args.platform as string | undefined) ?? ctx.deviceManager.getCurrentPlatform();
       if (platform !== "android") {
         return { text: "sandbox_prefs_write is only available on Android.", isError: true };
@@ -385,11 +389,13 @@ export const sandboxTools: ToolDefinition[] = [
             enum: ["android"],
             description: "Target platform. Sandbox access is Android-only.",
           },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["package", "database", "query"],
       },
     },
     handler: async (args, ctx) => {
+      const deviceId = args.deviceId as string | undefined;
       const platform = (args.platform as string | undefined) ?? ctx.deviceManager.getCurrentPlatform();
       if (platform !== "android") {
         return { text: "sandbox_sqlite_query is only available on Android.", isError: true };
@@ -486,11 +492,13 @@ export const sandboxTools: ToolDefinition[] = [
             enum: ["android"],
             description: "Target platform. Sandbox access is Android-only.",
           },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["package"],
       },
     },
     handler: async (args, ctx) => {
+      const deviceId = args.deviceId as string | undefined;
       const platform = (args.platform as string | undefined) ?? ctx.deviceManager.getCurrentPlatform();
       if (platform !== "android") {
         return { text: "sandbox_file_list is only available on Android.", isError: true };
@@ -557,11 +565,13 @@ export const sandboxTools: ToolDefinition[] = [
             enum: ["android"],
             description: "Target platform. Sandbox access is Android-only.",
           },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["package", "path"],
       },
     },
     handler: async (args, ctx) => {
+      const deviceId = args.deviceId as string | undefined;
       const platform = (args.platform as string | undefined) ?? ctx.deviceManager.getCurrentPlatform();
       if (platform !== "android") {
         return { text: "sandbox_file_read is only available on Android.", isError: true };

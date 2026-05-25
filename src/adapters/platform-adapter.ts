@@ -34,55 +34,56 @@ export interface CorePlatformAdapter {
   autoDetectDevice(): Device | undefined;
 
   // -- Core interaction --
-  tap(x: number, y: number, targetPid?: number): Promise<void>;
-  doubleTap(x: number, y: number, intervalMs?: number): Promise<void>;
-  longPress(x: number, y: number, durationMs?: number): Promise<void>;
-  swipe(x1: number, y1: number, x2: number, y2: number, durationMs?: number): Promise<void>;
-  swipeDirection(direction: "up" | "down" | "left" | "right"): Promise<void>;
-  inputText(text: string, targetPid?: number): Promise<void>;
-  pressKey(key: string, targetPid?: number): Promise<void>;
+  tap(x: number, y: number, targetPid?: number, deviceId?: string): Promise<void>;
+  doubleTap(x: number, y: number, intervalMs?: number, deviceId?: string): Promise<void>;
+  longPress(x: number, y: number, durationMs?: number, deviceId?: string): Promise<void>;
+  swipe(x1: number, y1: number, x2: number, y2: number, durationMs?: number, deviceId?: string): Promise<void>;
+  swipeDirection(direction: "up" | "down" | "left" | "right", deviceId?: string): Promise<void>;
+  inputText(text: string, targetPid?: number, deviceId?: string): Promise<void>;
+  pressKey(key: string, targetPid?: number, deviceId?: string): Promise<void>;
 
   // -- Screenshot --
   screenshotAsync(
     compress: boolean,
     options?: CompressOptions & { monitorIndex?: number },
+    deviceId?: string,
   ): Promise<{ data: string; mimeType: string }>;
-  getScreenshotBufferAsync(): Promise<Buffer>;
+  getScreenshotBufferAsync(deviceId?: string): Promise<Buffer>;
 
   // -- UI --
-  getUiHierarchy(): Promise<string>;
+  getUiHierarchy(deviceId?: string): Promise<string>;
 
   // -- System info --
-  getSystemInfo(): Promise<string>;
+  getSystemInfo(deviceId?: string): Promise<string>;
 }
 
 // ============ App management capability ============
 
 export interface AppManagementAdapter {
-  launchApp(packageOrBundleId: string): string | Promise<string>;
-  stopApp(packageOrBundleId: string): void;
-  installApp(path: string): string;
+  launchApp(packageOrBundleId: string, deviceId?: string): string | Promise<string>;
+  stopApp(packageOrBundleId: string, deviceId?: string): void;
+  installApp(path: string, deviceId?: string): string;
 }
 
 // ============ Permission management capability ============
 
 export interface PermissionAdapter {
-  grantPermission(packageOrBundleId: string, permission: string): string;
-  revokePermission(packageOrBundleId: string, permission: string): string;
-  resetPermissions(packageOrBundleId: string): string;
+  grantPermission(packageOrBundleId: string, permission: string, deviceId?: string): string;
+  revokePermission(packageOrBundleId: string, permission: string, deviceId?: string): string;
+  resetPermissions(packageOrBundleId: string, deviceId?: string): string;
 }
 
 // ============ Shell / logs capability ============
 
 export interface ShellAdapter {
-  shell(command: string): string;
+  shell(command: string, deviceId?: string): string;
   getLogs(options: {
     level?: string;
     tag?: string;
     lines?: number;
     package?: string;
-  }): string;
-  clearLogs(): string;
+  }, deviceId?: string): string;
+  clearLogs(deviceId?: string): string;
 }
 
 // ============ Legacy sync screenshot (Android / iOS / Aurora only) ============

@@ -14,18 +14,21 @@ export const permissionTools: ToolDefinition[] = [
           package: { type: "string", description: "Package name (Android) or bundle ID (iOS)" },
           permission: { type: "string", description: "Permission to grant. Android: android.permission.CAMERA, android.permission.ACCESS_FINE_LOCATION, etc. iOS: camera, microphone, photos, location, contacts, calendar, reminders, motion, health, speech-recognition" },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["package", "permission"],
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       validatePackageName(args.package as string);
       validatePermission(args.permission as string);
       const result = ctx.deviceManager.grantPermission(
         args.package as string,
         args.permission as string,
-        platform
+        platform,
+        deviceId
       );
       return { text: result };
     },
@@ -40,18 +43,21 @@ export const permissionTools: ToolDefinition[] = [
           package: { type: "string", description: "Package name (Android) or bundle ID (iOS)" },
           permission: { type: "string", description: "Permission to revoke. Same values as grant_permission" },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["package", "permission"],
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       validatePackageName(args.package as string);
       validatePermission(args.permission as string);
       const result = ctx.deviceManager.revokePermission(
         args.package as string,
         args.permission as string,
-        platform
+        platform,
+        deviceId
       );
       return { text: result };
     },
@@ -65,16 +71,19 @@ export const permissionTools: ToolDefinition[] = [
         properties: {
           package: { type: "string", description: "Package name (Android) or bundle ID (iOS)" },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["package"],
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       validatePackageName(args.package as string);
       const result = ctx.deviceManager.resetPermissions(
         args.package as string,
-        platform
+        platform,
+        deviceId
       );
       return { text: result };
     },

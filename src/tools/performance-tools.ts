@@ -154,10 +154,12 @@ export const performanceTools: ToolDefinition[] = [
             type: "string",
             description: "App package name (Android). Auto-detected from foreground if not provided.",
           },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
       },
     },
     handler: async (args, ctx) => {
+      const deviceId = args.deviceId as string | undefined;
       const platform = resolvePlatform(args.platform as string | undefined, ctx);
       const packageName = args.packageName as string | undefined;
 
@@ -200,11 +202,13 @@ export const performanceTools: ToolDefinition[] = [
             description: "Number of samples to average (default: 3, max: 10)",
             default: 3,
           },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["name"],
       },
     },
     handler: async (args, ctx) => {
+      const deviceId = args.deviceId as string | undefined;
       const name = args.name as string;
       if (!name) throw new ValidationError("name is required for baseline");
       validateBaselineName(name, "baseline_name");
@@ -268,11 +272,13 @@ export const performanceTools: ToolDefinition[] = [
             description: "Max allowed FPS drop % (default: 10)",
             default: 10,
           },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["name"],
       },
     },
     handler: async (args, ctx) => {
+      const deviceId = args.deviceId as string | undefined;
       const name = args.name as string;
       if (!name) throw new ValidationError("name is required for compare");
       validateBaselineName(name, "baseline_name");
@@ -335,10 +341,12 @@ export const performanceTools: ToolDefinition[] = [
             description: "Sampling interval in ms (default: 1000, min: 500)",
             default: 1000,
           },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
       },
     },
     handler: async (args, ctx) => {
+      const deviceId = args.deviceId as string | undefined;
       const platform = resolvePlatform(args.platform as string | undefined, ctx);
       const packageName = args.packageName as string | undefined;
 
@@ -402,10 +410,12 @@ export const performanceTools: ToolDefinition[] = [
             type: "string",
             description: "App package name (Android). Auto-detected if not provided.",
           },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
       },
     },
     handler: async (args, ctx) => {
+      const deviceId = args.deviceId as string | undefined;
       const platform = resolvePlatform(args.platform as string | undefined, ctx);
       const packageName = args.packageName as string | undefined;
 
@@ -438,10 +448,12 @@ export const performanceTools: ToolDefinition[] = [
             type: "string",
             description: "App package name. Auto-detected from foreground if not provided.",
           },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
       },
     },
     handler: async (args, ctx) => {
+      const deviceId = args.deviceId as string | undefined;
       const platform = resolvePlatform(args.platform as string | undefined, ctx);
 
       if (platform !== "android") {

@@ -30,17 +30,26 @@ export class IosClient {
     this.wdaClient = undefined;
   }
 
-  private async ensureWDA(): Promise<WDAClient> {
-    if (!this.deviceId) {
+  private async ensureWDA(deviceIdOverride?: string): Promise<WDAClient> {
+    const effectiveId = deviceIdOverride ?? this.deviceId;
+
+    if (!effectiveId) {
       const booted = this.getBootedDevices();
       if (booted.length === 0) {
         throw new Error("No booted iOS simulator found. Boot a simulator first.");
       }
       this.deviceId = booted[0].id;
+      this.wdaClient = await this.wdaManager.ensureWDAReady(this.deviceId);
+      return this.wdaClient;
+    }
+
+    // Per-call override: don't cache on instance if different from default
+    if (deviceIdOverride && deviceIdOverride !== this.deviceId) {
+      return this.wdaManager.ensureWDAReady(deviceIdOverride);
     }
 
     if (!this.wdaClient) {
-      this.wdaClient = await this.wdaManager.ensureWDAReady(this.deviceId);
+      this.wdaClient = await this.wdaManager.ensureWDAReady(effectiveId);
     }
     return this.wdaClient;
   }
@@ -70,6 +79,11 @@ export class IosClient {
    */
   private get targetDevice(): string {
     return this.deviceId ?? "booted";
+  }
+
+  /** Resolve target device for a per-call override or fall back to instance default. */
+  private targetDeviceFor(deviceIdOverride?: string): string {
+    return deviceIdOverride ?? this.deviceId ?? "booted";
   }
 
   /**
@@ -145,10 +159,11 @@ export class IosClient {
   /**
    * Take screenshot and return raw PNG buffer
    */
-  screenshotRaw(): Buffer {
+  screenshotRaw(deviceIdOverride?: string): Buffer {
+    const target = this.targetDeviceFor(deviceIdOverride);
     const tmpFile = join(tmpdir(), `ios-screenshot-${Date.now()}.png`);
     try {
-      this.exec(`io ${this.targetDevice} screenshot "${tmpFile}"`);
+      this.exec(`io ${target} screenshot "${tmpFile}"`);
       return readFileSync(tmpFile);
     } finally {
       try { unlinkSync(tmpFile); } catch {}
@@ -158,16 +173,16 @@ export class IosClient {
   /**
    * Take screenshot and return as base64 (legacy)
    */
-  screenshot(): string {
-    return this.screenshotRaw().toString("base64");
+  screenshot(deviceIdOverride?: string): string {
+    return this.screenshotRaw(deviceIdOverride).toString("base64");
   }
 
   /**
    * Tap at coordinates
    */
-  async tap(x: number, y: number): Promise<void> {
+  async tap(x: number, y: number, deviceIdOverride?: string): Promise<void> {
     try {
-      const wdaClient = await this.ensureWDA();
+      const wdaClient = await this.ensureWDA(deviceIdOverride);
       await wdaClient.tapByCoordinates(x, y);
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -183,9 +198,9 @@ export class IosClient {
   /**
    * Swipe gesture
    */
-  async swipe(x1: number, y1: number, x2: number, y2: number, durationMs: number = 300): Promise<void> {
+  async swipe(x1: number, y1: number, x2: number, y2: number, durationMs: number = 300, deviceIdOverride?: string): Promise<void> {
     try {
-      const wdaClient = await this.ensureWDA();
+      const wdaClient = await this.ensureWDA(deviceIdOverride);
       await wdaClient.swipe(x1, y1, x2, y2, durationMs);
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -201,9 +216,9 @@ export class IosClient {
   /**
    * Long press at coordinates via WDA Actions API
    */
-  async longPress(x: number, y: number, durationMs: number = 1000): Promise<void> {
+  async longPress(x: number, y: number, durationMs: number = 1000, deviceIdOverride?: string): Promise<void> {
     try {
-      const wdaClient = await this.ensureWDA();
+      const wdaClient = await this.ensureWDA(deviceIdOverride);
       await wdaClient.longPress(x, y, durationMs);
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -247,9 +262,9 @@ export class IosClient {
   /**
    * Input text via WDA (types into the currently focused element)
    */
-  async inputText(text: string): Promise<void> {
+  async inputText(text: string, deviceIdOverride?: string): Promise<void> {
     try {
-      const wdaClient = await this.ensureWDA();
+      const wdaClient = await this.ensureWDA(deviceIdOverride);
       await wdaClient.typeText(text);
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -290,17 +305,17 @@ export class IosClient {
   /**
    * Launch app by bundle ID
    */
-  launchApp(bundleId: string): string {
-    this.exec(`launch ${this.targetDevice} ${bundleId}`);
+  launchApp(bundleId: string, deviceIdOverride?: string): string {
+    this.exec(`launch ${this.targetDeviceFor(deviceIdOverride)} ${bundleId}`);
     return `Launched ${bundleId}`;
   }
 
   /**
    * Terminate app
    */
-  stopApp(bundleId: string): void {
+  stopApp(bundleId: string, deviceIdOverride?: string): void {
     try {
-      this.exec(`terminate ${this.targetDevice} ${bundleId}`);
+      this.exec(`terminate ${this.targetDeviceFor(deviceIdOverride)} ${bundleId}`);
     } catch {
       // App might not be running
     }
@@ -326,9 +341,9 @@ export class IosClient {
    * Get UI hierarchy (limited on iOS simulator)
    * Returns accessibility info if available
    */
-  async getUiHierarchy(): Promise<string> {
+  async getUiHierarchy(deviceIdOverride?: string): Promise<string> {
     try {
-      const wdaClient = await this.ensureWDA();
+      const wdaClient = await this.ensureWDA(deviceIdOverride);
       const tree = await wdaClient.getAccessibleSource();
       return JSON.stringify(tree, null, 2);
     } catch (error: unknown) {

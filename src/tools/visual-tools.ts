@@ -70,11 +70,13 @@ export const visualTools: ToolDefinition[] = [
           tags: { type: "array", items: { type: "string" }, description: "Tags for grouping" },
           overwrite: { type: "boolean", description: "Overwrite existing baseline (default: false)", default: false },
           waitForStable: { type: "boolean", description: "Wait for UI stabilization (default: true)", default: true },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["name"],
       },
     },
     handler: async (args, ctx) => {
+      const deviceId = args.deviceId as string | undefined;
       const name = args.name as string;
       if (!name) throw new ValidationError("name is required for baseline_save");
       const platform = args.platform as Platform | undefined;
@@ -122,11 +124,13 @@ export const visualTools: ToolDefinition[] = [
             description: "Regions to exclude (e.g. status bar, clock)",
           },
           waitForStable: { type: "boolean", description: "Wait for UI stabilization (default: true)", default: true },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["name"],
       },
     },
     handler: async (args, ctx) => {
+      const deviceId = args.deviceId as string | undefined;
       const name = args.name as string;
       if (!name) throw new ValidationError("name is required for compare");
       const platform = args.platform as Platform | undefined;
@@ -176,11 +180,13 @@ export const visualTools: ToolDefinition[] = [
           },
           reason: { type: "string", description: "Reason for update (recorded in metadata)" },
           waitForStable: { type: "boolean", description: "Wait for UI stabilization (default: true)", default: true },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["name"],
       },
     },
     handler: async (args, ctx) => {
+      const deviceId = args.deviceId as string | undefined;
       const name = args.name as string;
       if (!name) throw new ValidationError("name is required for baseline_update");
       const platform = args.platform as Platform | undefined;
@@ -208,10 +214,12 @@ export const visualTools: ToolDefinition[] = [
             description: "Filter by platform",
           },
           tag: { type: "string", description: "Filter by tag" },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
       },
     },
     handler: async (args) => {
+      const deviceId = args.deviceId as string | undefined;
       const platform = args.platform as string | undefined;
       const tag = args.tag as string | undefined;
       const entries = await getStore().list(platform, tag);
@@ -240,11 +248,13 @@ export const visualTools: ToolDefinition[] = [
             type: "string",
             enum: ["android", "ios", "desktop", "aurora", "browser"],
           },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["name"],
       },
     },
     handler: async (args, ctx) => {
+      const deviceId = args.deviceId as string | undefined;
       const name = args.name as string;
       if (!name) throw new ValidationError("name is required for delete");
       const platform = (args.platform as string) ?? ctx.deviceManager.getCurrentPlatform() ?? "android";
@@ -269,10 +279,12 @@ export const visualTools: ToolDefinition[] = [
           tag: { type: "string", description: "Filter baselines by tag" },
           threshold: { type: "number", description: "Max allowed change % (default: 1.0)", default: 1.0 },
           stopOnFail: { type: "boolean", description: "Stop on first failure (default: false)", default: false },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
       },
     },
     handler: async (args, ctx) => {
+      const deviceId = args.deviceId as string | undefined;
       const platform = args.platform as string | undefined;
       const tag = args.tag as string | undefined;
       const threshold = (args.threshold as number) ?? 1.0;

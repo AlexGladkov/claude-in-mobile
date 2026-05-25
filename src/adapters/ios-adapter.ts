@@ -38,6 +38,12 @@ export class IosAdapter
     return this.client;
   }
 
+  /** Return a client targeting deviceId without mutating global state. */
+  private clientFor(deviceId?: string): IosClient {
+    if (!deviceId || deviceId === this._selectedDeviceId) return this.client;
+    return new IosClient(deviceId);
+  }
+
   // ============ Device management ============
 
   listDevices(): Device[] {
@@ -74,19 +80,19 @@ export class IosAdapter
 
   // ============ Core actions ============
 
-  async tap(x: number, y: number): Promise<void> {
-    await this.client.tap(x, y);
+  async tap(x: number, y: number, _targetPid?: number, deviceId?: string): Promise<void> {
+    await this.clientFor(deviceId).tap(x, y, deviceId);
   }
 
-  async doubleTap(x: number, y: number, intervalMs: number = 100): Promise<void> {
-    // iOS: two taps with interval
-    await this.client.tap(x, y);
+  async doubleTap(x: number, y: number, intervalMs: number = 100, deviceId?: string): Promise<void> {
+    const c = this.clientFor(deviceId);
+    await c.tap(x, y, deviceId);
     await new Promise(resolve => setTimeout(resolve, intervalMs));
-    await this.client.tap(x, y);
+    await c.tap(x, y, deviceId);
   }
 
-  async longPress(x: number, y: number, durationMs: number = 1000): Promise<void> {
-    await this.client.longPress(x, y, durationMs);
+  async longPress(x: number, y: number, durationMs: number = 1000, deviceId?: string): Promise<void> {
+    await this.clientFor(deviceId).longPress(x, y, durationMs, deviceId);
   }
 
   async swipe(
@@ -95,16 +101,17 @@ export class IosAdapter
     x2: number,
     y2: number,
     durationMs: number = 300,
+    deviceId?: string,
   ): Promise<void> {
-    await this.client.swipe(x1, y1, x2, y2, durationMs);
+    await this.clientFor(deviceId).swipe(x1, y1, x2, y2, durationMs, deviceId);
   }
 
-  async swipeDirection(direction: "up" | "down" | "left" | "right"): Promise<void> {
-    await this.client.swipeDirection(direction);
+  async swipeDirection(direction: "up" | "down" | "left" | "right", deviceId?: string): Promise<void> {
+    await this.clientFor(deviceId).swipeDirection(direction);
   }
 
-  async inputText(text: string): Promise<void> {
-    await this.client.inputText(text);
+  async inputText(text: string, _targetPid?: number, deviceId?: string): Promise<void> {
+    await this.clientFor(deviceId).inputText(text, deviceId);
   }
 
   async pressKey(key: string): Promise<void> {
@@ -116,16 +123,17 @@ export class IosAdapter
   async screenshotAsync(
     compress: boolean = true,
     options?: CompressOptions & { monitorIndex?: number },
+    deviceId?: string,
   ): Promise<{ data: string; mimeType: string }> {
-    const buffer = this.client.screenshotRaw();
+    const buffer = this.clientFor(deviceId).screenshotRaw(deviceId);
     if (compress) {
       return compressScreenshot(buffer, options);
     }
     return { data: buffer.toString("base64"), mimeType: "image/png" };
   }
 
-  async getScreenshotBufferAsync(): Promise<Buffer> {
-    return this.client.screenshotRaw();
+  async getScreenshotBufferAsync(deviceId?: string): Promise<Buffer> {
+    return this.clientFor(deviceId).screenshotRaw(deviceId);
   }
 
   screenshotRaw(): string {
@@ -134,18 +142,18 @@ export class IosAdapter
 
   // ============ UI ============
 
-  async getUiHierarchy(): Promise<string> {
-    return this.client.getUiHierarchy();
+  async getUiHierarchy(deviceId?: string): Promise<string> {
+    return this.clientFor(deviceId).getUiHierarchy(deviceId);
   }
 
   // ============ App management (AppManagementAdapter) ============
 
-  launchApp(bundleId: string): string {
-    return this.client.launchApp(bundleId);
+  launchApp(bundleId: string, deviceId?: string): string {
+    return this.clientFor(deviceId).launchApp(bundleId, deviceId);
   }
 
-  stopApp(bundleId: string): void {
-    this.client.stopApp(bundleId);
+  stopApp(bundleId: string, deviceId?: string): void {
+    this.clientFor(deviceId).stopApp(bundleId, deviceId);
   }
 
   installApp(path: string): string {

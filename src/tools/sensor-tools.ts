@@ -100,11 +100,13 @@ export const sensorTools: ToolDefinition[] = [
             enum: ["android", "ios"],
             description: "Target platform. If not specified, uses the active target.",
           },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["latitude", "longitude"],
       },
     },
     handler: async (args, ctx) => {
+      const deviceId = args.deviceId as string | undefined;
       const platform = (args.platform as Platform | undefined) ?? ctx.deviceManager.getCurrentPlatform();
       const lat = validateNumber(args.latitude, "latitude");
       const lon = validateNumber(args.longitude, "longitude");
@@ -217,10 +219,12 @@ export const sensorTools: ToolDefinition[] = [
             enum: ["android", "ios"],
             description: "Target platform. If not specified, uses the active target.",
           },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
       },
     },
     handler: async (args, ctx) => {
+      const deviceId = args.deviceId as string | undefined;
       const platform = (args.platform as Platform | undefined) ?? ctx.deviceManager.getCurrentPlatform();
 
       if (platform !== "android") {
@@ -306,10 +310,12 @@ export const sensorTools: ToolDefinition[] = [
             enum: ["android", "ios"],
             description: "Target platform. If not specified, uses the active target.",
           },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
       },
     },
     handler: async (args, ctx) => {
+      const deviceId = args.deviceId as string | undefined;
       const platform = (args.platform as Platform | undefined) ?? ctx.deviceManager.getCurrentPlatform();
 
       if (platform !== "android") {
@@ -379,10 +385,12 @@ export const sensorTools: ToolDefinition[] = [
             enum: ["android", "ios"],
             description: "Target platform. If not specified, uses the active target.",
           },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
       },
     },
     handler: async (args, ctx) => {
+      const deviceId = args.deviceId as string | undefined;
       const platform = (args.platform as Platform | undefined) ?? ctx.deviceManager.getCurrentPlatform();
 
       if (platform !== "android") {

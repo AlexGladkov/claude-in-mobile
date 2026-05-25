@@ -84,7 +84,7 @@ export const deviceTools: ToolDefinition[] = [
   {
     tool: {
       name: "device_set",
-      description: "Select active device for commands",
+      description: "Select active device for subsequent commands. Sets global state — all following tool calls will target this device until changed. For parallel multi-device workflows, prefer passing deviceId directly to each tool call instead of using device_set, which avoids race conditions from shared mutable state.",
       inputSchema: {
         type: "object",
         properties: {

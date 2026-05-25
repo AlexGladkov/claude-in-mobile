@@ -131,6 +131,7 @@ describe("permission_revoke", () => {
     expect(ctx.deviceManager.revokePermission).toHaveBeenCalledWith(
       "com.example.app",
       "android.permission.READ_EXTERNAL_STORAGE",
+      undefined,
       undefined
     );
   });

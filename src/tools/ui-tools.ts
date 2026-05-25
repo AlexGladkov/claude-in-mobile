@@ -25,16 +25,18 @@ export const uiTools: ToolDefinition[] = [
         properties: {
           showAll: { type: "boolean", description: "Show all elements including non-interactive ones", default: false },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
 
       if (currentPlatform === "ios") {
         try {
-          const json = await ctx.deviceManager.getUiHierarchy("ios");
+          const json = await ctx.deviceManager.getUiHierarchy("ios", deviceId);
           const tree = JSON.parse(json);
           const formatted = ctx.formatIOSUITree(tree);
           return { text: formatted };
@@ -48,7 +50,7 @@ export const uiTools: ToolDefinition[] = [
         }
       }
 
-      const xml = await ctx.deviceManager.getUiHierarchyAsync(platform);
+      const xml = await ctx.deviceManager.getUiHierarchyAsync(platform, deviceId);
 
       if (currentPlatform === "desktop") {
         const { truncateOutput } = await import("../utils/truncate.js");
@@ -96,11 +98,13 @@ export const uiTools: ToolDefinition[] = [
           clickable: { type: "boolean", description: "Android: Filter by clickable state" },
           visible: { type: "boolean", description: "iOS: Filter by visibility" },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
 
       if (currentPlatform === "ios") {
@@ -158,12 +162,14 @@ export const uiTools: ToolDefinition[] = [
           description: { type: "string", description: "Natural language description of the element to tap, e.g., 'submit button', 'settings', 'back'" },
           minConfidence: { type: "number", description: "Minimum confidence score (0-100) to accept a match (default: 30)", default: 30 },
           walkToClickable: { type: "boolean", description: "If matched element is non-clickable (e.g., a TextView label), walk up to the smallest containing clickable ancestor. Default true. Set false to tap the matched element directly even if non-clickable (rare).", default: true },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["description"],
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
 
       if (currentPlatform !== "android") {
@@ -190,7 +196,7 @@ export const uiTools: ToolDefinition[] = [
         };
       }
 
-      await ctx.deviceManager.tap(match.element.centerX, match.element.centerY, "android");
+      await ctx.deviceManager.tap(match.element.centerX, match.element.centerY, "android", undefined, deviceId);
 
       return {
         text: `Tapped "${description}" (${match.confidence}% confidence)\n` +
@@ -209,12 +215,14 @@ export const uiTools: ToolDefinition[] = [
           text: { type: "string", description: "Text to search for (partial match, case-insensitive)" },
           pid: { type: "number", description: "Process ID of the target application. Get from get_window_info. Optional if a native app was launched/attached." },
           exactMatch: { type: "boolean", description: "If true, requires exact text match (default: false)", default: false },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["text"],
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
 
       if (currentPlatform !== "desktop") {
@@ -247,11 +255,13 @@ export const uiTools: ToolDefinition[] = [
         type: "object",
         properties: {
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
       let screenElements: UiElement[] = [];
       let activity: string | undefined;
@@ -306,11 +316,13 @@ export const uiTools: ToolDefinition[] = [
           timeout: { type: "number", description: "Max wait time in ms (default: 5000)", default: 5000 },
           interval: { type: "number", description: "Poll interval in ms (default: 500)", default: 500 },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
       const timeout = getNumber(args, "timeout") ?? 5000;
       const interval = getNumber(args, "interval") ?? 500;
@@ -363,11 +375,13 @@ export const uiTools: ToolDefinition[] = [
           text: { type: "string", description: "Element text to check for (partial match)" },
           resourceId: { type: "string", description: "Android: resource ID to check for" },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
       const searchText = getString(args, "text");
       const searchId = getString(args, "resourceId");
@@ -399,11 +413,13 @@ export const uiTools: ToolDefinition[] = [
           text: { type: "string", description: "Element text that should NOT be present" },
           resourceId: { type: "string", description: "Android: resource ID that should NOT be present" },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
       const searchText = getString(args, "text");
       const searchId = getString(args, "resourceId");

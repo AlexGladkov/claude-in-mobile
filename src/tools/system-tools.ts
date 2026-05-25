@@ -11,11 +11,14 @@ export const systemTools: ToolDefinition[] = [
       description: "Get current foreground activity (Android only)",
       inputSchema: {
         type: "object",
-        properties: {},
+        properties: {
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
+        },
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
 
       if (currentPlatform !== "android") {
@@ -35,15 +38,17 @@ export const systemTools: ToolDefinition[] = [
         properties: {
           command: { type: "string", description: "Shell command to execute" },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["command"],
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const command = args.command as string;
       validateShellCommand(command);
-      const output = ctx.deviceManager.shell(command, platform);
+      const output = ctx.deviceManager.shell(command, platform, deviceId);
       return { text: truncateOutput(output || "(no output)") };
     },
   },
@@ -73,12 +78,14 @@ export const systemTools: ToolDefinition[] = [
         properties: {
           url: { type: "string", description: "URL to open" },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["url"],
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
       const url = args.url as string;
 
@@ -103,6 +110,7 @@ export const systemTools: ToolDefinition[] = [
         type: "object",
         properties: {
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
           level: { type: "string", description: "Log level filter. Android: V/D/I/W/E/F (Verbose/Debug/Info/Warning/Error/Fatal). iOS: debug/info/default/error/fault" },
           tag: { type: "string", description: "Filter by tag (Android only)" },
           lines: { type: "number", description: "Number of lines to return (default: 100)", default: 100 },
@@ -112,8 +120,10 @@ export const systemTools: ToolDefinition[] = [
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const logs = ctx.deviceManager.getLogs({
         platform,
+        deviceId,
         level: args.level as string | undefined,
         tag: args.tag as string | undefined,
         lines: Math.min((args.lines as number) ?? 100, 500),
@@ -139,12 +149,14 @@ export const systemTools: ToolDefinition[] = [
           package: { type: "string", description: "Pre-filter by package" },
           clearFirst: { type: "boolean", description: "Clear log buffer before polling so only new lines are scanned. Default false (scan from current buffer head).", default: false },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["pattern"],
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
       if (currentPlatform !== "android") {
         return { text: "system_wait_log is only available for Android." };
@@ -169,11 +181,12 @@ export const systemTools: ToolDefinition[] = [
       const clearFirst = (args.clearFirst as boolean) ?? false;
 
       if (clearFirst) {
-        try { ctx.deviceManager.clearLogs(platform); } catch { /* best-effort */ }
+        try { ctx.deviceManager.clearLogs(platform, deviceId); } catch { /* best-effort */ }
       }
 
       const filterArgs = {
         platform,
+        deviceId,
         level: args.level as string | undefined,
         tag: args.tag as string | undefined,
         lines: 500,
@@ -212,12 +225,15 @@ export const systemTools: ToolDefinition[] = [
       description: "Clear device log buffer (Android only)",
       inputSchema: {
         type: "object",
-        properties: {},
+        properties: {
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
+        },
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
-      const result = ctx.deviceManager.clearLogs(platform);
+      const deviceId = args.deviceId as string | undefined;
+      const result = ctx.deviceManager.clearLogs(platform, deviceId);
       return { text: result };
     },
   },
@@ -230,12 +246,14 @@ export const systemTools: ToolDefinition[] = [
         properties: {
           package: { type: "string", description: "Package name, e.g., com.android.settings" },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["package"],
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
       if (currentPlatform !== "android") {
         return { text: "system_pid_of is only available for Android." };
@@ -244,7 +262,7 @@ export const systemTools: ToolDefinition[] = [
       validatePackageName(pkg);
       // pidof -s returns single PID (first match); empty output if not running.
       // Package name is whitelist-validated, no shell injection vector.
-      const raw = ctx.deviceManager.shell(`pidof -s ${pkg}`, platform).trim();
+      const raw = ctx.deviceManager.shell(`pidof -s ${pkg}`, platform, deviceId).trim();
       const pid = raw === "" ? 0 : parseInt(raw, 10);
       if (Number.isNaN(pid) || pid <= 0) {
         return { text: `0 (not running)` };
@@ -261,19 +279,21 @@ export const systemTools: ToolDefinition[] = [
         properties: {
           package: { type: "string", description: "Package name, e.g., com.android.settings" },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["package"],
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
       if (currentPlatform !== "android") {
         return { text: "system_is_running is only available for Android." };
       }
       const pkg = args.package as string;
       validatePackageName(pkg);
-      const raw = ctx.deviceManager.shell(`pidof -s ${pkg}`, platform).trim();
+      const raw = ctx.deviceManager.shell(`pidof -s ${pkg}`, platform, deviceId).trim();
       const pid = raw === "" ? 0 : parseInt(raw, 10);
       const running = !Number.isNaN(pid) && pid > 0;
       return { text: running ? `true (pid=${pid})` : "false" };
@@ -287,12 +307,14 @@ export const systemTools: ToolDefinition[] = [
         type: "object",
         properties: {
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
-      const info = await ctx.deviceManager.getSystemInfo(platform);
+      const deviceId = args.deviceId as string | undefined;
+      const info = await ctx.deviceManager.getSystemInfo(platform, deviceId);
       return { text: info };
     },
   },
@@ -302,11 +324,14 @@ export const systemTools: ToolDefinition[] = [
       description: "Inspect WebView via Chrome DevTools Protocol (Android only)",
       inputSchema: {
         type: "object",
-        properties: {},
+        properties: {
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
+        },
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
 
       if (currentPlatform !== "android") {

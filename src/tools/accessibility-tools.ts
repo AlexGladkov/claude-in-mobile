@@ -160,6 +160,7 @@ export const accessibilityTools: ToolDefinition[] = [
             enum: ["labels", "touch-targets", "focus", "states"],
             description: "Filter to specific category",
           },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
       },
     },
@@ -168,6 +169,7 @@ export const accessibilityTools: ToolDefinition[] = [
         (args.platform as Platform | undefined) ??
         ctx.deviceManager.getCurrentPlatform() ??
         "android";
+      const deviceId = args.deviceId as string | undefined;
       const standard = validateStandard(args.standard);
       const severityFilter = validateSeverityFilter(args.severity);
       const compact = args.compact === true;
@@ -239,6 +241,7 @@ export const accessibilityTools: ToolDefinition[] = [
             type: "number",
             description: "Find element by index",
           },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
       },
     },
@@ -247,6 +250,7 @@ export const accessibilityTools: ToolDefinition[] = [
         (args.platform as Platform | undefined) ??
         ctx.deviceManager.getCurrentPlatform() ??
         "android";
+      const deviceId = args.deviceId as string | undefined;
 
       const text = args.text as string | undefined;
       const resourceId = args.resourceId as string | undefined;
@@ -323,6 +327,7 @@ export const accessibilityTools: ToolDefinition[] = [
             enum: ["A", "AA", "AAA"],
             description: "WCAG conformance level (default: AA)",
           },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
       },
     },
@@ -331,6 +336,7 @@ export const accessibilityTools: ToolDefinition[] = [
         (args.platform as Platform | undefined) ??
         ctx.deviceManager.getCurrentPlatform() ??
         "android";
+      const deviceId = args.deviceId as string | undefined;
       const standard = validateStandard(args.standard);
 
       const { elements } = await getUiElements(ctx, platform);

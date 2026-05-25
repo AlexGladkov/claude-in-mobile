@@ -1,6 +1,7 @@
 //! iOS Simulator automation via simctl
 
 use std::process::Command;
+use std::path::PathBuf;
 use anyhow::{Result, Context, bail};
 use serde::Serialize;
 
@@ -42,9 +43,96 @@ fn simctl_exec(args: &[&str]) -> Result<std::process::Output> {
         .context("Failed to execute simctl command")
 }
 
-/// Get Simulator window content area position (top-left of the simulated screen)
+/// Embedded Swift source for CGWindowList-based geometry lookup.
+/// Does NOT require TCC/Accessibility — works in ad-hoc signed terminals.
+const SWIFT_HELPER_SOURCE: &str = include_str!("../assets/simwindow.swift");
+
+/// Get path to compiled Swift helper, compiling on first use or when source changes.
+/// Binary cached at ~/.cache/claude-in-mobile/simwindow
+fn get_swift_helper_path() -> Result<PathBuf> {
+    let cache_dir = dirs_or_fallback();
+    std::fs::create_dir_all(&cache_dir).context("Failed to create cache dir")?;
+
+    let bin_path = cache_dir.join("simwindow");
+    let hash_path = cache_dir.join("simwindow.hash");
+
+    // Simple hash: length + first 64 bytes to detect source changes
+    let current_hash = format!("{}-{}", SWIFT_HELPER_SOURCE.len(),
+        &SWIFT_HELPER_SOURCE[..SWIFT_HELPER_SOURCE.len().min(64)]);
+
+    let needs_compile = if bin_path.exists() {
+        match std::fs::read_to_string(&hash_path) {
+            Ok(stored) => stored.trim() != current_hash,
+            Err(_) => true,
+        }
+    } else {
+        true
+    };
+
+    if needs_compile {
+        let src_path = cache_dir.join("simwindow.swift");
+        std::fs::write(&src_path, SWIFT_HELPER_SOURCE)?;
+
+        let output = Command::new("swiftc")
+            .args(["-O", "-o"])
+            .arg(&bin_path)
+            .arg(&src_path)
+            .output()
+            .context("Failed to compile Swift helper (is Xcode installed?)")?;
+
+        if !output.status.success() {
+            bail!("Swift compilation failed: {}", String::from_utf8_lossy(&output.stderr));
+        }
+
+        std::fs::write(&hash_path, &current_hash)?;
+        let _ = std::fs::remove_file(&src_path);
+    }
+
+    Ok(bin_path)
+}
+
+/// Cache dir: ~/.cache/claude-in-mobile
+fn dirs_or_fallback() -> PathBuf {
+    if let Some(home) = std::env::var_os("HOME") {
+        PathBuf::from(home).join(".cache").join("claude-in-mobile")
+    } else {
+        PathBuf::from("/tmp/claude-in-mobile")
+    }
+}
+
+/// Parse "x,y,w,h" string into (f64, f64, f64, f64)
+fn parse_geometry(text: &str) -> Result<(f64, f64, f64, f64)> {
+    let parts: Vec<f64> = text.trim().split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
+
+    if parts.len() != 4 {
+        bail!("Failed to parse window geometry: {}", text);
+    }
+
+    Ok((parts[0], parts[1], parts[2], parts[3]))
+}
+
+/// Get Simulator window geometry via CGWindowList Swift helper (primary)
+/// or osascript System Events (fallback for older setups).
 /// Returns (window_x, window_y, content_width, content_height)
 fn get_simulator_window_geometry() -> Result<(f64, f64, f64, f64)> {
+    // Primary: Swift helper using CGWindowListCopyWindowInfo (no TCC required)
+    if let Ok(helper_path) = get_swift_helper_path() {
+        let output = Command::new(&helper_path)
+            .output()
+            .context("Failed to run Swift window geometry helper")?;
+
+        if output.status.success() {
+            let text = String::from_utf8_lossy(&output.stdout).to_string();
+            return parse_geometry(&text);
+        }
+        // Swift helper failed — fall through to osascript
+        eprintln!("Swift helper failed: {}, falling back to osascript",
+            String::from_utf8_lossy(&output.stderr).trim());
+    }
+
+    // Fallback: osascript (requires Accessibility/TCC permission)
     let script = r#"
 tell application "System Events"
     tell process "Simulator"
@@ -62,18 +150,20 @@ end tell
     let output = Command::new("osascript")
         .args(["-e", script])
         .output()
-        .context("Failed to get Simulator window geometry")?;
+        .context("Failed to get Simulator window geometry via osascript")?;
 
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let parts: Vec<f64> = text.split(',')
-        .filter_map(|s| s.trim().parse().ok())
-        .collect();
-
-    if parts.len() != 4 {
-        bail!("Failed to parse window geometry: {}", text);
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "Cannot get Simulator window geometry.\n\
+             CGWindowList helper failed and osascript requires Accessibility permission.\n\
+             If using Cursor/VibeStudio: grant Accessibility access in System Settings > Privacy & Security.\n\
+             Error: {}", stderr.trim()
+        );
     }
 
-    Ok((parts[0], parts[1], parts[2], parts[3]))
+    let text = String::from_utf8_lossy(&output.stdout).to_string();
+    parse_geometry(&text)
 }
 
 /// Convert simulator coordinates to screen coordinates
@@ -88,9 +178,9 @@ fn sim_to_screen_coords(sim_x: i32, sim_y: i32, simulator: Option<&str>) -> Resu
     let sim_w = img.width() as f64;
     let sim_h = img.height() as f64;
 
-    // The simulator window has a bezel/chrome area around the screen content
-    // The content area takes most of the window
-    // Approximate: toolbar ~44px at top, small padding
+    // CGWindowList returns full window bounds (including toolbar chrome).
+    // The toolbar is ~44pt; we subtract it to get the content area.
+    // This holds for both CGWindowList and osascript paths.
     let toolbar_h = 44.0;
     let content_h = wh - toolbar_h;
     let scale_x = ww / sim_w;

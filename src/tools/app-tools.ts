@@ -13,14 +13,16 @@ export const appTools: ToolDefinition[] = [
         properties: {
           package: { type: "string", description: "Package name (Android) or bundle ID (iOS), e.g., com.android.settings or com.apple.Preferences" },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["package"],
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       validatePackageName(args.package as string);
-      const result = await ctx.deviceManager.launchApp(args.package as string, platform);
+      const result = await ctx.deviceManager.launchApp(args.package as string, platform, deviceId);
       return { text: result };
     },
   },
@@ -33,14 +35,16 @@ export const appTools: ToolDefinition[] = [
         properties: {
           package: { type: "string", description: "Package name (Android) or bundle ID (iOS)" },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["package"],
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       validatePackageName(args.package as string);
-      ctx.deviceManager.stopApp(args.package as string, platform);
+      ctx.deviceManager.stopApp(args.package as string, platform, deviceId);
       return { text: `Stopped: ${args.package}` };
     },
   },
@@ -53,14 +57,16 @@ export const appTools: ToolDefinition[] = [
         properties: {
           path: { type: "string", description: "Path to APK (Android) or .app bundle (iOS)" },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["path"],
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       validatePath(args.path as string, "install_path");
-      const result = ctx.deviceManager.installApp(args.path as string, platform);
+      const result = ctx.deviceManager.installApp(args.path as string, platform, deviceId);
       return { text: result };
     },
   },
@@ -74,21 +80,23 @@ export const appTools: ToolDefinition[] = [
           package: { type: "string", description: "Package name (Android) or bundle ID (iOS)" },
           delayMs: { type: "number", description: "Delay between stop and launch in ms (default: 500). Useful so OS releases resources.", default: 500 },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["package"],
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const pkg = args.package as string;
       validatePackageName(pkg);
       const delayMs = Math.max(0, Math.min((args.delayMs as number) ?? 500, 10_000));
 
-      ctx.deviceManager.stopApp(pkg, platform);
+      ctx.deviceManager.stopApp(pkg, platform, deviceId);
       if (delayMs > 0) {
         await new Promise(resolve => setTimeout(resolve, delayMs));
       }
-      const launchResult = await ctx.deviceManager.launchApp(pkg, platform);
+      const launchResult = await ctx.deviceManager.launchApp(pkg, platform, deviceId);
       return { text: `Restarted: ${pkg} (delay=${delayMs}ms). ${launchResult}` };
     },
   },

@@ -23,11 +23,14 @@ export const clipboardTools: ToolDefinition[] = [
       description: "Select all text in focused field (Android only)",
       inputSchema: {
         type: "object",
-        properties: {},
+        properties: {
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
+        },
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const client = getAndroidAdapter(ctx, platform);
       client.selectAll();
       return { text: "Selected all text in focused input field" };
@@ -39,11 +42,14 @@ export const clipboardTools: ToolDefinition[] = [
       description: "Select all and copy to clipboard (Android only)",
       inputSchema: {
         type: "object",
-        properties: {},
+        properties: {
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
+        },
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const client = getAndroidAdapter(ctx, platform);
       client.selectAll();
       await new Promise(resolve => setTimeout(resolve, 100));
@@ -60,11 +66,13 @@ export const clipboardTools: ToolDefinition[] = [
         properties: {
           fieldText: { type: "string", description: "Find input field by text and tap to focus before pasting" },
           fieldId: { type: "string", description: "Find input field by resource ID and tap to focus before pasting" },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const client = getAndroidAdapter(ctx, platform);
 
       // Optionally find and tap the target field first
@@ -99,11 +107,14 @@ export const clipboardTools: ToolDefinition[] = [
       description: "Read clipboard text from Android device",
       inputSchema: {
         type: "object",
-        properties: {},
+        properties: {
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
+        },
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const client = getAndroidAdapter(ctx, platform);
       const text = client.getClipboardText();
       return { text: `Clipboard: ${text}` };

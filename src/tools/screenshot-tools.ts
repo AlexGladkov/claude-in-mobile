@@ -76,11 +76,13 @@ export const screenshotTools: ToolDefinition[] = [
             description: "Wait for UI to stabilize before capturing. Takes two captures ~300ms apart and compares them; retries up to 3 times until change < 2%. Useful after navigation or animations.",
             default: false,
           },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const compress = args.compress !== false;
       const diffMode = args.diff === true;
       const stableMode = args.waitForStable === true;
@@ -101,7 +103,7 @@ export const screenshotTools: ToolDefinition[] = [
       };
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform() ?? "android";
 
-      const captureBuffer = () => ctx.deviceManager.getScreenshotBufferAsync(currentPlatform);
+      const captureBuffer = () => ctx.deviceManager.getScreenshotBufferAsync(currentPlatform, deviceId);
 
       if (diffMode) {
         const pngBuffer = stableMode
@@ -201,25 +203,27 @@ export const screenshotTools: ToolDefinition[] = [
             description: "JPEG quality 1-100 (default: 55). Lower = smaller size, faster processing.",
             default: 55,
           },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const currentPlat = platform ?? ctx.deviceManager.getCurrentPlatform();
       if (currentPlat === "desktop" || currentPlat === "aurora") {
         return { text: `screen(action:'annotate') is not supported for ${currentPlat} platform. Use screen(action:'capture') + ui(action:'tree') instead.` };
       }
 
-      const pngBuffer = await ctx.deviceManager.getScreenshotBufferAsync(currentPlat);
+      const pngBuffer = await ctx.deviceManager.getScreenshotBufferAsync(currentPlat, deviceId);
 
       let uiElements: UiElement[] = [];
       if (currentPlat === "android" || !currentPlat) {
-        const xml = await ctx.deviceManager.getUiHierarchyAsync("android");
+        const xml = await ctx.deviceManager.getUiHierarchyAsync("android", deviceId);
         uiElements = parseUiHierarchy(xml);
       } else if (currentPlat === "ios") {
         try {
-          const json = await ctx.deviceManager.getUiHierarchy("ios");
+          const json = await ctx.deviceManager.getUiHierarchy("ios", deviceId);
           const tree = JSON.parse(json);
           uiElements = ctx.iosTreeToUiElements(tree);
         } catch (iosUiErr: any) {

@@ -29,11 +29,13 @@ export const interactionTools: ToolDefinition[] = [
           targetPid: { type: "number", description: "Desktop only: PID of target process. When provided, sends tap without stealing window focus." },
           hints: { type: "boolean", description: "Return hints about what changed after the action (new/gone elements, suggestions). Eliminates need for follow-up screen(action:'capture')/ui(action:'tree').", default: true },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
 
       const resolved = await resolveElementCoordinates(args, ctx, currentPlatform);
@@ -63,7 +65,7 @@ export const interactionTools: ToolDefinition[] = [
       }
 
       const targetPid = getNumber(args, "targetPid");
-      await ctx.deviceManager.tap(x, y, platform, targetPid);
+      await ctx.deviceManager.tap(x, y, platform, targetPid, deviceId);
       ctx.invalidateUiTreeCache(currentPlatform ?? undefined);
       let result = `Tapped at (${x}, ${y})`;
       if (getBoolean(args, "hints", true)) {
@@ -87,11 +89,13 @@ export const interactionTools: ToolDefinition[] = [
           interval: { type: "number", description: "Delay between taps in milliseconds (default: 100)", default: 100 },
           hints: { type: "boolean", description: "Return hints about what changed after the action (new/gone elements, suggestions). Eliminates need for follow-up screen(action:'capture')/ui(action:'tree').", default: true },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const interval = getNumber(args, "interval") ?? 100;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
 
@@ -107,7 +111,7 @@ export const interactionTools: ToolDefinition[] = [
         ({ x, y } = applyScale(x, y, currentPlatform ?? undefined, ctx));
       }
 
-      await ctx.deviceManager.doubleTap(x, y, interval, platform);
+      await ctx.deviceManager.doubleTap(x, y, interval, platform, deviceId);
       let result = `Double tapped at (${x}, ${y}) with ${interval}ms interval`;
       if (getBoolean(args, "hints", true)) {
         result += await ctx.generateActionHints(getString(args, "platform"));
@@ -128,11 +132,13 @@ export const interactionTools: ToolDefinition[] = [
           text: { type: "string", description: "Find element by text (Android only)" },
           duration: { type: "number", description: "Duration in milliseconds (default: 1000)", default: 1000 },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const duration = getNumber(args, "duration") ?? 1000;
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
 
@@ -153,7 +159,7 @@ export const interactionTools: ToolDefinition[] = [
           if (rect) {
             const cx = Math.round(rect.x + rect.width / 2);
             const cy = Math.round(rect.y + rect.height / 2);
-            await ctx.deviceManager.longPress(cx, cy, duration, platform);
+            await ctx.deviceManager.longPress(cx, cy, duration, platform, deviceId);
             return { text: `Long pressed element: ${resolved.description} at (${cx}, ${cy}) for ${duration}ms` };
           }
         }
@@ -166,7 +172,7 @@ export const interactionTools: ToolDefinition[] = [
         ({ x, y } = applyScale(x, y, currentPlatform ?? undefined, ctx));
       }
 
-      await ctx.deviceManager.longPress(x, y, duration, platform);
+      await ctx.deviceManager.longPress(x, y, duration, platform, deviceId);
       return { text: `Long pressed at (${x}, ${y}) for ${duration}ms` };
     },
   },
@@ -185,15 +191,17 @@ export const interactionTools: ToolDefinition[] = [
           duration: { type: "number", description: "Duration in ms (default: 300)", default: 300 },
           hints: { type: "boolean", description: "Return hints about what changed after the action (new/gone elements, suggestions). Eliminates need for follow-up screen(action:'capture')/ui(action:'tree').", default: true },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const direction = getString(args, "direction") as "up" | "down" | "left" | "right" | undefined;
 
       if (direction) {
-        await ctx.deviceManager.swipeDirection(direction, platform);
+        await ctx.deviceManager.swipeDirection(direction, platform, deviceId);
         ctx.invalidateUiTreeCache(platform ?? ctx.deviceManager.getCurrentPlatform() ?? undefined);
         let result = `Swiped ${direction}`;
         if (getBoolean(args, "hints", true)) {
@@ -213,7 +221,7 @@ export const interactionTools: ToolDefinition[] = [
         const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
         const p1 = applyScale(x1, y1, currentPlatform ?? undefined, ctx);
         const p2 = applyScale(x2, y2, currentPlatform ?? undefined, ctx);
-        await ctx.deviceManager.swipe(p1.x, p1.y, p2.x, p2.y, duration, platform);
+        await ctx.deviceManager.swipe(p1.x, p1.y, p2.x, p2.y, duration, platform, deviceId);
         ctx.invalidateUiTreeCache(currentPlatform ?? undefined);
         let result = `Swiped from (${p1.x}, ${p1.y}) to (${p2.x}, ${p2.y})`;
         if (getBoolean(args, "hints", true)) {
@@ -236,15 +244,17 @@ export const interactionTools: ToolDefinition[] = [
           targetPid: { type: "number", description: "Desktop only: PID of target process. When provided, sends input without stealing window focus." },
           hints: { type: "boolean", description: "Return hints about what changed after the action (new/gone elements, suggestions). Eliminates need for follow-up screen(action:'capture')/ui(action:'tree').", default: true },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["text"],
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const targetPid = getNumber(args, "targetPid");
       const text = requireString(args, "text");
-      await ctx.deviceManager.inputText(text, platform, targetPid);
+      await ctx.deviceManager.inputText(text, platform, targetPid, deviceId);
       ctx.invalidateUiTreeCache(platform ?? ctx.deviceManager.getCurrentPlatform() ?? undefined);
       let result = `Entered text: "${text}"`;
       if (getBoolean(args, "hints", true)) {
@@ -264,15 +274,17 @@ export const interactionTools: ToolDefinition[] = [
           targetPid: { type: "number", description: "Desktop only: PID of target process. When provided, sends key without stealing window focus." },
           hints: { type: "boolean", description: "Return hints about what changed after the action (new/gone elements, suggestions). Eliminates need for follow-up screen(action:'capture')/ui(action:'tree').", default: true },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },
         required: ["key"],
       },
     },
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
+      const deviceId = args.deviceId as string | undefined;
       const targetPid = getNumber(args, "targetPid");
       const key = requireString(args, "key");
-      await ctx.deviceManager.pressKey(key, platform, targetPid);
+      await ctx.deviceManager.pressKey(key, platform, targetPid, deviceId);
       ctx.invalidateUiTreeCache(platform ?? ctx.deviceManager.getCurrentPlatform() ?? undefined);
       let result = `Pressed key: ${key}`;
       if (getBoolean(args, "hints", true)) {

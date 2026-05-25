@@ -35,11 +35,17 @@ export class AdbClient {
     return this.deviceId ? `-s ${this.deviceId}` : "";
   }
 
+  /** Build device flag for a specific deviceId override or fall back to instance default. */
+  private deviceFlagFor(deviceIdOverride?: string): string {
+    const id = deviceIdOverride ?? this.deviceId;
+    return id ? `-s ${id}` : "";
+  }
+
   /**
    * Execute ADB command and return stdout as string
    */
-  exec(command: string): string {
-    const fullCommand = `${adbCmd()} ${this.deviceFlag} ${command}`;
+  exec(command: string, deviceIdOverride?: string): string {
+    const fullCommand = `${adbCmd()} ${this.deviceFlagFor(deviceIdOverride)} ${command}`;
     try {
       return execSync(fullCommand, {
         encoding: "utf-8",
@@ -58,8 +64,8 @@ export class AdbClient {
   /**
    * Execute ADB command and return raw bytes (for screenshots)
    */
-  execRaw(command: string): Buffer {
-    const fullCommand = `${adbCmd()} ${this.deviceFlag} ${command}`;
+  execRaw(command: string, deviceIdOverride?: string): Buffer {
+    const fullCommand = `${adbCmd()} ${this.deviceFlagFor(deviceIdOverride)} ${command}`;
     try {
       return execSync(fullCommand, {
         timeout: EXEC_RAW_TIMEOUT_MS,
@@ -77,8 +83,8 @@ export class AdbClient {
   /**
    * Execute ADB command async (non-blocking)
    */
-  async execAsync(command: string): Promise<string> {
-    const fullCommand = `${adbCmd()} ${this.deviceFlag} ${command}`;
+  async execAsync(command: string, deviceIdOverride?: string): Promise<string> {
+    const fullCommand = `${adbCmd()} ${this.deviceFlagFor(deviceIdOverride)} ${command}`;
     try {
       const { stdout } = await execAsyncCmd(fullCommand, {
         timeout: EXEC_TIMEOUT_MS,
@@ -97,9 +103,10 @@ export class AdbClient {
   /**
    * Execute ADB command async and return raw bytes (for screenshots)
    */
-  async execRawAsync(command: string): Promise<Buffer> {
-    const args = this.deviceId
-      ? ["-s", this.deviceId, ...command.split(/\s+/)]
+  async execRawAsync(command: string, deviceIdOverride?: string): Promise<Buffer> {
+    const effectiveId = deviceIdOverride ?? this.deviceId;
+    const args = effectiveId
+      ? ["-s", effectiveId, ...command.split(/\s+/)]
       : command.split(/\s+/);
     const adbBin = resolveAdbPath();
     const fullCommand = `${quoteAdbPath(adbBin)} ${args.join(" ")}`;

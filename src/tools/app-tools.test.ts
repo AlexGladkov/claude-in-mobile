@@ -130,8 +130,8 @@ describe("app_restart", () => {
       } as any,
     });
     const result = await handler({ package: "com.android.settings", delayMs: 0 }, ctx);
-    expect(stopSpy).toHaveBeenCalledWith("com.android.settings", undefined);
-    expect(launchSpy).toHaveBeenCalledWith("com.android.settings", undefined);
+    expect(stopSpy).toHaveBeenCalledWith("com.android.settings", undefined, undefined);
+    expect(launchSpy).toHaveBeenCalledWith("com.android.settings", undefined, undefined);
     // stop must precede launch
     expect(stopSpy.mock.invocationCallOrder[0]).toBeLessThan(launchSpy.mock.invocationCallOrder[0]);
     expect(result).toEqual({ text: "Restarted: com.android.settings (delay=0ms). launched" });
