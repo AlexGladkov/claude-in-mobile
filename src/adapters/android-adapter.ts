@@ -159,8 +159,8 @@ export class AndroidAdapter
 
   // ============ UI ============
 
-  async getUiHierarchy(deviceId?: string): Promise<string> {
-    return this.clientFor(deviceId).getUiHierarchyAsync();
+  async getUiHierarchy(deviceId?: string, turbo?: boolean): Promise<string> {
+    return this.clientFor(deviceId).getUiHierarchyAsync(turbo);
   }
 
   // ============ App management (AppManagementAdapter) ============

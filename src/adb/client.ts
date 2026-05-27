@@ -24,6 +24,10 @@ export interface Device {
 export class AdbClient {
   private deviceId?: string;
 
+  // Turbo: UI tree TTL cache (active only when turbo=true is passed)
+  private uiTreeCache: { xml: string; timestamp: number } | null = null;
+  private uiTreeCacheTTL = 500; // ms
+
   constructor(deviceId?: string) {
     if (deviceId) {
       validateDeviceId(deviceId);
@@ -351,19 +355,64 @@ export class AdbClient {
   }
 
   /**
+   * Invalidate the turbo UI tree cache.
+   * Call after actions that mutate the screen (tap, swipe, input, etc.)
+   * so the next getUiHierarchy call fetches fresh data.
+   */
+  invalidateUiTreeCache(): void {
+    this.uiTreeCache = null;
+  }
+
+  /**
+   * Strip the "UI hierachy dumped to: /dev/tty" prefix that some devices
+   * prepend when dumping to stdout via /dev/tty.
+   */
+  private stripDumpPrefix(raw: string): string {
+    const idx = raw.indexOf("<?xml");
+    if (idx > 0) return raw.slice(idx);
+    return raw;
+  }
+
+  /**
    * Get UI hierarchy XML (sync — blocks event loop)
    */
-  getUiHierarchy(): string {
-    this.exec("shell uiautomator dump /sdcard/ui.xml");
-    return this.exec("shell cat /sdcard/ui.xml");
+  getUiHierarchy(turbo?: boolean): string {
+    if (turbo && this.uiTreeCache && Date.now() - this.uiTreeCache.timestamp < this.uiTreeCacheTTL) {
+      return this.uiTreeCache.xml;
+    }
+
+    let xml: string;
+    if (turbo) {
+      // Single ADB call: pipe XML directly to stdout
+      xml = this.stripDumpPrefix(this.exec("exec-out uiautomator dump /dev/tty"));
+    } else {
+      this.exec("shell uiautomator dump /sdcard/ui.xml");
+      xml = this.exec("shell cat /sdcard/ui.xml");
+    }
+
+    this.uiTreeCache = { xml, timestamp: Date.now() };
+    return xml;
   }
 
   /**
    * Get UI hierarchy XML async (non-blocking)
    */
-  async getUiHierarchyAsync(): Promise<string> {
-    await this.execAsync("shell uiautomator dump /sdcard/ui.xml");
-    return this.execAsync("shell cat /sdcard/ui.xml");
+  async getUiHierarchyAsync(turbo?: boolean): Promise<string> {
+    if (turbo && this.uiTreeCache && Date.now() - this.uiTreeCache.timestamp < this.uiTreeCacheTTL) {
+      return this.uiTreeCache.xml;
+    }
+
+    let xml: string;
+    if (turbo) {
+      // Single ADB call: pipe XML directly to stdout
+      xml = this.stripDumpPrefix(await this.execAsync("exec-out uiautomator dump /dev/tty"));
+    } else {
+      await this.execAsync("shell uiautomator dump /sdcard/ui.xml");
+      xml = await this.execAsync("shell cat /sdcard/ui.xml");
+    }
+
+    this.uiTreeCache = { xml, timestamp: Date.now() };
+    return xml;
   }
 
   /**

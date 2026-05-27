@@ -42,7 +42,7 @@ import { iosTreeToUiElements, formatIOSUITree } from "./context/ios-helpers.js";
 // Shared device manager singleton
 export const deviceManager = createFullDeviceManager();
 
-// Bound hint functions for the shared deviceManager
+// Bound hint functions for the shared deviceManager (non-turbo defaults for backward compat)
 export const generateActionHints = createGenerateActionHints(deviceManager);
 export const getElementsForPlatform = createGetElementsForPlatform(deviceManager);
 
@@ -77,6 +77,18 @@ export function createToolContext(
   handleTool: ToolContext["handleTool"],
   options?: { turboDefault?: boolean },
 ): ToolContext {
+  const turbo = options?.turboDefault ?? false;
+
+  // When turbo is enabled, create dedicated hint functions that pass turbo=true
+  // down to DeviceManager and use adaptive delays. When off, use the default
+  // non-turbo singletons for zero-overhead backward compatibility.
+  const turboHints = turbo
+    ? createGenerateActionHints(deviceManager, { turbo: true })
+    : generateActionHints;
+  const turboElements = turbo
+    ? createGetElementsForPlatform(deviceManager, { turbo: true })
+    : getElementsForPlatform;
+
   return {
     deviceManager,
     getCachedElements,
@@ -84,13 +96,13 @@ export function createToolContext(
     lastScreenshotMap,
     lastUiTreeMap,
     screenshotScaleMap,
-    generateActionHints,
-    getElementsForPlatform,
+    generateActionHints: turboHints,
+    getElementsForPlatform: turboElements,
     iosTreeToUiElements,
     formatIOSUITree,
     invalidateUiTreeCache,
     platformParam,
     handleTool,
-    turboDefault: options?.turboDefault ?? false,
+    turboDefault: turbo,
   };
 }

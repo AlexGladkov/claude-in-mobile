@@ -109,6 +109,9 @@
     "google-auth-library": "^10.6.2",
     "jimp": "^1.6.0"
   },
+  "optionalDependencies": {
+    "sharp": "^0.33.0"
+  },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "typescript": "^5.7.0",

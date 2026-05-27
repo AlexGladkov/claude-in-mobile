@@ -20,29 +20,36 @@ import { getCachedElements, setCachedElements } from "./shared-state.js";
  * NOTE: This is a factory — it captures the deviceManager reference so callers
  * do not need to pass it on every invocation.
  */
-export function createGenerateActionHints(deviceManager: DeviceManager) {
+export function createGenerateActionHints(deviceManager: DeviceManager, options?: { turbo?: boolean }) {
+  const turbo = options?.turbo ?? false;
+
   return async function generateActionHints(platform: string | undefined): Promise<string> {
     const currentPlatform = platform ?? deviceManager.getCurrentPlatform() ?? "android";
     const beforeElements = getCachedElements(currentPlatform);
 
-    await new Promise(resolve => setTimeout(resolve, 150));
+    // Turbo: shorter initial delay; non-turbo: standard 150ms
+    const initialDelay = turbo ? 50 : 150;
+    await new Promise(resolve => setTimeout(resolve, initialDelay));
 
     let afterElements: UiElement[] = [];
     try {
-      if (currentPlatform === "android") {
-        const xml = await deviceManager.getUiHierarchyAsync("android");
-        afterElements = parseUiHierarchy(xml);
-      } else if (currentPlatform === "ios") {
-        const json = await deviceManager.getUiHierarchy("ios");
-        const tree = JSON.parse(json);
-        afterElements = iosTreeToUiElements(tree);
-      } else if (currentPlatform === "desktop") {
-        const text = await deviceManager.getUiHierarchyAsync("desktop");
-        afterElements = desktopHierarchyToUiElements(text);
-      }
+      afterElements = await fetchUiElements(deviceManager, currentPlatform, turbo);
     } catch (hintError: any) {
       const reason = hintError?.message ?? "unknown error";
       return `\n--- Hints ---\nUnable to fetch UI state for hints: ${reason}`;
+    }
+
+    // Turbo adaptive retry: if UI tree unchanged, wait 100ms and retry once
+    if (turbo && beforeElements.length > 0 && afterElements.length > 0) {
+      const diff = diffUiElements(beforeElements, afterElements);
+      if (!diff.screenChanged && diff.appeared.length === 0 && diff.disappeared.length === 0) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        try {
+          afterElements = await fetchUiElements(deviceManager, currentPlatform, turbo);
+        } catch {
+          // Keep the original afterElements on retry failure
+        }
+      }
     }
 
     setCachedElements(currentPlatform, afterElements);
@@ -74,15 +81,37 @@ export function createGenerateActionHints(deviceManager: DeviceManager) {
   };
 }
 
+/** Internal helper: fetch UI elements for the given platform. */
+async function fetchUiElements(
+  deviceManager: DeviceManager,
+  currentPlatform: string,
+  turbo: boolean,
+): Promise<UiElement[]> {
+  if (currentPlatform === "android") {
+    const xml = await deviceManager.getUiHierarchyAsync("android", undefined, turbo);
+    return parseUiHierarchy(xml);
+  } else if (currentPlatform === "ios") {
+    const json = await deviceManager.getUiHierarchy("ios");
+    const tree = JSON.parse(json);
+    return iosTreeToUiElements(tree);
+  } else if (currentPlatform === "desktop") {
+    const text = await deviceManager.getUiHierarchyAsync("desktop");
+    return desktopHierarchyToUiElements(text);
+  }
+  return [];
+}
+
 /**
  * Get UI elements for the current platform (helper for flow element checks).
  *
  * Factory that captures the deviceManager reference.
  */
-export function createGetElementsForPlatform(deviceManager: DeviceManager) {
+export function createGetElementsForPlatform(deviceManager: DeviceManager, options?: { turbo?: boolean }) {
+  const turbo = options?.turbo ?? false;
+
   return async function getElementsForPlatform(plat: string): Promise<UiElement[]> {
     if (plat === "android" || !plat) {
-      const xml = await deviceManager.getUiHierarchyAsync("android");
+      const xml = await deviceManager.getUiHierarchyAsync("android", undefined, turbo);
       const elements = parseUiHierarchy(xml);
       setCachedElements("android", elements);
       return elements;
