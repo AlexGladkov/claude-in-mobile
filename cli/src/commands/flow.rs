@@ -191,6 +191,33 @@ pub fn run(
         }
 
         let step_start = Instant::now();
+
+        // -- Turbo fast-track: combine action + UI dump in 1 ADB call (Android only) --
+        if turbo && ctx.platform == "android" {
+            if let Some((shell_cmd, desc)) = build_fast_track_cmd(step, &ctx) {
+                match android::exec_with_ui_dump(&shell_cmd, ctx.device) {
+                    Ok((_, ui_xml)) => {
+                        let ui = if !ui_xml.is_empty() {
+                            Some(android::compact_ui_from_xml(&ui_xml))
+                        } else {
+                            None
+                        };
+                        results.push(StepResult {
+                            step: i + 1,
+                            action: step.action.clone(),
+                            success: true,
+                            message: desc,
+                            ms: step_start.elapsed().as_millis(),
+                            ui,
+                            screenshot: None,
+                        });
+                        continue;
+                    }
+                    Err(_) => { /* fall through to normal path */ }
+                }
+            }
+        }
+
         let exec_result = execute_step(&ctx, step);
         let step_ms = step_start.elapsed().as_millis();
 
@@ -454,6 +481,92 @@ fn step_open_url(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
         _ => bail!("Unsupported platform for open-url"),
     }
     Ok(format!("Opened URL \"{}\"", url))
+}
+
+// ---------------------------------------------------------------------------
+// Turbo fast-track helpers (Android-only)
+// ---------------------------------------------------------------------------
+
+/// Escape text for `adb shell input text "..."`.
+fn escape_adb_text(text: &str) -> String {
+    text.replace('\\', "\\\\")
+        .replace(' ', "%s")
+        .replace('\'', "\\'")
+        .replace('"', "\\\"")
+        .replace('&', "\\&")
+        .replace('|', "\\|")
+        .replace(';', "\\;")
+        .replace('$', "\\$")
+        .replace('`', "\\`")
+}
+
+/// Resolve a key name to its Android keyevent code string.
+fn resolve_keycode(key: &str) -> Option<&'static str> {
+    match key.to_lowercase().as_str() {
+        "home" => Some("KEYCODE_HOME"),
+        "back" => Some("KEYCODE_BACK"),
+        "enter" | "return" => Some("KEYCODE_ENTER"),
+        "tab" => Some("KEYCODE_TAB"),
+        "delete" | "backspace" => Some("KEYCODE_DEL"),
+        "menu" => Some("KEYCODE_MENU"),
+        "power" => Some("KEYCODE_POWER"),
+        "volume_up" => Some("KEYCODE_VOLUME_UP"),
+        "volume_down" => Some("KEYCODE_VOLUME_DOWN"),
+        "camera" => Some("KEYCODE_CAMERA"),
+        "search" => Some("KEYCODE_SEARCH"),
+        "space" => Some("KEYCODE_SPACE"),
+        "escape" | "esc" => Some("KEYCODE_ESCAPE"),
+        "up" => Some("KEYCODE_DPAD_UP"),
+        "down" => Some("KEYCODE_DPAD_DOWN"),
+        "left" => Some("KEYCODE_DPAD_LEFT"),
+        "right" => Some("KEYCODE_DPAD_RIGHT"),
+        "app_switch" | "recent" => Some("KEYCODE_APP_SWITCH"),
+        _ => None,
+    }
+}
+
+/// Build shell command + description for simple Android actions eligible for fast-track.
+/// Returns None if the action is not eligible (fall through to normal path).
+fn build_fast_track_cmd(step: &FlowStep, ctx: &PlatformCtx<'_>) -> Option<(String, String)> {
+    if ctx.platform != "android" {
+        return None;
+    }
+    match step.action.as_str() {
+        "tap" if step.args.len() >= 2 => {
+            let x = step.args[0].parse::<i32>().ok()?;
+            let y = step.args[1].parse::<i32>().ok()?;
+            Some((
+                format!("input tap {} {}", x, y),
+                format!("Tapped at ({}, {})", x, y),
+            ))
+        }
+        "key" if !step.args.is_empty() => {
+            let keycode = resolve_keycode(&step.args[0])?;
+            Some((
+                format!("input keyevent {}", keycode),
+                format!("Pressed key \"{}\"", step.args[0]),
+            ))
+        }
+        "input" if !step.args.is_empty() => {
+            let escaped = escape_adb_text(&step.args[0]);
+            Some((
+                format!("input text \"{}\"", escaped),
+                format!("Typed \"{}\"", step.args[0]),
+            ))
+        }
+        "swipe" if step.args.len() >= 4 => {
+            let x1 = step.args[0].parse::<i32>().ok()?;
+            let y1 = step.args[1].parse::<i32>().ok()?;
+            let x2 = step.args[2].parse::<i32>().ok()?;
+            let y2 = step.args[3].parse::<i32>().ok()?;
+            let dur: u32 = step.args.get(4).and_then(|s| s.parse().ok()).unwrap_or(300);
+            Some((
+                format!("input swipe {} {} {} {} {}", x1, y1, x2, y2, dur),
+                format!("Swiped ({},{}) -> ({},{})", x1, y1, x2, y2),
+            ))
+        }
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------

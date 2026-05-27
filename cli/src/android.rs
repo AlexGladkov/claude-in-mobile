@@ -947,6 +947,51 @@ pub fn set_clipboard(text: &str, device: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// Execute an action command + UI dump in a single adb shell invocation (turbo fast-track).
+/// Returns (action_output, ui_xml). ui_xml may be empty if dump failed.
+pub fn exec_with_ui_dump(shell_cmd: &str, device: Option<&str>) -> Result<(String, String)> {
+    let combined = format!("{} && uiautomator dump /dev/tty", shell_cmd);
+    let output = adb_exec(device, &["shell", &combined], None)?;
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+
+    // Split at XML boundary
+    let xml_start = stdout.find("<?xml").or_else(|| stdout.find("<hierarchy"));
+    match xml_start {
+        Some(idx) => {
+            let action_output = stdout[..idx].trim().to_string();
+            let mut ui_xml = stdout[idx..].to_string();
+            // Strip "UI hierachy dumped to: /dev/tty" prefix if present before <?xml
+            if let Some(xml_idx) = ui_xml.find("<?xml") {
+                if xml_idx > 0 {
+                    ui_xml = ui_xml[xml_idx..].to_string();
+                }
+            }
+            Ok((action_output, ui_xml))
+        }
+        None => Ok((stdout.trim().to_string(), String::new())),
+    }
+}
+
+/// Parse UI XML into compact one-line summary of interactive elements (reused by turbo fast-track).
+pub fn compact_ui_from_xml(xml: &str) -> String {
+    let elements = parse_ui_elements(xml);
+    let parts: Vec<String> = elements
+        .iter()
+        .take(20)
+        .map(|e| {
+            let short_class = e.class.split('.').last().unwrap_or(&e.class);
+            if !e.text.is_empty() {
+                format!("{} \"{}\"", short_class, e.text)
+            } else if !e.content_desc.is_empty() {
+                format!("{} \"{}\"", short_class, e.content_desc)
+            } else {
+                short_class.to_string()
+            }
+        })
+        .collect();
+    parts.join(" | ")
+}
+
 // ============== Tests ==============
 
 #[cfg(test)]
