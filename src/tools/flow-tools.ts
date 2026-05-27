@@ -361,17 +361,24 @@ export const flowTools: ToolDefinition[] = [
       async function collectTurboContext(stepNum: number, stepSuccess: boolean): Promise<void> {
         if (!turbo || !turboContexts) return;
         const ctx_entry: TurboStepContext = {};
-        try {
-          const uiTree = await collectCompactUiTree(ctx, currentPlatform);
-          if (uiTree) ctx_entry.uiTree = uiTree;
-        } catch { /* silently skip */ }
 
         if (!stepSuccess && turboScreenshots.length < TURBO_MAX_SCREENSHOTS) {
-          const screenshot = await captureTurboScreenshot(ctx, currentPlatform);
+          // Parallel: UI tree + screenshot simultaneously on failure
+          const [uiTree, screenshot] = await Promise.all([
+            collectCompactUiTree(ctx, currentPlatform).catch(() => ""),
+            captureTurboScreenshot(ctx, currentPlatform),
+          ]);
+          if (uiTree) ctx_entry.uiTree = uiTree;
           if (screenshot) {
             turboScreenshots.push(screenshot);
             ctx_entry.hasScreenshot = true;
           }
+        } else {
+          // Success: only UI tree (no screenshot needed)
+          try {
+            const uiTree = await collectCompactUiTree(ctx, currentPlatform);
+            if (uiTree) ctx_entry.uiTree = uiTree;
+          } catch { /* silently skip */ }
         }
 
         turboContexts.set(stepNum, ctx_entry);
@@ -454,7 +461,7 @@ export const flowTools: ToolDefinition[] = [
                   throw condErr;
                 }
               }
-              await new Promise(resolve => setTimeout(resolve, 300));
+              await new Promise(resolve => setTimeout(resolve, turbo ? 100 : 300));
             }
           } catch (error: unknown) {
             const durationMs = Date.now() - stepStart;
@@ -471,7 +478,7 @@ export const flowTools: ToolDefinition[] = [
               } else if (step.if_not_found === "scroll_down" || step.if_not_found === "scroll_up") {
                 try {
                   await ctx.handleTool("swipe", { direction: step.if_not_found === "scroll_down" ? "up" : "down", platform: currentPlatform }, (_depth ?? 0) + 1);
-                  await new Promise(resolve => setTimeout(resolve, 300));
+                  await new Promise(resolve => setTimeout(resolve, turbo ? 100 : 300));
                   const retryResult = await ctx.handleTool(step.action, stepArgs, (_depth ?? 0) + 1);
                   const retryText = typeof retryResult === "object" && retryResult !== null && "text" in retryResult
                     ? (retryResult as { text: string }).text
@@ -502,7 +509,7 @@ export const flowTools: ToolDefinition[] = [
             }
 
             if (onError === "retry" && iter < maxIterations - 1) {
-              await new Promise(resolve => setTimeout(resolve, 300));
+              await new Promise(resolve => setTimeout(resolve, turbo ? 100 : 300));
               if (Date.now() - flowStart > maxDuration) break;
               continue;
             }

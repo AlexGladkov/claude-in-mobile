@@ -103,7 +103,10 @@ async function handleTool(name: string, args: Record<string, unknown>, depth: nu
 
   // Record step if recording is active (no-op if idle, depth>0, or blocklisted)
   captureStep(name, args, depth);
-  recordCall(name, depth);
+  // Skip anti-pattern tracking for nested calls (flow sub-steps) in turbo — reduces overhead
+  if (!(turboEnabled && depth > 0)) {
+    recordCall(name, depth);
+  }
 
   const resolved = resolveToolCall(name, args);
   if (!resolved) {
@@ -453,8 +456,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       text = text.slice(0, MAX_RESPONSE_CHARS) + `\n\n[truncated, ${remaining} chars remaining]`;
     }
 
-    // Anti-pattern detection (only at top level, not on errors)
-    const hint = detectAntiPattern();
+    // Anti-pattern detection (only at top level, not on errors; skipped in turbo — flow manages feedback)
+    const hint = turboEnabled ? null : detectAntiPattern();
     const hintBlock = hint ? `\n[HINT: ${hint}]` : "";
 
     return {
