@@ -416,6 +416,87 @@ export class AdbClient {
   }
 
   /**
+   * Execute an action + uiautomator dump in a single adb shell invocation (turbo only).
+   * Reduces two process spawns to one, saving ~150-300ms per step.
+   * Returns { actionOutput: string; uiXml: string }.
+   */
+  async execWithUiDump(actionCommand: string, deviceIdOverride?: string): Promise<{ actionOutput: string; uiXml: string }> {
+    const combined = `${actionCommand} && uiautomator dump /dev/tty`;
+    const raw = await this.execAsync(`shell "${combined}"`, deviceIdOverride);
+
+    // Split output: everything before XML is action output, XML starts with <?xml or <hierarchy
+    const xmlStart = raw.indexOf("<?xml");
+    const xmlStartAlt = raw.indexOf("<hierarchy");
+    const splitIdx = xmlStart >= 0 ? xmlStart : xmlStartAlt;
+
+    if (splitIdx < 0) {
+      // No XML found — dump may have failed, return action output only
+      return { actionOutput: raw.trim(), uiXml: "" };
+    }
+
+    const actionOutput = raw.substring(0, splitIdx).trim();
+    const uiXml = this.stripDumpPrefix(raw.substring(splitIdx));
+
+    return { actionOutput, uiXml };
+  }
+
+  /**
+   * Tap at coordinates (async, non-blocking — for turbo mode).
+   */
+  async tapAsync(x: number, y: number, deviceIdOverride?: string): Promise<void> {
+    await this.execAsync(`shell input tap ${x} ${y}`, deviceIdOverride);
+  }
+
+  /**
+   * Swipe gesture (async, non-blocking — for turbo mode).
+   */
+  async swipeAsync(x1: number, y1: number, x2: number, y2: number, durationMs: number = 300, deviceIdOverride?: string): Promise<void> {
+    await this.execAsync(`shell input swipe ${x1} ${y1} ${x2} ${y2} ${durationMs}`, deviceIdOverride);
+  }
+
+  /**
+   * Press key (async, non-blocking — for turbo mode).
+   */
+  async pressKeyAsync(key: string, deviceIdOverride?: string): Promise<void> {
+    const keyCodes: Record<string, number> = {
+      "BACK": 4, "HOME": 3, "MENU": 82, "ENTER": 66, "TAB": 61,
+      "DELETE": 67, "BACKSPACE": 67, "POWER": 26, "VOLUME_UP": 24,
+      "VOLUME_DOWN": 25, "ESCAPE": 111, "SPACE": 62, "DPAD_UP": 19,
+      "DPAD_DOWN": 20, "DPAD_LEFT": 21, "DPAD_RIGHT": 22,
+    };
+
+    const keyCode = keyCodes[key.toUpperCase()] ?? parseInt(key);
+    if (isNaN(keyCode)) {
+      throw new Error(`Unknown key: ${key}`);
+    }
+
+    await this.execAsync(`shell input keyevent ${keyCode}`, deviceIdOverride);
+  }
+
+  /**
+   * Input text (async, non-blocking — for turbo mode).
+   */
+  async inputTextAsync(text: string, deviceIdOverride?: string): Promise<void> {
+    const escaped = text
+      .replace(/[\n\r]/g, "")
+      .replace(/\\/g, "\\\\")
+      .replace(/"/g, '\\"')
+      .replace(/'/g, "\\'")
+      .replace(/`/g, "\\`")
+      .replace(/\$/g, "\\$")
+      .replace(/ /g, "%s")
+      .replace(/&/g, "\\&")
+      .replace(/\(/g, "\\(")
+      .replace(/\)/g, "\\)")
+      .replace(/</g, "\\<")
+      .replace(/>/g, "\\>")
+      .replace(/\|/g, "\\|")
+      .replace(/;/g, "\\;");
+
+    await this.execAsync(`shell input text "${escaped}"`, deviceIdOverride);
+  }
+
+  /**
    * Launch app by package name
    */
   launchApp(packageName: string): string {

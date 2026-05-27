@@ -208,7 +208,11 @@ export const flowTools: ToolDefinition[] = [
         let resultText = "";
 
         try {
-          const result = await ctx.handleTool(cmd.name, cmd.arguments ?? {}, (_depth ?? 0) + 1);
+          const cmdArgs = { ...(cmd.arguments ?? {}) };
+          if (turbo && !("hints" in cmdArgs)) {
+            cmdArgs.hints = false; // turbo collects UI tree itself, skip redundant hints
+          }
+          const result = await ctx.handleTool(cmd.name, cmdArgs, (_depth ?? 0) + 1);
           const text = typeof result === "object" && result !== null && "text" in result
             ? (result as { text: string }).text
             : JSON.stringify(result);
@@ -401,6 +405,9 @@ export const flowTools: ToolDefinition[] = [
 
         const step = steps[i];
         const stepArgs = { platform: currentPlatform, ...step.args } as Record<string, unknown>;
+        if (turbo && !("hints" in stepArgs)) {
+          stepArgs.hints = false; // turbo collects UI tree itself via collectCompactUiTree, skip redundant hints
+        }
         const onError = step.on_error ?? "stop";
 
         const repeatTimes = step.repeat?.times ? Math.min(step.repeat.times, FLOW_MAX_REPEAT) : 1;
