@@ -2,10 +2,11 @@ import type { ToolDefinition } from "./registry.js";
 import { getRegisteredToolNames } from "./registry.js";
 import type { ToolContext } from "./context.js";
 import type { Platform } from "../device-manager.js";
-import { findElements, UiElement } from "../adb/ui-parser.js";
+import { parseUiHierarchy, findElements, UiElement } from "../adb/ui-parser.js";
 import { DeviceNotFoundError, DeviceOfflineError, AdbNotInstalledError, ValidationError, MobileError } from "../errors.js";
 import { MAX_RECURSION_DEPTH } from "./context.js";
 import { truncateOutput } from "../utils/truncate.js";
+import { applyScale } from "./helpers/resolve-element.js";
 
 // Actions explicitly blocked from flow execution (security-sensitive).
 // Everything else registered in the registry is allowed.
@@ -80,6 +81,117 @@ async function collectCompactUiTree(
     return `${shortClass}${label ? ` "${label}"` : ""}`;
   });
   return parts.join(" | ");
+}
+
+// ─── Turbo fast-track: combine action + UI dump in 1 ADB call ───
+// Saves ~150-300ms per step by eliminating extra process spawn.
+// Only for Android, simple actions (tap/key/text), no element resolution.
+
+const FAST_TRACK_KEYS: Record<string, number> = {
+  BACK: 4, HOME: 3, MENU: 82, ENTER: 66, TAB: 61,
+  DELETE: 67, BACKSPACE: 67, POWER: 26, VOLUME_UP: 24, VOLUME_DOWN: 25,
+  ESCAPE: 111, SPACE: 62, DPAD_UP: 19, DPAD_DOWN: 20, DPAD_LEFT: 21,
+  DPAD_RIGHT: 22, DPAD_CENTER: 23, APP_SWITCH: 187, WAKEUP: 224,
+};
+
+/** Actions eligible for fast-track (canonical + common aliases) */
+const FAST_TRACK_TAP = new Set(["input_tap", "tap", "click"]);
+const FAST_TRACK_KEY = new Set(["input_key", "press_key", "press_button"]);
+const FAST_TRACK_TEXT = new Set(["input_text", "type_text", "type"]);
+
+/** Shell-escape text for ADB input (mirrors AdbClient.inputText logic) */
+function escapeAdbText(text: string): string {
+  return text
+    .replace(/[\n\r]/g, "")
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/'/g, "\\'")
+    .replace(/`/g, "\\`")
+    .replace(/\$/g, "\\$")
+    .replace(/ /g, "%s")
+    .replace(/&/g, "\\&")
+    .replace(/\(/g, "\\(")
+    .replace(/\)/g, "\\)")
+    .replace(/</g, "\\<")
+    .replace(/>/g, "\\>")
+    .replace(/\|/g, "\\|")
+    .replace(/;/g, "\\;");
+}
+
+interface FastTrackResult {
+  message: string;
+  uiCompact: string;
+}
+
+/**
+ * Try to execute a step via fast-track (1 ADB call for action + UI dump).
+ * Returns null if the step can't be fast-tracked → caller falls through to handleTool.
+ */
+async function turboFastTrack(
+  step: FlowStep,
+  ctx: ToolContext,
+  platform: string,
+  deviceId?: string,
+): Promise<FastTrackResult | null> {
+  if (platform !== "android") return null;
+
+  const action = step.action;
+  const args = step.args ?? {};
+  let shellCmd: string | null = null;
+  let message = "";
+
+  // input_tap — only raw x/y (no element resolution)
+  if (FAST_TRACK_TAP.has(action)
+      && typeof args.x === "number" && typeof args.y === "number"
+      && !args.text && !args.resourceId && !args.index && !args.label) {
+    const scaled = applyScale(args.x as number, args.y as number, platform, ctx);
+    shellCmd = `input tap ${scaled.x} ${scaled.y}`;
+    message = `Tapped at (${scaled.x}, ${scaled.y})`;
+  }
+
+  // input_key
+  else if (FAST_TRACK_KEY.has(action) && args.key) {
+    const key = (args.key as string).toUpperCase();
+    const code = FAST_TRACK_KEYS[key] ?? parseInt(key);
+    if (isNaN(code)) return null;
+    shellCmd = `input keyevent ${code}`;
+    message = `Pressed key: ${key}`;
+  }
+
+  // input_text
+  else if (FAST_TRACK_TEXT.has(action) && args.text) {
+    const escaped = escapeAdbText(args.text as string);
+    shellCmd = `input text "${escaped}"`;
+    message = `Entered text: "${(args.text as string).slice(0, 50)}"`;
+  }
+
+  if (!shellCmd) return null;
+
+  try {
+    const adb = ctx.deviceManager.getAndroidClient(deviceId);
+    const { uiXml } = await adb.execWithUiDump(shellCmd);
+
+    let uiCompact = "";
+    if (uiXml) {
+      const elements = parseUiHierarchy(uiXml);
+      ctx.setCachedElements(platform, elements);
+      // Build compact tree inline (same logic as collectCompactUiTree but no extra call)
+      const interactive = elements.filter(
+        (el) => !el.password && (el.clickable || el.scrollable || el.className.includes("EditText")),
+      );
+      const limited = interactive.slice(0, 15);
+      uiCompact = limited.map((el) => {
+        const shortClass = el.className.split(".").pop() ?? "";
+        const isEditText = el.className.includes("EditText");
+        const label = isEditText ? "[input]" : (el.contentDesc || el.text || "");
+        return `${shortClass}${label ? ` "${label}"` : ""}`;
+      }).join(" | ");
+    }
+
+    return { message, uiCompact };
+  } catch {
+    return null; // Fast-track failed, fall through to normal path
+  }
 }
 
 /** Collect brief UI context for diagnostics on flow step failure */
@@ -360,6 +472,7 @@ export const flowTools: ToolDefinition[] = [
       /** Collect turbo context for a step. Time spent here does NOT count against maxDuration. */
       async function collectTurboContext(stepNum: number, stepSuccess: boolean): Promise<void> {
         if (!turbo || !turboContexts) return;
+        if (turboContexts.has(stepNum)) return; // Already populated by fast-track
         const ctx_entry: TurboStepContext = {};
 
         if (!stepSuccess && turboScreenshots.length < TURBO_MAX_SCREENSHOTS) {
@@ -429,6 +542,23 @@ export const flowTools: ToolDefinition[] = [
           if (Date.now() - flowStart > maxDuration) break;
 
           const stepStart = Date.now();
+
+          // Turbo fast-track: combine action + UI dump in 1 ADB call (~150-300ms saved per step)
+          // Only for simple Android actions without repeat/if_not_found
+          if (turbo && !hasRepeatCondition && repeatTimes === 1 && !step.if_not_found) {
+            const fastResult = await turboFastTrack(step, ctx, currentPlatform, stepArgs.deviceId as string | undefined);
+            if (fastResult) {
+              lastStepResult = {
+                step: i + 1, action: step.action, label: step.label,
+                success: true, message: fastResult.message.slice(0, 200),
+                durationMs: Date.now() - stepStart,
+              };
+              if (turboContexts) {
+                turboContexts.set(i + 1, { uiTree: fastResult.uiCompact });
+              }
+              break; // Exit repeat loop — fast-track always single iteration
+            }
+          }
 
           try {
             const result = await ctx.handleTool(step.action, stepArgs, (_depth ?? 0) + 1);
