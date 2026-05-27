@@ -1,5 +1,13 @@
 # Claude Mobile
 
+> **Known Issue — Homebrew upgrade not working?**
+> Some users may see `already installed` with an old version when running `brew upgrade claude-in-mobile`. This happens when the local tap points to the wrong repository. Fix:
+> ```bash
+> brew untap alexgladkov/claude-in-mobile
+> brew tap alexgladkov/claude-in-mobile
+> brew install claude-in-mobile
+> ```
+
 MCP server for mobile, desktop, and browser automation — Android (ADB), iOS Simulator (simctl + WDA), Desktop (any macOS app), Aurora OS (audb), and Browser (CDP). Like [Claude in Chrome](https://www.anthropic.com/news/claude-for-chrome) but for devices, apps, and browsers.
 
 Control your Android phone, emulator, iOS Simulator, desktop app, Aurora device, or headless browser with natural language through Claude.
