@@ -3,6 +3,7 @@
 //! The top-level [`run`] function matches the parsed CLI command and delegates
 //! to the appropriate handler in [`device`] or [`store`].
 
+pub mod config;
 mod device;
 mod doctor;
 mod flow;
@@ -545,6 +546,9 @@ pub fn run(command: Commands) -> Result<()> {
 
         // -- Flow commands ----------------------------------------------------
         Commands::Flow { command } => {
+            // Resolve turbo: CLI flag || global config.
+            let global_turbo = config::get_bool("turbo").unwrap_or(false);
+
             match command {
                 crate::cli::FlowCommands::Run {
                     platform,
@@ -558,7 +562,7 @@ pub fn run(command: Commands) -> Result<()> {
                 } => flow::run(
                     &platform,
                     file.as_deref(),
-                    turbo,
+                    turbo || global_turbo,
                     max_duration,
                     stop_on_error,
                     simulator.as_deref(),
@@ -578,7 +582,7 @@ pub fn run(command: Commands) -> Result<()> {
                     &platform,
                     file.as_deref(),
                     stop_on_error,
-                    turbo,
+                    turbo || global_turbo,
                     simulator.as_deref(),
                     device.as_deref(),
                     companion_path.as_deref(),
@@ -594,7 +598,7 @@ pub fn run(command: Commands) -> Result<()> {
                     &platform,
                     file.as_deref(),
                     &devices,
-                    turbo,
+                    turbo || global_turbo,
                     max_duration,
                 ),
             }
@@ -633,5 +637,15 @@ pub fn run(command: Commands) -> Result<()> {
 
         // -- Sync commands ----------------------------------------------------
         Commands::Sync { command } => sync::run(command),
+
+        // -- Config commands --------------------------------------------------
+        Commands::Config { command } => {
+            match command {
+                crate::cli::ConfigCommands::Get { key } => config::get(&key),
+                crate::cli::ConfigCommands::Set { key, value } => config::set(&key, &value),
+                crate::cli::ConfigCommands::List => config::list(),
+                crate::cli::ConfigCommands::Reset { key } => config::reset(&key),
+            }
+        }
     }
 }

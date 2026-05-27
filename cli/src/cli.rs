@@ -1297,6 +1297,12 @@ pub enum Commands {
         #[command(subcommand)]
         command: SyncCommands,
     },
+
+    /// Manage persistent CLI settings (~/.claude-mobile/config.json)
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommands,
+    },
 }
 
 // -- Flow subcommands ---------------------------------------------------------
@@ -1395,6 +1401,35 @@ pub enum FlowCommands {
         /// Maximum total duration in milliseconds per device (default: 60000)
         #[arg(long, default_value = "60000")]
         max_duration: u64,
+    },
+}
+
+// -- Config subcommands -------------------------------------------------------
+
+#[derive(Subcommand)]
+pub enum ConfigCommands {
+    /// Get the value of a config key
+    Get {
+        /// Key name (e.g. "turbo")
+        key: String,
+    },
+
+    /// Set a config key to a value
+    Set {
+        /// Key name (e.g. "turbo")
+        key: String,
+
+        /// Value (true/false → bool, digits → number, else string)
+        value: String,
+    },
+
+    /// List all config settings
+    List,
+
+    /// Remove a config key
+    Reset {
+        /// Key name to remove
+        key: String,
     },
 }
 
