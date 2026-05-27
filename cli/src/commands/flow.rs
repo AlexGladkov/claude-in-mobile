@@ -31,8 +31,24 @@ const BLOCKED_ACTIONS: &[&str] = &["shell", "system_shell"];
 
 /// All recognised action names — anything else is rejected.
 const ALLOWED_ACTIONS: &[&str] = &[
+    // core interaction
     "tap", "tap-text", "input", "swipe", "find", "key", "launch", "stop",
     "screenshot", "wait", "ui-dump", "open-url",
+    // Batch 1/2 — sensor
+    "sensor-location", "sensor-battery", "sensor-notifications", "sensor-thermal",
+    // Batch 1/2 — network
+    "network-traffic", "network-connectivity", "network-proxy", "network-airplane",
+    // Batch 1/2 — permissions
+    "permission-grant", "permission-revoke", "permission-reset",
+    // Batch 1/2 — intents
+    "intent-start", "intent-broadcast", "intent-deeplink", "intent-services",
+    // Batch 1/2 — sandbox
+    "sandbox-prefs-read", "sandbox-prefs-write", "sandbox-sqlite-query",
+    "sandbox-file-list", "sandbox-file-read",
+    // Batch 1/2 — UI assertions
+    "ui-wait", "ui-assert-visible", "ui-assert-gone",
+    // Batch 1/2 — performance
+    "perf-snapshot", "perf-crashes", "perf-framestats",
 ];
 
 // ---------------------------------------------------------------------------
@@ -303,11 +319,430 @@ pub fn run(
 }
 
 // ---------------------------------------------------------------------------
+// `flow batch` — execute commands from MCP batch format
+// ---------------------------------------------------------------------------
+
+/// Batch command entry as received from the MCP `flow_batch` tool.
+///
+/// Format differs from [`FlowStep`]: uses `name` instead of `action` and
+/// `arguments` instead of `args`. We normalise into [`FlowStep`] internally.
+#[derive(Debug, serde::Deserialize)]
+struct BatchCommand {
+    name: String,
+    #[serde(default)]
+    arguments: Vec<String>,
+}
+
+/// Execute multiple commands sequentially using the MCP batch-command format.
+///
+/// JSON input format:
+/// ```json
+/// [{"name": "tap", "arguments": ["100", "200"]}, {"name": "input", "arguments": ["hello"]}]
+/// ```
+///
+/// Output is the same [`FlowResult`] JSON format as `flow run`.
+#[allow(clippy::too_many_arguments)]
+pub fn batch(
+    platform: &str,
+    file: Option<&str>,
+    stop_on_error: bool,
+    turbo: bool,
+    simulator: Option<&str>,
+    device: Option<&str>,
+    companion_path: Option<&str>,
+) -> Result<()> {
+    // Read input
+    let json_text = match file {
+        Some(path) => std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("Cannot read file '{}': {}", path, e))?,
+        None => {
+            let mut buf = String::new();
+            std::io::stdin().read_to_string(&mut buf)?;
+            buf
+        }
+    };
+
+    // Parse batch commands and map to FlowStep
+    let commands: Vec<BatchCommand> = serde_json::from_str(&json_text)
+        .map_err(|e| anyhow::anyhow!("Invalid batch command JSON: {}", e))?;
+
+    if commands.is_empty() {
+        bail!("Batch contains zero commands");
+    }
+    if commands.len() > MAX_STEPS {
+        bail!(
+            "Batch contains {} commands, maximum is {}",
+            commands.len(),
+            MAX_STEPS
+        );
+    }
+
+    // Convert to FlowStep — name → action, arguments → args
+    let steps: Vec<FlowStep> = commands
+        .into_iter()
+        .map(|cmd| FlowStep {
+            action: cmd.name,
+            args: cmd.arguments,
+            on_error: if stop_on_error { OnError::Stop } else { OnError::Skip },
+        })
+        .collect();
+
+    // Validate actions
+    for (i, step) in steps.iter().enumerate() {
+        let action = step.action.as_str();
+        if BLOCKED_ACTIONS.contains(&action) {
+            bail!(
+                "Command {}: action '{}' is blocked for security reasons",
+                i + 1,
+                action
+            );
+        }
+        if !ALLOWED_ACTIONS.contains(&action) {
+            bail!(
+                "Command {}: unknown action '{}'. Allowed: {}",
+                i + 1,
+                action,
+                ALLOWED_ACTIONS.join(", ")
+            );
+        }
+    }
+
+    let ctx = PlatformCtx {
+        platform,
+        device,
+        simulator,
+        companion_path,
+    };
+
+    let total_start = std::time::Instant::now();
+    let mut results: Vec<StepResult> = Vec::with_capacity(steps.len());
+    let mut screenshots_taken: usize = 0;
+    let mut all_passed = true;
+
+    for (i, step) in steps.iter().enumerate() {
+        let step_start = std::time::Instant::now();
+
+        // Turbo fast-track (Android-only, same as flow run)
+        if turbo && ctx.platform == "android" {
+            if let Some((shell_cmd, desc)) = build_fast_track_cmd(step, &ctx) {
+                match android::exec_with_ui_dump(&shell_cmd, ctx.device) {
+                    Ok((_, ui_xml)) => {
+                        let ui = if !ui_xml.is_empty() {
+                            Some(android::compact_ui_from_xml(&ui_xml))
+                        } else {
+                            None
+                        };
+                        results.push(StepResult {
+                            step: i + 1,
+                            action: step.action.clone(),
+                            success: true,
+                            message: desc,
+                            ms: step_start.elapsed().as_millis(),
+                            ui,
+                            screenshot: None,
+                        });
+                        continue;
+                    }
+                    Err(_) => { /* fall through to normal path */ }
+                }
+            }
+        }
+
+        let exec_result = execute_step(&ctx, step);
+        let step_ms = step_start.elapsed().as_millis();
+
+        let (success, message) = match exec_result {
+            Ok(msg) => (true, msg),
+            Err(e) => (false, format!("{e}")),
+        };
+
+        let ui = if turbo { compact_ui_dump(&ctx).ok() } else { None };
+
+        let screenshot_path = if turbo && !success && screenshots_taken < MAX_SCREENSHOTS {
+            match capture_failure_screenshot(&ctx, i + 1) {
+                Ok(path) => {
+                    screenshots_taken += 1;
+                    Some(path)
+                }
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+
+        if !success {
+            all_passed = false;
+        }
+
+        results.push(StepResult {
+            step: i + 1,
+            action: step.action.clone(),
+            success,
+            message,
+            ms: step_ms,
+            ui,
+            screenshot: screenshot_path,
+        });
+
+        if !success && step.on_error == OnError::Stop {
+            for j in (i + 1)..steps.len() {
+                results.push(StepResult {
+                    step: j + 1,
+                    action: steps[j].action.clone(),
+                    success: false,
+                    message: "Skipped: previous command failed (stop_on_error=true)".into(),
+                    ms: 0,
+                    ui: None,
+                    screenshot: None,
+                });
+            }
+            break;
+        }
+    }
+
+    let total_ms = total_start.elapsed().as_millis();
+    let passed = results.iter().filter(|r| r.success).count();
+    let failed = results.iter().filter(|r| !r.success).count();
+    let total = results.len();
+
+    let output = FlowResult {
+        completed: all_passed,
+        total_ms,
+        steps: results,
+        passed,
+        failed,
+        total,
+    };
+
+    println!("{}", serde_json::to_string_pretty(&output)?);
+
+    if all_passed { Ok(()) } else { bail!("") }
+}
+
+// ---------------------------------------------------------------------------
+// `flow parallel` — run a flow file on multiple devices sequentially
+// ---------------------------------------------------------------------------
+
+/// Per-device result for `flow parallel`.
+#[derive(serde::Serialize)]
+struct DeviceFlowResult {
+    device: String,
+    result: FlowResult,
+}
+
+/// Run the same flow JSON on each device in `devices` (comma-separated)
+/// sequentially. Produces a JSON array of per-device [`FlowResult`] objects.
+pub fn parallel(
+    platform: &str,
+    file: Option<&str>,
+    devices: &str,
+    turbo: bool,
+    max_duration: u64,
+) -> Result<()> {
+    let max_duration = max_duration.min(MAX_DURATION_LIMIT);
+
+    // Read flow steps once — same steps are run on every device
+    let json_text = match file {
+        Some(path) => std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("Cannot read file '{}': {}", path, e))?,
+        None => {
+            let mut buf = String::new();
+            std::io::stdin().read_to_string(&mut buf)?;
+            buf
+        }
+    };
+
+    // Validate the step list once up-front (same for all devices)
+    let steps: Vec<FlowStep> = serde_json::from_str(&json_text)
+        .map_err(|e| anyhow::anyhow!("Invalid step JSON: {}", e))?;
+
+    if steps.is_empty() {
+        bail!("Flow contains zero steps");
+    }
+    if steps.len() > MAX_STEPS {
+        bail!(
+            "Flow contains {} steps, maximum is {}",
+            steps.len(),
+            MAX_STEPS
+        );
+    }
+
+    for (i, step) in steps.iter().enumerate() {
+        let action = step.action.as_str();
+        if BLOCKED_ACTIONS.contains(&action) {
+            bail!(
+                "Step {}: action '{}' is blocked for security reasons",
+                i + 1,
+                action
+            );
+        }
+        if !ALLOWED_ACTIONS.contains(&action) {
+            bail!(
+                "Step {}: unknown action '{}'. Allowed: {}",
+                i + 1,
+                action,
+                ALLOWED_ACTIONS.join(", ")
+            );
+        }
+    }
+
+    let device_list: Vec<&str> = devices
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if device_list.is_empty() {
+        bail!("--devices must contain at least one device identifier");
+    }
+
+    let mut device_results: Vec<DeviceFlowResult> = Vec::with_capacity(device_list.len());
+
+    for &device_id in &device_list {
+        let ctx = PlatformCtx {
+            platform,
+            device: Some(device_id),
+            simulator: Some(device_id),
+            companion_path: None,
+        };
+
+        let total_start = std::time::Instant::now();
+        let mut results: Vec<StepResult> = Vec::with_capacity(steps.len());
+        let mut screenshots_taken: usize = 0;
+        let mut all_passed = true;
+
+        'steps: for (i, step) in steps.iter().enumerate() {
+            if total_start.elapsed().as_millis() as u64 >= max_duration {
+                for j in i..steps.len() {
+                    results.push(StepResult {
+                        step: j + 1,
+                        action: steps[j].action.clone(),
+                        success: false,
+                        message: "Skipped: max duration exceeded".into(),
+                        ms: 0,
+                        ui: None,
+                        screenshot: None,
+                    });
+                }
+                all_passed = false;
+                break 'steps;
+            }
+
+            let step_start = std::time::Instant::now();
+
+            // Turbo fast-track (Android-only)
+            if turbo && ctx.platform == "android" {
+                if let Some((shell_cmd, desc)) = build_fast_track_cmd(step, &ctx) {
+                    match android::exec_with_ui_dump(&shell_cmd, ctx.device) {
+                        Ok((_, ui_xml)) => {
+                            let ui = if !ui_xml.is_empty() {
+                                Some(android::compact_ui_from_xml(&ui_xml))
+                            } else {
+                                None
+                            };
+                            results.push(StepResult {
+                                step: i + 1,
+                                action: step.action.clone(),
+                                success: true,
+                                message: desc,
+                                ms: step_start.elapsed().as_millis(),
+                                ui,
+                                screenshot: None,
+                            });
+                            continue 'steps;
+                        }
+                        Err(_) => { /* fall through */ }
+                    }
+                }
+            }
+
+            let exec_result = execute_step(&ctx, step);
+            let step_ms = step_start.elapsed().as_millis();
+
+            let (success, message) = match exec_result {
+                Ok(msg) => (true, msg),
+                Err(e) => (false, format!("{e}")),
+            };
+
+            let ui = if turbo { compact_ui_dump(&ctx).ok() } else { None };
+
+            let screenshot_path = if turbo && !success && screenshots_taken < MAX_SCREENSHOTS {
+                match capture_failure_screenshot(&ctx, i + 1) {
+                    Ok(path) => {
+                        screenshots_taken += 1;
+                        Some(path)
+                    }
+                    Err(_) => None,
+                }
+            } else {
+                None
+            };
+
+            if !success {
+                all_passed = false;
+            }
+
+            results.push(StepResult {
+                step: i + 1,
+                action: step.action.clone(),
+                success,
+                message,
+                ms: step_ms,
+                ui,
+                screenshot: screenshot_path,
+            });
+
+            if !success && step.on_error == OnError::Stop {
+                for j in (i + 1)..steps.len() {
+                    results.push(StepResult {
+                        step: j + 1,
+                        action: steps[j].action.clone(),
+                        success: false,
+                        message: "Skipped: previous step failed (on_error=stop)".into(),
+                        ms: 0,
+                        ui: None,
+                        screenshot: None,
+                    });
+                }
+                break 'steps;
+            }
+        }
+
+        let total_ms = total_start.elapsed().as_millis();
+        let passed = results.iter().filter(|r| r.success).count();
+        let failed = results.iter().filter(|r| !r.success).count();
+        let total = results.len();
+
+        device_results.push(DeviceFlowResult {
+            device: device_id.to_owned(),
+            result: FlowResult {
+                completed: all_passed,
+                total_ms,
+                steps: results,
+                passed,
+                failed,
+                total,
+            },
+        });
+    }
+
+    println!("{}", serde_json::to_string_pretty(&device_results)?);
+
+    let all_devices_passed = device_results.iter().all(|dr| dr.result.completed);
+    if all_devices_passed {
+        Ok(())
+    } else {
+        bail!("")
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Step dispatcher — maps action names to existing platform functions
 // ---------------------------------------------------------------------------
 
 fn execute_step(ctx: &PlatformCtx<'_>, step: &FlowStep) -> Result<String> {
     match step.action.as_str() {
+        // core
         "tap" => step_tap(ctx, &step.args),
         "tap-text" => step_tap_text(ctx, &step.args),
         "input" => step_input(ctx, &step.args),
@@ -320,6 +755,39 @@ fn execute_step(ctx: &PlatformCtx<'_>, step: &FlowStep) -> Result<String> {
         "wait" => step_wait(&step.args),
         "ui-dump" => step_ui_dump(ctx),
         "open-url" => step_open_url(ctx, &step.args),
+        // Batch 1/2 — sensor
+        "sensor-location" => step_sensor_location(ctx, &step.args),
+        "sensor-battery" => step_sensor_battery(ctx, &step.args),
+        "sensor-notifications" => step_sensor_notifications(ctx, &step.args),
+        "sensor-thermal" => step_sensor_thermal(ctx, &step.args),
+        // Batch 1/2 — network
+        "network-traffic" => step_network_traffic(ctx, &step.args),
+        "network-connectivity" => step_network_connectivity(ctx),
+        "network-proxy" => step_network_proxy(ctx, &step.args),
+        "network-airplane" => step_network_airplane(ctx, &step.args),
+        // Batch 1/2 — permissions
+        "permission-grant" => step_permission_grant(ctx, &step.args),
+        "permission-revoke" => step_permission_revoke(ctx, &step.args),
+        "permission-reset" => step_permission_reset(ctx, &step.args),
+        // Batch 1/2 — intents
+        "intent-start" => step_intent_start(ctx, &step.args),
+        "intent-broadcast" => step_intent_broadcast(ctx, &step.args),
+        "intent-deeplink" => step_intent_deeplink(ctx, &step.args),
+        "intent-services" => step_intent_services(ctx, &step.args),
+        // Batch 1/2 — sandbox
+        "sandbox-prefs-read" => step_sandbox_prefs_read(ctx, &step.args),
+        "sandbox-prefs-write" => step_sandbox_prefs_write(ctx, &step.args),
+        "sandbox-sqlite-query" => step_sandbox_sqlite_query(ctx, &step.args),
+        "sandbox-file-list" => step_sandbox_file_list(ctx, &step.args),
+        "sandbox-file-read" => step_sandbox_file_read(ctx, &step.args),
+        // Batch 1/2 — UI assertions
+        "ui-wait" => step_ui_wait(ctx, &step.args),
+        "ui-assert-visible" => step_ui_assert_visible(ctx, &step.args),
+        "ui-assert-gone" => step_ui_assert_gone(ctx, &step.args),
+        // Batch 1/2 — performance
+        "perf-snapshot" => step_perf_snapshot(ctx, &step.args),
+        "perf-crashes" => step_perf_crashes(ctx, &step.args),
+        "perf-framestats" => step_perf_framestats(ctx, &step.args),
         _ => bail!("Unhandled action '{}'", step.action),
     }
 }
@@ -481,6 +949,244 @@ fn step_open_url(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
         _ => bail!("Unsupported platform for open-url"),
     }
     Ok(format!("Opened URL \"{}\"", url))
+}
+
+// ---------------------------------------------------------------------------
+// Batch 2 — sensor step helpers (Android-only)
+// ---------------------------------------------------------------------------
+
+fn step_sensor_location(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
+    require_args(args, 2, "sensor-location")?;
+    let lat: f64 = args[0].parse().map_err(|_| anyhow::anyhow!("Invalid latitude"))?;
+    let lon: f64 = args[1].parse().map_err(|_| anyhow::anyhow!("Invalid longitude"))?;
+    let alt: f64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    android::sensor_location(lat, lon, alt, ctx.device)?;
+    Ok(format!("GPS mocked to ({}, {})", lat, lon))
+}
+
+fn step_sensor_battery(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
+    let level = args.first().and_then(|s| s.parse::<u8>().ok());
+    let status = args.get(1).map(|s| s.as_str());
+    let plugged = args.get(2).map(|s| s.as_str());
+    android::sensor_battery(level, status, plugged, false, ctx.device)?;
+    Ok(format!("Battery override applied"))
+}
+
+fn step_sensor_notifications(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
+    let pkg_filter = args.first().map(|s| s.as_str());
+    android::sensor_notifications(pkg_filter, ctx.device)?;
+    Ok("Notifications listed".into())
+}
+
+fn step_sensor_thermal(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
+    let reset = args.first().map(|s| s == "reset").unwrap_or(false);
+    let status = if reset { None } else { args.first().map(|s| s.as_str()) };
+    android::sensor_thermal(status, reset, ctx.device)?;
+    Ok(if reset { "Thermal status reset".into() } else { format!("Thermal status set") })
+}
+
+// ---------------------------------------------------------------------------
+// Batch 2 — network step helpers (Android-only)
+// ---------------------------------------------------------------------------
+
+fn step_network_traffic(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
+    let pkg = args.first().map(|s| s.as_str());
+    android::network_traffic(pkg, ctx.device)?;
+    Ok("Network traffic retrieved".into())
+}
+
+fn step_network_connectivity(ctx: &PlatformCtx<'_>) -> Result<String> {
+    android::network_connectivity(ctx.device)?;
+    Ok("Network connectivity retrieved".into())
+}
+
+fn step_network_proxy(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
+    let clear = args.first().map(|s| s == "clear").unwrap_or(false);
+    let host = if !clear { args.first().map(|s| s.as_str()) } else { None };
+    let port: Option<u16> = args.get(1).and_then(|s| s.parse().ok());
+    android::network_proxy(host, port, clear, ctx.device)?;
+    Ok("Network proxy updated".into())
+}
+
+fn step_network_airplane(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
+    require_args(args, 1, "network-airplane")?;
+    let on = args[0] == "on";
+    android::network_airplane(on, ctx.device)?;
+    Ok(format!("Airplane mode {}", if on { "ON" } else { "OFF" }))
+}
+
+// ---------------------------------------------------------------------------
+// Batch 2 — permission step helpers
+// ---------------------------------------------------------------------------
+
+fn step_permission_grant(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
+    require_args(args, 2, "permission-grant")?;
+    android::permission_grant(&args[0], &args[1], ctx.device)?;
+    Ok(format!("Granted {} to {}", args[1], args[0]))
+}
+
+fn step_permission_revoke(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
+    require_args(args, 2, "permission-revoke")?;
+    android::permission_revoke(&args[0], &args[1], ctx.device)?;
+    Ok(format!("Revoked {} from {}", args[1], args[0]))
+}
+
+fn step_permission_reset(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
+    require_args(args, 1, "permission-reset")?;
+    android::permission_reset(&args[0], ctx.device)?;
+    Ok(format!("Permissions reset for {}", args[0]))
+}
+
+// ---------------------------------------------------------------------------
+// Batch 2 — intent step helpers (Android-only)
+// ---------------------------------------------------------------------------
+
+fn step_intent_start(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
+    // args: [action?, component?, data?, category?, package?]
+    let action = args.first().filter(|s| !s.is_empty()).map(|s| s.as_str());
+    let component = args.get(1).filter(|s| !s.is_empty()).map(|s| s.as_str());
+    let data = args.get(2).filter(|s| !s.is_empty()).map(|s| s.as_str());
+    let category = args.get(3).filter(|s| !s.is_empty()).map(|s| s.as_str());
+    let package = args.get(4).filter(|s| !s.is_empty()).map(|s| s.as_str());
+    android::intent_start(action, component, data, category, package, None, None, ctx.device)?;
+    Ok("Intent started".into())
+}
+
+fn step_intent_broadcast(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
+    require_args(args, 1, "intent-broadcast")?;
+    let action = &args[0];
+    let package = args.get(1).map(|s| s.as_str());
+    android::intent_broadcast(action, package, None, None, ctx.device)?;
+    Ok(format!("Broadcast sent: {}", action))
+}
+
+fn step_intent_deeplink(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
+    require_args(args, 1, "intent-deeplink")?;
+    let uri = &args[0];
+    android::intent_deeplink(uri, None, ctx.device)?;
+    Ok(format!("Deep-link opened: {}", uri))
+}
+
+fn step_intent_services(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
+    let pkg = args.first().map(|s| s.as_str());
+    android::intent_services(pkg, ctx.device)?;
+    Ok("Services listed".into())
+}
+
+// ---------------------------------------------------------------------------
+// Batch 2 — sandbox step helpers (Android-only)
+// ---------------------------------------------------------------------------
+
+fn step_sandbox_prefs_read(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
+    require_args(args, 1, "sandbox-prefs-read")?;
+    let pkg = &args[0];
+    let file = args.get(1).map(|s| s.as_str());
+    android::sandbox_prefs_read(pkg, file, ctx.device)?;
+    Ok(format!("Preferences read for {}", pkg))
+}
+
+fn step_sandbox_prefs_write(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
+    require_args(args, 4, "sandbox-prefs-write")?;
+    android::sandbox_prefs_write(&args[0], &args[1], &args[2], &args[3], args.get(4).map(|s| s.as_str()), ctx.device)?;
+    Ok(format!("Preference written: {}.{} = {}", args[1], args[2], args[3]))
+}
+
+fn step_sandbox_sqlite_query(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
+    require_args(args, 3, "sandbox-sqlite-query")?;
+    android::sandbox_sqlite_query(&args[0], &args[1], &args[2], ctx.device)?;
+    Ok("SQLite query executed".into())
+}
+
+fn step_sandbox_file_list(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
+    require_args(args, 1, "sandbox-file-list")?;
+    let path = args.get(1).map(|s| s.as_str());
+    android::sandbox_file_list(&args[0], path, ctx.device)?;
+    Ok(format!("File list for {}", args[0]))
+}
+
+fn step_sandbox_file_read(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
+    require_args(args, 2, "sandbox-file-read")?;
+    let max_bytes: Option<u64> = args.get(2).and_then(|s| s.parse().ok());
+    android::sandbox_file_read(&args[0], &args[1], max_bytes, ctx.device)?;
+    Ok(format!("File read: {}/{}", args[0], args[1]))
+}
+
+// ---------------------------------------------------------------------------
+// Batch 2 — UI assertion step helpers
+// ---------------------------------------------------------------------------
+
+fn step_ui_wait(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
+    require_args(args, 1, "ui-wait")?;
+    let query = &args[0];
+    let timeout: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(5000);
+    let interval: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(500);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout);
+
+    loop {
+        let found = match ctx.platform {
+            "android" => android::find_element(query, ctx.device)?,
+            "ios" => ios::find_element(query, ctx.simulator)?,
+            _ => bail!("Unsupported platform for ui-wait"),
+        };
+        if found.is_some() {
+            return Ok(format!("Element '{}' appeared", query));
+        }
+        if std::time::Instant::now() >= deadline {
+            bail!("Timed out waiting for element '{}'", query);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(interval));
+    }
+}
+
+fn step_ui_assert_visible(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
+    require_args(args, 1, "ui-assert-visible")?;
+    let query = &args[0];
+    let found = match ctx.platform {
+        "android" => android::find_element(query, ctx.device)?,
+        "ios" => ios::find_element(query, ctx.simulator)?,
+        _ => bail!("Unsupported platform for ui-assert-visible"),
+    };
+    if found.is_none() {
+        bail!("Element '{}' not found (assert-visible failed)", query);
+    }
+    Ok(format!("Element '{}' is visible", query))
+}
+
+fn step_ui_assert_gone(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
+    require_args(args, 1, "ui-assert-gone")?;
+    let query = &args[0];
+    let found = match ctx.platform {
+        "android" => android::find_element(query, ctx.device)?,
+        "ios" => ios::find_element(query, ctx.simulator)?,
+        _ => bail!("Unsupported platform for ui-assert-gone"),
+    };
+    if found.is_some() {
+        bail!("Element '{}' is still present (assert-gone failed)", query);
+    }
+    Ok(format!("Element '{}' is gone", query))
+}
+
+// ---------------------------------------------------------------------------
+// Batch 3 — performance step helpers (Android-only)
+// ---------------------------------------------------------------------------
+
+fn step_perf_snapshot(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
+    require_args(args, 1, "perf-snapshot")?;
+    android::perf_snapshot(&args[0], ctx.device)?;
+    Ok(format!("Perf snapshot captured for {}", args[0]))
+}
+
+fn step_perf_crashes(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
+    let pkg = args.first().map(|s| s.as_str());
+    let lines: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(50);
+    android::perf_crashes(pkg, lines, ctx.device)?;
+    Ok("Crash log retrieved".into())
+}
+
+fn step_perf_framestats(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
+    require_args(args, 1, "perf-framestats")?;
+    android::perf_framestats(&args[0], ctx.device)?;
+    Ok(format!("Frame stats captured for {}", args[0]))
 }
 
 // ---------------------------------------------------------------------------

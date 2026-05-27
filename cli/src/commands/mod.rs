@@ -6,8 +6,10 @@
 mod device;
 mod doctor;
 mod flow;
+pub mod recorder;
 mod setup;
 mod store;
+pub mod sync;
 
 use anyhow::Result;
 
@@ -342,6 +344,197 @@ pub fn run(command: Commands) -> Result<()> {
             device::resize_window(&window_id, width, height, companion_path.as_deref())
         }
 
+        Commands::UiWait {
+            platform,
+            text,
+            resource_id,
+            class_name,
+            timeout,
+            interval,
+            simulator,
+            device,
+        } => device::ui_wait(
+            &platform,
+            text.as_deref(),
+            resource_id.as_deref(),
+            class_name.as_deref(),
+            timeout,
+            interval,
+            simulator.as_deref(),
+            device.as_deref(),
+        ),
+
+        Commands::UiAssertVisible {
+            platform,
+            text,
+            resource_id,
+            simulator,
+            device,
+        } => device::ui_assert_visible(
+            &platform,
+            text.as_deref(),
+            resource_id.as_deref(),
+            simulator.as_deref(),
+            device.as_deref(),
+        ),
+
+        Commands::UiAssertGone {
+            platform,
+            text,
+            resource_id,
+            simulator,
+            device,
+        } => device::ui_assert_gone(
+            &platform,
+            text.as_deref(),
+            resource_id.as_deref(),
+            simulator.as_deref(),
+            device.as_deref(),
+        ),
+
+        // -- Sensor commands --------------------------------------------------
+        Commands::SensorLocation { latitude, longitude, altitude, device } => {
+            device::sensor_location(latitude, longitude, altitude, device.as_deref())
+        }
+
+        Commands::SensorBattery { level, status, plugged, reset, device } => {
+            device::sensor_battery(
+                level,
+                status.as_deref(),
+                plugged.as_deref(),
+                reset,
+                device.as_deref(),
+            )
+        }
+
+        Commands::SensorNotifications { package, device } => {
+            device::sensor_notifications(package.as_deref(), device.as_deref())
+        }
+
+        Commands::SensorThermal { status, reset, device } => {
+            device::sensor_thermal(status.as_deref(), reset, device.as_deref())
+        }
+
+        // -- Network commands -------------------------------------------------
+        Commands::NetworkTraffic { package, device } => {
+            device::network_traffic(package.as_deref(), device.as_deref())
+        }
+
+        Commands::NetworkConnectivity { device } => {
+            device::network_connectivity(device.as_deref())
+        }
+
+        Commands::NetworkProxy { host, port, clear, device } => {
+            device::network_proxy(host.as_deref(), port, clear, device.as_deref())
+        }
+
+        Commands::NetworkAirplane { state, device } => {
+            device::network_airplane(state == "on", device.as_deref())
+        }
+
+        // -- Permission commands ----------------------------------------------
+        Commands::PermissionGrant { platform, package, permission, simulator, device } => {
+            device::permission_grant(
+                &platform,
+                &package,
+                &permission,
+                simulator.as_deref(),
+                device.as_deref(),
+            )
+        }
+
+        Commands::PermissionRevoke { platform, package, permission, simulator, device } => {
+            device::permission_revoke(
+                &platform,
+                &package,
+                &permission,
+                simulator.as_deref(),
+                device.as_deref(),
+            )
+        }
+
+        Commands::PermissionReset { platform, package, simulator, device } => {
+            device::permission_reset(
+                &platform,
+                &package,
+                simulator.as_deref(),
+                device.as_deref(),
+            )
+        }
+
+        // -- Intent commands --------------------------------------------------
+        Commands::IntentStart {
+            action,
+            component,
+            data,
+            category,
+            package,
+            extras,
+            flags,
+            device,
+        } => device::intent_start(
+            action.as_deref(),
+            component.as_deref(),
+            data.as_deref(),
+            category.as_deref(),
+            package.as_deref(),
+            extras.as_deref(),
+            flags.as_deref(),
+            device.as_deref(),
+        ),
+
+        Commands::IntentBroadcast { action, package, component, extras, device } => {
+            device::intent_broadcast(
+                &action,
+                package.as_deref(),
+                component.as_deref(),
+                extras.as_deref(),
+                device.as_deref(),
+            )
+        }
+
+        Commands::IntentDeeplink { platform, uri, package, simulator, device } => {
+            device::intent_deeplink(
+                &platform,
+                &uri,
+                package.as_deref(),
+                simulator.as_deref(),
+                device.as_deref(),
+            )
+        }
+
+        Commands::IntentServices { package, device } => {
+            device::intent_services(package.as_deref(), device.as_deref())
+        }
+
+        // -- Sandbox commands -------------------------------------------------
+        Commands::SandboxPrefsRead { package, file, device } => {
+            device::sandbox_prefs_read(&package, file.as_deref(), device.as_deref())
+        }
+
+        Commands::SandboxPrefsWrite { package, file, key, value, r#type, device } => {
+            device::sandbox_prefs_write(
+                &package,
+                &file,
+                &key,
+                &value,
+                Some(r#type.as_str()),
+                device.as_deref(),
+            )
+        }
+
+        Commands::SandboxSqliteQuery { package, database, query, device } => {
+            device::sandbox_sqlite_query(&package, &database, &query, device.as_deref())
+        }
+
+        Commands::SandboxFileList { package, path, device } => {
+            device::sandbox_file_list(&package, path.as_deref(), device.as_deref())
+        }
+
+        Commands::SandboxFileRead { package, path, max_bytes, device } => {
+            device::sandbox_file_read(&package, &path, max_bytes, device.as_deref())
+        }
+
         // -- Setup commands ---------------------------------------------------
         Commands::Setup { command } => setup::run(command),
 
@@ -372,10 +565,73 @@ pub fn run(command: Commands) -> Result<()> {
                     device.as_deref(),
                     companion_path.as_deref(),
                 ),
+
+                crate::cli::FlowCommands::Batch {
+                    platform,
+                    file,
+                    stop_on_error,
+                    turbo,
+                    simulator,
+                    device,
+                    companion_path,
+                } => flow::batch(
+                    &platform,
+                    file.as_deref(),
+                    stop_on_error,
+                    turbo,
+                    simulator.as_deref(),
+                    device.as_deref(),
+                    companion_path.as_deref(),
+                ),
+
+                crate::cli::FlowCommands::Parallel {
+                    platform,
+                    file,
+                    devices,
+                    turbo,
+                    max_duration,
+                } => flow::parallel(
+                    &platform,
+                    file.as_deref(),
+                    &devices,
+                    turbo,
+                    max_duration,
+                ),
             }
+        }
+
+        // -- Performance commands (Android-only) ------------------------------
+        Commands::PerfSnapshot { package, device } => {
+            device::perf_snapshot(&package, device.as_deref())
+        }
+
+        Commands::PerfBaseline { package, name, device } => {
+            device::perf_baseline(&package, &name, device.as_deref())
+        }
+
+        Commands::PerfCompare { package, name, device } => {
+            device::perf_compare(&package, &name, device.as_deref())
+        }
+
+        Commands::PerfMonitor { package, count, interval_ms, device } => {
+            device::perf_monitor(&package, count, interval_ms, device.as_deref())
+        }
+
+        Commands::PerfCrashes { package, lines, device } => {
+            device::perf_crashes(package.as_deref(), lines, device.as_deref())
+        }
+
+        Commands::PerfFramestats { package, device } => {
+            device::perf_framestats(&package, device.as_deref())
         }
 
         // -- Doctor -----------------------------------------------------------
         Commands::Doctor => doctor::run(),
+
+        // -- Recorder commands ------------------------------------------------
+        Commands::Recorder { command } => recorder::run(command),
+
+        // -- Sync commands ----------------------------------------------------
+        Commands::Sync { command } => sync::run(command),
     }
 }
