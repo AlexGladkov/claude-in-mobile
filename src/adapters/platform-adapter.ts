@@ -51,7 +51,7 @@ export interface CorePlatformAdapter {
   getScreenshotBufferAsync(deviceId?: string): Promise<Buffer>;
 
   // -- UI --
-  getUiHierarchy(deviceId?: string): Promise<string>;
+  getUiHierarchy(deviceId?: string, turbo?: boolean): Promise<string>;
 
   // -- System info --
   getSystemInfo(deviceId?: string): Promise<string>;

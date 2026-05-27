@@ -46,8 +46,8 @@ import { sensorMeta, sensorAliases } from "./tools/meta/sensor-meta.js";
 import { networkMeta, networkAliases } from "./tools/meta/network-meta.js";
 import { captureStep } from "./tools/recorder-tools.js";
 
-/** Build dynamic MCP instructions based on active profile */
-function buildInstructions(profile: MobileProfile): string {
+/** Build dynamic MCP instructions based on active profile and turbo setting */
+function buildInstructions(profile: MobileProfile, turbo: boolean): string {
   const lines: string[] = [
     "Mobile, desktop, browser automation + store management.",
     "",
@@ -76,6 +76,13 @@ function buildInstructions(profile: MobileProfile): string {
     );
   }
 
+  if (turbo) {
+    lines.push(
+      "",
+      "TURBO MODE (experimental): flow(action:'run') returns rich UI context per step. For multi-step operations (E2E testing, navigation sequences, form filling), ALWAYS use flow(action:'run', steps:[...]) instead of calling tools individually. One flow call replaces 10-50 individual calls.",
+    );
+  }
+
   return lines.join("\n");
 }
 
@@ -96,7 +103,10 @@ async function handleTool(name: string, args: Record<string, unknown>, depth: nu
 
   // Record step if recording is active (no-op if idle, depth>0, or blocklisted)
   captureStep(name, args, depth);
-  recordCall(name, depth);
+  // Skip anti-pattern tracking for nested calls (flow sub-steps) in turbo — reduces overhead
+  if (!(turboEnabled && depth > 0)) {
+    recordCall(name, depth);
+  }
 
   const resolved = resolveToolCall(name, args);
   if (!resolved) {
@@ -136,8 +146,12 @@ async function handleTool(name: string, args: Record<string, unknown>, depth: nu
   }
 }
 
+// Resolve MOBILE_TURBO env — server-wide turbo default for flow tools
+const turboEnabled = process.env.MOBILE_TURBO === "true";
+if (turboEnabled) console.error("[turbo] MOBILE_TURBO=true — flow(run) turbo mode enabled by default");
+
 // Shared context (wired after handleTool is defined)
-const ctx = createToolContext(handleTool);
+const ctx = createToolContext(handleTool, { turboDefault: turboEnabled });
 
 // Resolve profile from MOBILE_PROFILE env, default "core"
 const rawProfile = process.env.MOBILE_PROFILE ?? "core";
@@ -334,7 +348,7 @@ const server = new Server(
     capabilities: {
       tools: { listChanged: true },
     },
-    instructions: buildInstructions(activeProfile),
+    instructions: buildInstructions(activeProfile, turboEnabled),
   }
 );
 
@@ -386,6 +400,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       ? `[Module "${autoEnabledModule}" auto-enabled]\n`
       : "";
 
+    // Handle multi-content response (turbo mode: array of text/image blocks)
+    if (typeof result === "object" && result !== null && "content" in result && Array.isArray((result as { content: unknown }).content)) {
+      const blocks = (result as { content: Array<{ type: string; text?: string; data?: string; mimeType?: string }> }).content;
+      const content: Array<{ type: string; text?: string; data?: string; mimeType?: string }> = [];
+      let noticePrepended = false;
+      for (const block of blocks) {
+        if (block.type === "text") {
+          const prefix = (!noticePrepended && moduleNotice) ? moduleNotice : "";
+          noticePrepended = true;
+          content.push({ type: "text", text: prefix + (block.text ?? "") });
+        } else if (block.type === "image" && block.data && block.mimeType) {
+          content.push({ type: "image", data: block.data, mimeType: block.mimeType });
+        }
+      }
+      // If moduleNotice was not prepended (no text blocks), add it
+      if (moduleNotice && !content.some(b => b.type === "text")) {
+        content.unshift({ type: "text", text: moduleNotice });
+      }
+      return { content };
+    }
+
     // Handle image response (optionally with text)
     if (typeof result === "object" && result !== null && "image" in result) {
       const img = (result as { image: { data: string; mimeType: string }; text?: string }).image;
@@ -421,8 +456,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       text = text.slice(0, MAX_RESPONSE_CHARS) + `\n\n[truncated, ${remaining} chars remaining]`;
     }
 
-    // Anti-pattern detection (only at top level, not on errors)
-    const hint = detectAntiPattern();
+    // Anti-pattern detection (only at top level, not on errors; skipped in turbo — flow manages feedback)
+    const hint = turboEnabled ? null : detectAntiPattern();
     const hintBlock = hint ? `\n[HINT: ${hint}]` : "";
 
     return {

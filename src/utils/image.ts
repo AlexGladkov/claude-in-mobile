@@ -6,6 +6,8 @@ export interface CompressOptions {
   maxHeight?: number;
   quality?: number;
   maxSizeBytes?: number;
+  /** When true, use Sharp (native) for faster compression if available. */
+  turbo?: boolean;
 }
 
 const DEFAULT_OPTIONS: CompressOptions = {
@@ -31,6 +33,28 @@ export interface CompressResult {
   originalHeight: number;
 }
 
+/**
+ * Try to load Sharp (native libvips). Returns null if not installed.
+ * Result is cached after first call. Typed as `any` because sharp is an
+ * optional dependency — no @types/sharp guaranteed at compile time.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let sharpModule: any | null | undefined;
+async function tryLoadSharp(): Promise<((input: Buffer) => any) | null> {
+  if (sharpModule !== undefined) return sharpModule;
+  try {
+    // Use variable to prevent TypeScript from resolving the module at compile time.
+    // Sharp is an optional dependency — may not be installed.
+    const moduleName = "sharp";
+    const mod = await import(/* webpackIgnore: true */ moduleName);
+    sharpModule = mod.default ?? mod;
+    return sharpModule;
+  } catch {
+    sharpModule = null;
+    return null;
+  }
+}
+
 export async function compressScreenshot(
   pngBuffer: Buffer,
   options: CompressOptions = {}
@@ -42,6 +66,20 @@ export async function compressScreenshot(
   }
 
   const opts = { ...DEFAULT_OPTIONS, ...options };
+
+  // Turbo path: use Sharp (native, 5-10x faster) when available
+  if (opts.turbo) {
+    const sharp = await tryLoadSharp();
+    if (sharp) {
+      return compressWithSharp(sharp, pngBuffer, {
+        maxWidth: opts.maxWidth!,
+        maxHeight: opts.maxHeight!,
+        quality: opts.quality!,
+        maxSizeBytes: opts.maxSizeBytes!,
+      });
+    }
+    // Sharp not available — fall through to Jimp
+  }
 
   const image = await Jimp.read(pngBuffer);
   const width = image.width;
@@ -103,6 +141,69 @@ export async function compressScreenshot(
     height: newHeight,
     originalWidth: width,
     originalHeight: height,
+  };
+}
+
+/**
+ * Compress using Sharp (native libvips) -- turbo fast path.
+ * `sharp` is typed as `any` because it is an optional dependency.
+ */
+async function compressWithSharp(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  sharp: (input: Buffer) => any,
+  pngBuffer: Buffer,
+  opts: { maxWidth: number; maxHeight: number; quality: number; maxSizeBytes: number },
+): Promise<CompressResult> {
+  const meta = await sharp(pngBuffer).metadata();
+  const originalWidth = meta.width ?? 0;
+  const originalHeight = meta.height ?? 0;
+
+  let newWidth = originalWidth;
+  let newHeight = originalHeight;
+
+  if (originalWidth > opts.maxWidth || originalHeight > opts.maxHeight) {
+    const widthRatio = opts.maxWidth / originalWidth;
+    const heightRatio = opts.maxHeight / originalHeight;
+    const ratio = Math.min(widthRatio, heightRatio);
+    newWidth = Math.round(originalWidth * ratio);
+    newHeight = Math.round(originalHeight * ratio);
+  }
+
+  let quality = opts.quality;
+  let jpegBuffer: Buffer;
+  let attempts = 0;
+  const maxAttempts = 5;
+
+  do {
+    let pipeline = sharp(pngBuffer);
+    if (newWidth !== originalWidth || newHeight !== originalHeight) {
+      pipeline = pipeline.resize(newWidth, newHeight, { fit: "inside" });
+    }
+    jpegBuffer = await pipeline.jpeg({ quality }).toBuffer();
+
+    if (jpegBuffer.length <= opts.maxSizeBytes) break;
+    quality = Math.max(20, quality - 15);
+    attempts++;
+  } while (attempts < maxAttempts);
+
+  // If still too large, resize further
+  if (jpegBuffer.length > opts.maxSizeBytes) {
+    const scaleFactor = Math.sqrt(opts.maxSizeBytes / jpegBuffer.length) * 0.9;
+    newWidth = Math.round(newWidth * scaleFactor);
+    newHeight = Math.round(newHeight * scaleFactor);
+    jpegBuffer = await sharp(pngBuffer)
+      .resize(newWidth, newHeight, { fit: "inside" })
+      .jpeg({ quality: 50 })
+      .toBuffer();
+  }
+
+  return {
+    data: jpegBuffer.toString("base64"),
+    mimeType: "image/jpeg",
+    width: newWidth,
+    height: newHeight,
+    originalWidth,
+    originalHeight,
   };
 }
 

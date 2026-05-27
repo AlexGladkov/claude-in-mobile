@@ -100,6 +100,7 @@ export const screenshotTools: ToolDefinition[] = [
         maxHeight: (args.maxHeight as number | undefined) ?? preset?.maxHeight,
         quality: (args.quality as number | undefined) ?? preset?.quality,
         monitorIndex: args.monitorIndex as number | undefined,
+        turbo: ctx.turboDefault,
       };
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform() ?? "android";
 
@@ -247,6 +248,7 @@ export const screenshotTools: ToolDefinition[] = [
         maxWidth: args.maxWidth as number | undefined,
         maxHeight: args.maxHeight as number | undefined,
         quality: args.quality as number | undefined,
+        turbo: ctx.turboDefault,
       });
 
       const maxAnnotElements = 100;

@@ -764,6 +764,60 @@ pub fn find_element(query: &str, _simulator: Option<&str>) -> Result<Option<(i32
     Ok(None)
 }
 
+/// Find a UI element on iOS matching any of the supplied criteria.
+///
+/// Matching is case-insensitive and partial (contains). Returns a human-readable
+/// description of the first matching element, or `None` if nothing is found.
+///
+/// This is the iOS counterpart of `android::find_ui_element`, used by
+/// `ui-wait`, `ui-assert-visible`, and `ui-assert-gone`.
+pub fn find_ui_element(
+    text: Option<&str>,
+    resource_id: Option<&str>,
+    simulator: Option<&str>,
+) -> Result<Option<String>> {
+    // iOS accessibility elements do not have a resource-id concept, but we
+    // support the parameter for API symmetry with Android, treating it as a
+    // match against the accessibility identifier / description.
+    let _ = simulator; // simctl-based accessibility lookup does not need UDID here
+
+    let elements = get_accessibility_elements()?;
+
+    let text_q = text.map(|s| s.to_lowercase());
+    let res_q = resource_id.map(|s| s.to_lowercase());
+
+    for elem in &elements {
+        if let Some(ref q) = text_q {
+            let matches_title = elem.title.to_lowercase().contains(q.as_str());
+            let matches_value = elem.value.to_lowercase().contains(q.as_str());
+            let matches_desc = elem.description.to_lowercase().contains(q.as_str());
+            if !matches_title && !matches_value && !matches_desc {
+                continue;
+            }
+        }
+
+        if let Some(ref q) = res_q {
+            let matches_desc = elem.description.to_lowercase().contains(q.as_str());
+            let matches_title = elem.title.to_lowercase().contains(q.as_str());
+            if !matches_desc && !matches_title {
+                continue;
+            }
+        }
+
+        let label = if !elem.title.is_empty() { &elem.title }
+            else if !elem.description.is_empty() { &elem.description }
+            else { &elem.value };
+
+        let desc = format!(
+            "role=\"{}\" label=\"{}\" at ({},{}) size={}x{}",
+            elem.role, label, elem.x, elem.y, elem.width, elem.height
+        );
+        return Ok(Some(desc));
+    }
+
+    Ok(None)
+}
+
 /// Tap element by text
 pub fn tap_element(query: &str, simulator: Option<&str>) -> Result<()> {
     if let Some((x, y)) = find_element(query, simulator)? {

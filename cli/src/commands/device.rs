@@ -422,6 +422,129 @@ pub fn wait(ms: u64) -> Result<()> {
     Ok(())
 }
 
+// -- UI inspection commands ---------------------------------------------------
+
+/// Poll UI hierarchy until a matching element appears or timeout expires.
+///
+/// Returns `Ok(())` when the element is found.
+/// Returns an error (which propagates as exit code 1 via main) if the timeout
+/// expires before the element becomes visible.
+pub fn ui_wait(
+    platform: &str,
+    text: Option<&str>,
+    resource_id: Option<&str>,
+    class_name: Option<&str>,
+    timeout_ms: u64,
+    interval_ms: u64,
+    simulator: Option<&str>,
+    device: Option<&str>,
+) -> Result<()> {
+    use std::time::Instant;
+
+    let deadline = Instant::now() + std::time::Duration::from_millis(timeout_ms);
+
+    loop {
+        let found = if platform == "android" {
+            android::find_ui_element(text, resource_id, class_name, device)?
+        } else {
+            ios::find_ui_element(text, resource_id, simulator)?
+        };
+
+        if let Some(elem_desc) = found {
+            println!("Found: {}", elem_desc);
+            return Ok(());
+        }
+
+        if Instant::now() >= deadline {
+            let query = build_query_description(text, resource_id, class_name);
+            anyhow::bail!("Timeout: element {} not found within {}ms", query, timeout_ms);
+        }
+
+        std::thread::sleep(std::time::Duration::from_millis(interval_ms));
+    }
+}
+
+/// Assert that an element matching the given criteria is currently visible.
+///
+/// Prints `PASS: Element visible -- <details>` and exits 0 on success.
+/// Prints `FAIL: Element not visible` and exits 1 on failure.
+pub fn ui_assert_visible(
+    platform: &str,
+    text: Option<&str>,
+    resource_id: Option<&str>,
+    simulator: Option<&str>,
+    device: Option<&str>,
+) -> Result<()> {
+    let found = if platform == "android" {
+        android::find_ui_element(text, resource_id, None, device)?
+    } else {
+        ios::find_ui_element(text, resource_id, simulator)?
+    };
+
+    match found {
+        Some(elem_desc) => {
+            println!("PASS: Element visible -- {}", elem_desc);
+            Ok(())
+        }
+        None => {
+            println!("FAIL: Element not visible");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Assert that an element matching the given criteria is NOT present.
+///
+/// Prints `PASS: Element not present` and exits 0 on success.
+/// Prints `FAIL: Element exists -- <details>` and exits 1 on failure.
+pub fn ui_assert_gone(
+    platform: &str,
+    text: Option<&str>,
+    resource_id: Option<&str>,
+    simulator: Option<&str>,
+    device: Option<&str>,
+) -> Result<()> {
+    let found = if platform == "android" {
+        android::find_ui_element(text, resource_id, None, device)?
+    } else {
+        ios::find_ui_element(text, resource_id, simulator)?
+    };
+
+    match found {
+        None => {
+            println!("PASS: Element not present");
+            Ok(())
+        }
+        Some(elem_desc) => {
+            println!("FAIL: Element exists -- {}", elem_desc);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Build a human-readable description of the query criteria for error messages.
+fn build_query_description(
+    text: Option<&str>,
+    resource_id: Option<&str>,
+    class_name: Option<&str>,
+) -> String {
+    let mut parts = Vec::new();
+    if let Some(t) = text {
+        parts.push(format!("text=\"{}\"", t));
+    }
+    if let Some(r) = resource_id {
+        parts.push(format!("resource_id=\"{}\"", r));
+    }
+    if let Some(c) = class_name {
+        parts.push(format!("class=\"{}\"", c));
+    }
+    if parts.is_empty() {
+        "(no criteria)".to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
 // -- Android-only advanced commands -------------------------------------------
 
 pub fn analyze_screen(device: Option<&str>) -> Result<()> {
@@ -522,6 +645,285 @@ pub fn resize_window(
     companion_path: Option<&str>,
 ) -> Result<()> {
     desktop::resize_window(window_id, width, height, companion_path)
+}
+
+// -- Sensor commands (Android-only) -------------------------------------------
+
+pub fn sensor_location(
+    latitude: f64,
+    longitude: f64,
+    altitude: f64,
+    device: Option<&str>,
+) -> Result<()> {
+    android::sensor_location(latitude, longitude, altitude, device)
+}
+
+pub fn sensor_battery(
+    level: Option<u8>,
+    status: Option<&str>,
+    plugged: Option<&str>,
+    reset: bool,
+    device: Option<&str>,
+) -> Result<()> {
+    android::sensor_battery(level, status, plugged, reset, device)
+}
+
+pub fn sensor_notifications(package: Option<&str>, device: Option<&str>) -> Result<()> {
+    android::sensor_notifications(package, device)
+}
+
+pub fn sensor_thermal(status: Option<&str>, reset: bool, device: Option<&str>) -> Result<()> {
+    android::sensor_thermal(status, reset, device)
+}
+
+// -- Network commands (Android-only) ------------------------------------------
+
+pub fn network_traffic(package: Option<&str>, device: Option<&str>) -> Result<()> {
+    android::network_traffic(package, device)
+}
+
+pub fn network_connectivity(device: Option<&str>) -> Result<()> {
+    android::network_connectivity(device)
+}
+
+pub fn network_proxy(
+    host: Option<&str>,
+    port: Option<u16>,
+    clear: bool,
+    device: Option<&str>,
+) -> Result<()> {
+    android::network_proxy(host, port, clear, device)
+}
+
+pub fn network_airplane(enabled: bool, device: Option<&str>) -> Result<()> {
+    android::network_airplane(enabled, device)
+}
+
+// -- Permission commands (Android + iOS) --------------------------------------
+
+pub fn permission_grant(
+    platform: &str,
+    package: &str,
+    permission: &str,
+    simulator: Option<&str>,
+    device: Option<&str>,
+) -> Result<()> {
+    match platform {
+        "android" => android::permission_grant(package, permission, device),
+        "ios" => {
+            let sim = simulator.unwrap_or("booted");
+            let output = std::process::Command::new("xcrun")
+                .args(["simctl", "privacy", sim, "grant", permission, package])
+                .output()
+                .map_err(|e| anyhow::anyhow!("xcrun simctl privacy grant failed: {}", e))?;
+            if !output.status.success() {
+                anyhow::bail!(
+                    "simctl privacy grant failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            println!("Granted {} to {}", permission, package);
+            Ok(())
+        }
+        _ => anyhow::bail!("Unsupported platform for permission-grant: {}", platform),
+    }
+}
+
+pub fn permission_revoke(
+    platform: &str,
+    package: &str,
+    permission: &str,
+    simulator: Option<&str>,
+    device: Option<&str>,
+) -> Result<()> {
+    match platform {
+        "android" => android::permission_revoke(package, permission, device),
+        "ios" => {
+            let sim = simulator.unwrap_or("booted");
+            let output = std::process::Command::new("xcrun")
+                .args(["simctl", "privacy", sim, "revoke", permission, package])
+                .output()
+                .map_err(|e| anyhow::anyhow!("xcrun simctl privacy revoke failed: {}", e))?;
+            if !output.status.success() {
+                anyhow::bail!(
+                    "simctl privacy revoke failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            println!("Revoked {} from {}", permission, package);
+            Ok(())
+        }
+        _ => anyhow::bail!("Unsupported platform for permission-revoke: {}", platform),
+    }
+}
+
+pub fn permission_reset(
+    platform: &str,
+    package: &str,
+    simulator: Option<&str>,
+    device: Option<&str>,
+) -> Result<()> {
+    match platform {
+        "android" => android::permission_reset(package, device),
+        "ios" => {
+            let sim = simulator.unwrap_or("booted");
+            let output = std::process::Command::new("xcrun")
+                .args(["simctl", "privacy", sim, "reset", "all", package])
+                .output()
+                .map_err(|e| anyhow::anyhow!("xcrun simctl privacy reset failed: {}", e))?;
+            if !output.status.success() {
+                anyhow::bail!(
+                    "simctl privacy reset failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            println!("Permissions reset for {}", package);
+            Ok(())
+        }
+        _ => anyhow::bail!("Unsupported platform for permission-reset: {}", platform),
+    }
+}
+
+// -- Intent commands (Android-only) -------------------------------------------
+
+#[allow(clippy::too_many_arguments)]
+pub fn intent_start(
+    action: Option<&str>,
+    component: Option<&str>,
+    data: Option<&str>,
+    category: Option<&str>,
+    package: Option<&str>,
+    extras: Option<&str>,
+    flags: Option<&str>,
+    device: Option<&str>,
+) -> Result<()> {
+    android::intent_start(action, component, data, category, package, extras, flags, device)
+}
+
+pub fn intent_broadcast(
+    action: &str,
+    package: Option<&str>,
+    component: Option<&str>,
+    extras: Option<&str>,
+    device: Option<&str>,
+) -> Result<()> {
+    android::intent_broadcast(action, package, component, extras, device)
+}
+
+pub fn intent_deeplink(
+    platform: &str,
+    uri: &str,
+    package: Option<&str>,
+    simulator: Option<&str>,
+    device: Option<&str>,
+) -> Result<()> {
+    match platform {
+        "android" => android::intent_deeplink(uri, package, device),
+        "ios" => {
+            let sim = simulator.unwrap_or("booted");
+            let output = std::process::Command::new("xcrun")
+                .args(["simctl", "openurl", sim, uri])
+                .output()
+                .map_err(|e| anyhow::anyhow!("xcrun simctl openurl failed: {}", e))?;
+            if !output.status.success() {
+                anyhow::bail!(
+                    "simctl openurl failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            println!("Opened deep-link on iOS simulator: {}", uri);
+            Ok(())
+        }
+        _ => anyhow::bail!("Unsupported platform for intent-deeplink: {}", platform),
+    }
+}
+
+pub fn intent_services(package: Option<&str>, device: Option<&str>) -> Result<()> {
+    android::intent_services(package, device)
+}
+
+// -- Sandbox commands (Android-only) ------------------------------------------
+
+pub fn sandbox_prefs_read(
+    package: &str,
+    file: Option<&str>,
+    device: Option<&str>,
+) -> Result<()> {
+    android::sandbox_prefs_read(package, file, device)
+}
+
+pub fn sandbox_prefs_write(
+    package: &str,
+    file: &str,
+    key: &str,
+    value: &str,
+    pref_type: Option<&str>,
+    device: Option<&str>,
+) -> Result<()> {
+    android::sandbox_prefs_write(package, file, key, value, pref_type, device)
+}
+
+pub fn sandbox_sqlite_query(
+    package: &str,
+    database: &str,
+    query: &str,
+    device: Option<&str>,
+) -> Result<()> {
+    android::sandbox_sqlite_query(package, database, query, device)
+}
+
+pub fn sandbox_file_list(
+    package: &str,
+    path: Option<&str>,
+    device: Option<&str>,
+) -> Result<()> {
+    android::sandbox_file_list(package, path, device)
+}
+
+pub fn sandbox_file_read(
+    package: &str,
+    path: &str,
+    max_bytes: Option<u64>,
+    device: Option<&str>,
+) -> Result<()> {
+    android::sandbox_file_read(package, path, max_bytes, device)
+}
+
+// -- Performance commands (Android-only) --------------------------------------
+
+/// Capture a memory/CPU/battery/framestats snapshot for a package.
+pub fn perf_snapshot(package: &str, device: Option<&str>) -> Result<()> {
+    android::perf_snapshot(package, device)
+}
+
+/// Save a perf-snapshot as a named baseline JSON file in /tmp.
+pub fn perf_baseline(package: &str, name: &str, device: Option<&str>) -> Result<()> {
+    android::perf_baseline(package, name, device)
+}
+
+/// Compare current perf metrics against a saved named baseline.
+pub fn perf_compare(package: &str, name: &str, device: Option<&str>) -> Result<()> {
+    android::perf_compare(package, name, device)
+}
+
+/// Collect N perf samples at the given interval and report min/max/avg trends.
+pub fn perf_monitor(
+    package: &str,
+    count: u32,
+    interval_ms: u64,
+    device: Option<&str>,
+) -> Result<()> {
+    android::perf_monitor(package, count, interval_ms, device)
+}
+
+/// Extract recent crashes and ANRs from logcat.
+pub fn perf_crashes(package: Option<&str>, lines: usize, device: Option<&str>) -> Result<()> {
+    android::perf_crashes(package, lines, device)
+}
+
+/// Detailed frame rendering stats (gfxinfo framestats) for a package.
+pub fn perf_framestats(package: &str, device: Option<&str>) -> Result<()> {
+    android::perf_framestats(package, device)
 }
 
 // -- Helpers ------------------------------------------------------------------

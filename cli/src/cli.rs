@@ -756,8 +756,646 @@ pub enum Commands {
         command: RuStoreCommands,
     },
 
+    /// [experimental] Run a sequence of automation steps in one invocation
+    Flow {
+        #[command(subcommand)]
+        command: FlowCommands,
+    },
+
+    /// Wait for a UI element to appear (polls every --interval ms up to --timeout ms)
+    UiWait {
+        /// Platform: android or ios
+        #[arg(value_parser = ["android", "ios"])]
+        platform: String,
+
+        /// Match by text (case-insensitive partial match)
+        #[arg(long)]
+        text: Option<String>,
+
+        /// Match by resource-id (case-insensitive partial match)
+        #[arg(long)]
+        resource_id: Option<String>,
+
+        /// Match by class name (case-insensitive partial match)
+        #[arg(long)]
+        class_name: Option<String>,
+
+        /// Timeout in milliseconds (default: 5000)
+        #[arg(long, default_value = "5000")]
+        timeout: u64,
+
+        /// Polling interval in milliseconds (default: 500)
+        #[arg(long, default_value = "500")]
+        interval: u64,
+
+        /// iOS Simulator name
+        #[arg(long)]
+        simulator: Option<String>,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    /// Assert that a UI element is currently visible (exit 1 if not found)
+    UiAssertVisible {
+        /// Platform: android or ios
+        #[arg(value_parser = ["android", "ios"])]
+        platform: String,
+
+        /// Match by text (case-insensitive partial match)
+        #[arg(long)]
+        text: Option<String>,
+
+        /// Match by resource-id (case-insensitive partial match)
+        #[arg(long)]
+        resource_id: Option<String>,
+
+        /// iOS Simulator name
+        #[arg(long)]
+        simulator: Option<String>,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    /// Assert that a UI element is NOT present (exit 1 if found)
+    UiAssertGone {
+        /// Platform: android or ios
+        #[arg(value_parser = ["android", "ios"])]
+        platform: String,
+
+        /// Match by text (case-insensitive partial match)
+        #[arg(long)]
+        text: Option<String>,
+
+        /// Match by resource-id (case-insensitive partial match)
+        #[arg(long)]
+        resource_id: Option<String>,
+
+        /// iOS Simulator name
+        #[arg(long)]
+        simulator: Option<String>,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    // ===== Sensor commands (Android-only) =====
+
+    /// Set mock GPS location (Android only)
+    SensorLocation {
+        /// Latitude in decimal degrees (e.g. 37.7749)
+        latitude: f64,
+
+        /// Longitude in decimal degrees (e.g. -122.4194)
+        longitude: f64,
+
+        /// Altitude in metres (default: 0.0)
+        #[arg(long, default_value = "0.0")]
+        altitude: f64,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    /// Override battery state (Android only)
+    SensorBattery {
+        /// Battery level 0-100
+        #[arg(long)]
+        level: Option<u8>,
+
+        /// Battery status: charging, discharging, full, not_charging, unknown
+        #[arg(long)]
+        status: Option<String>,
+
+        /// Power source: ac, usb, wireless, unplugged
+        #[arg(long)]
+        plugged: Option<String>,
+
+        /// Reset battery to real values
+        #[arg(long, default_value = "false")]
+        reset: bool,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    /// List active notifications (Android only)
+    SensorNotifications {
+        /// Filter by package name
+        #[arg(long)]
+        package: Option<String>,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    /// Override or reset thermal status (Android only)
+    SensorThermal {
+        /// Thermal status: none, light, moderate, severe, critical, emergency, shutdown
+        #[arg(long)]
+        status: Option<String>,
+
+        /// Reset thermal status to real value
+        #[arg(long, default_value = "false")]
+        reset: bool,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    // ===== Network commands (Android-only) =====
+
+    /// Show per-app or global network traffic (Android only)
+    NetworkTraffic {
+        /// Filter by package name (omit for global stats)
+        #[arg(long)]
+        package: Option<String>,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    /// Show connectivity and WiFi status (Android only)
+    NetworkConnectivity {
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    /// Get, set, or clear the HTTP proxy (Android only)
+    NetworkProxy {
+        /// Proxy host (required when setting)
+        #[arg(long)]
+        host: Option<String>,
+
+        /// Proxy port (required when setting)
+        #[arg(long)]
+        port: Option<u16>,
+
+        /// Clear the proxy setting
+        #[arg(long, default_value = "false")]
+        clear: bool,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    /// Enable or disable airplane mode (Android only)
+    NetworkAirplane {
+        /// on or off
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    // ===== Permission commands =====
+
+    /// Grant a permission to a package
+    PermissionGrant {
+        /// Platform: android or ios
+        #[arg(value_parser = ["android", "ios"])]
+        platform: String,
+
+        /// Package name (Android) or bundle ID (iOS)
+        package: String,
+
+        /// Permission (e.g. android.permission.CAMERA or photos/camera for iOS)
+        permission: String,
+
+        /// iOS Simulator name
+        #[arg(long)]
+        simulator: Option<String>,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    /// Revoke a permission from a package
+    PermissionRevoke {
+        /// Platform: android or ios
+        #[arg(value_parser = ["android", "ios"])]
+        platform: String,
+
+        /// Package name (Android) or bundle ID (iOS)
+        package: String,
+
+        /// Permission name
+        permission: String,
+
+        /// iOS Simulator name
+        #[arg(long)]
+        simulator: Option<String>,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    /// Reset all runtime permissions for a package
+    PermissionReset {
+        /// Platform: android or ios
+        #[arg(value_parser = ["android", "ios"])]
+        platform: String,
+
+        /// Package name (Android) or bundle ID (iOS)
+        package: String,
+
+        /// iOS Simulator name
+        #[arg(long)]
+        simulator: Option<String>,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    // ===== Intent commands (Android + iOS deeplink) =====
+
+    /// Start an activity via am start (Android only)
+    IntentStart {
+        /// Intent action (e.g. android.intent.action.MAIN)
+        #[arg(long)]
+        action: Option<String>,
+
+        /// Component name (e.g. com.example/.MainActivity)
+        #[arg(long)]
+        component: Option<String>,
+
+        /// Data URI
+        #[arg(long)]
+        data: Option<String>,
+
+        /// Category (e.g. android.intent.category.LAUNCHER)
+        #[arg(long)]
+        category: Option<String>,
+
+        /// Package name
+        #[arg(long)]
+        package: Option<String>,
+
+        /// Extras as JSON object (e.g. {"key":"value","num":42})
+        #[arg(long)]
+        extras: Option<String>,
+
+        /// Intent flags as hex string (e.g. 0x10000000)
+        #[arg(long)]
+        flags: Option<String>,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    /// Send a broadcast intent via am broadcast (Android only)
+    IntentBroadcast {
+        /// Broadcast action (required)
+        #[arg(long)]
+        action: String,
+
+        /// Target package
+        #[arg(long)]
+        package: Option<String>,
+
+        /// Target component (pkg/.ReceiverClass)
+        #[arg(long)]
+        component: Option<String>,
+
+        /// Extras as JSON object
+        #[arg(long)]
+        extras: Option<String>,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    /// Open a deep-link URI (Android + iOS)
+    IntentDeeplink {
+        /// Platform: android or ios
+        #[arg(value_parser = ["android", "ios"])]
+        platform: String,
+
+        /// URI to open (e.g. myapp://screen/detail?id=1)
+        uri: String,
+
+        /// Restrict to this package (Android only)
+        #[arg(long)]
+        package: Option<String>,
+
+        /// iOS Simulator name
+        #[arg(long)]
+        simulator: Option<String>,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    /// List running services (Android only)
+    IntentServices {
+        /// Filter by package name
+        #[arg(long)]
+        package: Option<String>,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    // ===== Sandbox commands (Android-only) =====
+
+    /// Read SharedPreferences XML from app sandbox (Android only)
+    SandboxPrefsRead {
+        /// Package name
+        package: String,
+
+        /// Preferences file name without .xml (default: default_preferences)
+        #[arg(long)]
+        file: Option<String>,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    /// Write a value to SharedPreferences (Android only)
+    SandboxPrefsWrite {
+        /// Package name
+        package: String,
+
+        /// Preferences file name without .xml
+        file: String,
+
+        /// Preference key to update
+        key: String,
+
+        /// Value to set
+        value: String,
+
+        /// Type: string, boolean, int, long, float (default: string)
+        #[arg(long, default_value = "string")]
+        r#type: String,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    /// Execute a SQLite query on the app's database (Android only)
+    SandboxSqliteQuery {
+        /// Package name
+        package: String,
+
+        /// Database file name (e.g. app.db) or absolute path
+        database: String,
+
+        /// SQL query to execute
+        query: String,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    /// List files in the app sandbox directory (Android only)
+    SandboxFileList {
+        /// Package name
+        package: String,
+
+        /// Path inside app data dir (default: .)
+        #[arg(long)]
+        path: Option<String>,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    /// Read a file from the app sandbox (Android only)
+    SandboxFileRead {
+        /// Package name
+        package: String,
+
+        /// File path inside app data dir
+        path: String,
+
+        /// Maximum bytes to read (omit for full file)
+        #[arg(long)]
+        max_bytes: Option<u64>,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    // ===== Performance commands (Android-only) =====
+
+    /// Capture memory/CPU/battery/framestats snapshot for a package (Android only)
+    PerfSnapshot {
+        /// Package name (e.g. com.example.app)
+        package: String,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    /// Save a perf-snapshot as a named baseline to /tmp (Android only)
+    PerfBaseline {
+        /// Package name (e.g. com.example.app)
+        package: String,
+
+        /// Baseline name (e.g. before-refactor)
+        name: String,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    /// Compare current perf against a saved baseline (Android only)
+    PerfCompare {
+        /// Package name (e.g. com.example.app)
+        package: String,
+
+        /// Baseline name to compare against
+        name: String,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    /// Collect N perf samples at an interval and show trends (Android only)
+    PerfMonitor {
+        /// Package name (e.g. com.example.app)
+        package: String,
+
+        /// Number of samples to collect (default: 5)
+        #[arg(long, default_value = "5")]
+        count: u32,
+
+        /// Interval between samples in milliseconds (default: 1000)
+        #[arg(long, default_value = "1000")]
+        interval_ms: u64,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    /// Extract recent crashes and ANRs from logcat (Android only)
+    PerfCrashes {
+        /// Filter by package name
+        #[arg(long)]
+        package: Option<String>,
+
+        /// Number of log lines to retrieve (default: 50)
+        #[arg(long, default_value = "50")]
+        lines: usize,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
+    /// Detailed frame rendering stats for a package (Android only)
+    PerfFramestats {
+        /// Package name (e.g. com.example.app)
+        package: String,
+
+        /// Android device serial
+        #[arg(long)]
+        device: Option<String>,
+    },
+
     /// Check all tool dependencies and print green/red status for each platform
     Doctor,
+
+    /// Record, manage and replay automation scenarios
+    Recorder {
+        #[command(subcommand)]
+        command: RecorderCommands,
+    },
+
+    /// Coordinated multi-device testing (sync groups)
+    Sync {
+        #[command(subcommand)]
+        command: SyncCommands,
+    },
+}
+
+// -- Flow subcommands ---------------------------------------------------------
+
+#[derive(Subcommand)]
+pub enum FlowCommands {
+    /// Execute a sequence of steps from JSON (stdin or --file)
+    Run {
+        /// Platform: android, ios, aurora, or desktop
+        #[arg(value_parser = ["android", "ios", "aurora", "desktop"])]
+        platform: String,
+
+        /// Path to JSON file with steps (reads from stdin if omitted)
+        #[arg(short, long)]
+        file: Option<String>,
+
+        /// Turbo mode: compact UI tree after each step, screenshot on fail
+        #[arg(long, default_value = "false")]
+        turbo: bool,
+
+        /// Maximum total duration in milliseconds (default: 60000)
+        #[arg(long, default_value = "60000")]
+        max_duration: u64,
+
+        /// Stop on first error (default: true, respects per-step on_error)
+        #[arg(long, default_value = "true")]
+        stop_on_error: bool,
+
+        /// iOS Simulator name
+        #[arg(long)]
+        simulator: Option<String>,
+
+        /// Android/Aurora device serial
+        #[arg(long)]
+        device: Option<String>,
+
+        /// Desktop companion app path
+        #[arg(long)]
+        companion_path: Option<String>,
+    },
+
+    /// Execute multiple named commands sequentially (batch API format)
+    ///
+    /// Input JSON format:
+    /// `[{"name": "tap", "arguments": ["100", "200"]}, {"name": "input", "arguments": ["hello"]}]`
+    Batch {
+        /// Platform: android, ios, aurora, or desktop
+        #[arg(value_parser = ["android", "ios", "aurora", "desktop"])]
+        platform: String,
+
+        /// Path to JSON file with commands (reads from stdin if omitted)
+        #[arg(short, long)]
+        file: Option<String>,
+
+        /// Stop execution on first error (default: true)
+        #[arg(long, default_value = "true")]
+        stop_on_error: bool,
+
+        /// Turbo mode: compact UI tree after each step, screenshot on fail
+        #[arg(long, default_value = "false")]
+        turbo: bool,
+
+        /// iOS Simulator name
+        #[arg(long)]
+        simulator: Option<String>,
+
+        /// Android/Aurora device serial
+        #[arg(long)]
+        device: Option<String>,
+
+        /// Desktop companion app path
+        #[arg(long)]
+        companion_path: Option<String>,
+    },
+
+    /// Run the same flow file on multiple devices sequentially
+    ///
+    /// Example: `claude-in-mobile flow parallel android --file steps.json --devices "device1,device2"`
+    Parallel {
+        /// Platform: android, ios, aurora, or desktop
+        #[arg(value_parser = ["android", "ios", "aurora", "desktop"])]
+        platform: String,
+
+        /// Path to JSON file with steps (reads from stdin if omitted)
+        #[arg(short, long)]
+        file: Option<String>,
+
+        /// Comma-separated list of device/simulator identifiers
+        #[arg(long)]
+        devices: String,
+
+        /// Turbo mode: compact UI tree after each step, screenshot on fail
+        #[arg(long, default_value = "false")]
+        turbo: bool,
+
+        /// Maximum total duration in milliseconds per device (default: 60000)
+        #[arg(long, default_value = "60000")]
+        max_duration: u64,
+    },
 }
 
 // -- Setup subcommands --------------------------------------------------------
@@ -958,5 +1596,225 @@ pub enum RuStoreCommands {
     /// Delete current RuStore draft
     Discard {
         #[arg(short, long)] package: String,
+    },
+}
+
+// -- Recorder subcommands -----------------------------------------------------
+
+#[derive(Subcommand)]
+pub enum RecorderCommands {
+    /// Start a new recording session (creates /tmp/claude-mobile-recording-<name>.json)
+    Start {
+        /// Scenario name (used as filename and identifier)
+        #[arg(short, long)]
+        name: String,
+
+        /// Target platform (android, ios, aurora, desktop)
+        #[arg(short, long, default_value = "android")]
+        platform: String,
+
+        /// Human-readable description of the scenario
+        #[arg(short, long)]
+        description: Option<String>,
+
+        /// Comma-separated tags (e.g. smoke,login)
+        #[arg(long)]
+        tags: Option<String>,
+    },
+
+    /// Stop the active recording and save the scenario (or discard it)
+    Stop {
+        /// Discard the recording without saving
+        #[arg(long, default_value = "false")]
+        discard: bool,
+    },
+
+    /// Show the current active recording state and recent steps
+    Status,
+
+    /// Manually add a step to the active recording
+    AddStep {
+        /// Action name (tap, swipe, input, …)
+        action_name: String,
+
+        /// Action arguments as a JSON array (e.g. '["100","200"]')
+        #[arg(long)]
+        args: Option<String>,
+
+        /// Optional human-readable label for this step
+        #[arg(long)]
+        label: Option<String>,
+    },
+
+    /// Remove a step from the active recording by 1-based index
+    RemoveStep {
+        /// 1-based index of the step to remove
+        step_index: usize,
+    },
+
+    /// List saved scenarios
+    List {
+        /// Filter by platform (omit to list all platforms)
+        #[arg(short, long)]
+        platform: Option<String>,
+
+        /// Filter by tag
+        #[arg(long)]
+        tag: Option<String>,
+    },
+
+    /// Display the full contents of a saved scenario
+    Show {
+        /// Scenario name
+        name: String,
+
+        /// Platform the scenario belongs to
+        #[arg(short, long, default_value = "android")]
+        platform: String,
+    },
+
+    /// Delete a saved scenario
+    Delete {
+        /// Scenario name
+        name: String,
+
+        /// Platform the scenario belongs to
+        #[arg(short, long, default_value = "android")]
+        platform: String,
+    },
+
+    /// Replay a saved scenario
+    Play {
+        /// Scenario name
+        name: String,
+
+        /// Platform to replay on
+        #[arg(short, long, default_value = "android")]
+        platform: String,
+
+        /// Playback speed multiplier (default: 1.0)
+        #[arg(long, default_value = "1.0")]
+        speed: f64,
+
+        /// Stop replay on the first failing step
+        #[arg(long, default_value = "false")]
+        stop_on_fail: bool,
+
+        /// Per-step timeout in milliseconds (omit for no timeout)
+        #[arg(long)]
+        step_timeout: Option<u64>,
+
+        /// Maximum total replay duration in milliseconds (omit for no limit)
+        #[arg(long)]
+        max_duration: Option<u64>,
+
+        /// First step to replay (1-based, default: 1)
+        #[arg(long)]
+        from_step: Option<usize>,
+
+        /// Last step to replay (1-based, default: last)
+        #[arg(long)]
+        to_step: Option<usize>,
+
+        /// Print steps without executing them
+        #[arg(long, default_value = "false")]
+        dry_run: bool,
+    },
+
+    /// Export a scenario as flow_steps JSON or markdown
+    Export {
+        /// Scenario name
+        name: String,
+
+        /// Platform the scenario belongs to
+        #[arg(short, long, default_value = "android")]
+        platform: String,
+
+        /// Output format: flow_steps or markdown
+        #[arg(short, long, default_value = "flow_steps",
+              value_parser = ["flow_steps", "markdown"])]
+        format: String,
+    },
+}
+
+// -- Sync subcommands ---------------------------------------------------------
+
+#[derive(Subcommand)]
+pub enum SyncCommands {
+    /// Create a new device group for coordinated testing
+    CreateGroup {
+        /// Group name (used as identifier)
+        name: String,
+
+        /// Roles as a JSON array (e.g. '[{"name":"sender","deviceId":"abc"}]')
+        #[arg(long)]
+        roles: String,
+    },
+
+    /// Execute a sequence of cross-role steps
+    Run {
+        /// Sync group name
+        group_name: String,
+
+        /// Path to JSON file containing the steps array
+        #[arg(long)]
+        file: String,
+
+        /// Maximum total run duration in milliseconds (omit for no limit)
+        #[arg(long)]
+        max_duration: Option<u64>,
+    },
+
+    /// Perform a cross-device assertion (source action triggers, target is verified)
+    AssertCross {
+        /// Sync group name
+        group_name: String,
+
+        /// Source role name
+        #[arg(long)]
+        source_role: String,
+
+        /// Action to perform on the source device
+        #[arg(long)]
+        source_action: String,
+
+        /// Source action arguments as a JSON array
+        #[arg(long)]
+        source_args: Option<String>,
+
+        /// Target role name
+        #[arg(long)]
+        target_role: String,
+
+        /// Action to verify on the target device
+        #[arg(long)]
+        target_action: String,
+
+        /// Target action arguments as a JSON array
+        #[arg(long)]
+        target_args: Option<String>,
+
+        /// Milliseconds to wait between source and target action
+        #[arg(long)]
+        delay_ms: Option<u64>,
+
+        /// Number of retry attempts for the target action (default: 1)
+        #[arg(long, default_value = "1")]
+        retries: u32,
+    },
+
+    /// Show group details and last run summary
+    Status {
+        /// Sync group name
+        group_name: String,
+    },
+
+    /// List all active sync groups
+    List,
+
+    /// Destroy (delete) a sync group
+    Destroy {
+        /// Sync group name
+        group_name: String,
     },
 }

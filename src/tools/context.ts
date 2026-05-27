@@ -42,7 +42,7 @@ import { iosTreeToUiElements, formatIOSUITree } from "./context/ios-helpers.js";
 // Shared device manager singleton
 export const deviceManager = createFullDeviceManager();
 
-// Bound hint functions for the shared deviceManager
+// Bound hint functions for the shared deviceManager (non-turbo defaults for backward compat)
 export const generateActionHints = createGenerateActionHints(deviceManager);
 export const getElementsForPlatform = createGetElementsForPlatform(deviceManager);
 
@@ -70,9 +70,25 @@ export interface ToolContext {
   invalidateUiTreeCache: (platform?: string) => void;
   platformParam: typeof platformParam;
   handleTool: (name: string, args: Record<string, unknown>, depth?: number) => Promise<unknown>;
+  turboDefault: boolean;
 }
 
-export function createToolContext(handleTool: ToolContext["handleTool"]): ToolContext {
+export function createToolContext(
+  handleTool: ToolContext["handleTool"],
+  options?: { turboDefault?: boolean },
+): ToolContext {
+  const turbo = options?.turboDefault ?? false;
+
+  // When turbo is enabled, create dedicated hint functions that pass turbo=true
+  // down to DeviceManager and use adaptive delays. When off, use the default
+  // non-turbo singletons for zero-overhead backward compatibility.
+  const turboHints = turbo
+    ? createGenerateActionHints(deviceManager, { turbo: true })
+    : generateActionHints;
+  const turboElements = turbo
+    ? createGetElementsForPlatform(deviceManager, { turbo: true })
+    : getElementsForPlatform;
+
   return {
     deviceManager,
     getCachedElements,
@@ -80,12 +96,13 @@ export function createToolContext(handleTool: ToolContext["handleTool"]): ToolCo
     lastScreenshotMap,
     lastUiTreeMap,
     screenshotScaleMap,
-    generateActionHints,
-    getElementsForPlatform,
+    generateActionHints: turboHints,
+    getElementsForPlatform: turboElements,
     iosTreeToUiElements,
     formatIOSUITree,
     invalidateUiTreeCache,
     platformParam,
     handleTool,
+    turboDefault: turbo,
   };
 }

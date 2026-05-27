@@ -483,14 +483,14 @@ export class DeviceManager {
 
   // ============ UI ============
 
-  async getUiHierarchy(platform?: Platform, deviceId?: string): Promise<string> {
+  async getUiHierarchy(platform?: Platform, deviceId?: string, turbo?: boolean): Promise<string> {
     const adapter = this.getAdapter(platform, deviceId);
-    return adapter.getUiHierarchy(deviceId);
+    return adapter.getUiHierarchy(deviceId, turbo);
   }
 
-  async getUiHierarchyAsync(platform?: Platform, deviceId?: string): Promise<string> {
+  async getUiHierarchyAsync(platform?: Platform, deviceId?: string, turbo?: boolean): Promise<string> {
     const adapter = this.getAdapter(platform, deviceId);
-    return adapter.getUiHierarchy(deviceId);
+    return adapter.getUiHierarchy(deviceId, turbo);
   }
 
   // ============ Shell (guarded by type guard) ============
