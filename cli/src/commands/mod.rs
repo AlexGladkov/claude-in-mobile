@@ -5,6 +5,7 @@
 
 mod device;
 mod doctor;
+mod flow;
 mod setup;
 mod store;
 
@@ -348,6 +349,31 @@ pub fn run(command: Commands) -> Result<()> {
         Commands::Store { command } => store::google_play(command),
         Commands::Huawei { command } => store::huawei(command),
         Commands::Rustore { command } => store::rustore(command),
+
+        // -- Flow commands ----------------------------------------------------
+        Commands::Flow { command } => {
+            match command {
+                crate::cli::FlowCommands::Run {
+                    platform,
+                    file,
+                    turbo,
+                    max_duration,
+                    stop_on_error,
+                    simulator,
+                    device,
+                    companion_path,
+                } => flow::run(
+                    &platform,
+                    file.as_deref(),
+                    turbo,
+                    max_duration,
+                    stop_on_error,
+                    simulator.as_deref(),
+                    device.as_deref(),
+                    companion_path.as_deref(),
+                ),
+            }
+        }
 
         // -- Doctor -----------------------------------------------------------
         Commands::Doctor => doctor::run(),

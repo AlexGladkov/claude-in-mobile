@@ -51,6 +51,37 @@ interface FlowStepResult {
   durationMs: number;
 }
 
+/** ContentBlock for turbo multi-content responses */
+type ContentBlock =
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mimeType: string };
+
+/**
+ * Collect compact UI tree: interactive elements, no passwords, redacted input text.
+ * Returns pipe-separated one-liner like: Button "Login" | EditText [input] | TextView "Welcome"
+ */
+async function collectCompactUiTree(
+  ctx: ToolContext,
+  platform: string,
+): Promise<string> {
+  const elements = await Promise.race([
+    ctx.getElementsForPlatform(platform),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("ui tree timeout")), 800)),
+  ]);
+  const interactive = elements.filter(
+    (el: UiElement) => !el.password && (el.clickable || el.scrollable || el.className.includes("EditText")),
+  );
+  const limited = interactive.slice(0, 15);
+  if (limited.length === 0) return "";
+  const parts = limited.map((el: UiElement) => {
+    const shortClass = el.className.split(".").pop() ?? "";
+    const isEditText = el.className.includes("EditText");
+    const label = isEditText ? "[input]" : (el.contentDesc || el.text || "");
+    return `${shortClass}${label ? ` "${label}"` : ""}`;
+  });
+  return parts.join(" | ");
+}
+
 /** Collect brief UI context for diagnostics on flow step failure */
 async function collectFailureDiag(
   ctx: ToolContext,
@@ -58,32 +89,54 @@ async function collectFailureDiag(
   stepIndex: number,
 ): Promise<string> {
   try {
-    const elements = await Promise.race([
-      ctx.getElementsForPlatform(platform),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("diag timeout")), 800)),
-    ]);
-    const interactive = elements.filter(
-      (el: UiElement) => el.clickable || el.scrollable || el.className.includes("EditText"),
-    );
-    const limited = interactive.slice(0, 15);
-    if (limited.length === 0) return "";
-    const lines = limited.map((el: UiElement) => {
-      const label = el.text || el.contentDesc || "";
-      const shortClass = el.className.split(".").pop() ?? "";
-      return `  ${shortClass}${label ? ` "${label}"` : ""} (${el.centerX},${el.centerY})`;
-    });
-    return `\n[DIAG:step${stepIndex}] Available UI:\n${lines.join("\n")}`;
+    const tree = await collectCompactUiTree(ctx, platform);
+    if (!tree) return "";
+    return `\n[DIAG:step${stepIndex}] Available UI:\n  ${tree}`;
   } catch {
     return ""; // silently skip diagnostics
   }
 }
 
-function formatFlowResults(results: FlowStepResult[], totalMs: number, diagBlock: string = ""): string {
+/** Capture a compressed screenshot for turbo mode. Returns base64 data or null on failure. */
+async function captureTurboScreenshot(
+  ctx: ToolContext,
+  platform: string,
+): Promise<{ data: string; mimeType: string } | null> {
+  try {
+    const result = await ctx.handleTool("screen_capture", { platform, preset: "low", compress: true });
+    if (typeof result === "object" && result !== null && "image" in result) {
+      const img = (result as { image: { data: string; mimeType: string } }).image;
+      return { data: img.data, mimeType: img.mimeType };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+interface TurboStepContext {
+  uiTree?: string;
+  hasScreenshot?: boolean;
+}
+
+function formatFlowResults(
+  results: FlowStepResult[],
+  totalMs: number,
+  diagBlock: string = "",
+  turboContexts?: Map<number, TurboStepContext>,
+): string {
   const lines: string[] = [`Flow completed (${totalMs}ms)`, ""];
   for (const r of results) {
     const label = r.label ? ` (${r.label})` : "";
     const status = r.success ? "OK" : "FAIL";
     lines.push(`${r.step}. ${r.action}${label}: ${status} — ${r.message} (${r.durationMs}ms)`);
+    const turbo = turboContexts?.get(r.step);
+    if (turbo?.uiTree) {
+      lines.push(`   [UI] ${turbo.uiTree}`);
+    }
+    if (turbo?.hasScreenshot) {
+      lines.push(`   [screenshot attached]`);
+    }
   }
   return lines.join("\n") + diagBlock;
 }
@@ -92,7 +145,7 @@ export const flowTools: ToolDefinition[] = [
   {
     tool: {
       name: "flow_batch",
-      description: "Execute multiple commands in one round-trip",
+      description: "Execute multiple commands in one round-trip. Set turbo:true for UI context per step (experimental).",
       inputSchema: {
         type: "object",
         properties: {
@@ -109,6 +162,7 @@ export const flowTools: ToolDefinition[] = [
             description: "Array of commands to execute sequentially",
           },
           stopOnError: { type: "boolean", description: "Stop execution on first error (default: true)", default: true },
+          turbo: { type: "boolean", description: "[experimental] Rich UI feedback per step. Compact UI tree after each step, screenshot on failure.", default: false },
         },
         required: ["commands"],
       },
@@ -120,6 +174,7 @@ export const flowTools: ToolDefinition[] = [
 
       const commands = args.commands as Array<{ name: string; arguments?: Record<string, unknown> }>;
       const stopOnError = args.stopOnError !== false;
+      const turbo = (args.turbo as boolean) ?? ctx.turboDefault;
 
       if (!commands || commands.length === 0) {
         throw new ValidationError("No commands provided.");
@@ -140,40 +195,94 @@ export const flowTools: ToolDefinition[] = [
       }
 
       const results: Array<{ command: string; success: boolean; result: string }> = [];
+      // Turbo state
+      const turboUiLines: string[] = [];
+      const turboScreenshots: Array<{ data: string; mimeType: string }> = [];
+      const TURBO_MAX_SCREENSHOTS = 5;
+      // Detect platform for turbo UI collection
+      const turboPlatform = turbo ? (ctx.deviceManager.getCurrentPlatform() as string) : "";
 
-      for (const cmd of commands) {
+      for (let i = 0; i < commands.length; i++) {
+        const cmd = commands[i];
+        let success = true;
+        let resultText = "";
+
         try {
           const result = await ctx.handleTool(cmd.name, cmd.arguments ?? {}, (_depth ?? 0) + 1);
           const text = typeof result === "object" && result !== null && "text" in result
             ? (result as { text: string }).text
             : JSON.stringify(result);
 
-          results.push({ command: cmd.name, success: true, result: truncateOutput(text, { maxChars: 500, maxLines: 20 }) });
+          resultText = truncateOutput(text, { maxChars: 500, maxLines: 20 });
+          results.push({ command: cmd.name, success: true, result: resultText });
         } catch (error: unknown) {
+          success = false;
           const msg = error instanceof Error ? error.message : String(error);
+          resultText = msg;
           results.push({ command: cmd.name, success: false, result: msg });
-          if (stopOnError) {
-            break;
+        }
+
+        // Turbo: collect UI tree after each step, screenshot on failure
+        if (turbo) {
+          try {
+            const uiTree = await collectCompactUiTree(ctx, turboPlatform);
+            if (uiTree) {
+              turboUiLines.push(`   [UI] ${uiTree}`);
+            } else {
+              turboUiLines.push("");
+            }
+          } catch {
+            turboUiLines.push("");
+          }
+
+          if (!success && turboScreenshots.length < TURBO_MAX_SCREENSHOTS) {
+            const screenshot = await captureTurboScreenshot(ctx, turboPlatform);
+            if (screenshot) turboScreenshots.push(screenshot);
+            // Mark this line for screenshot reference
+            if (turboUiLines.length > 0 && turboUiLines[turboUiLines.length - 1] !== "") {
+              turboUiLines[turboUiLines.length - 1] += "\n   [screenshot attached]";
+            } else {
+              turboUiLines.push("   [screenshot attached]");
+            }
           }
         }
-      }
 
-      const output = results.map((r, i) =>
-        `${i + 1}. ${r.command}: ${r.success ? "OK" : "ERROR"} — ${r.result}`
-      ).join("\n");
+        if (!success && stopOnError) {
+          break;
+        }
+      }
 
       const failed = results.filter(r => !r.success).length;
       const summary = failed > 0
         ? `Batch: ${results.length}/${commands.length} executed, ${failed} failed`
         : `Batch: ${results.length} commands OK`;
 
-      return { text: `${summary}\n\n${output}` };
+      const outputLines = results.map((r, i) => {
+        let line = `${i + 1}. ${r.command}: ${r.success ? "OK" : "ERROR"} — ${r.result}`;
+        if (turbo && turboUiLines[i]) {
+          line += `\n${turboUiLines[i]}`;
+        }
+        return line;
+      });
+
+      const textBlock = `${summary}\n\n${outputLines.join("\n")}`;
+
+      // Turbo: return multi-content with screenshots
+      if (turbo && turboScreenshots.length > 0) {
+        const content: ContentBlock[] = [{ type: "text", text: textBlock }];
+        for (const ss of turboScreenshots) {
+          content.push({ type: "image", data: ss.data, mimeType: ss.mimeType });
+        }
+        return { content };
+      }
+
+      return { text: textBlock };
     },
   },
   {
     tool: {
       name: "flow_run",
-      description: "Multi-step automation flow with conditionals, loops, error handling. Max 20 steps.",
+      description: "Multi-step automation flow with conditionals, loops, error handling. Use for E2E testing instead of calling tools one-by-one. Set turbo:true for UI context per step (experimental). Max 20 steps.",
       inputSchema: {
         type: "object",
         properties: {
@@ -203,6 +312,7 @@ export const flowTools: ToolDefinition[] = [
           },
           maxDuration: { type: "number", description: "Max total duration in ms (default: 30000, max: 60000)", default: 30000 },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
+          turbo: { type: "boolean", description: "[experimental] Rich UI feedback per step. Compact UI tree after each step, screenshot on failure.", default: false },
         },
         required: ["steps"],
       },
@@ -216,6 +326,7 @@ export const flowTools: ToolDefinition[] = [
       const steps = args.steps as FlowStep[];
       const maxDuration = Math.min((args.maxDuration as number) ?? 30000, FLOW_MAX_DURATION);
       const currentPlatform = (platform ?? ctx.deviceManager.getCurrentPlatform()) as string;
+      const turbo = (args.turbo as boolean) ?? ctx.turboDefault;
 
       if (!steps || steps.length === 0) {
         throw new ValidationError("No steps provided.");
@@ -236,6 +347,44 @@ export const flowTools: ToolDefinition[] = [
 
       const flowStart = Date.now();
       const results: FlowStepResult[] = [];
+
+      // Turbo state
+      const turboContexts = turbo ? new Map<number, TurboStepContext>() : undefined;
+      const turboScreenshots: Array<{ data: string; mimeType: string }> = [];
+      const TURBO_MAX_SCREENSHOTS = 5;
+
+      /** Collect turbo context for a step. Time spent here does NOT count against maxDuration. */
+      async function collectTurboContext(stepNum: number, stepSuccess: boolean): Promise<void> {
+        if (!turbo || !turboContexts) return;
+        const ctx_entry: TurboStepContext = {};
+        try {
+          const uiTree = await collectCompactUiTree(ctx, currentPlatform);
+          if (uiTree) ctx_entry.uiTree = uiTree;
+        } catch { /* silently skip */ }
+
+        if (!stepSuccess && turboScreenshots.length < TURBO_MAX_SCREENSHOTS) {
+          const screenshot = await captureTurboScreenshot(ctx, currentPlatform);
+          if (screenshot) {
+            turboScreenshots.push(screenshot);
+            ctx_entry.hasScreenshot = true;
+          }
+        }
+
+        turboContexts.set(stepNum, ctx_entry);
+      }
+
+      /** Build the final return value, factoring in turbo multi-content. */
+      function buildReturn(totalMs: number, diagBlock: string = ""): { text: string } | { content: ContentBlock[] } {
+        const text = formatFlowResults(results, totalMs, diagBlock, turboContexts);
+        if (turbo && turboScreenshots.length > 0) {
+          const content: ContentBlock[] = [{ type: "text", text }];
+          for (const ss of turboScreenshots) {
+            content.push({ type: "image", data: ss.data, mimeType: ss.mimeType });
+          }
+          return { content };
+        }
+        return { text };
+      }
 
       for (let i = 0; i < steps.length; i++) {
         if (Date.now() - flowStart > maxDuration) {
@@ -358,8 +507,13 @@ export const flowTools: ToolDefinition[] = [
 
             if (onError === "stop") {
               results.push(lastStepResult);
-              const diag = await collectFailureDiag(ctx, currentPlatform, i + 1);
-              return { text: formatFlowResults(results, Date.now() - flowStart, diag) };
+              // Turbo context collected outside maxDuration timer
+              await collectTurboContext(i + 1, false);
+              if (!turbo) {
+                const diag = await collectFailureDiag(ctx, currentPlatform, i + 1);
+                return { text: formatFlowResults(results, Date.now() - flowStart, diag) };
+              }
+              return buildReturn(Date.now() - flowStart);
             }
             break;
           }
@@ -367,16 +521,25 @@ export const flowTools: ToolDefinition[] = [
 
         if (lastStepResult) {
           results.push(lastStepResult);
+          // Turbo: collect UI context after each step (outside maxDuration timer)
+          await collectTurboContext(lastStepResult.step, lastStepResult.success);
+
           if (!lastStepResult.success && (step.on_error ?? "stop") === "stop") {
-            const diag = await collectFailureDiag(ctx, currentPlatform, i + 1);
-            return { text: formatFlowResults(results, Date.now() - flowStart, diag) };
+            if (!turbo) {
+              const diag = await collectFailureDiag(ctx, currentPlatform, i + 1);
+              return { text: formatFlowResults(results, Date.now() - flowStart, diag) };
+            }
+            return buildReturn(Date.now() - flowStart);
           }
         }
       }
 
-      const lastFailed = results.length > 0 && !results[results.length - 1].success;
-      const diag = lastFailed ? await collectFailureDiag(ctx, currentPlatform, results.length) : "";
-      return { text: formatFlowResults(results, Date.now() - flowStart, diag) };
+      if (!turbo) {
+        const lastFailed = results.length > 0 && !results[results.length - 1].success;
+        const diag = lastFailed ? await collectFailureDiag(ctx, currentPlatform, results.length) : "";
+        return { text: formatFlowResults(results, Date.now() - flowStart, diag) };
+      }
+      return buildReturn(Date.now() - flowStart);
     },
   },
   {

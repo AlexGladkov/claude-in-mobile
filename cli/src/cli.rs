@@ -756,8 +756,54 @@ pub enum Commands {
         command: RuStoreCommands,
     },
 
+    /// [experimental] Run a sequence of automation steps in one invocation
+    Flow {
+        #[command(subcommand)]
+        command: FlowCommands,
+    },
+
     /// Check all tool dependencies and print green/red status for each platform
     Doctor,
+}
+
+// -- Flow subcommands ---------------------------------------------------------
+
+#[derive(Subcommand)]
+pub enum FlowCommands {
+    /// Execute a sequence of steps from JSON (stdin or --file)
+    Run {
+        /// Platform: android, ios, aurora, or desktop
+        #[arg(value_parser = ["android", "ios", "aurora", "desktop"])]
+        platform: String,
+
+        /// Path to JSON file with steps (reads from stdin if omitted)
+        #[arg(short, long)]
+        file: Option<String>,
+
+        /// Turbo mode: compact UI tree after each step, screenshot on fail
+        #[arg(long, default_value = "false")]
+        turbo: bool,
+
+        /// Maximum total duration in milliseconds (default: 60000)
+        #[arg(long, default_value = "60000")]
+        max_duration: u64,
+
+        /// Stop on first error (default: true, respects per-step on_error)
+        #[arg(long, default_value = "true")]
+        stop_on_error: bool,
+
+        /// iOS Simulator name
+        #[arg(long)]
+        simulator: Option<String>,
+
+        /// Android/Aurora device serial
+        #[arg(long)]
+        device: Option<String>,
+
+        /// Desktop companion app path
+        #[arg(long)]
+        companion_path: Option<String>,
+    },
 }
 
 // -- Setup subcommands --------------------------------------------------------

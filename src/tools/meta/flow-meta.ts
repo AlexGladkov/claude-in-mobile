@@ -11,7 +11,7 @@ import { flowTools } from "../flow-tools.js";
 const { meta, aliases } = createMetaTool({
   name: "flow",
   description:
-    "Flow orchestration: batch (multi-command), run (multi-step automation with loops/conditionals), parallel (same action on multiple devices)",
+    "Flow orchestration: batch (multi-command), run (multi-step automation with loops/conditionals), parallel (same action on multiple devices). Use turbo:true for rich feedback (experimental).",
   tools: flowTools,
   prefix: "flow_",
 });

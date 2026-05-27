@@ -70,9 +70,13 @@ export interface ToolContext {
   invalidateUiTreeCache: (platform?: string) => void;
   platformParam: typeof platformParam;
   handleTool: (name: string, args: Record<string, unknown>, depth?: number) => Promise<unknown>;
+  turboDefault: boolean;
 }
 
-export function createToolContext(handleTool: ToolContext["handleTool"]): ToolContext {
+export function createToolContext(
+  handleTool: ToolContext["handleTool"],
+  options?: { turboDefault?: boolean },
+): ToolContext {
   return {
     deviceManager,
     getCachedElements,
@@ -87,5 +91,6 @@ export function createToolContext(handleTool: ToolContext["handleTool"]): ToolCo
     invalidateUiTreeCache,
     platformParam,
     handleTool,
+    turboDefault: options?.turboDefault ?? false,
   };
 }
