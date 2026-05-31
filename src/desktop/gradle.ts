@@ -2,7 +2,7 @@
  * Gradle task detection and launcher for Compose Desktop projects
  */
 
-import { execSync, spawn, ChildProcess } from "child_process";
+import { execFileSync, spawn, ChildProcess } from "child_process";
 import * as path from "path";
 import * as fs from "fs";
 import type { GradleProject, RawLaunchOptions } from "./types.js";
@@ -47,7 +47,9 @@ export class GradleLauncher {
 
     try {
       // Run gradle tasks and parse output
-      const output = execSync(`"${gradle}" tasks --all`, {
+      // SECURITY: argv-form invocation (execFileSync) — no /bin/sh -c, shell metachars
+      // in `gradle` path or args are passed literally. Mirrors src/adb/client.ts fix (#40).
+      const output = execFileSync(gradle, ["tasks", "--all"], {
         cwd: projectPath,
         encoding: "utf-8",
         maxBuffer: 10 * 1024 * 1024,
@@ -82,7 +84,8 @@ export class GradleLauncher {
 
       for (const pattern of DESKTOP_TASK_PATTERNS) {
         try {
-          execSync(`"${gradle}" ${pattern} --dry-run`, {
+          // SECURITY: argv-form — `pattern` from internal const, single task name (no spaces).
+          execFileSync(gradle, [pattern, "--dry-run"], {
             cwd: projectPath,
             encoding: "utf-8",
             timeout: 30000,
@@ -193,7 +196,8 @@ export class GradleLauncher {
     // Quick check for common patterns
     for (const pattern of DESKTOP_TASK_PATTERNS) {
       try {
-        execSync(`"${gradle}" ${pattern} --dry-run`, {
+        // SECURITY: argv-form — `pattern` from internal const, single task name (no spaces).
+        execFileSync(gradle, [pattern, "--dry-run"], {
           cwd: projectPath,
           encoding: "utf-8",
           timeout: 30000,
@@ -231,7 +235,8 @@ export class GradleLauncher {
   isGradleDaemonRunning(projectPath: string): boolean {
     const gradle = this.getGradleExecutable(projectPath);
     try {
-      const output = execSync(`"${gradle}" --status`, {
+      // SECURITY: argv-form invocation — no shell parsing of `gradle` path.
+      const output = execFileSync(gradle, ["--status"], {
         cwd: projectPath,
         encoding: "utf-8",
         timeout: 10000,
@@ -248,7 +253,8 @@ export class GradleLauncher {
   stopGradleDaemon(projectPath: string): void {
     const gradle = this.getGradleExecutable(projectPath);
     try {
-      execSync(`"${gradle}" --stop`, {
+      // SECURITY: argv-form invocation — no shell parsing of `gradle` path.
+      execFileSync(gradle, ["--stop"], {
         cwd: projectPath,
         encoding: "utf-8",
         timeout: 30000,

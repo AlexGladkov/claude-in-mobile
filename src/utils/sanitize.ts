@@ -1,12 +1,23 @@
 import { MobileError } from "../errors.js";
 
-// C1: Block dangerous shell patterns
-const BLOCKED_SHELL_PATTERNS = /[;|`]|&&|\|\||>\s*|>>\s*|<\s*|\$\(|\bsudo\b|\brm\s+-rf\b|\bcurl\b|\bwget\b|\bnc\b|\bncat\b|\bnetcat\b|\bdd\b|[\n\r]/i;
+// C1: Block dangerous shell patterns.
+//
+// SECURITY NOTE — this denylist is DEFENSE IN DEPTH. The primary protection against
+// host-side OS Command Injection (CWE-78) is that ADB invocations now run through
+// execFileSync(adb, argv) — see src/adb/client.ts. Even if a future regression brings
+// back string-form exec, this denylist must block the obvious bypasses:
+//   - standalone `&` (background separator — POSIX-equivalent of `;` for injection)
+//   - process substitution `<(...)` / `>(...)`
+//   - brace expansion `${...}` (parameter substitution)
+//   - tab character (token-separator like space, can join attacker-controlled segments)
+// Track every published bypass against this list — denylists must grow over time.
+const BLOCKED_SHELL_PATTERNS =
+  /[;|`&]|&&|\|\||>\s*|>>\s*|<\s*|\$\(|\$\{|<\(|>\(|\bsudo\b|\brm\s+-rf\b|\bcurl\b|\bwget\b|\bnc\b|\bncat\b|\bnetcat\b|\bdd\b|[\n\r\t]/i;
 
 export function validateShellCommand(command: string): void {
   if (BLOCKED_SHELL_PATTERNS.test(command)) {
     throw new MobileError(
-      "Shell command contains blocked pattern. Chaining (;|&&||), redirects (><), backticks, $() are not allowed.",
+      "Shell command contains blocked pattern. Chaining (;|&|&&||), redirects (><), backticks, $(), ${}, <(), >() and whitespace control chars are not allowed.",
       "SHELL_INJECTION_BLOCKED"
     );
   }

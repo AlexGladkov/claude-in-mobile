@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use anyhow::{Result, Context, bail};
 use serde::Serialize;
 
+use crate::utils::validate::validate_osascript_key;
+
 /// Get simulator UDID (booted or by name)
 fn get_simulator_udid(simulator: Option<&str>) -> Result<String> {
     if let Some(name) = simulator {
@@ -362,6 +364,11 @@ pub fn input_text(text: &str, simulator: Option<&str>) -> Result<()> {
     }
 
     // Fallback: use pbcopy + paste (safe, no shell injection)
+    // SECURITY INVARIANT: `temp_path` MUST remain a static string literal.
+    // The `sh -c "cat '<path>' | pbcopy"` below is only safe because the path
+    // is a compile-time constant we control. If a future refactor makes this
+    // dynamic (e.g. per-user tempdir, randomised filename), switch to passing
+    // `text` directly to `pbcopy` via stdin instead — DO NOT keep this shape.
     let temp_path = "/tmp/ios_input_text.txt";
     std::fs::write(temp_path, text)?;
 
@@ -423,6 +430,10 @@ pub fn press_key(key: &str, simulator: Option<&str>) -> Result<()> {
         _ => {
             let output = simctl_exec(&["io", &udid, "key", key]);
             if output.is_err() || !output.as_ref().unwrap().status.success() {
+                // SECURITY: `key` is about to be interpolated into an
+                // AppleScript double-quoted string literal. Reject anything
+                // that could close the literal or inject extra AppleScript.
+                validate_osascript_key(key)?;
                 let script = format!(
                     r#"tell application "Simulator" to activate
                     delay 0.1

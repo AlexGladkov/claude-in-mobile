@@ -99,6 +99,42 @@ describe("validateShellCommand", () => {
       expect((e as MobileError).message).toContain("blocked pattern");
     }
   });
+
+  // ──────────────────────────────────────────────
+  // Regression — issue #40 bypass and adjacent forms
+  // ──────────────────────────────────────────────
+
+  it("blocks standalone & (issue #40 host-side RCE bypass)", () => {
+    expect(() => validateShellCommand("x & touch /tmp/RCE")).toThrow(MobileError);
+    try {
+      validateShellCommand("x & touch /tmp/RCE");
+    } catch (e) {
+      expect((e as MobileError).code).toBe("SHELL_INJECTION_BLOCKED");
+    }
+  });
+
+  it("blocks brace expansion ${...}", () => {
+    expect(() => validateShellCommand("echo ${IFS}cmd")).toThrow(MobileError);
+    expect(() => validateShellCommand("${PATH:0:1}")).toThrow(MobileError);
+  });
+
+  it("blocks process substitution <(...)", () => {
+    expect(() => validateShellCommand("diff <(echo a) <(echo b)")).toThrow(MobileError);
+    expect(() => validateShellCommand("cat <(whoami)")).toThrow(MobileError);
+  });
+
+  it("blocks process substitution >(...)", () => {
+    expect(() => validateShellCommand("tee >(cat) <(echo)")).toThrow(MobileError);
+  });
+
+  it("blocks tab character injection", () => {
+    expect(() => validateShellCommand("cmd\trest")).toThrow(MobileError);
+  });
+
+  it("blocks combinations of bypass primitives", () => {
+    expect(() => validateShellCommand("x & ${HOME}/run")).toThrow(MobileError);
+    expect(() => validateShellCommand("x\t& y")).toThrow(MobileError);
+  });
 });
 
 // ──────────────────────────────────────────────

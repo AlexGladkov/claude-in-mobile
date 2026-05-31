@@ -7,6 +7,11 @@ use anyhow::{Result, Context, bail};
 use regex::Regex;
 use serde::Serialize;
 
+use crate::utils::validate::{
+    validate_permission_name, validate_pref_key, validate_relative_path,
+    validate_sqlite_value, validate_xml_filename,
+};
+
 // Compiled regexes (created once, reused)
 fn node_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
@@ -1483,6 +1488,7 @@ pub fn network_airplane(enabled: bool, device: Option<&str>) -> Result<()> {
 /// Grant a permission to a package (Android).
 pub fn permission_grant(package: &str, permission: &str, device: Option<&str>) -> Result<()> {
     validate_package_name(package)?;
+    validate_permission_name(permission)?;
     let output = adb_exec(device, &["shell", "pm", "grant", package, permission], None)?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
@@ -1498,6 +1504,7 @@ pub fn permission_grant(package: &str, permission: &str, device: Option<&str>) -
 /// Revoke a permission from a package (Android).
 pub fn permission_revoke(package: &str, permission: &str, device: Option<&str>) -> Result<()> {
     validate_package_name(package)?;
+    validate_permission_name(permission)?;
     let output = adb_exec(device, &["shell", "pm", "revoke", package, permission], None)?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
@@ -1689,6 +1696,9 @@ pub fn intent_services(package: Option<&str>, device: Option<&str>) -> Result<()
 // ============== Sandbox Commands ==============
 
 /// Read SharedPreferences XML from app sandbox via `run-as`.
+///
+/// SECURITY: `package` and the derived `xml_file` are interpolated raw into a
+/// device-side `sh` command. Both are whitelisted at entry — no other defence.
 pub fn sandbox_prefs_read(package: &str, file: Option<&str>, device: Option<&str>) -> Result<()> {
     validate_package_name(package)?;
     let filename = file.unwrap_or("default_preferences");
@@ -1697,6 +1707,7 @@ pub fn sandbox_prefs_read(package: &str, file: Option<&str>, device: Option<&str
     } else {
         format!("{}.xml", filename)
     };
+    validate_xml_filename(&xml_file)?;
 
     let cmd = format!("run-as {} cat shared_prefs/{}", package, xml_file);
     let output = adb_exec(device, &["shell", &cmd], None)?;
@@ -1712,6 +1723,11 @@ pub fn sandbox_prefs_read(package: &str, file: Option<&str>, device: Option<&str
 }
 
 /// Write or update a preference key in SharedPreferences XML via `run-as` + `sed`.
+///
+/// SECURITY: `package`, `xml_file`, `key`, and `value` are all interpolated raw
+/// into a device-side `sh` command (`sh -c 'run-as <pkg> sed -i ...'`). All are
+/// whitelisted at entry; the `sed` expression itself is single-quoted but that
+/// is defence-in-depth only — the validators are the primary guarantee.
 pub fn sandbox_prefs_write(
     package: &str,
     file: &str,
@@ -1721,12 +1737,15 @@ pub fn sandbox_prefs_write(
     device: Option<&str>,
 ) -> Result<()> {
     validate_package_name(package)?;
+    validate_pref_key(key)?;
+    validate_sqlite_value(value)?;
 
     let xml_file = if file.ends_with(".xml") {
         file.to_string()
     } else {
         format!("{}.xml", file)
     };
+    validate_xml_filename(&xml_file)?;
 
     let type_tag = match pref_type.unwrap_or("string") {
         "boolean" | "bool" => "boolean",
@@ -1764,6 +1783,14 @@ pub fn sandbox_prefs_write(
 }
 
 /// Execute a SQLite query on the app's database via `run-as`.
+///
+/// SECURITY: `package` and `database` are interpolated raw into a device-side
+/// `sh` command. `query` is wrapped in single quotes and `'` chars are escaped
+/// as `'\''` — this is the standard shell-safe quoting for arbitrary SQL.
+/// The SQL string itself is intentionally pass-through because SQL *is* the
+/// API surface of this command; the user is expected to be trusted to write
+/// SQL. The whitelists on `package`/`database` prevent breaking out of the
+/// surrounding shell command.
 pub fn sandbox_sqlite_query(
     package: &str,
     database: &str,
@@ -1773,8 +1800,25 @@ pub fn sandbox_sqlite_query(
     validate_package_name(package)?;
 
     let db_path = if database.starts_with('/') {
+        // Caller explicitly requested an absolute path on the device. We still
+        // ban shell metachars; the rest of the path is treated as opaque.
+        for b in database.bytes() {
+            let bad = matches!(
+                b,
+                b';' | b'&' | b'|' | b'<' | b'>' | b'$' | b'(' | b')' | b'{' | b'}'
+                | b'*' | b'?' | b'[' | b']' | b'\\' | b'\'' | b'"' | b'`'
+                | b'\n' | b'\r' | b'\t' | b' ' | 0
+            );
+            if bad {
+                bail!("Database path '{}' contains a disallowed character", database);
+            }
+        }
+        if database.split('/').any(|seg| seg == "..") {
+            bail!("Database path '{}' contains '..'", database);
+        }
         database.to_string()
     } else {
+        validate_relative_path(database)?;
         format!("databases/{}", database)
     };
 
@@ -1795,9 +1839,13 @@ pub fn sandbox_sqlite_query(
 }
 
 /// List files in the app sandbox directory via `run-as`.
+///
+/// SECURITY: `package` and `dir` are interpolated raw into a device-side `sh`
+/// command. Both are whitelisted at entry.
 pub fn sandbox_file_list(package: &str, path: Option<&str>, device: Option<&str>) -> Result<()> {
     validate_package_name(package)?;
     let dir = path.unwrap_or(".");
+    validate_relative_path(dir)?;
     let cmd = format!("run-as {} ls -la {}", package, dir);
 
     let output = adb_exec(device, &["shell", &cmd], None)?;
@@ -1813,6 +1861,10 @@ pub fn sandbox_file_list(package: &str, path: Option<&str>, device: Option<&str>
 }
 
 /// Read a file from the app sandbox via `run-as`, with optional byte limit.
+///
+/// SECURITY: `package` and `path` are interpolated raw into a device-side `sh`
+/// command. Both are whitelisted at entry. `max_bytes` is a `u64` so it is
+/// safe to format directly.
 pub fn sandbox_file_read(
     package: &str,
     path: &str,
@@ -1820,6 +1872,7 @@ pub fn sandbox_file_read(
     device: Option<&str>,
 ) -> Result<()> {
     validate_package_name(package)?;
+    validate_relative_path(path)?;
 
     let cmd = if let Some(limit) = max_bytes {
         format!("run-as {} dd if={} bs=1 count={} 2>/dev/null", package, path, limit)
