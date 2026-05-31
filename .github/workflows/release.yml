@@ -50,6 +50,45 @@ jobs:
             claude-in-mobile-*.tar.gz
             claude-in-mobile-*.tar.gz.sha256
 
+  verify-plugin-versions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify package.json, marketplace.json, plugin.json match tag
+        run: |
+          TAG="${{ steps.version.outputs.version }}"
+          FAIL=0
+
+          PKG=$(jq -r '.version' package.json)
+          MARKET=$(jq -r '.plugins[0].version' .claude-plugin/marketplace.json)
+          PLUGIN=$(jq -r '.version' cli/plugin/.claude-plugin/plugin.json)
+          CARGO=$(grep '^version =' cli/Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+
+          echo "Tag:                                   $TAG"
+          echo "package.json:                          $PKG"
+          echo "cli/Cargo.toml:                        $CARGO"
+          echo ".claude-plugin/marketplace.json:       $MARKET"
+          echo "cli/plugin/.claude-plugin/plugin.json: $PLUGIN"
+
+          for KIND in PKG CARGO MARKET PLUGIN; do
+            VAL=$(eval echo \$$KIND)
+            if [ "$VAL" != "$TAG" ]; then
+              echo "::error::$KIND version ($VAL) does not match tag ($TAG)"
+              FAIL=1
+            fi
+          done
+
+          if [ "$FAIL" -ne 0 ]; then
+            echo "::error::Version drift detected. All four version fields must equal the tag."
+            exit 1
+          fi
+          echo "All versions match tag $TAG"
+
   release:
     needs: build
     runs-on: ubuntu-latest
@@ -65,6 +104,38 @@ jobs:
         with:
           generate_release_notes: true
           files: "*.tar.gz"
+
+  publish-npm:
+    needs: [build, verify-plugin-versions]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify package version matches tag
+        run: |
+          PKG_VERSION=$(jq -r '.version' package.json)
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::package.json version ($PKG_VERSION) does not match tag ($TAG_VERSION)"
+            exit 1
+          fi
+
+      - name: Publish to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public --provenance
 
   update-homebrew:
     needs: release
