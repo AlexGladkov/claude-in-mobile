@@ -101,7 +101,14 @@ pub fn run(command: Commands) -> Result<()> {
             command,
             simulator,
             device,
-        } => device::shell(&platform, &command, simulator.as_deref(), device.as_deref()),
+            i_know_what_im_doing,
+        } => device::shell(
+            &platform,
+            &command,
+            simulator.as_deref(),
+            device.as_deref(),
+            i_know_what_im_doing,
+        ),
 
         Commands::Wait { ms } => device::wait(ms),
 

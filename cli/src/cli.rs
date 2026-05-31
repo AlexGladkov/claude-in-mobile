@@ -167,7 +167,11 @@ pub enum Commands {
         device: Option<String>,
     },
 
-    /// Execute shell command on device
+    /// Execute an arbitrary device-side shell command.
+    ///
+    /// SECURITY: Disabled by default in non-interactive contexts to prevent
+    /// supply-chain / CI misuse. Use --i-know-what-im-doing or set
+    /// CLAUDE_IN_MOBILE_ALLOW_SHELL=1 to enable in scripts.
     Shell {
         /// Platform: android, ios, or aurora
         #[arg(value_parser = ["android", "ios", "aurora"])]
@@ -183,6 +187,11 @@ pub enum Commands {
         /// Android/Aurora device serial
         #[arg(long)]
         device: Option<String>,
+
+        /// Acknowledge that this subcommand runs arbitrary device-side commands
+        /// and bypass the non-interactive safety gate (see issue #41).
+        #[arg(long = "i-know-what-im-doing", hide_short_help = true)]
+        i_know_what_im_doing: bool,
     },
 
     /// Wait for specified duration

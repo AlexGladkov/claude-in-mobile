@@ -1,4 +1,19 @@
-//! Android device automation via ADB
+//! Android device automation via ADB.
+//!
+//! # Shell-injection invariant (CWE-78)
+//!
+//! Any string handed to `adb shell <string>` is re-parsed by `sh` on the
+//! device. Every dynamic segment of such a string MUST go through
+//! [`crate::utils::device_shell::DeviceShellCmd`] — never `format!`. The
+//! builder's `user_input(` / `validated(` call sites are the audit surface
+//! for caller-controlled inputs. Plain `format!` in this module is allowed
+//! ONLY for non-shell purposes (error messages, JSON payloads, file paths,
+//! log lines, numeric formatting). When reviewing changes:
+//!
+//!   1. `rg 'adb_exec\(.*shell.*&[a-z_]+,' src/android.rs` lists every
+//!      shell invocation. Each must be fed by a `DeviceShellCmd::render()`.
+//!   2. `rg '\.user_input\(' src/android.rs` lists every untrusted shell
+//!      segment. Each should be paired with a documented threat model.
 
 use std::process::Command;
 use std::sync::OnceLock;
@@ -7,6 +22,7 @@ use anyhow::{Result, Context, bail};
 use regex::Regex;
 use serde::Serialize;
 
+use crate::utils::device_shell::DeviceShellCmd;
 use crate::utils::validate::{
     validate_permission_name, validate_pref_key, validate_relative_path,
     validate_sqlite_value, validate_xml_filename,
@@ -160,21 +176,21 @@ pub fn swipe(x1: i32, y1: i32, x2: i32, y2: i32, duration: u32, device: Option<&
     Ok(())
 }
 
-/// Input text (with proper escaping)
+/// Input text via `adb shell input text <string>`.
+///
+/// On-device `input text` receives a single token and treats `%s` as a literal
+/// space (Android quirk). We POSIX-quote the value via [`DeviceShellCmd`] so
+/// shell metacharacters cannot escape the argument; the `%s` swap stays as a
+/// pre-quoting transformation so spaces become the literal-space sentinel
+/// expected by `input text` rather than tripping the on-device tokenizer.
 pub fn input_text(text: &str, device: Option<&str>) -> Result<()> {
-    // Escape special characters for shell
-    let escaped = text
-        .replace('\\', "\\\\")
-        .replace(' ', "%s")
-        .replace('\'', "\\'")
-        .replace('"', "\\\"")
-        .replace('&', "\\&")
-        .replace('|', "\\|")
-        .replace(';', "\\;")
-        .replace('$', "\\$")
-        .replace('`', "\\`");
-
-    let output = adb_exec(device, &["shell", "input", "text", &escaped], None)?;
+    let with_space_sentinel = text.replace(' ', "%s");
+    let shell_cmd = DeviceShellCmd::new()
+        .literal("input")
+        .literal("text")
+        .user_input(&with_space_sentinel)
+        .render();
+    let output = adb_exec(device, &["shell", &shell_cmd], None)?;
 
     if !output.status.success() {
         bail!("adb input text failed: {}", String::from_utf8_lossy(&output.stderr));
@@ -651,12 +667,35 @@ pub fn list_apps(filter: Option<&str>, device: Option<&str>) -> Result<()> {
 
 /// Launch an app (using am start for speed)
 pub fn launch_app(package: &str, device: Option<&str>) -> Result<()> {
-    // Resolve launcher activity and start in one shell call
-    let cmd = format!(
-        "am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER \
-         $(cmd package resolve-activity --brief -c android.intent.category.LAUNCHER {} | tail -1)",
-        package
-    );
+    validate_package_name(package)?;
+
+    // Resolve launcher activity and start in one shell call.
+    //
+    // Note: the `$( … )` command-substitution is part of the trusted command
+    // template; only `<package>` is dynamic and is validated above + quoted
+    // by the builder. The substitution itself runs on-device and is bounded
+    // by the surrounding literal flags.
+    let resolve = DeviceShellCmd::new()
+        .literal("cmd")
+        .literal("package")
+        .literal("resolve-activity")
+        .literal("--brief")
+        .literal("-c")
+        .literal("android.intent.category.LAUNCHER")
+        .validated(package, validate_package_name)?
+        .literal("|")
+        .literal("tail")
+        .literal("-1")
+        .render();
+    let cmd = DeviceShellCmd::new()
+        .literal("am")
+        .literal("start")
+        .literal("-a")
+        .literal("android.intent.action.MAIN")
+        .literal("-c")
+        .literal("android.intent.category.LAUNCHER")
+        .raw_trusted(format!("$({})", resolve))
+        .render();
 
     let output = adb_exec(device, &["shell", &cmd], None)?;
 
@@ -678,7 +717,13 @@ pub fn launch_app(package: &str, device: Option<&str>) -> Result<()> {
 
 /// Stop an app
 pub fn stop_app(package: &str, device: Option<&str>) -> Result<()> {
-    let output = adb_exec(device, &["shell", "am", "force-stop", package], None)?;
+    validate_package_name(package)?;
+    let cmd = DeviceShellCmd::new()
+        .literal("am")
+        .literal("force-stop")
+        .validated(package, validate_package_name)?
+        .render();
+    let output = adb_exec(device, &["shell", &cmd], None)?;
 
     if !output.status.success() {
         bail!("Failed to stop {}: {}", package, String::from_utf8_lossy(&output.stderr));
@@ -1027,7 +1072,15 @@ pub fn get_clipboard(device: Option<&str>) -> Result<()> {
 
 /// Set clipboard content
 pub fn set_clipboard(text: &str, device: Option<&str>) -> Result<()> {
-    let cmd = format!("am broadcast -a clipper.set -e text '{}'", text.replace('\'', "'\\''"));
+    let cmd = DeviceShellCmd::new()
+        .literal("am")
+        .literal("broadcast")
+        .literal("-a")
+        .literal("clipper.set")
+        .literal("-e")
+        .literal("text")
+        .user_input(text)
+        .render();
     let output = adb_exec(device, &["shell", &cmd], None)?;
     if !output.status.success() {
         // Fallback: try input method
@@ -1039,8 +1092,19 @@ pub fn set_clipboard(text: &str, device: Option<&str>) -> Result<()> {
 
 /// Execute an action command + UI dump in a single adb shell invocation (turbo fast-track).
 /// Returns (action_output, ui_xml). ui_xml may be empty if dump failed.
+///
+/// `shell_cmd` is a pre-composed, trusted shell fragment (produced by the
+/// turbo fast-track builders in `flow.rs`). It is joined with the literal
+/// `&& uiautomator dump /dev/tty` suffix via [`DeviceShellCmd::raw_trusted`]
+/// — DO NOT pass user input here.
 pub fn exec_with_ui_dump(shell_cmd: &str, device: Option<&str>) -> Result<(String, String)> {
-    let combined = format!("{} && uiautomator dump /dev/tty", shell_cmd);
+    let combined = DeviceShellCmd::new()
+        .raw_trusted(shell_cmd.to_string())
+        .literal("&&")
+        .literal("uiautomator")
+        .literal("dump")
+        .literal("/dev/tty")
+        .render();
     let output = adb_exec(device, &["shell", &combined], None)?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
 
@@ -1097,19 +1161,37 @@ pub fn sensor_location(latitude: f64, longitude: f64, altitude: f64, device: Opt
         });
 
     if is_emulator {
-        // `emu geo fix <lon> <lat> [<alt>]` — note: longitude before latitude in emu command
-        let cmd = format!("emu geo fix {} {} {}", longitude, latitude, altitude);
+        // `emu geo fix <lon> <lat> [<alt>]` — note: longitude before latitude in emu command.
+        // Coordinates are `f64`; they cannot contain shell metacharacters.
+        let cmd = DeviceShellCmd::new()
+            .literal("emu")
+            .literal("geo")
+            .literal("fix")
+            .user_input(&longitude.to_string())
+            .user_input(&latitude.to_string())
+            .user_input(&altitude.to_string())
+            .render();
         let output = adb_exec(device, &["shell", &cmd], None)?;
         if !output.status.success() {
             bail!("emu geo fix failed: {}", String::from_utf8_lossy(&output.stderr));
         }
     } else {
-        // Broadcast a mock location to any registered listener
-        let cmd = format!(
-            "am broadcast -a com.android.shell.action.MOCK_LOCATION \
-             --ef latitude {} --ef longitude {} --ef altitude {}",
-            latitude, longitude, altitude
-        );
+        // Broadcast a mock location to any registered listener.
+        let cmd = DeviceShellCmd::new()
+            .literal("am")
+            .literal("broadcast")
+            .literal("-a")
+            .literal("com.android.shell.action.MOCK_LOCATION")
+            .literal("--ef")
+            .literal("latitude")
+            .user_input(&latitude.to_string())
+            .literal("--ef")
+            .literal("longitude")
+            .user_input(&longitude.to_string())
+            .literal("--ef")
+            .literal("altitude")
+            .user_input(&altitude.to_string())
+            .render();
         let output = adb_exec(device, &["shell", &cmd], None)?;
         if !output.status.success() {
             bail!("Mock location broadcast failed: {}", String::from_utf8_lossy(&output.stderr));
@@ -1489,7 +1571,13 @@ pub fn network_airplane(enabled: bool, device: Option<&str>) -> Result<()> {
 pub fn permission_grant(package: &str, permission: &str, device: Option<&str>) -> Result<()> {
     validate_package_name(package)?;
     validate_permission_name(permission)?;
-    let output = adb_exec(device, &["shell", "pm", "grant", package, permission], None)?;
+    let cmd = DeviceShellCmd::new()
+        .literal("pm")
+        .literal("grant")
+        .validated(package, validate_package_name)?
+        .validated(permission, validate_permission_name)?
+        .render();
+    let output = adb_exec(device, &["shell", &cmd], None)?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
         bail!("pm grant failed: {}", stderr);
@@ -1505,7 +1593,13 @@ pub fn permission_grant(package: &str, permission: &str, device: Option<&str>) -
 pub fn permission_revoke(package: &str, permission: &str, device: Option<&str>) -> Result<()> {
     validate_package_name(package)?;
     validate_permission_name(permission)?;
-    let output = adb_exec(device, &["shell", "pm", "revoke", package, permission], None)?;
+    let cmd = DeviceShellCmd::new()
+        .literal("pm")
+        .literal("revoke")
+        .validated(package, validate_package_name)?
+        .validated(permission, validate_permission_name)?
+        .render();
+    let output = adb_exec(device, &["shell", &cmd], None)?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     if !output.status.success() {
         bail!("pm revoke failed: {}", stderr);
@@ -1520,7 +1614,12 @@ pub fn permission_revoke(package: &str, permission: &str, device: Option<&str>) 
 /// Reset all runtime permissions for a package (Android).
 pub fn permission_reset(package: &str, device: Option<&str>) -> Result<()> {
     validate_package_name(package)?;
-    let output = adb_exec(device, &["shell", "pm", "reset-permissions", package], None)?;
+    let cmd = DeviceShellCmd::new()
+        .literal("pm")
+        .literal("reset-permissions")
+        .validated(package, validate_package_name)?
+        .render();
+    let output = adb_exec(device, &["shell", &cmd], None)?;
     if !output.status.success() {
         bail!("pm reset-permissions failed: {}", String::from_utf8_lossy(&output.stderr));
     }
@@ -1541,39 +1640,34 @@ pub fn intent_start(
     flags: Option<&str>,
     device: Option<&str>,
 ) -> Result<()> {
-    let mut args: Vec<String> = vec!["shell".into(), "am".into(), "start".into()];
+    let mut cmd = DeviceShellCmd::new().literal("am").literal("start");
 
     if let Some(a) = action {
-        args.push("-a".into());
-        args.push(a.into());
+        cmd = cmd.literal("-a").user_input(a);
     }
     if let Some(c) = component {
-        args.push("-n".into());
-        args.push(c.into());
+        cmd = cmd.literal("-n").user_input(c);
     }
     if let Some(d) = data {
-        args.push("-d".into());
-        args.push(d.into());
+        cmd = cmd.literal("-d").user_input(d);
     }
     if let Some(cat) = category {
-        args.push("-c".into());
-        args.push(cat.into());
+        cmd = cmd.literal("-c").user_input(cat);
     }
     if let Some(pkg) = package {
-        validate_package_name(pkg)?;
-        args.push("--package".into());
-        args.push(pkg.into());
+        cmd = cmd
+            .literal("--package")
+            .validated(pkg, validate_package_name)?;
     }
     if let Some(f) = flags {
-        args.push("-f".into());
-        args.push(f.into());
+        cmd = cmd.literal("-f").user_input(f);
     }
     if let Some(extras_json) = extras {
-        append_extras_args(&mut args, extras_json)?;
+        cmd = append_extras_to_cmd(cmd, extras_json)?;
     }
 
-    let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
-    let output = adb_exec(device, &args_ref, None)?;
+    let rendered = cmd.render();
+    let output = adb_exec(device, &["shell", &rendered], None)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     if !output.status.success() {
@@ -1595,25 +1689,26 @@ pub fn intent_broadcast(
     extras: Option<&str>,
     device: Option<&str>,
 ) -> Result<()> {
-    let mut args: Vec<String> = vec!["shell".into(), "am".into(), "broadcast".into()];
-    args.push("-a".into());
-    args.push(action.into());
+    let mut cmd = DeviceShellCmd::new()
+        .literal("am")
+        .literal("broadcast")
+        .literal("-a")
+        .user_input(action);
 
     if let Some(pkg) = package {
-        validate_package_name(pkg)?;
-        args.push("--package".into());
-        args.push(pkg.into());
+        cmd = cmd
+            .literal("--package")
+            .validated(pkg, validate_package_name)?;
     }
     if let Some(comp) = component {
-        args.push("-n".into());
-        args.push(comp.into());
+        cmd = cmd.literal("-n").user_input(comp);
     }
     if let Some(extras_json) = extras {
-        append_extras_args(&mut args, extras_json)?;
+        cmd = append_extras_to_cmd(cmd, extras_json)?;
     }
 
-    let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
-    let output = adb_exec(device, &args_ref, None)?;
+    let rendered = cmd.render();
+    let output = adb_exec(device, &["shell", &rendered], None)?;
 
     if !output.status.success() {
         bail!("am broadcast failed: {}", String::from_utf8_lossy(&output.stderr));
@@ -1625,19 +1720,21 @@ pub fn intent_broadcast(
 
 /// Open a deep-link URI via `am start -a android.intent.action.VIEW -d <uri>`.
 pub fn intent_deeplink(uri: &str, package: Option<&str>, device: Option<&str>) -> Result<()> {
-    let mut args: Vec<String> = vec![
-        "shell".into(), "am".into(), "start".into(),
-        "-a".into(), "android.intent.action.VIEW".into(),
-        "-d".into(), uri.into(),
-    ];
+    let mut cmd = DeviceShellCmd::new()
+        .literal("am")
+        .literal("start")
+        .literal("-a")
+        .literal("android.intent.action.VIEW")
+        .literal("-d")
+        .user_input(uri);
     if let Some(pkg) = package {
-        validate_package_name(pkg)?;
-        args.push("--package".into());
-        args.push(pkg.into());
+        cmd = cmd
+            .literal("--package")
+            .validated(pkg, validate_package_name)?;
     }
 
-    let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
-    let output = adb_exec(device, &args_ref, None)?;
+    let rendered = cmd.render();
+    let output = adb_exec(device, &["shell", &rendered], None)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     if !output.status.success() {
@@ -1653,12 +1750,16 @@ pub fn intent_deeplink(uri: &str, package: Option<&str>, device: Option<&str>) -
 
 /// List running services via `dumpsys activity services`.
 pub fn intent_services(package: Option<&str>, device: Option<&str>) -> Result<()> {
-    let mut cmd_args = vec!["shell", "dumpsys", "activity", "services"];
+    let mut cmd = DeviceShellCmd::new()
+        .literal("dumpsys")
+        .literal("activity")
+        .literal("services");
     if let Some(pkg) = package {
-        cmd_args.push(pkg);
+        cmd = cmd.validated(pkg, validate_package_name)?;
     }
 
-    let output = adb_exec(device, &cmd_args, None)?;
+    let rendered = cmd.render();
+    let output = adb_exec(device, &["shell", &rendered], None)?;
     if !output.status.success() {
         bail!("dumpsys activity services failed: {}", String::from_utf8_lossy(&output.stderr));
     }
@@ -1697,8 +1798,9 @@ pub fn intent_services(package: Option<&str>, device: Option<&str>) -> Result<()
 
 /// Read SharedPreferences XML from app sandbox via `run-as`.
 ///
-/// SECURITY: `package` and the derived `xml_file` are interpolated raw into a
-/// device-side `sh` command. Both are whitelisted at entry — no other defence.
+/// SECURITY: `package` is validated at entry (whitelist) AND single-quoted by
+/// the builder. The XML path is composed from a trusted `shared_prefs/` prefix
+/// plus a validated filename, then single-quoted as well.
 pub fn sandbox_prefs_read(package: &str, file: Option<&str>, device: Option<&str>) -> Result<()> {
     validate_package_name(package)?;
     let filename = file.unwrap_or("default_preferences");
@@ -1709,7 +1811,13 @@ pub fn sandbox_prefs_read(package: &str, file: Option<&str>, device: Option<&str
     };
     validate_xml_filename(&xml_file)?;
 
-    let cmd = format!("run-as {} cat shared_prefs/{}", package, xml_file);
+    let prefs_path = format!("shared_prefs/{}", xml_file);
+    let cmd = DeviceShellCmd::new()
+        .literal("run-as")
+        .validated(package, validate_package_name)?
+        .literal("cat")
+        .user_input(&prefs_path)
+        .render();
     let output = adb_exec(device, &["shell", &cmd], None)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1755,7 +1863,9 @@ pub fn sandbox_prefs_write(
         _ => "string",
     };
 
-    // Build sed expression to replace existing entry in the XML
+    // Build sed expression to replace existing entry in the XML.
+    // `key` is whitelisted to `[A-Za-z0-9._-]` and `value` is whitelisted by
+    // `validate_sqlite_value` — both are safe to embed inside the sed pattern.
     let sed_expr = if type_tag == "string" {
         format!(
             r#"s|<string name="{}">[^<]*</string>|<string name="{}">{}</string>|g"#,
@@ -1769,7 +1879,14 @@ pub fn sandbox_prefs_write(
     };
 
     let path = format!("shared_prefs/{}", xml_file);
-    let cmd = format!("run-as {} sed -i '{}' {}", package, sed_expr, path);
+    let cmd = DeviceShellCmd::new()
+        .literal("run-as")
+        .validated(package, validate_package_name)?
+        .literal("sed")
+        .literal("-i")
+        .user_input(&sed_expr)
+        .user_input(&path)
+        .render();
 
     let output = adb_exec(device, &["shell", &cmd], None)?;
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1822,9 +1939,16 @@ pub fn sandbox_sqlite_query(
         format!("databases/{}", database)
     };
 
-    // Escape single quotes in query for shell safety
-    let escaped_query = query.replace('\'', "'\\''");
-    let cmd = format!("run-as {} sqlite3 {} '{}'", package, db_path, escaped_query);
+    // `query` is intentionally passed through unvalidated — SQL *is* this
+    // command's API. The builder POSIX-quotes it so embedded shell metachars
+    // (`;`, `$`, backticks, etc.) cannot break out of the surrounding shell.
+    let cmd = DeviceShellCmd::new()
+        .literal("run-as")
+        .validated(package, validate_package_name)?
+        .literal("sqlite3")
+        .user_input(&db_path)
+        .user_input(query)
+        .render();
 
     let output = adb_exec(device, &["shell", &cmd], None)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1846,7 +1970,13 @@ pub fn sandbox_file_list(package: &str, path: Option<&str>, device: Option<&str>
     validate_package_name(package)?;
     let dir = path.unwrap_or(".");
     validate_relative_path(dir)?;
-    let cmd = format!("run-as {} ls -la {}", package, dir);
+    let cmd = DeviceShellCmd::new()
+        .literal("run-as")
+        .validated(package, validate_package_name)?
+        .literal("ls")
+        .literal("-la")
+        .validated(dir, validate_relative_path)?
+        .render();
 
     let output = adb_exec(device, &["shell", &cmd], None)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1875,9 +2005,30 @@ pub fn sandbox_file_read(
     validate_relative_path(path)?;
 
     let cmd = if let Some(limit) = max_bytes {
-        format!("run-as {} dd if={} bs=1 count={} 2>/dev/null", package, path, limit)
+        // `dd if=<path> bs=1 count=<n>` — `if=…` and `count=…` are single
+        // argv tokens; the prefixes are static literals, the values are
+        // quoted by the builder. `2>/dev/null` is a shell-level redirect,
+        // so it stays a separate trusted literal.
+        let if_arg = format!("if={}", path);
+        let count_arg = format!("count={}", limit);
+        DeviceShellCmd::new()
+            .literal("run-as")
+            .validated(package, validate_package_name)?
+            .literal("dd")
+            .user_input(&if_arg)
+            .literal("bs=1")
+            // `limit` is `u64`; no metachars possible — `user_input` is
+            // used here purely for consistency with the `if=` segment.
+            .user_input(&count_arg)
+            .literal("2>/dev/null")
+            .render()
     } else {
-        format!("run-as {} cat {}", package, path)
+        DeviceShellCmd::new()
+            .literal("run-as")
+            .validated(package, validate_package_name)?
+            .literal("cat")
+            .validated(path, validate_relative_path)?
+            .render()
     };
 
     let output = adb_exec(device, &["shell", &cmd], None)?;
@@ -2406,8 +2557,11 @@ fn validate_package_name(package: &str) -> Result<()> {
     Ok(())
 }
 
-/// Append `--es`/`--ez`/`--ei`/`--ef` extras from a JSON object string to an args list.
-fn append_extras_args(args: &mut Vec<String>, extras_json: &str) -> Result<()> {
+/// Append `--es`/`--ez`/`--ei`/`--ef` extras parsed from a JSON object string
+/// to a [`DeviceShellCmd`] builder. All keys and values become `user_input(…)`
+/// segments — they are POSIX-quoted on render, so embedded metacharacters in
+/// JSON values cannot escape the surrounding `am` invocation.
+fn append_extras_to_cmd(mut cmd: DeviceShellCmd, extras_json: &str) -> Result<DeviceShellCmd> {
     let parsed: serde_json::Value =
         serde_json::from_str(extras_json).context("--extras must be a valid JSON object")?;
     let obj = parsed
@@ -2417,32 +2571,31 @@ fn append_extras_args(args: &mut Vec<String>, extras_json: &str) -> Result<()> {
     for (k, v) in obj {
         match v {
             serde_json::Value::String(s) => {
-                args.push("--es".into());
-                args.push(k.clone());
-                args.push(s.clone());
+                cmd = cmd.literal("--es").user_input(k).user_input(s);
             }
             serde_json::Value::Bool(b) => {
-                args.push("--ez".into());
-                args.push(k.clone());
-                args.push(b.to_string());
+                cmd = cmd
+                    .literal("--ez")
+                    .user_input(k)
+                    .user_input(&b.to_string());
             }
             serde_json::Value::Number(n) => {
-                if n.is_i64() {
-                    args.push("--ei".into());
+                cmd = if n.is_i64() {
+                    cmd.literal("--ei")
                 } else {
-                    args.push("--ef".into());
-                }
-                args.push(k.clone());
-                args.push(n.to_string());
+                    cmd.literal("--ef")
+                };
+                cmd = cmd.user_input(k).user_input(&n.to_string());
             }
             _ => {
-                args.push("--es".into());
-                args.push(k.clone());
-                args.push(v.to_string());
+                cmd = cmd
+                    .literal("--es")
+                    .user_input(k)
+                    .user_input(&v.to_string());
             }
         }
     }
-    Ok(())
+    Ok(cmd)
 }
 
 // ============== Tests ==============
