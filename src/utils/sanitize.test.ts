@@ -100,6 +100,66 @@ describe("validateShellCommand", () => {
     }
   });
 
+  // LLM-friendly diagnostic messages
+  it("error names the offending metacharacter for '&'", () => {
+    try {
+      validateShellCommand("foo & bar");
+      expect.unreachable("Should have thrown");
+    } catch (e) {
+      const m = (e as MobileError).message;
+      expect(m).toContain("'&'");
+      expect(m).toContain("system_open_url");
+    }
+  });
+
+  it("error suggests system_open_url for URL-like '&' usage", () => {
+    try {
+      validateShellCommand("am start -d https://x.com?a=1&b=2");
+      expect.unreachable("Should have thrown");
+    } catch (e) {
+      expect((e as MobileError).message).toContain("system_open_url");
+    }
+  });
+
+  it("error names TAB explicitly and mentions copy-paste", () => {
+    try {
+      validateShellCommand("foo\tbar");
+      expect.unreachable("Should have thrown");
+    } catch (e) {
+      const m = (e as MobileError).message;
+      expect(m).toContain("TAB");
+      expect(m).toMatch(/copy/i);
+    }
+  });
+
+  it("error names '${...}' for brace expansion", () => {
+    try {
+      validateShellCommand("echo ${HOME}");
+      expect.unreachable("Should have thrown");
+    } catch (e) {
+      expect((e as MobileError).message).toContain("${...}");
+    }
+  });
+
+  it("error names '$(...)' for command substitution", () => {
+    try {
+      validateShellCommand("echo $(whoami)");
+      expect.unreachable("Should have thrown");
+    } catch (e) {
+      expect((e as MobileError).message).toContain("$(...)");
+    }
+  });
+
+  it("error suggests ui_tap/ui_swipe as alternatives", () => {
+    try {
+      validateShellCommand("input tap 1; input tap 2");
+      expect.unreachable("Should have thrown");
+    } catch (e) {
+      const m = (e as MobileError).message;
+      expect(m).toMatch(/ui_tap|ui_swipe/);
+    }
+  });
+
   // ──────────────────────────────────────────────
   // Regression — issue #40 bypass and adjacent forms
   // ──────────────────────────────────────────────
