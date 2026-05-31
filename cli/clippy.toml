@@ -1,0 +1,18 @@
+# Clippy configuration for `claude-in-mobile` CLI.
+#
+# Intentionally minimal. We initially planned a `disallowed-macros` rule on
+# `std::format` to force shell-string composition through `DeviceShellCmd`,
+# but the volume of legitimate `format!` callouts in `android.rs` / `aurora.rs`
+# (error messages, JSON values, file paths, log lines) made the per-call-site
+# `#[allow(clippy::disallowed_macros)]` annotations prohibitive (~360 sites).
+#
+# Convention is documented instead at the top of `android.rs` and `aurora.rs`:
+# every `format!()` that produces a string handed to `adb shell` / `audb shell`
+# MUST go through `DeviceShellCmd`. Reviewers verify this with:
+#
+#     rg 'adb_exec\(.*shell.*&[a-z_]+,' src/android.rs
+#     rg 'audb_exec\(.*shell.*&[a-z_]+,' src/aurora.rs
+#
+# and confirm each match's preceding `let <name> = …` is a `DeviceShellCmd`
+# builder, not a raw `format!`. The builder's `user_input(` call sites are
+# the single grep that lists every user-controlled segment.

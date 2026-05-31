@@ -1,4 +1,4 @@
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { readFileSync, unlinkSync } from "fs";
 import { randomBytes } from "crypto";
 import { tmpdir } from "os";
@@ -20,42 +20,39 @@ export interface LogOptions {
   since?: string;
 }
 
-export class AuroraClient {
-  private escapeShellArg(arg: string): string {
-    return arg
-      .replace(/\\/g, "\\\\")
-      .replace(/"/g, '\\"')
-      .replace(/'/g, "\\'")
-      .replace(/`/g, "\\`")
-      .replace(/\$/g, "\\$")
-      .replace(/ /g, "%s")
-      .replace(/&/g, "\\&")
-      .replace(/\(/g, "\\(")
-      .replace(/\)/g, "\\)")
-      .replace(/</g, "\\<")
-      .replace(/>/g, "\\>")
-      .replace(/\|/g, "\\|")
-      .replace(/;/g, "\\;");
-  }
+const EXEC_TIMEOUT_MS = 30_000;
 
-  private runCommandSync(command: string): string {
+export class AuroraClient {
+  /**
+   * SECURITY: All audb invocations route through this argv-form path (execFileSync — no /bin/sh -c).
+   * Shell metacharacters in `args` are passed as literal argv slots, not parsed by the host shell.
+   * This structurally prevents host-side OS Command Injection (CWE-78) — see issue #40.
+   *
+   * Mirrors the defense applied in src/adb/client.ts:75-97.
+   */
+  private runAudbSync(args: string[]): string {
     try {
-      const output = execSync(command, { encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 });
+      const output = execFileSync("audb", args, {
+        encoding: "utf-8",
+        maxBuffer: 50 * 1024 * 1024,
+        timeout: EXEC_TIMEOUT_MS,
+      });
       return output.trim();
     } catch (error: unknown) {
+      const display = `audb ${args.join(" ")}`;
       if (error instanceof Error) {
-        if (error.message.includes("audb: command not found")) {
+        if (error.message.includes("audb: command not found") || error.message.includes("ENOENT")) {
           throw new Error("audb not found. Install: cargo install audb-client");
         }
-        throw new Error(`Command '${command}' failed: ${error.message}`);
+        throw new Error(`Command '${display}' failed: ${error.message}`);
       }
-      throw new Error(`Command '${command}' failed with unknown error`);
+      throw new Error(`Command '${display}' failed with unknown error`);
     }
   }
 
   async checkAvailability(): Promise<boolean> {
     try {
-      execSync("audb --version", { encoding: "utf-8" });
+      execFileSync("audb", ["--version"], { encoding: "utf-8", timeout: EXEC_TIMEOUT_MS });
       return true;
     } catch {
       return false;
@@ -68,7 +65,7 @@ export class AuroraClient {
    */
   listDevices(): Device[] {
     try {
-      const output = this.runCommandSync("audb device list");
+      const output = this.runAudbSync(["device", "list"]);
       const devices: Device[] = [];
 
       // Strip ANSI escape codes
@@ -125,7 +122,7 @@ export class AuroraClient {
    * @param y - Y coordinate in pixels
    */
   tap(x: number, y: number): void {
-    this.runCommandSync(`audb tap ${x} ${y}`);
+    this.runAudbSync(["tap", String(x), String(y)]);
   }
 
   /**
@@ -135,7 +132,7 @@ export class AuroraClient {
    * @param duration - Duration of the press in milliseconds
    */
   longPress(x: number, y: number, duration: number): void {
-    this.runCommandSync(`audb tap ${x} ${y} --duration ${duration}`);
+    this.runAudbSync(["tap", String(x), String(y), "--duration", String(duration)]);
   }
 
   /**
@@ -143,7 +140,7 @@ export class AuroraClient {
    * @param direction - Direction to swipe: "up", "down", "left", or "right"
    */
   swipeDirection(direction: "up"|"down"|"left"|"right"): void {
-    this.runCommandSync(`audb swipe ${direction}`);
+    this.runAudbSync(["swipe", direction]);
   }
 
   /**
@@ -154,7 +151,7 @@ export class AuroraClient {
    * @param y2 - Ending Y coordinate in pixels
    */
   swipeCoords(x1: number, y1: number, x2: number, y2: number): void {
-    this.runCommandSync(`audb swipe ${x1} ${y1} ${x2} ${y2}`);
+    this.runAudbSync(["swipe", String(x1), String(y1), String(x2), String(y2)]);
   }
 
   /**
@@ -167,7 +164,7 @@ export class AuroraClient {
    * @param durationMs - Duration in milliseconds (ignored by audb, kept for compatibility)
    */
   swipe(x1: number, y1: number, x2: number, y2: number, durationMs?: number): void {
-    this.runCommandSync(`audb swipe ${x1} ${y1} ${x2} ${y2}`);
+    this.runAudbSync(["swipe", String(x1), String(y1), String(x2), String(y2)]);
   }
 
   /**
@@ -203,7 +200,7 @@ export class AuroraClient {
    * @param key - Key name to send (e.g., "Enter", "Back", "Home")
    */
   pressKey(key: string): void {
-    this.runCommandSync(`audb key ${key}`);
+    this.runAudbSync(["key", key]);
   }
 
   /**
@@ -215,7 +212,9 @@ export class AuroraClient {
     const tmpFile = `${tmpdir()}/aurora_screenshot_${uniqueId}.png`;
 
     try {
-      execSync(`audb screenshot --output "${tmpFile}"`);
+      // tmpFile passes as a literal argv slot — host shell never parses it,
+      // so embedded metacharacters (if any future change introduced them) are inert.
+      this.runAudbSync(["screenshot", "--output", tmpFile]);
       return readFileSync(tmpFile);
     } finally {
       try { unlinkSync(tmpFile); } catch {}
@@ -236,7 +235,7 @@ export class AuroraClient {
    * @returns Output message from audb
    */
   launchApp(packageName: string): string {
-    const output = this.runCommandSync(`audb launch ${packageName}`);
+    const output = this.runAudbSync(["launch", packageName]);
     return output || `Launched ${packageName}`;
   }
 
@@ -245,7 +244,7 @@ export class AuroraClient {
    * @param packageName - Application name (D-Bus format: ru.domain.AppName)
    */
   stopApp(packageName: string): void {
-    this.runCommandSync(`audb stop ${packageName}`);
+    this.runAudbSync(["stop", packageName]);
   }
 
   /**
@@ -254,7 +253,7 @@ export class AuroraClient {
    * @returns Installation result message
    */
   installApp(path: string): string {
-    const output = this.runCommandSync(`audb package install ${path}`);
+    const output = this.runAudbSync(["package", "install", path]);
     return output || `Installed ${path}`;
   }
 
@@ -264,7 +263,7 @@ export class AuroraClient {
    * @returns Uninstallation result message
    */
   uninstallApp(packageName: string): string {
-    const output = this.runCommandSync(`audb package uninstall ${packageName}`);
+    const output = this.runAudbSync(["package", "uninstall", packageName]);
     return output || `Uninstalled ${packageName}`;
   }
 
@@ -273,23 +272,27 @@ export class AuroraClient {
    * @returns Array of package names
    */
   listPackages(): string[] {
-    const output = this.runCommandSync("audb package list");
+    const output = this.runAudbSync(["package", "list"]);
     if (!output) return [];
     return output.split("\n").filter(line => line.trim().length > 0);
   }
 
   /**
-   * Execute a shell command on the Aurora device
+   * Execute a shell command on the Aurora device.
    *
-   * WARNING: This method executes arbitrary commands on the device.
-   * Input validation should be performed at the call site.
+   * SECURITY: `command` travels as a SINGLE argv slot (`audb shell <command>`) — the host
+   * shell never parses it, so host-side metacharacters (`;`, `&&`, backticks, `$()`)
+   * cannot inject host-side commands. This structurally closes CWE-78 on the host (issue #40).
    *
-   * @param command - Shell command to execute (must be validated/sanitized)
+   * NOTE on device-side semantics: `command` may still be parsed by the DEVICE shell once
+   * audb hands it off. Call sites that accept untrusted input MUST validate via
+   * `validateShellCommand` from src/utils/sanitize.ts (system_shell tool already does this).
+   *
+   * @param command - Shell command to execute (already validated at call site)
    * @returns Command output
    */
   shell(command: string): string {
-    const escaped = this.escapeShellArg(command);
-    return this.runCommandSync(`audb shell ${escaped}`);
+    return this.runAudbSync(["shell", command]);
   }
 
   /**
@@ -303,20 +306,14 @@ export class AuroraClient {
    * @returns Log output
    */
   getLogs(options: LogOptions = {}): string {
-    let cmd = "audb logs";
-    if (options.lines) cmd += ` -n ${options.lines}`;
-    if (options.priority) cmd += ` --priority ${options.priority}`;
-    if (options.unit) cmd += ` --unit ${options.unit}`;
-    if (options.grep) {
-      const escaped = options.grep.replace(/'/g, "'\\''");
-      cmd += ` --grep '${escaped}'`;
-    }
-    if (options.since) {
-      const escaped = options.since.replace(/'/g, "'\\''");
-      cmd += ` --since '${escaped}'`;
-    }
+    const args: string[] = ["logs"];
+    if (options.lines) args.push("-n", String(Math.trunc(options.lines)));
+    if (options.priority) args.push("--priority", options.priority);
+    if (options.unit) args.push("--unit", options.unit);
+    if (options.grep) args.push("--grep", options.grep);
+    if (options.since) args.push("--since", options.since);
 
-    return this.runCommandSync(cmd);
+    return this.runAudbSync(args);
   }
 
   /**
@@ -324,7 +321,7 @@ export class AuroraClient {
    * @returns Result message
    */
   clearLogs(): string {
-    return this.runCommandSync("audb logs --clear --force");
+    return this.runAudbSync(["logs", "--clear", "--force"]);
   }
 
   /**
@@ -332,7 +329,7 @@ export class AuroraClient {
    * @returns System info output
    */
   getSystemInfo(): string {
-    return this.runCommandSync("audb info");
+    return this.runAudbSync(["info"]);
   }
 
   /**
@@ -342,7 +339,7 @@ export class AuroraClient {
    * @returns Upload result message
    */
   pushFile(localPath: string, remotePath: string): string {
-    const output = this.runCommandSync(`audb push ${localPath} ${remotePath}`);
+    const output = this.runAudbSync(["push", localPath, remotePath]);
     return output || `Uploaded ${localPath} → ${remotePath}`;
   }
 
@@ -354,10 +351,9 @@ export class AuroraClient {
    */
   pullFile(remotePath: string, localPath?: string): Buffer {
     const local = localPath || remotePath.split("/").pop() || "pulled_file";
-    this.runCommandSync(`audb pull ${remotePath} --output "${local}"`);
+    this.runAudbSync(["pull", remotePath, "--output", local]);
     return readFileSync(local);
   }
 }
 
 export const auroraClient = new AuroraClient();
-

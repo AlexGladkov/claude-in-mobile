@@ -99,6 +99,102 @@ describe("validateShellCommand", () => {
       expect((e as MobileError).message).toContain("blocked pattern");
     }
   });
+
+  // LLM-friendly diagnostic messages
+  it("error names the offending metacharacter for '&'", () => {
+    try {
+      validateShellCommand("foo & bar");
+      expect.unreachable("Should have thrown");
+    } catch (e) {
+      const m = (e as MobileError).message;
+      expect(m).toContain("'&'");
+      expect(m).toContain("system_open_url");
+    }
+  });
+
+  it("error suggests system_open_url for URL-like '&' usage", () => {
+    try {
+      validateShellCommand("am start -d https://x.com?a=1&b=2");
+      expect.unreachable("Should have thrown");
+    } catch (e) {
+      expect((e as MobileError).message).toContain("system_open_url");
+    }
+  });
+
+  it("error names TAB explicitly and mentions copy-paste", () => {
+    try {
+      validateShellCommand("foo\tbar");
+      expect.unreachable("Should have thrown");
+    } catch (e) {
+      const m = (e as MobileError).message;
+      expect(m).toContain("TAB");
+      expect(m).toMatch(/copy/i);
+    }
+  });
+
+  it("error names '${...}' for brace expansion", () => {
+    try {
+      validateShellCommand("echo ${HOME}");
+      expect.unreachable("Should have thrown");
+    } catch (e) {
+      expect((e as MobileError).message).toContain("${...}");
+    }
+  });
+
+  it("error names '$(...)' for command substitution", () => {
+    try {
+      validateShellCommand("echo $(whoami)");
+      expect.unreachable("Should have thrown");
+    } catch (e) {
+      expect((e as MobileError).message).toContain("$(...)");
+    }
+  });
+
+  it("error suggests ui_tap/ui_swipe as alternatives", () => {
+    try {
+      validateShellCommand("input tap 1; input tap 2");
+      expect.unreachable("Should have thrown");
+    } catch (e) {
+      const m = (e as MobileError).message;
+      expect(m).toMatch(/ui_tap|ui_swipe/);
+    }
+  });
+
+  // ──────────────────────────────────────────────
+  // Regression — issue #40 bypass and adjacent forms
+  // ──────────────────────────────────────────────
+
+  it("blocks standalone & (issue #40 host-side RCE bypass)", () => {
+    expect(() => validateShellCommand("x & touch /tmp/RCE")).toThrow(MobileError);
+    try {
+      validateShellCommand("x & touch /tmp/RCE");
+    } catch (e) {
+      expect((e as MobileError).code).toBe("SHELL_INJECTION_BLOCKED");
+    }
+  });
+
+  it("blocks brace expansion ${...}", () => {
+    expect(() => validateShellCommand("echo ${IFS}cmd")).toThrow(MobileError);
+    expect(() => validateShellCommand("${PATH:0:1}")).toThrow(MobileError);
+  });
+
+  it("blocks process substitution <(...)", () => {
+    expect(() => validateShellCommand("diff <(echo a) <(echo b)")).toThrow(MobileError);
+    expect(() => validateShellCommand("cat <(whoami)")).toThrow(MobileError);
+  });
+
+  it("blocks process substitution >(...)", () => {
+    expect(() => validateShellCommand("tee >(cat) <(echo)")).toThrow(MobileError);
+  });
+
+  it("blocks tab character injection", () => {
+    expect(() => validateShellCommand("cmd\trest")).toThrow(MobileError);
+  });
+
+  it("blocks combinations of bypass primitives", () => {
+    expect(() => validateShellCommand("x & ${HOME}/run")).toThrow(MobileError);
+    expect(() => validateShellCommand("x\t& y")).toThrow(MobileError);
+  });
 });
 
 // ──────────────────────────────────────────────

@@ -1,18 +1,45 @@
-import { execSync, exec, execFile } from "child_process";
+import { execFile, execFileSync } from "child_process";
 import { promisify } from "util";
 import { classifyAdbError } from "../errors.js";
-import { resolveAdbPath, quoteAdbPath } from "./resolver.js";
+import { resolveAdbPath } from "./resolver.js";
 import { validatePackageName, validatePermission, validateDeviceId, validateLogTag, validateLogTimestamp } from "../utils/sanitize.js";
 
-const execAsyncCmd = promisify(exec);
 const execFileAsync = promisify(execFile);
 
 const EXEC_TIMEOUT_MS = 15_000;      // 15s for text commands
 const EXEC_RAW_TIMEOUT_MS = 30_000;  // 30s for binary (screenshots)
 
-/** Resolved adb binary path, quoted for safe shell inclusion. Throws if adb not found. */
-function adbCmd(): string {
-  return quoteAdbPath(resolveAdbPath());
+/**
+ * Split a whitespace-separated command into argv tokens.
+ * Safe for commands that do not contain shell-quoted strings.
+ * For commands with spaces inside arguments (e.g. text input), use execArgs() directly.
+ */
+function splitArgs(command: string): string[] {
+  return command.split(/\s+/).filter(Boolean);
+}
+
+/**
+ * Escape user text for safe embedding inside a double-quoted `input text "..."` on the
+ * device shell. The OUTER context (host shell) never parses this string — it travels as a
+ * single argv slot to adb (see inputText/inputTextAsync). Escaping covers only device-side
+ * shell metacharacters within double quotes plus Android `input`'s `%s`-for-space quirk.
+ */
+function escapeAndroidInputText(text: string): string {
+  return text
+    .replace(/[\n\r]/g, "")
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/'/g, "\\'")
+    .replace(/`/g, "\\`")
+    .replace(/\$/g, "\\$")
+    .replace(/ /g, "%s")
+    .replace(/&/g, "\\&")
+    .replace(/\(/g, "\\(")
+    .replace(/\)/g, "\\)")
+    .replace(/</g, "\\<")
+    .replace(/>/g, "\\>")
+    .replace(/\|/g, "\\|")
+    .replace(/;/g, "\\;");
 }
 
 export interface Device {
@@ -39,83 +66,106 @@ export class AdbClient {
     return this.deviceId ? `-s ${this.deviceId}` : "";
   }
 
-  /** Build device flag for a specific deviceId override or fall back to instance default. */
-  private deviceFlagFor(deviceIdOverride?: string): string {
+  /** Build device-flag argv slice for a specific deviceId override or fall back to instance default. */
+  private deviceArgs(deviceIdOverride?: string): string[] {
     const id = deviceIdOverride ?? this.deviceId;
-    return id ? `-s ${id}` : "";
+    return id ? ["-s", id] : [];
   }
 
   /**
-   * Execute ADB command and return stdout as string
+   * SECURITY: All adb invocations route through this argv-form path (execFileSync — no /bin/sh -c).
+   * Shell metacharacters in `args` are passed as literal argv slots, not parsed by the host shell.
+   * This structurally prevents host-side OS Command Injection (CWE-78) — see issue #40.
    */
-  exec(command: string, deviceIdOverride?: string): string {
-    const fullCommand = `${adbCmd()} ${this.deviceFlagFor(deviceIdOverride)} ${command}`;
+  private execArgs(args: string[], deviceIdOverride?: string): string {
+    const adbBin = resolveAdbPath();
+    const fullArgs = [...this.deviceArgs(deviceIdOverride), ...args];
     try {
-      return execSync(fullCommand, {
+      return execFileSync(adbBin, fullArgs, {
         encoding: "utf-8",
         timeout: EXEC_TIMEOUT_MS,
-        maxBuffer: 50 * 1024 * 1024 // 50MB for screenshots
+        maxBuffer: 50 * 1024 * 1024,
       }).trim();
     } catch (error: unknown) {
       const e = error as { killed?: boolean; signal?: string; stderr?: Buffer | string; message?: string };
+      const display = `adb ${fullArgs.join(" ")}`;
       if (e.killed === true || e.signal === "SIGTERM") {
-        throw new Error(`ADB command timed out after ${EXEC_TIMEOUT_MS}ms: ${fullCommand}. Device may be disconnected or screen locked.`);
+        throw new Error(`ADB command timed out after ${EXEC_TIMEOUT_MS}ms: ${display}. Device may be disconnected or screen locked.`);
       }
-      throw classifyAdbError(e.stderr?.toString() ?? e.message ?? String(error), fullCommand);
+      throw classifyAdbError(e.stderr?.toString() ?? e.message ?? String(error), display);
     }
+  }
+
+  private execArgsRaw(args: string[], deviceIdOverride?: string): Buffer {
+    const adbBin = resolveAdbPath();
+    const fullArgs = [...this.deviceArgs(deviceIdOverride), ...args];
+    try {
+      return execFileSync(adbBin, fullArgs, {
+        timeout: EXEC_RAW_TIMEOUT_MS,
+        maxBuffer: 50 * 1024 * 1024,
+      });
+    } catch (error: unknown) {
+      const e = error as { killed?: boolean; signal?: string; stderr?: Buffer | string; message?: string };
+      const display = `adb ${fullArgs.join(" ")}`;
+      if (e.killed === true || e.signal === "SIGTERM") {
+        throw new Error(`ADB command timed out after ${EXEC_RAW_TIMEOUT_MS}ms: ${display}. Device may be disconnected or screen locked.`);
+      }
+      throw classifyAdbError(e.stderr?.toString() ?? e.message ?? String(error), display);
+    }
+  }
+
+  private async execArgsAsync(args: string[], deviceIdOverride?: string): Promise<string> {
+    const adbBin = resolveAdbPath();
+    const fullArgs = [...this.deviceArgs(deviceIdOverride), ...args];
+    try {
+      const { stdout } = await execFileAsync(adbBin, fullArgs, {
+        timeout: EXEC_TIMEOUT_MS,
+        maxBuffer: 50 * 1024 * 1024,
+        encoding: "utf-8",
+      });
+      return stdout.trim();
+    } catch (error: unknown) {
+      const e = error as { killed?: boolean; signal?: string; stderr?: Buffer | string; message?: string };
+      const display = `adb ${fullArgs.join(" ")}`;
+      if (e.killed === true || e.signal === "SIGTERM") {
+        throw new Error(`ADB command timed out after ${EXEC_TIMEOUT_MS}ms: ${display}. Device may be disconnected or screen locked.`);
+      }
+      throw classifyAdbError(e.stderr?.toString() ?? e.message ?? String(error), display);
+    }
+  }
+
+  /**
+   * Execute ADB command and return stdout as string.
+   * SECURITY: Command is whitespace-split into argv tokens — shell metachars in the input
+   * are NOT interpreted (no /bin/sh -c). For commands needing spaces inside an argument
+   * (e.g. text input with spaces), use the new argv-form via internal helpers.
+   */
+  exec(command: string, deviceIdOverride?: string): string {
+    return this.execArgs(splitArgs(command), deviceIdOverride);
   }
 
   /**
    * Execute ADB command and return raw bytes (for screenshots)
    */
   execRaw(command: string, deviceIdOverride?: string): Buffer {
-    const fullCommand = `${adbCmd()} ${this.deviceFlagFor(deviceIdOverride)} ${command}`;
-    try {
-      return execSync(fullCommand, {
-        timeout: EXEC_RAW_TIMEOUT_MS,
-        maxBuffer: 50 * 1024 * 1024
-      });
-    } catch (error: unknown) {
-      const e = error as { killed?: boolean; signal?: string; stderr?: Buffer | string; message?: string };
-      if (e.killed === true || e.signal === "SIGTERM") {
-        throw new Error(`ADB command timed out after ${EXEC_RAW_TIMEOUT_MS}ms: ${fullCommand}. Device may be disconnected or screen locked.`);
-      }
-      throw classifyAdbError(e.stderr?.toString() ?? e.message ?? String(error), fullCommand);
-    }
+    return this.execArgsRaw(splitArgs(command), deviceIdOverride);
   }
 
   /**
    * Execute ADB command async (non-blocking)
    */
   async execAsync(command: string, deviceIdOverride?: string): Promise<string> {
-    const fullCommand = `${adbCmd()} ${this.deviceFlagFor(deviceIdOverride)} ${command}`;
-    try {
-      const { stdout } = await execAsyncCmd(fullCommand, {
-        timeout: EXEC_TIMEOUT_MS,
-        maxBuffer: 50 * 1024 * 1024
-      });
-      return stdout.trim();
-    } catch (error: unknown) {
-      const e = error as { killed?: boolean; signal?: string; stderr?: Buffer | string; message?: string };
-      if (e.killed === true || e.signal === "SIGTERM") {
-        throw new Error(`ADB command timed out after ${EXEC_TIMEOUT_MS}ms: ${fullCommand}. Device may be disconnected or screen locked.`);
-      }
-      throw classifyAdbError(e.stderr?.toString() ?? e.message ?? String(error), fullCommand);
-    }
+    return this.execArgsAsync(splitArgs(command), deviceIdOverride);
   }
 
   /**
    * Execute ADB command async and return raw bytes (for screenshots)
    */
   async execRawAsync(command: string, deviceIdOverride?: string): Promise<Buffer> {
-    const effectiveId = deviceIdOverride ?? this.deviceId;
-    const args = effectiveId
-      ? ["-s", effectiveId, ...command.split(/\s+/)]
-      : command.split(/\s+/);
     const adbBin = resolveAdbPath();
-    const fullCommand = `${quoteAdbPath(adbBin)} ${args.join(" ")}`;
+    const fullArgs = [...this.deviceArgs(deviceIdOverride), ...splitArgs(command)];
     try {
-      const { stdout } = await execFileAsync(adbBin, args, {
+      const { stdout } = await execFileAsync(adbBin, fullArgs, {
         timeout: EXEC_RAW_TIMEOUT_MS,
         maxBuffer: 50 * 1024 * 1024,
         encoding: "buffer" as BufferEncoding,
@@ -123,10 +173,11 @@ export class AdbClient {
       return stdout as unknown as Buffer;
     } catch (error: unknown) {
       const e = error as { killed?: boolean; signal?: string; stderr?: Buffer | string; message?: string };
+      const display = `adb ${fullArgs.join(" ")}`;
       if (e.killed === true || e.signal === "SIGTERM") {
-        throw new Error(`ADB command timed out after ${EXEC_RAW_TIMEOUT_MS}ms: ${fullCommand}. Device may be disconnected or screen locked.`);
+        throw new Error(`ADB command timed out after ${EXEC_RAW_TIMEOUT_MS}ms: ${display}. Device may be disconnected or screen locked.`);
       }
-      throw classifyAdbError(e.stderr?.toString() ?? e.message ?? String(error), fullCommand);
+      throw classifyAdbError(e.stderr?.toString() ?? e.message ?? String(error), display);
     }
   }
 
@@ -134,7 +185,8 @@ export class AdbClient {
    * Get list of connected devices
    */
   getDevices(): Device[] {
-    const output = execSync(`${adbCmd()} devices -l`, { encoding: "utf-8", timeout: EXEC_TIMEOUT_MS });
+    const adbBin = resolveAdbPath();
+    const output = execFileSync(adbBin, ["devices", "-l"], { encoding: "utf-8", timeout: EXEC_TIMEOUT_MS });
     const lines = output.split("\n").slice(1); // Skip header
 
     return lines
@@ -197,10 +249,16 @@ export class AdbClient {
   }
 
   /**
-   * Double tap at coordinates
+   * Double tap at coordinates.
+   * Device-side composition via single sh -c argv slot — host shell never parses the metachars.
+   * Inputs are validated numerics; user-controlled strings never reach this code path.
    */
   doubleTap(x: number, y: number, intervalMs: number = 100): void {
-    this.exec(`shell "input tap ${x} ${y} && sleep ${(intervalMs / 1000).toFixed(2)} && input tap ${x} ${y}"`);
+    const xi = Math.trunc(x);
+    const yi = Math.trunc(y);
+    const seconds = (Math.max(0, intervalMs) / 1000).toFixed(2);
+    const deviceCmd = `input tap ${xi} ${yi} && sleep ${seconds} && input tap ${xi} ${yi}`;
+    this.execArgs(["shell", "sh", "-c", deviceCmd]);
   }
 
   /**
@@ -281,27 +339,15 @@ export class AdbClient {
   }
 
   /**
-   * Input text
+   * Input text.
+   * The full `shell input text "<escaped>"` string passes as a SINGLE argv slot to adb,
+   * so the host shell never parses it (host-side CWE-78 closed). adb ships the string
+   * verbatim to the device shell, which parses the double-quoted form safely thanks to
+   * the per-character escape below.
    */
   inputText(text: string): void {
-    // Escape special characters for shell
-    const escaped = text
-      .replace(/[\n\r]/g, "")
-      .replace(/\\/g, "\\\\")
-      .replace(/"/g, '\\"')
-      .replace(/'/g, "\\'")
-      .replace(/`/g, "\\`")
-      .replace(/\$/g, "\\$")
-      .replace(/ /g, "%s")
-      .replace(/&/g, "\\&")
-      .replace(/\(/g, "\\(")
-      .replace(/\)/g, "\\)")
-      .replace(/</g, "\\<")
-      .replace(/>/g, "\\>")
-      .replace(/\|/g, "\\|")
-      .replace(/;/g, "\\;");
-
-    this.exec(`shell input text "${escaped}"`);
+    const escaped = escapeAndroidInputText(text);
+    this.execArgs(["shell", `input text "${escaped}"`]);
   }
 
   /**
@@ -419,10 +465,14 @@ export class AdbClient {
    * Execute an action + uiautomator dump in a single adb shell invocation (turbo only).
    * Reduces two process spawns to one, saving ~150-300ms per step.
    * Returns { actionOutput: string; uiXml: string }.
+   *
+   * SECURITY: Device-side composition via single sh -c argv slot — host shell never parses
+   * the metachars. `actionCommand` originates from internal turbo helpers (tap/swipe/press),
+   * which validate numeric inputs; user-controlled strings do not reach this path.
    */
   async execWithUiDump(actionCommand: string, deviceIdOverride?: string): Promise<{ actionOutput: string; uiXml: string }> {
     const combined = `${actionCommand} && uiautomator dump /dev/tty`;
-    const raw = await this.execAsync(`shell "${combined}"`, deviceIdOverride);
+    const raw = await this.execArgsAsync(["shell", "sh", "-c", combined], deviceIdOverride);
 
     // Split output: everything before XML is action output, XML starts with <?xml or <hierarchy
     const xmlStart = raw.indexOf("<?xml");
@@ -477,23 +527,8 @@ export class AdbClient {
    * Input text (async, non-blocking — for turbo mode).
    */
   async inputTextAsync(text: string, deviceIdOverride?: string): Promise<void> {
-    const escaped = text
-      .replace(/[\n\r]/g, "")
-      .replace(/\\/g, "\\\\")
-      .replace(/"/g, '\\"')
-      .replace(/'/g, "\\'")
-      .replace(/`/g, "\\`")
-      .replace(/\$/g, "\\$")
-      .replace(/ /g, "%s")
-      .replace(/&/g, "\\&")
-      .replace(/\(/g, "\\(")
-      .replace(/\)/g, "\\)")
-      .replace(/</g, "\\<")
-      .replace(/>/g, "\\>")
-      .replace(/\|/g, "\\|")
-      .replace(/;/g, "\\;");
-
-    await this.execAsync(`shell input text "${escaped}"`, deviceIdOverride);
+    const escaped = escapeAndroidInputText(text);
+    await this.execArgsAsync(["shell", `input text "${escaped}"`], deviceIdOverride);
   }
 
   /**
@@ -564,7 +599,7 @@ export class AdbClient {
    * Install APK
    */
   installApk(apkPath: string): string {
-    return this.exec(`install -r "${apkPath}"`);
+    return this.execArgs(["install", "-r", apkPath]);
   }
 
   /**
@@ -609,10 +644,14 @@ export class AdbClient {
 
       return "unknown";
     } catch {
-      // Try alternative method
+      // Try alternative method — Node-side filter replaces device-side `| grep`.
       try {
-        const output = this.exec("shell dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'");
-        const match = output.match(/(\S+\/\S+)/);
+        const output = this.execArgs(["shell", "dumpsys", "window"]);
+        const filtered = output
+          .split("\n")
+          .filter(line => /mCurrentFocus|mFocusedApp/.test(line))
+          .join("\n");
+        const match = filtered.match(/(\S+\/\S+)/);
         return match?.[1] ?? "unknown";
       } catch {
         return "unknown (could not determine)";
@@ -657,31 +696,27 @@ export class AdbClient {
     since?: string;
     package?: string;
   } = {}): string {
-    let cmd = "logcat -d";
+    const args: string[] = ["shell", "logcat", "-d"];
 
-    // Filter by log level
     if (options.level) {
-      cmd += ` *:${options.level}`;
+      args.push(`*:${options.level}`);
     }
 
-    // Filter by tag
     if (options.tag) {
       validateLogTag(options.tag);
-      cmd += ` -s ${options.tag}`;
+      args.push("-s", options.tag);
     }
 
-    // Limit number of lines
     if (options.lines) {
-      cmd += ` -t ${options.lines}`;
+      args.push("-t", String(Math.trunc(options.lines)));
     }
 
-    // Filter by time (e.g., "01-01 00:00:00.000")
     if (options.since) {
       validateLogTimestamp(options.since);
-      cmd += ` -t "${options.since}"`;
+      args.push("-t", options.since);
     }
 
-    const output = this.exec(`shell ${cmd}`);
+    const output = this.execArgs(args);
 
     // Filter by package if specified
     if (options.package) {
@@ -704,10 +739,12 @@ export class AdbClient {
   }
 
   /**
-   * Get network stats
+   * Get network stats (first 100 lines).
+   * Node-side filter replaces device-side `| head -100` so we can use argv-form (no shell pipe).
    */
   getNetworkStats(): string {
-    return this.exec("shell dumpsys netstats | head -100");
+    const output = this.execArgs(["shell", "dumpsys", "netstats"]);
+    return output.split("\n").slice(0, 100).join("\n");
   }
 
   /**
@@ -723,15 +760,17 @@ export class AdbClient {
   getMemoryInfo(packageName?: string): string {
     if (packageName) {
       validatePackageName(packageName);
-      return this.exec(`shell dumpsys meminfo ${packageName}`);
+      return this.execArgs(["shell", "dumpsys", "meminfo", packageName]);
     }
-    return this.exec("shell cat /proc/meminfo | head -20");
+    const output = this.execArgs(["shell", "cat", "/proc/meminfo"]);
+    return output.split("\n").slice(0, 20).join("\n");
   }
 
   /**
-   * Get CPU info
+   * Get CPU info (first 20 lines).
    */
   getCpuInfo(): string {
-    return this.exec("shell top -n 1 | head -20");
+    const output = this.execArgs(["shell", "top", "-n", "1"]);
+    return output.split("\n").slice(0, 20).join("\n");
   }
 }

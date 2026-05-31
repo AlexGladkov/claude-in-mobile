@@ -1,12 +1,21 @@
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { tmpdir } from "os";
 import { join } from "path";
 import { readFileSync, unlinkSync } from "fs";
 import { WDAManager, WDAClient, WDAElement, WDARect } from "./wda/index.js";
 import { classifySimctlError } from "../errors.js";
-import { validateDeviceId } from "../utils/sanitize.js";
+import { validateDeviceId, validateBundleId } from "../utils/sanitize.js";
 
 const EXEC_TIMEOUT_MS = 15_000;      // 15s for text commands
+
+/**
+ * Split a whitespace-separated command into argv tokens.
+ * Safe for commands that do not contain shell-quoted strings (no embedded spaces inside an arg).
+ * For commands with spaces inside arguments (e.g. file paths), use execArgs() directly.
+ */
+function splitArgs(command: string): string[] {
+  return command.split(/\s+/).filter(Boolean);
+}
 
 export interface IosDevice {
   id: string;
@@ -22,6 +31,9 @@ export class IosClient {
   private wdaClient?: WDAClient;
 
   constructor(deviceId?: string) {
+    if (deviceId) {
+      validateDeviceId(deviceId);
+    }
     this.deviceId = deviceId;
   }
 
@@ -55,23 +67,66 @@ export class IosClient {
   }
 
   /**
-   * Execute simctl command
+   * SECURITY: All simctl invocations route through this argv-form path
+   * (execFileSync — no /bin/sh -c). Shell metacharacters in `args` are passed as
+   * literal argv slots, not parsed by the host shell. This structurally prevents
+   * host-side OS Command Injection (CWE-78) — see issue #40.
+   *
+   * Note: `xcrun simctl` and its sub-tools (e.g. `log show --predicate`) parse their
+   * own arguments internally; predicate strings travel as a single argv slot, so
+   * they reach simctl verbatim without /bin/sh expansion.
    */
-  private exec(command: string): string {
-    const fullCommand = `xcrun simctl ${command}`;
+  private execArgs(args: string[]): string {
+    const fullArgs = ["simctl", ...args];
     try {
-      return execSync(fullCommand, {
+      return execFileSync("xcrun", fullArgs, {
         encoding: "utf-8",
         timeout: EXEC_TIMEOUT_MS,
-        maxBuffer: 50 * 1024 * 1024
+        maxBuffer: 50 * 1024 * 1024,
       }).trim();
     } catch (error: unknown) {
       const e = error as { killed?: boolean; signal?: string; stderr?: Buffer | string; message?: string };
+      const display = `xcrun ${fullArgs.join(" ")}`;
       if (e.killed === true || e.signal === "SIGTERM") {
-        throw new Error(`simctl command timed out after ${EXEC_TIMEOUT_MS}ms: ${fullCommand}. Simulator may be unresponsive.`);
+        throw new Error(`simctl command timed out after ${EXEC_TIMEOUT_MS}ms: ${display}. Simulator may be unresponsive.`);
       }
-      throw classifySimctlError(e.stderr?.toString() ?? e.message ?? String(error), fullCommand);
+      throw classifySimctlError(e.stderr?.toString() ?? e.message ?? String(error), display);
     }
+  }
+
+  /**
+   * Variant of execArgs that suppresses stderr (used by fallback log paths
+   * that previously relied on shell `2>/dev/null`).
+   * Same SECURITY guarantee as execArgs — argv form, no shell parsing.
+   */
+  private execArgsQuiet(args: string[]): string {
+    const fullArgs = ["simctl", ...args];
+    try {
+      const out = execFileSync("xcrun", fullArgs, {
+        encoding: "utf-8",
+        timeout: EXEC_TIMEOUT_MS,
+        maxBuffer: 50 * 1024 * 1024,
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      return out.toString().trim();
+    } catch (error: unknown) {
+      const e = error as { killed?: boolean; signal?: string; stderr?: Buffer | string; message?: string };
+      const display = `xcrun ${fullArgs.join(" ")}`;
+      if (e.killed === true || e.signal === "SIGTERM") {
+        throw new Error(`simctl command timed out after ${EXEC_TIMEOUT_MS}ms: ${display}. Simulator may be unresponsive.`);
+      }
+      throw classifySimctlError(e.stderr?.toString() ?? e.message ?? String(error), display);
+    }
+  }
+
+  /**
+   * Execute simctl command (legacy string form). Whitespace-split into argv tokens.
+   * SECURITY: Shell metacharacters in `command` are NOT interpreted — the split tokens
+   * pass to execFileSync as distinct argv slots (no /bin/sh -c). For commands that
+   * require an argument containing spaces (e.g. file paths), call execArgs() directly.
+   */
+  private exec(command: string): string {
+    return this.execArgs(splitArgs(command));
   }
 
   /**
@@ -145,7 +200,8 @@ export class IosClient {
   boot(deviceId?: string): void {
     const target = deviceId ?? this.deviceId;
     if (!target) throw new Error("No device specified");
-    this.exec(`boot ${target}`);
+    validateDeviceId(target);
+    this.execArgs(["boot", target]);
   }
 
   /**
@@ -153,7 +209,8 @@ export class IosClient {
    */
   shutdown(deviceId?: string): void {
     const target = deviceId ?? this.deviceId ?? "booted";
-    this.exec(`shutdown ${target}`);
+    if (target !== "booted") validateDeviceId(target);
+    this.execArgs(["shutdown", target]);
   }
 
   /**
@@ -163,7 +220,8 @@ export class IosClient {
     const target = this.targetDeviceFor(deviceIdOverride);
     const tmpFile = join(tmpdir(), `ios-screenshot-${Date.now()}.png`);
     try {
-      this.exec(`io ${target} screenshot "${tmpFile}"`);
+      // Path passed as distinct argv slot — spaces in tmpdir are safe.
+      this.execArgs(["io", target, "screenshot", tmpFile]);
       return readFileSync(tmpFile);
     } finally {
       try { unlinkSync(tmpFile); } catch {}
@@ -279,6 +337,11 @@ export class IosClient {
 
   /**
    * Press key
+   *
+   * SECURITY: AppleScript invocations use execFileSync("osascript", ["-e", literal])
+   * — the script literal is a single argv slot, so /bin/sh never parses its contents.
+   * The `key` argument is whitelisted via keyMap; only fixed AppleScript literals reach
+   * osascript.
    */
   pressKey(key: string): void {
     const keyMap: Record<string, string> = {
@@ -293,12 +356,23 @@ export class IosClient {
 
     // Use simctl io for button presses
     if (mappedKey === "home") {
-      execSync(`xcrun simctl io ${this.targetDevice} enumerate`, { encoding: "utf-8", timeout: EXEC_TIMEOUT_MS });
+      this.execArgs(["io", this.targetDevice, "enumerate"]);
       // Trigger home button via keyboard shortcut
-      execSync(`osascript -e 'tell application "Simulator" to activate' -e 'tell application "System Events" to keystroke "h" using {command down, shift down}'`, { encoding: "utf-8", timeout: EXEC_TIMEOUT_MS });
+      execFileSync(
+        "osascript",
+        [
+          "-e", 'tell application "Simulator" to activate',
+          "-e", 'tell application "System Events" to keystroke "h" using {command down, shift down}',
+        ],
+        { encoding: "utf-8", timeout: EXEC_TIMEOUT_MS }
+      );
     } else {
       // Try generic approach
-      execSync(`osascript -e 'tell application "Simulator" to activate'`, { encoding: "utf-8", timeout: EXEC_TIMEOUT_MS });
+      execFileSync(
+        "osascript",
+        ["-e", 'tell application "Simulator" to activate'],
+        { encoding: "utf-8", timeout: EXEC_TIMEOUT_MS }
+      );
     }
   }
 
@@ -306,7 +380,8 @@ export class IosClient {
    * Launch app by bundle ID
    */
   launchApp(bundleId: string, deviceIdOverride?: string): string {
-    this.exec(`launch ${this.targetDeviceFor(deviceIdOverride)} ${bundleId}`);
+    validateBundleId(bundleId);
+    this.execArgs(["launch", this.targetDeviceFor(deviceIdOverride), bundleId]);
     return `Launched ${bundleId}`;
   }
 
@@ -314,8 +389,9 @@ export class IosClient {
    * Terminate app
    */
   stopApp(bundleId: string, deviceIdOverride?: string): void {
+    validateBundleId(bundleId);
     try {
-      this.exec(`terminate ${this.targetDeviceFor(deviceIdOverride)} ${bundleId}`);
+      this.execArgs(["terminate", this.targetDeviceFor(deviceIdOverride), bundleId]);
     } catch {
       // App might not be running
     }
@@ -325,7 +401,8 @@ export class IosClient {
    * Install app (.app bundle or .ipa)
    */
   installApp(path: string): string {
-    this.exec(`install ${this.targetDevice} "${path}"`);
+    // Path passed as distinct argv slot — spaces in path are safe; no shell parsing.
+    this.execArgs(["install", this.targetDevice, path]);
     return `Installed ${path}`;
   }
 
@@ -333,7 +410,8 @@ export class IosClient {
    * Uninstall app
    */
   uninstallApp(bundleId: string): string {
-    this.exec(`uninstall ${this.targetDevice} ${bundleId}`);
+    validateBundleId(bundleId);
+    this.execArgs(["uninstall", this.targetDevice, bundleId]);
     return `Uninstalled ${bundleId}`;
   }
 
@@ -449,15 +527,14 @@ export class IosClient {
 
   /**
    * Open URL in simulator
+   *
+   * SECURITY: URL passes as a single argv slot to xcrun (no /bin/sh -c).
+   * Any shell metacharacters in `url` are not parsed by the host shell.
+   * Scheme validation happens at the tool layer (validateUrl).
    */
   openUrl(url: string): void {
-    // Use execFileSync with args array to prevent shell injection
     try {
-      execSync(`xcrun simctl openurl ${this.targetDevice} '${url.replace(/'/g, "'\\''")}'`, {
-        encoding: "utf-8",
-        timeout: EXEC_TIMEOUT_MS,
-        maxBuffer: 50 * 1024 * 1024
-      });
+      this.execArgs(["openurl", this.targetDevice, url]);
     } catch (error: unknown) {
       const e = error as { stderr?: Buffer | string; message?: string };
       throw classifySimctlError(e.stderr?.toString() ?? e.message ?? String(error), `simctl openurl ${url}`);
@@ -468,26 +545,38 @@ export class IosClient {
    * Add photo to simulator
    */
   addPhoto(imagePath: string): void {
-    this.exec(`addmedia ${this.targetDevice} "${imagePath}"`);
+    // Path passed as distinct argv slot — spaces in path are safe.
+    this.execArgs(["addmedia", this.targetDevice, imagePath]);
   }
 
   /**
    * Set location
    */
   setLocation(lat: number, lon: number): void {
-    this.exec(`location ${this.targetDevice} set ${lat},${lon}`);
+    // Coerce to finite numbers — simctl expects `lat,lon` as a single argument.
+    const latN = Number(lat);
+    const lonN = Number(lon);
+    if (!Number.isFinite(latN) || !Number.isFinite(lonN)) {
+      throw new Error(`Invalid coordinates: lat=${lat}, lon=${lon}`);
+    }
+    this.execArgs(["location", this.targetDevice, "set", `${latN},${lonN}`]);
   }
 
   /**
    * Get device info
    */
   getDeviceInfo(): Record<string, string> {
-    const output = this.exec(`getenv ${this.targetDevice} SIMULATOR_DEVICE_NAME`);
+    const output = this.execArgs(["getenv", this.targetDevice, "SIMULATOR_DEVICE_NAME"]);
     return { name: output };
   }
 
   /**
    * Execute arbitrary simctl command
+   *
+   * SECURITY: `command` is whitespace-split into argv tokens before reaching
+   * execFileSync. Shell metacharacters (;, &, |, $(), backticks, etc.) cannot
+   * spawn a host shell from this path. The MCP tool layer additionally validates
+   * via validateShellCommand as defense in depth.
    */
   shell(command: string): string {
     return this.exec(command);
@@ -501,38 +590,39 @@ export class IosClient {
     lines?: number;
     level?: "debug" | "info" | "default" | "error" | "fault";
   } = {}): string {
-    try {
-      let cmd = `spawn ${this.targetDevice} log show --style compact`;
-
-      // Add time limit (last 5 minutes by default)
-      cmd += " --last 5m";
-
+    const buildArgs = (lastWindow: string): string[] => {
+      const args: string[] = ["spawn", this.targetDevice, "log", "show", "--style", "compact", "--last", lastWindow];
       // Filter by level
       if (options.level) {
-        cmd += ` --predicate 'messageType == ${options.level}'`;
+        // Predicate string is a single argv slot — simctl parses it internally, not /bin/sh.
+        args.push("--predicate", `messageType == ${options.level}`);
       }
-
-      // Custom predicate
+      // Custom predicate (user-controlled, but passes as one argv slot — no shell parsing)
       if (options.predicate) {
-        cmd += ` --predicate '${options.predicate}'`;
+        args.push("--predicate", options.predicate);
       }
+      return args;
+    };
 
-      const output = this.exec(cmd);
+    try {
+      const output = this.execArgs(buildArgs("5m"));
 
-      // Limit lines if specified
+      // Limit lines if specified (Node-side slice replaces the prior shell `| tail`).
       if (options.lines) {
+        const linesN = Math.trunc(Math.max(0, options.lines));
         const lines = output.split("\n");
-        return lines.slice(-options.lines).join("\n");
+        return lines.slice(-linesN).join("\n");
       }
 
       return output;
     } catch {
-      // Fallback: try system log
+      // Fallback: try system log (last 1m, swallow stderr — replaces prior `2>/dev/null`).
       try {
-        return execSync(
-          `xcrun simctl spawn ${this.targetDevice} log show --style compact --last 1m 2>/dev/null | tail -100`,
-          { encoding: "utf-8", timeout: EXEC_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 }
-        );
+        const fallback = this.execArgsQuiet([
+          "spawn", this.targetDevice, "log", "show", "--style", "compact", "--last", "1m",
+        ]);
+        // Node-side slice replaces the prior shell `| tail -100`.
+        return fallback.split("\n").slice(-100).join("\n");
       } catch {
         return "Unable to retrieve logs. Make sure the simulator is running.";
       }
@@ -541,11 +631,23 @@ export class IosClient {
 
   /**
    * Get app-specific logs
+   *
+   * SECURITY: bundleId is validated against the reverse-DNS whitelist before
+   * embedding into the simctl predicate string. The predicate itself is passed
+   * as ONE argv slot — the host shell never parses it; simctl parses it
+   * internally as its own DSL.
    */
   getAppLogs(bundleId: string, lines: number = 100): string {
+    validateBundleId(bundleId);
+    const linesN = Math.trunc(Math.max(0, lines));
     try {
-      const cmd = `spawn ${this.targetDevice} log show --style compact --last 5m --predicate 'subsystem == "${bundleId}"' | tail -${lines}`;
-      return this.exec(cmd);
+      const output = this.execArgs([
+        "spawn", this.targetDevice, "log", "show", "--style", "compact",
+        "--last", "5m",
+        "--predicate", `subsystem == "${bundleId}"`,
+      ]);
+      // Node-side slice replaces prior shell `| tail -${lines}`.
+      return output.split("\n").slice(-linesN).join("\n");
     } catch {
       return `Unable to retrieve logs for ${bundleId}`;
     }
@@ -563,20 +665,23 @@ export class IosClient {
    * Services: camera, microphone, photos, location, contacts, calendar, reminders, motion, health, speech-recognition
    */
   grantPermission(bundleId: string, service: string): string {
-    return this.exec(`privacy ${this.targetDevice} grant ${service} ${bundleId}`);
+    validateBundleId(bundleId);
+    return this.execArgs(["privacy", this.targetDevice, "grant", service, bundleId]);
   }
 
   /**
    * Revoke privacy permission on iOS simulator
    */
   revokePermission(bundleId: string, service: string): string {
-    return this.exec(`privacy ${this.targetDevice} revoke ${service} ${bundleId}`);
+    validateBundleId(bundleId);
+    return this.execArgs(["privacy", this.targetDevice, "revoke", service, bundleId]);
   }
 
   /**
    * Reset all privacy permissions for an app on iOS simulator
    */
   resetPermissions(bundleId: string): string {
-    return this.exec(`privacy ${this.targetDevice} reset all ${bundleId}`);
+    validateBundleId(bundleId);
+    return this.execArgs(["privacy", this.targetDevice, "reset", "all", bundleId]);
   }
 }

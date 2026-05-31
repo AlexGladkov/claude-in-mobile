@@ -12,6 +12,7 @@ mod ios;
 mod scale;
 mod screenshot;
 mod store;
+mod utils;
 
 use std::process::ExitCode;
 

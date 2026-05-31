@@ -11,6 +11,7 @@ use std::time::Instant;
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::utils::device_shell::DeviceShellCmd;
 use crate::{android, aurora, desktop, ios};
 
 // ---------------------------------------------------------------------------
@@ -1193,18 +1194,11 @@ fn step_perf_framestats(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String
 // Turbo fast-track helpers (Android-only)
 // ---------------------------------------------------------------------------
 
-/// Escape text for `adb shell input text "..."`.
-fn escape_adb_text(text: &str) -> String {
-    text.replace('\\', "\\\\")
-        .replace(' ', "%s")
-        .replace('\'', "\\'")
-        .replace('"', "\\\"")
-        .replace('&', "\\&")
-        .replace('|', "\\|")
-        .replace(';', "\\;")
-        .replace('$', "\\$")
-        .replace('`', "\\`")
-}
+// `escape_adb_text` was retired in v3.10.3 (issue #42). Text composition for
+// `adb shell input text …` now goes through
+// [`crate::utils::device_shell::DeviceShellCmd`], which POSIX-quotes the
+// payload by construction. The Android `%s`-as-space sentinel is still
+// applied below.
 
 /// Resolve a key name to its Android keyevent code string.
 fn resolve_keycode(key: &str) -> Option<&'static str> {
@@ -1241,24 +1235,34 @@ fn build_fast_track_cmd(step: &FlowStep, ctx: &PlatformCtx<'_>) -> Option<(Strin
         "tap" if step.args.len() >= 2 => {
             let x = step.args[0].parse::<i32>().ok()?;
             let y = step.args[1].parse::<i32>().ok()?;
-            Some((
-                format!("input tap {} {}", x, y),
-                format!("Tapped at ({}, {})", x, y),
-            ))
+            // i32 values are metachar-free; user_input is used for consistency.
+            let cmd = DeviceShellCmd::new()
+                .literal("input")
+                .literal("tap")
+                .user_input(&x.to_string())
+                .user_input(&y.to_string())
+                .render();
+            Some((cmd, format!("Tapped at ({}, {})", x, y)))
         }
         "key" if !step.args.is_empty() => {
             let keycode = resolve_keycode(&step.args[0])?;
-            Some((
-                format!("input keyevent {}", keycode),
-                format!("Pressed key \"{}\"", step.args[0]),
-            ))
+            let cmd = DeviceShellCmd::new()
+                .literal("input")
+                .literal("keyevent")
+                .literal(keycode)
+                .render();
+            Some((cmd, format!("Pressed key \"{}\"", step.args[0])))
         }
         "input" if !step.args.is_empty() => {
-            let escaped = escape_adb_text(&step.args[0]);
-            Some((
-                format!("input text \"{}\"", escaped),
-                format!("Typed \"{}\"", step.args[0]),
-            ))
+            // Android's `input text` treats `%s` as a literal space; we apply
+            // the sentinel before POSIX-quoting via the builder.
+            let with_space_sentinel = step.args[0].replace(' ', "%s");
+            let cmd = DeviceShellCmd::new()
+                .literal("input")
+                .literal("text")
+                .user_input(&with_space_sentinel)
+                .render();
+            Some((cmd, format!("Typed \"{}\"", step.args[0])))
         }
         "swipe" if step.args.len() >= 4 => {
             let x1 = step.args[0].parse::<i32>().ok()?;
@@ -1266,10 +1270,16 @@ fn build_fast_track_cmd(step: &FlowStep, ctx: &PlatformCtx<'_>) -> Option<(Strin
             let x2 = step.args[2].parse::<i32>().ok()?;
             let y2 = step.args[3].parse::<i32>().ok()?;
             let dur: u32 = step.args.get(4).and_then(|s| s.parse().ok()).unwrap_or(300);
-            Some((
-                format!("input swipe {} {} {} {} {}", x1, y1, x2, y2, dur),
-                format!("Swiped ({},{}) -> ({},{})", x1, y1, x2, y2),
-            ))
+            let cmd = DeviceShellCmd::new()
+                .literal("input")
+                .literal("swipe")
+                .user_input(&x1.to_string())
+                .user_input(&y1.to_string())
+                .user_input(&x2.to_string())
+                .user_input(&y2.to_string())
+                .user_input(&dur.to_string())
+                .render();
+            Some((cmd, format!("Swiped ({},{}) -> ({},{})", x1, y1, x2, y2)))
         }
         _ => None,
     }

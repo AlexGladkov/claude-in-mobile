@@ -32,11 +32,23 @@ export const systemTools: ToolDefinition[] = [
   {
     tool: {
       name: "system_shell",
-      description: "Execute shell command on device",
+      description:
+        "Execute a shell command on the device. SECURITY: shell metacharacters " +
+        "(`& | ; $ \\` ' \\\\ ( ) < > { } * ? [ ] tab newline`) are REJECTED — " +
+        "the command is NOT passed through /bin/sh and chaining/expansion does not work. " +
+        "Prefer these alternatives when applicable: ui_tap/ui_swipe for input, " +
+        "app_launch for starting apps, system_open_url for opening URLs " +
+        "(URLs with `&` in query string MUST go through system_open_url, not here). " +
+        "For multi-step operations, invoke this tool once per step.",
       inputSchema: {
         type: "object",
         properties: {
-          command: { type: "string", description: "Shell command to execute" },
+          command: {
+            type: "string",
+            description:
+              "Single shell command, no chaining or shell metacharacters. " +
+              "Example: 'pm list packages -3' (valid), 'pm list packages | grep foo' (rejected).",
+          },
           platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
           deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
         },

@@ -1,8 +1,17 @@
-//! Aurora OS device automation via audb
+//! Aurora OS device automation via audb.
+//!
+//! # Shell-injection invariant (CWE-78)
+//!
+//! Any string handed to `audb shell <string>` is re-parsed by `sh` on the
+//! device. Every dynamic segment of such a string MUST go through
+//! [`crate::utils::device_shell::DeviceShellCmd`] — never `format!`. See
+//! the matching note at the top of `android.rs` for the audit checklist.
 
 use std::process::Command;
 use anyhow::{Result, Context, bail};
 use serde::Serialize;
+
+use crate::utils::device_shell::DeviceShellCmd;
 
 /// Build audb command with optional device serial
 fn audb_cmd(device: Option<&str>) -> Command {
@@ -77,20 +86,19 @@ pub fn swipe(x1: i32, y1: i32, x2: i32, y2: i32, duration: u32, device: Option<&
     Ok(())
 }
 
-/// Input text (with proper escaping)
+/// Input text via `audb shell input text <string>`.
+///
+/// Same shape as the Android equivalent: spaces are mapped to the `%s`
+/// sentinel expected by Android's `input text`, then the whole payload is
+/// POSIX single-quoted by [`DeviceShellCmd`].
 pub fn input_text(text: &str, device: Option<&str>) -> Result<()> {
-    let escaped = text
-        .replace('\\', "\\\\")
-        .replace(' ', "%s")
-        .replace('\'', "\\'")
-        .replace('"', "\\\"")
-        .replace('&', "\\&")
-        .replace('|', "\\|")
-        .replace(';', "\\;")
-        .replace('$', "\\$")
-        .replace('`', "\\`");
-
-    let output = audb_exec(device, &["shell", "input", "text", &escaped])?;
+    let with_space_sentinel = text.replace(' ', "%s");
+    let shell_cmd = DeviceShellCmd::new()
+        .literal("input")
+        .literal("text")
+        .user_input(&with_space_sentinel)
+        .render();
+    let output = audb_exec(device, &["shell", &shell_cmd])?;
 
     if !output.status.success() {
         bail!("audb input text failed: {}", String::from_utf8_lossy(&output.stderr));
@@ -224,14 +232,24 @@ pub fn pull_file(remote: &str, local: &str, device: Option<&str>) -> Result<()> 
     Ok(())
 }
 
-/// Get device logs via journalctl
+/// Get device logs via journalctl.
+///
+/// `lines` is a `usize` so it is metachar-free by construction; the optional
+/// `filter` is user-controlled and is POSIX-quoted by the builder.
 pub fn get_logs(filter: Option<&str>, lines: usize, device: Option<&str>) -> Result<()> {
-    let lines_str = format!("{}", lines);
-    let cmd = if let Some(f) = filter {
-        format!("journalctl -n {} --grep={}", lines_str, f)
-    } else {
-        format!("journalctl -n {}", lines_str)
-    };
+    let lines_str = lines.to_string();
+    let mut builder = DeviceShellCmd::new()
+        .literal("journalctl")
+        .literal("-n")
+        .user_input(&lines_str);
+    if let Some(f) = filter {
+        // `--grep=<pattern>` is one argv token; the prefix is a static
+        // literal and the value is quoted by the builder. `format!` only
+        // composes a string here — it does not reach the shell on its own.
+        let grep_arg = format!("--grep={}", f);
+        builder = builder.user_input(&grep_arg);
+    }
+    let cmd = builder.render();
 
     let output = audb_exec(device, &["shell", &cmd])?;
 

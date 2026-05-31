@@ -5,6 +5,7 @@
 
 use anyhow::Result;
 
+use crate::utils::shell_gate;
 use crate::{android, aurora, desktop, ios, screenshot, scale};
 
 // -- Screenshot / Annotate ----------------------------------------------------
@@ -111,7 +112,15 @@ pub fn shell(
     command: &str,
     simulator: Option<&str>,
     device: Option<&str>,
+    i_know_what_im_doing: bool,
 ) -> Result<()> {
+    // SECURITY (issue #41): `shell` executes whatever the caller passes,
+    // verbatim, on the device. Gate non-interactive use behind an explicit
+    // opt-in to prevent supply-chain / CI misuse. Runs BEFORE any platform
+    // code so the gate cannot be skipped by picking a different platform.
+    shell_gate::check_shell_allowed(i_know_what_im_doing)?;
+    shell_gate::emit_warning_if_needed();
+
     match platform {
         "android" => { android::shell(command, device)?; }
         "ios" => { ios::shell(command, simulator)?; }
