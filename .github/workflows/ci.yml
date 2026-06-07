@@ -32,3 +32,42 @@ jobs:
           cache: 'npm'
       - run: npm ci
       - run: npx tsc --noEmit
+
+  cargo-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cli
+      - run: cd cli && cargo test --lib
+
+  npm-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+      # Fail the build on any HIGH or CRITICAL advisory affecting prod deps.
+      # Dev-only advisories are reported but do not block (separate job below
+      # surfaces them).
+      - run: npm audit --omit=dev --audit-level=high
+      - name: Dev dependency advisories (non-blocking)
+        if: always()
+        run: npm audit --audit-level=high || true
+
+  cargo-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: cli
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+      - name: Audit Rust dependencies
+        run: cd cli && cargo audit --deny warnings

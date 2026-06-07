@@ -5,6 +5,97 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.11.0] — 2026-06-07
+
+### Architecture — Microkernel
+
+claude-in-mobile now uses a microkernel design with capability-based plugins.
+Existing platforms (Android, iOS, Desktop, Web, Aurora) are wrapped as
+first-party plugins; the kernel itself knows nothing about them. The public
+contract is split into a new package, `@claude-in-mobile/plugin-api`, with an
+independent semver.
+
+ADRs:
+
+- `docs/adr/0001-microkernel-architecture.md` — design rationale, layering
+  rule, consequences.
+- `docs/adr/0002-plugin-api-v1.md` — formal v1 contract, lifecycle FSM,
+  event topics.
+
+Layout:
+
+- `packages/plugin-api/` — new workspace, exports `Capability`,
+  `SourcePlugin`, `PluginManifest`, `PluginContext`, event topics, errors.
+  Versioned at `1.0.0-alpha.0`.
+- `src/kernel/` — TypeScript kernel (registry, lifecycle, event bus,
+  resolver, guard, loader). 23 unit tests.
+- `src/plugins/<id>/` — Android, iOS, Desktop, Web, Aurora, REPL plugins.
+  Each ships a `contract.test.ts` consuming the generic plugin suite.
+- `src/runtime/bootstrap.ts` — composition root. Registers all built-ins and
+  exposes a `KernelHandle`.
+- `DeviceManager.fromKernel(handle)` — duck-typed factory that bridges the
+  legacy facade to the new registry without forcing plugins to depend on it.
+- `src/architecture.test.ts` — layering invariants enforced as tests (kernel
+  ↛ plugins, plugin ↛ plugin, plugin ↛ legacy facade).
+
+Rust mirror:
+
+- `cli/src/kernel/` — `Capability`, `PluginManifest`, `SourcePlugin`,
+  `Registry`, `Resolver`. Mirrors the TS semantics; `serde(rename_all =
+  "camelCase")` keeps the wire format identical. 18 unit tests.
+- `cli/src/plugins/` — Android, iOS, Desktop, Web, Aurora, REPL plugins +
+  `register_builtins(registry)`. Manifests are the contract reference; full
+  command dispatch arrives with the REPL bridge.
+
+### Added — REPL plugin (`terminal` + `input` capabilities)
+
+claude-in-mobile can now drive interactive REPLs and CLI tools (python,
+node, ghci, bash, custom CLIs) through a PTY-backed source.
+
+- Rust supervisor in `cli/src/plugins/repl/` using `portable-pty 0.9` and
+  `vt100 0.15`. Multi-session, in-memory state, JSON-RPC stdio bridge.
+- New subcommand `claude-in-mobile repl-supervisor` — long-lived loop
+  consumed by the TypeScript plugin. Not intended for direct human use; the
+  wire protocol is documented in `cli/src/plugins/repl/bridge.rs`.
+- TypeScript plugin in `src/plugins/repl/` exposes seven MCP tools:
+  `repl_spawn`, `repl_send`, `repl_key`, `repl_expect`, `repl_snapshot`,
+  `repl_list`, `repl_kill`.
+- Prompt-detection cascade: regex → idle timeout → child exit. Default
+  profiles for python, ipython, node, ghci, psql, bash, zsh, sh.
+- Skill `/test-repl` (`.claude/commands/test-repl.md`) for scripted
+  scenarios.
+
+### Security baseline
+
+- Secret redaction layer on every `repl_snapshot` response. Covers AWS
+  access keys, GitHub PATs, OpenAI/Anthropic keys, Bearer headers, JWTs,
+  Google API keys, Slack tokens. See `src/plugins/repl/redaction.ts`.
+- Minimal environment allowlist when spawning the REPL supervisor
+  subprocess. Per-session env is passed explicitly through `repl_spawn.env`.
+- `ci.yml` now runs `npm audit --omit=dev --audit-level=high` and `cargo
+  audit --deny warnings` on every push.
+- `docs/security.md` documents the 3.11.0 baseline and what is deferred to
+  v4 (sandbox, per-plugin permissions, signing).
+
+### Developer experience
+
+- `docs/plugins/{api-v1,authoring,capability-reference}.md` — reference
+  documentation for plugin authors.
+- `docs/plugins/template/` — copy-and-edit scaffold for new plugins.
+- Generic plugin contract suite in `src/plugins/contract-suite.ts` — every
+  plugin must invoke `runPluginContract(factory)`; CI enforces architecture
+  invariants.
+
+### Compatibility
+
+Public MCP tool names are unchanged. Existing skills (`/test-android`,
+`/test-ios`, `/test-desktop`, `/test-web`, `/test-aurora`) work as before.
+DeviceManager's legacy constructor is preserved; `fromKernel` is additive.
+
+`@claude-in-mobile/plugin-api` starts at `1.0.0-alpha.0` and follows its own
+semver. The `apiVersion` field on every plugin manifest gates compatibility
+with the kernel.
+
 ## [3.10.3] — 2026-05-31
 
 ### Security (CWE-78 — OS Command Injection)
