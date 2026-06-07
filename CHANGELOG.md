@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.11.4] — 2026-06-07
+
+### Fixed
+
+- **#45 — `npx claude-in-mobile@latest` fails with 404 on
+  `@claude-in-mobile/plugin-api`.** The 3.11.x line declared a dependency
+  on the workspace package `@claude-in-mobile/plugin-api`, which was never
+  published to the public npm registry. Local development worked through
+  the workspace symlink; every end-user install failed at dependency
+  resolution. The same root cause as the 3.11.0 → 3.11.2 internal hotfix
+  chain, but with a much larger blast radius — the npm tarball itself
+  was broken for everyone whose MCP config points at `@latest`.
+
+  Fix: `package.json` now lists `@claude-in-mobile/plugin-api` in
+  `bundledDependencies`. `npm publish` packs the workspace package's
+  built output directly into the tarball under
+  `node_modules/@claude-in-mobile/plugin-api/`, so npm never queries the
+  registry for it. The dep version was pinned to `1.0.0-alpha.0` (was
+  `*`) to satisfy `bundledDependencies` requirements.
+
+  Until `@claude-in-mobile/plugin-api` is properly published as a
+  standalone npm package (planned for v3.12), this is the supported way
+  to ship the contract alongside the host package.
+
+Local verification — `npm install ./claude-in-mobile-3.11.4.tgz` into an
+empty project succeeds without contacting the registry for the bundled
+dep.
+
 ## [3.11.3] — 2026-06-07
 
 ### Fixed
