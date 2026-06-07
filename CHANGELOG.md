@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.11.5] — 2026-06-07
+
+### Fixed
+
+- **REPL plugin tools (`repl_spawn`, `repl_send`, `repl_key`, `repl_expect`,
+  `repl_snapshot`, `repl_list`, `repl_kill`) are now actually exposed via
+  MCP.** Root cause: `src/runtime/bootstrap.ts` (and its
+  `DEFAULT_BUILTINS` containing `createReplPlugin`) was wired in code but
+  never called from the MCP entry point `src/index.ts`. The kernel was
+  only instantiated by `bootstrap.test.ts`; production runs registered
+  only the legacy meta-tools and the REPL plugin remained invisible — so
+  the 3.11.4 release notes advertised `repl_*` tools that no MCP client
+  could see.
+
+  Fix: `src/index.ts` now bootstraps the kernel with the REPL plugin,
+  awaits `kernel.initAll()`, and bridges each `PluginContext`-registered
+  `ToolDefinition` into the existing MCP `registerTools` registry before
+  freezing. `kernel.disposeAll()` is wired into the graceful shutdown
+  path so the Rust supervisor child is killed on `SIGTERM` / `SIGINT` /
+  stdin close.
+
+  Platform plugins (android/ios/desktop/web/aurora) remain on the legacy
+  meta-tool layer for this release — only REPL is bridged through the
+  kernel. Full kernel migration is scoped for v3.12.
+
+  Defensive note: the supervisor process is *not* spawned at bootstrap.
+  `ReplBridgeClient.start()` is lazy, called only on the first
+  `repl_spawn` / `repl_send` / etc. `--help`, `--version`, `--init` still
+  exit before any child process is launched.
+
 ## [3.11.4] — 2026-06-07
 
 ### Fixed
