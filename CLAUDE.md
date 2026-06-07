@@ -23,45 +23,34 @@
 | voltagent-lang:rust-engineer      | cli/src/**/*.rs  |
 | voltagent-lang:swift-expert       | cli/assets/*.swift |
 
-## Pre-Release Checklist (STRICT)
+## Local profiles
 
-Before tagging any release, ALL steps must pass. Do NOT tag until every item is green.
+This project ships its own profile set in `.claude/profiles/`. They override
+the user-level profiles from `~/.claude/profiles/` whenever the triggering
+keywords match. Read the profile file FIRST and follow it literally — the
+profile is the source of truth, this CLAUDE.md is only a router.
 
-### 1. Version consistency
-- [ ] `cli/Cargo.toml` version matches target release
-- [ ] `package.json` version matches target release
-- [ ] `cli/Cargo.lock` updated (`cargo check` after Cargo.toml change)
+| Profile        | File                              | Triggers                                                 |
+|----------------|-----------------------------------|----------------------------------------------------------|
+| Подготовка релиза | `.claude/profiles/release.md`  | релиз, выпустить, hotfix, patch release, опубликовать, npm publish, brew upgrade |
 
-### 2. Build verification
-- [ ] `npm run build` (tsc) — zero errors
-- [ ] `npm run test` (vitest) — all tests pass, zero failures
-- [ ] `cd cli && cargo build --release` — compiles without errors
-- [ ] `cd cli && cargo test` — all tests pass
+If a request matches a local profile trigger, switch to that profile before
+anything else and ignore the more generic global routing.
 
-### 3. Release asset sanity check
-- [ ] Verify previous release assets are Rust binaries (~3-4MB per arch), NOT Node.js bundles (~20MB)
-- [ ] If previous release has wrong assets — delete it before creating new one
+## Release workflow — see `.claude/profiles/release.md`
 
-### 4. Tag and push
-- [ ] `git tag v<version>` on the commit with all changes
-- [ ] `git push origin main --tags` — triggers `release.yml` CI
-- [ ] Wait for CI `Release CLI` workflow to complete
+The release procedure lives in the profile above and is non-negotiable. Two
+properties of that procedure that are critical for this repository:
 
-### 5. Post-release verification
-- [ ] CI `build` jobs: success (both arm64 and x86_64)
-- [ ] CI `release` job: success (GitHub release created)
-- [ ] Release assets: check sizes are ~3-4MB (Rust), NOT ~20MB (Node.js)
-- [ ] CI `update-homebrew` job: if fails (token issue), update formula manually:
-  - Clone `AlexGladkov/homebrew-claude-in-mobile`
-  - Update `version`, `sha256` for both arches
-  - Push
-- [ ] CI `verify-checksums` job: success (or manual verify if homebrew was updated manually)
+1. **Stage 0 — open issues are a release gate.** Before bumping any
+   version, run `gh issue list --state open` and either fix or explicitly
+   defer each item. Skipping this stage is how #43 (`ERR_REQUIRE_ESM` in
+   the browser module) sat unfixed across 3.10.3 → 3.11.2.
+2. **Runtime smoke ≠ tsc/vitest.** The release profile mandates running
+   `node dist/index.js --help` (catches #44-class deadlocks) and a
+   `await import("./dist/browser/client.js")` round-trip (catches #43-class
+   ESM regressions). These cannot be replaced by unit tests.
 
-### 6. Homebrew smoke test
-- [ ] `brew update && brew upgrade claude-in-mobile`
-- [ ] `claude-in-mobile --version` — shows correct version
-- [ ] `claude-in-mobile doctor` — shows full CLI diagnostics (not MCP server banner)
-
-### Known CI issues
-- `HOMEBREW_TAP_TOKEN` secret may expire — causes `update-homebrew` job failure with `Bad credentials`. Fix: update the secret in repo settings, or update formula manually.
-- Never create releases manually without git tags — CI won't run, assets will be wrong.
+The legacy Pre-Release Checklist that previously lived in this file was
+replaced by the profile in v3.11.3 — see commit history for the original
+text.
