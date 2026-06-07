@@ -9,6 +9,8 @@ mod cli;
 mod commands;
 mod desktop;
 mod ios;
+mod kernel;
+mod plugins;
 mod scale;
 mod screenshot;
 mod store;
