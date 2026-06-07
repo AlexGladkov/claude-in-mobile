@@ -18,6 +18,10 @@ import { MobileError, isRetryable, getRecoveryHints } from "./errors.js";
 import { getGlobalMetrics } from "./utils/metrics.js";
 import { ALWAYS_VISIBLE, PROFILE_VISIBLE, VALID_PROFILES, MODULE_METADATA, ALL_HIDEABLE_MODULES, type MobileProfile } from "./profiles.js";
 import { recordCall, detectAntiPattern } from "./utils/anti-patterns.js";
+import { bootstrapKernel, type KernelHandle } from "./runtime/bootstrap.js";
+import { createReplPlugin } from "./plugins/repl/index.js";
+import type { ToolDefinition as PluginToolDefinition } from "@claude-in-mobile/plugin-api";
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 // Read version from package.json — single source of truth
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -315,6 +319,37 @@ registerAliasesWithDefaults({
   take_screenshot: { tool: "screen", defaults: { action: "capture" } },
 });
 
+// Kernel bootstrap — surface microkernel plugin tools (e.g. REPL) through MCP.
+// Prior to 3.11.5 the plugin system was wired but never instantiated from the
+// MCP entry point, so repl_* tools never showed up despite shipping in dist/.
+// See issue: REPL tools missing in 3.11.4.
+//
+// We only bootstrap REPL here — platform plugins (android/ios/desktop/web/
+// aurora) are still served by the legacy meta-tool layer; switching them over
+// is a 3.12.x scope item.
+const kernel: KernelHandle = bootstrapKernel({
+  builtins: [() => createReplPlugin()],
+});
+await kernel.initAll();
+
+const kernelToolDefs: ToolDefinition[] = [];
+for (const def of kernel.tools.values()) {
+  const pluginDef: PluginToolDefinition = def;
+  const mcpTool: Tool = {
+    name: pluginDef.name,
+    description: pluginDef.description,
+    inputSchema: pluginDef.inputSchema as Tool["inputSchema"],
+  };
+  kernelToolDefs.push({
+    tool: mcpTool,
+    handler: async (args) => pluginDef.handler(args),
+  });
+}
+if (kernelToolDefs.length > 0) {
+  registerTools(kernelToolDefs);
+  console.error(`[kernel] registered ${kernelToolDefs.length} plugin tools: ${kernelToolDefs.map((d) => d.tool.name).join(", ")}`);
+}
+
 // Freeze tool registration — no new tools can be registered after this point.
 // Alias registration remains open for client-specific aliases in oninitialized.
 freezeRegistry();
@@ -537,6 +572,11 @@ async function shutdown(signal: string): Promise<void> {
     await ctx.deviceManager.cleanup();
   } catch (e) {
     console.error("Cleanup error:", e);
+  }
+  try {
+    await kernel.disposeAll();
+  } catch (e) {
+    console.error("Kernel dispose error:", e);
   }
   process.exit(0);
 }
