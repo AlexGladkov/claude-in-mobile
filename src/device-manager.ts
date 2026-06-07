@@ -47,11 +47,51 @@ export interface DeviceManagerConfig {
   activeTarget?: Platform;
 }
 
+/**
+ * Structural view of the microkernel handle used by `DeviceManager.fromKernel`.
+ * Defined structurally so device-manager.ts does NOT import from `plugins/**`
+ * — preserves the layering rule from ADR 0001 (plugins must not import the
+ * legacy facade, and the facade must not statically depend on plugin modules).
+ */
+export interface KernelHandleView {
+  registry: {
+    list(): readonly {
+      plugin: {
+        manifest: { id: string };
+        adapter?: CorePlatformAdapter;
+      };
+    }[];
+  };
+}
+
 export class DeviceManager {
   private adapters: Map<Platform, CorePlatformAdapter>;
   private activeDevice?: Device;
   private activeTarget: Platform = "android";
   private webViewInspector?: WebViewInspector;
+
+  /**
+   * Build a DeviceManager whose adapters come from the microkernel registry.
+   *
+   * Plugins that expose an `adapter` field contribute one adapter per
+   * `manifest.id`. Other plugins are skipped (e.g. future plugins with no
+   * adapter-style integration). This is the bridge between the legacy facade
+   * and the new plugin runtime used during the 3.11.x migration window.
+   */
+  static fromKernel(
+    handle: KernelHandleView,
+    activeTarget: Platform = "android"
+  ): DeviceManager {
+    const adapters = new Map<Platform, CorePlatformAdapter>();
+    for (const entry of handle.registry.list()) {
+      const id = entry.plugin.manifest.id as Platform;
+      const adapter = entry.plugin.adapter;
+      if (adapter) {
+        adapters.set(id, adapter);
+      }
+    }
+    return new DeviceManager({ adapters, activeTarget });
+  }
 
   constructor(config?: DeviceManagerConfig) {
     if (config) {
