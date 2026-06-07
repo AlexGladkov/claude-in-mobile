@@ -654,5 +654,8 @@ pub fn run(command: Commands) -> Result<()> {
                 crate::cli::ConfigCommands::Reset { key } => config::reset(&key),
             }
         }
+
+        // -- REPL supervisor (long-lived JSON-RPC stdio loop) ----------------
+        Commands::ReplSupervisor => crate::plugins::repl::bridge::run_supervisor_loop(),
     }
 }

@@ -1312,6 +1312,12 @@ pub enum Commands {
         #[command(subcommand)]
         command: ConfigCommands,
     },
+
+    /// REPL supervisor — long-lived JSON-RPC stdio loop hosting interactive
+    /// PTY sessions. Used by the TypeScript REPL plugin; not intended for
+    /// direct human use. Wire protocol is documented in
+    /// cli/src/plugins/repl/bridge.rs.
+    ReplSupervisor,
 }
 
 // -- Flow subcommands ---------------------------------------------------------
