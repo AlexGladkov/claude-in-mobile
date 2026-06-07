@@ -108,6 +108,12 @@ jobs:
   publish-npm:
     needs: [build, verify-plugin-versions]
     runs-on: ubuntu-latest
+    # `--provenance` on `npm publish` mints a Sigstore attestation linking
+    # the published tarball to this exact workflow run. The npm CLI rejects
+    # the publish unless the workflow has `id-token: write` granted.
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 

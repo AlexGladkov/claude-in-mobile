@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.11.2] — 2026-06-07
+
+### Fixed
+
+- Release workflow now grants `id-token: write` to the `publish-npm` job.
+  `npm publish --access public --provenance` mints a Sigstore attestation
+  linking the published tarball to the exact workflow run, which the npm
+  CLI refuses to do without `id-token: write`. The 3.11.1 release built
+  and packaged successfully but failed at the publish step with
+  `npm error EUSAGE — Provenance generation in GitHub Actions requires
+  "write" access to the "id-token" permission`.
+
+Runtime behaviour is identical to 3.11.0 / 3.11.1.
+
 ## [3.11.1] — 2026-06-07
 
 ### Fixed

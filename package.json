@@ -1,6 +1,6 @@
 {
   "name": "claude-in-mobile",
-  "version": "3.11.1",
+  "version": "3.11.2",
   "description": "MCP server for mobile, desktop and browser automation - Android (ADB), iOS Simulator (simctl), Desktop (Compose), Browser (CDP)",
   "type": "module",
   "main": "dist/index.js",
