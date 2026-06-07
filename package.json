@@ -1,6 +1,6 @@
 {
   "name": "claude-in-mobile",
-  "version": "3.11.0",
+  "version": "3.11.1",
   "description": "MCP server for mobile, desktop and browser automation - Android (ADB), iOS Simulator (simctl), Desktop (Compose), Browser (CDP)",
   "type": "module",
   "main": "dist/index.js",
@@ -57,7 +57,7 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "npm run build --workspace=packages/plugin-api && tsc",
     "build:lite": "npm run build && npm run build --workspace=packages/lite",
     "postinstall": "rm -rf node_modules/claude-in-mobile && ln -sf \"$(pwd)\" node_modules/claude-in-mobile 2>/dev/null || true",
     "build:desktop": "cd desktop-companion && ./gradlew installDist",

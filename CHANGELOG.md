@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.11.1] — 2026-06-07
+
+### Fixed
+
+- `npm run build` now builds the `@claude-in-mobile/plugin-api` workspace
+  package before compiling the main TypeScript sources. Without this, fresh
+  CI checkouts (and any contributor running `npm ci` then `npm run build`)
+  failed with `TS2307: Cannot find module '@claude-in-mobile/plugin-api'`.
+  The error only surfaced in the 3.11.0 release pipeline because local
+  development environments had a stale `packages/plugin-api/dist/` from
+  earlier manual builds.
+
+This is a build-pipeline-only hotfix; runtime behaviour is unchanged from
+3.11.0. If you already installed 3.11.0 successfully through Homebrew, no
+upgrade is required for functionality. The npm publish for 3.11.0 did not
+succeed; install `claude-in-mobile@3.11.1` from npm.
+
 ## [3.11.0] — 2026-06-07
 
 ### Architecture — Microkernel
