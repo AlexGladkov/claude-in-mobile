@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.11.3] — 2026-06-07
+
+### Fixed
+
+- **#43 — Browser module fails with `ERR_REQUIRE_ESM`.** `chrome-launcher`
+  ships as ESM-only and could not be loaded via `createRequire` under
+  Node 20+. `BrowserClient.launch` now uses dynamic `await import()` for
+  both `chrome-launcher` and `chrome-remote-interface`. The enclosing
+  function is already async, so no surface change.
+- **#44 — Agents deadlock on `npx -y claude-in-mobile --help`.** Without a
+  `--help` short-circuit the MCP server started its stdio JSON-RPC loop
+  and blocked forever waiting on stdin, which looked like a hang to the
+  calling agent (notably Gemini). The entrypoint now handles `--help`,
+  `-h`, `--version` and `-V` explicitly: it prints the usage info / version
+  to stdout and exits 0 before any server initialisation.
+
 ## [3.11.2] — 2026-06-07
 
 ### Fixed

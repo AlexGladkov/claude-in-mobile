@@ -1,6 +1,6 @@
 {
   "name": "claude-in-mobile",
-  "version": "3.11.2",
+  "version": "3.11.3",
   "description": "Mobile device automation CLI for Android, iOS, Aurora OS, and Desktop platforms",
   "author": {
     "name": "defendend",

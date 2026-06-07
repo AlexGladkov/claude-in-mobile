@@ -319,6 +319,46 @@ registerAliasesWithDefaults({
 // Alias registration remains open for client-specific aliases in oninitialized.
 freezeRegistry();
 
+// --help / --version short-circuit. Without these flags, agents that probe
+// `npx -y claude-in-mobile --help` (notably Gemini) cause the MCP server to
+// start its stdio JSON-RPC loop and block forever waiting on stdin, which
+// looks like a deadlock from the agent's side. See issue #44.
+if (process.argv.includes("--help") || process.argv.includes("-h")) {
+  console.log(`claude-in-mobile ${pkg.version}
+
+MCP server for mobile, desktop and browser automation. Designed to run as a
+stdio child of an MCP-capable client (Claude Code, Cursor, opencode, …) — it
+speaks JSON-RPC on stdin/stdout and is not intended for direct interactive
+use.
+
+Usage
+  claude-in-mobile               start the MCP stdio server (default)
+  claude-in-mobile --init <client>
+                                 print the configuration snippet for a
+                                 supported client (opencode | cursor |
+                                 claude-code) and exit
+  claude-in-mobile --version     print version and exit
+  claude-in-mobile --help        print this message and exit
+
+Environment
+  MOBILE_PROFILE                 minimal | core | android | web | full
+                                 (default: full)
+  DEVICE_ID, ANDROID_SERIAL      preselect Android device
+  IOS_DEVICE_ID                  preselect iOS Simulator
+  CLAUDE_IN_MOBILE_BIN           absolute path to the Rust companion binary
+                                 used by the REPL plugin
+
+Docs
+  https://github.com/AlexGladkov/claude-in-mobile
+`);
+  process.exit(0);
+}
+
+if (process.argv.includes("--version") || process.argv.includes("-V")) {
+  console.log(pkg.version);
+  process.exit(0);
+}
+
 // Handle --init CLI flag (generate config snippet and exit)
 const initIndex = process.argv.indexOf("--init");
 if (initIndex !== -1) {

@@ -1,11 +1,13 @@
-import { createRequire } from "module";
 import type { BrowserSession, BrowserOpenOptions, BrowserClickOptions, BrowserFillOptions, BrowserNavigateOptions, LaunchedChrome } from "./types.js";
 import type { CDPClientInterface, CDPAccessibilityNode } from "./cdp-types.js";
 import { BLOCKED_URL_PROTOCOLS, DEFAULT_SESSION } from "./types.js";
 import { SessionManager } from "./session-manager.js";
 import { BrowserRefNotFoundError } from "../errors.js";
 
-const require = createRequire(import.meta.url);
+// chrome-launcher >=1.0 ships as ESM-only. `createRequire(...)("chrome-launcher")`
+// throws `ERR_REQUIRE_ESM` under Node 20 when the host bundle is CJS. Switching
+// to dynamic `import()` works in both CJS and ESM bundles (and matches the
+// existing async-launch surface). See issue #43.
 
 export class BrowserClient {
   private sessionManager: SessionManager;
@@ -37,8 +39,18 @@ export class BrowserClient {
     // Kill any orphaned Chrome from previous run
     this.sessionManager.cleanupOrphanChrome(session);
 
-    const chromeLauncher = require("chrome-launcher");
-    const CDP = require("chrome-remote-interface");
+    const chromeLauncher = await import("chrome-launcher");
+    // chrome-remote-interface ships without bundled .d.ts; the previous
+    // require()-based code was implicitly `any`. Preserve that shape via an
+    // explicit cast so the rest of the function continues to type-check
+    // exactly as before the ESM migration.
+    // @ts-expect-error — no type declarations published for chrome-remote-interface
+    const cdpModule = (await import("chrome-remote-interface")) as {
+      default?: unknown;
+    } & Record<string, unknown>;
+    const CDP = (cdpModule.default ?? cdpModule) as (
+      opts: { port: number }
+    ) => Promise<CDPClientInterface>;
 
     const chromeFlags = [
       "--disable-gpu",
@@ -64,12 +76,16 @@ export class BrowserClient {
 
     let chrome: LaunchedChrome;
     try {
-      chrome = await chromeLauncher.launch({
+      // Cast to local LaunchedChrome — upstream's `kill()` is `void` while we
+      // model it as `Promise<void>` (caller already `.await`s and the runtime
+      // value works either way). Was implicit when chrome-launcher came in via
+      // require().
+      chrome = (await chromeLauncher.launch({
         chromeFlags,
         handleSIGINT: false,
         port: 0, // auto-select free port
         logLevel: "silent",
-      });
+      })) as unknown as LaunchedChrome;
     } catch (err: unknown) {
       const errObj = err as { message?: string; code?: string };
       if (errObj.message?.includes("not found") || errObj.code === "ENOENT") {
