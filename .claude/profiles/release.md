@@ -117,6 +117,34 @@ issue #43 ERR_REQUIRE_ESM пролежал между 3.10.3 и 3.11.2 и сло
   `printf '{"id":"r1","method":"shutdown"}\n' | cli/target/release/claude-in-mobile repl-supervisor`
   → должно прийти `{"event":"ready"}` и `{"id":"r1","result":"ok"}`.
 
+### Стадия 5b — Tarball install smoke (защита от регрессий типа #45)
+
+**ОБЯЗАТЕЛЬНО.** Локальный workspace + symlink маскируют отсутствие
+публикуемых dependency-package-ов. Без этой стадии #45 повторится.
+
+- [ ] `npm pack` — создать тарбол.
+- [ ] `tar -tzf claude-in-mobile-X.Y.Z.tgz | grep -E 'plugin-api|node_modules'` —
+  проверить, что bundled workspace-пакеты реально лежат в тарболе.
+- [ ] Установить тарбол в чистую директорию **БЕЗ доступа к workspace**:
+  ```sh
+  (cd /tmp && rm -rf install-smoke && mkdir install-smoke && cd install-smoke \
+    && npm init -y >/dev/null \
+    && npm install /absolute/path/to/claude-in-mobile-X.Y.Z.tgz)
+  ```
+  Зелёный результат = `added N packages`. Любой `npm ERR! 404` или
+  `code E404` для `@claude-in-mobile/*` — релиз останавливается, идёт
+  на стадию 1. Workspace в `bundledDependencies` обязателен пока
+  плагинный API не опубликован отдельно.
+- [ ] `cd /tmp/install-smoke && ./node_modules/.bin/claude-in-mobile --version`
+  → версия совпадает с тегом.
+- [ ] **После публикации** — повторить через публичный npm:
+  ```sh
+  (cd /tmp && rm -rf npx-smoke && mkdir npx-smoke && cd npx-smoke \
+    && npx -y claude-in-mobile@X.Y.Z --version)
+  ```
+  Это последняя стадия post-release smoke (см. стадия 9). Если падает с
+  404 — публикация сломана, hotfix обязателен.
+
 ### Стадия 6 — Коммиты и тег
 
 - [ ] Коммиты разбить по логическим слоям (kernel / cli / repl / docs /
