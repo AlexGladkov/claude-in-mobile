@@ -1,46 +1,29 @@
-import { execFile, execFileSync } from "child_process";
-import { promisify } from "util";
-import { classifyAdbError } from "../errors.js";
+import { execFileSync } from "child_process";
 import { resolveAdbPath } from "./resolver.js";
 import { validatePackageName, validatePermission, validateDeviceId, validateLogTag, validateLogTimestamp } from "../utils/sanitize.js";
+import {
+  EXEC_TIMEOUT_MS,
+  execAdb,
+  execAdbAsync,
+  execAdbRaw,
+  execAdbRawAsync,
+} from "./exec.js";
+import { escapeAndroidInputText, splitArgs } from "./text-escape.js";
+import { UiTreeCache } from "./ui-tree-cache.js";
+import { ANDROID_KEYCODES, ANDROID_KEYCODES_FAST, resolveKeyCode } from "./keycodes.js";
 
-const execFileAsync = promisify(execFile);
-
-const EXEC_TIMEOUT_MS = 15_000;      // 15s for text commands
-const EXEC_RAW_TIMEOUT_MS = 30_000;  // 30s for binary (screenshots)
-
-/**
- * Split a whitespace-separated command into argv tokens.
- * Safe for commands that do not contain shell-quoted strings.
- * For commands with spaces inside arguments (e.g. text input), use execArgs() directly.
- */
-function splitArgs(command: string): string[] {
-  return command.split(/\s+/).filter(Boolean);
-}
-
-/**
- * Escape user text for safe embedding inside a double-quoted `input text "..."` on the
- * device shell. The OUTER context (host shell) never parses this string — it travels as a
- * single argv slot to adb (see inputText/inputTextAsync). Escaping covers only device-side
- * shell metacharacters within double quotes plus Android `input`'s `%s`-for-space quirk.
- */
-function escapeAndroidInputText(text: string): string {
-  return text
-    .replace(/[\n\r]/g, "")
-    .replace(/\\/g, "\\\\")
-    .replace(/"/g, '\\"')
-    .replace(/'/g, "\\'")
-    .replace(/`/g, "\\`")
-    .replace(/\$/g, "\\$")
-    .replace(/ /g, "%s")
-    .replace(/&/g, "\\&")
-    .replace(/\(/g, "\\(")
-    .replace(/\)/g, "\\)")
-    .replace(/</g, "\\<")
-    .replace(/>/g, "\\>")
-    .replace(/\|/g, "\\|")
-    .replace(/;/g, "\\;");
-}
+// Re-export helpers so existing imports of `src/adb/client.js` keep working.
+export { escapeAndroidInputText, splitArgs } from "./text-escape.js";
+export { UiTreeCache } from "./ui-tree-cache.js";
+export { ANDROID_KEYCODES, ANDROID_KEYCODES_FAST, resolveKeyCode } from "./keycodes.js";
+export {
+  EXEC_TIMEOUT_MS,
+  EXEC_RAW_TIMEOUT_MS,
+  execAdb,
+  execAdbAsync,
+  execAdbRaw,
+  execAdbRawAsync,
+} from "./exec.js";
 
 export interface Device {
   id: string;
@@ -52,8 +35,7 @@ export class AdbClient {
   private deviceId?: string;
 
   // Turbo: UI tree TTL cache (active only when turbo=true is passed)
-  private uiTreeCache: { xml: string; timestamp: number } | null = null;
-  private uiTreeCacheTTL = 500; // ms
+  private readonly uiTreeCache = new UiTreeCache(500);
 
   constructor(deviceId?: string) {
     if (deviceId) {
@@ -66,72 +48,21 @@ export class AdbClient {
     return this.deviceId ? `-s ${this.deviceId}` : "";
   }
 
-  /** Build device-flag argv slice for a specific deviceId override or fall back to instance default. */
-  private deviceArgs(deviceIdOverride?: string): string[] {
-    const id = deviceIdOverride ?? this.deviceId;
-    return id ? ["-s", id] : [];
-  }
-
   /**
    * SECURITY: All adb invocations route through this argv-form path (execFileSync — no /bin/sh -c).
    * Shell metacharacters in `args` are passed as literal argv slots, not parsed by the host shell.
    * This structurally prevents host-side OS Command Injection (CWE-78) — see issue #40.
    */
   private execArgs(args: string[], deviceIdOverride?: string): string {
-    const adbBin = resolveAdbPath();
-    const fullArgs = [...this.deviceArgs(deviceIdOverride), ...args];
-    try {
-      return execFileSync(adbBin, fullArgs, {
-        encoding: "utf-8",
-        timeout: EXEC_TIMEOUT_MS,
-        maxBuffer: 50 * 1024 * 1024,
-      }).trim();
-    } catch (error: unknown) {
-      const e = error as { killed?: boolean; signal?: string; stderr?: Buffer | string; message?: string };
-      const display = `adb ${fullArgs.join(" ")}`;
-      if (e.killed === true || e.signal === "SIGTERM") {
-        throw new Error(`ADB command timed out after ${EXEC_TIMEOUT_MS}ms: ${display}. Device may be disconnected or screen locked.`);
-      }
-      throw classifyAdbError(e.stderr?.toString() ?? e.message ?? String(error), display);
-    }
+    return execAdb(args, deviceIdOverride ?? this.deviceId);
   }
 
   private execArgsRaw(args: string[], deviceIdOverride?: string): Buffer {
-    const adbBin = resolveAdbPath();
-    const fullArgs = [...this.deviceArgs(deviceIdOverride), ...args];
-    try {
-      return execFileSync(adbBin, fullArgs, {
-        timeout: EXEC_RAW_TIMEOUT_MS,
-        maxBuffer: 50 * 1024 * 1024,
-      });
-    } catch (error: unknown) {
-      const e = error as { killed?: boolean; signal?: string; stderr?: Buffer | string; message?: string };
-      const display = `adb ${fullArgs.join(" ")}`;
-      if (e.killed === true || e.signal === "SIGTERM") {
-        throw new Error(`ADB command timed out after ${EXEC_RAW_TIMEOUT_MS}ms: ${display}. Device may be disconnected or screen locked.`);
-      }
-      throw classifyAdbError(e.stderr?.toString() ?? e.message ?? String(error), display);
-    }
+    return execAdbRaw(args, deviceIdOverride ?? this.deviceId);
   }
 
   private async execArgsAsync(args: string[], deviceIdOverride?: string): Promise<string> {
-    const adbBin = resolveAdbPath();
-    const fullArgs = [...this.deviceArgs(deviceIdOverride), ...args];
-    try {
-      const { stdout } = await execFileAsync(adbBin, fullArgs, {
-        timeout: EXEC_TIMEOUT_MS,
-        maxBuffer: 50 * 1024 * 1024,
-        encoding: "utf-8",
-      });
-      return stdout.trim();
-    } catch (error: unknown) {
-      const e = error as { killed?: boolean; signal?: string; stderr?: Buffer | string; message?: string };
-      const display = `adb ${fullArgs.join(" ")}`;
-      if (e.killed === true || e.signal === "SIGTERM") {
-        throw new Error(`ADB command timed out after ${EXEC_TIMEOUT_MS}ms: ${display}. Device may be disconnected or screen locked.`);
-      }
-      throw classifyAdbError(e.stderr?.toString() ?? e.message ?? String(error), display);
-    }
+    return execAdbAsync(args, deviceIdOverride ?? this.deviceId);
   }
 
   /**
@@ -162,23 +93,7 @@ export class AdbClient {
    * Execute ADB command async and return raw bytes (for screenshots)
    */
   async execRawAsync(command: string, deviceIdOverride?: string): Promise<Buffer> {
-    const adbBin = resolveAdbPath();
-    const fullArgs = [...this.deviceArgs(deviceIdOverride), ...splitArgs(command)];
-    try {
-      const { stdout } = await execFileAsync(adbBin, fullArgs, {
-        timeout: EXEC_RAW_TIMEOUT_MS,
-        maxBuffer: 50 * 1024 * 1024,
-        encoding: "buffer" as BufferEncoding,
-      });
-      return stdout as unknown as Buffer;
-    } catch (error: unknown) {
-      const e = error as { killed?: boolean; signal?: string; stderr?: Buffer | string; message?: string };
-      const display = `adb ${fullArgs.join(" ")}`;
-      if (e.killed === true || e.signal === "SIGTERM") {
-        throw new Error(`ADB command timed out after ${EXEC_RAW_TIMEOUT_MS}ms: ${display}. Device may be disconnected or screen locked.`);
-      }
-      throw classifyAdbError(e.stderr?.toString() ?? e.message ?? String(error), display);
-    }
+    return execAdbRawAsync(splitArgs(command), deviceIdOverride ?? this.deviceId);
   }
 
   /**
@@ -354,49 +269,7 @@ export class AdbClient {
    * Press key by name or keycode
    */
   pressKey(key: string): void {
-    const keyCodes: Record<string, number> = {
-      "BACK": 4,
-      "HOME": 3,
-      "MENU": 82,
-      "ENTER": 66,
-      "TAB": 61,
-      "DELETE": 67,
-      "BACKSPACE": 67,
-      "POWER": 26,
-      "VOLUME_UP": 24,
-      "VOLUME_DOWN": 25,
-      "VOLUME_MUTE": 164,
-      "CAMERA": 27,
-      "APP_SWITCH": 187,
-      "DPAD_UP": 19,
-      "DPAD_DOWN": 20,
-      "DPAD_LEFT": 21,
-      "DPAD_RIGHT": 22,
-      "DPAD_CENTER": 23,
-      "SEARCH": 84,
-      "ESCAPE": 111,
-      "SPACE": 62,
-      "WAKEUP": 224,
-      "SLEEP": 223,
-      "BRIGHTNESS_UP": 221,
-      "BRIGHTNESS_DOWN": 220,
-      "MEDIA_PLAY_PAUSE": 85,
-      "MEDIA_NEXT": 87,
-      "MEDIA_PREVIOUS": 88,
-      "MEDIA_STOP": 86,
-      "MUTE": 91,
-      "NOTIFICATION": 83,
-      "SETTINGS": 176,
-      "COPY": 278,
-      "PASTE": 279,
-      "CUT": 277,
-    };
-
-    const keyCode = keyCodes[key.toUpperCase()] ?? parseInt(key);
-    if (isNaN(keyCode)) {
-      throw new Error(`Unknown key: ${key}`);
-    }
-
+    const keyCode = resolveKeyCode(key, ANDROID_KEYCODES);
     this.exec(`shell input keyevent ${keyCode}`);
   }
 
@@ -406,7 +279,7 @@ export class AdbClient {
    * so the next getUiHierarchy call fetches fresh data.
    */
   invalidateUiTreeCache(): void {
-    this.uiTreeCache = null;
+    this.uiTreeCache.invalidate();
   }
 
   /**
@@ -423,8 +296,9 @@ export class AdbClient {
    * Get UI hierarchy XML (sync — blocks event loop)
    */
   getUiHierarchy(turbo?: boolean): string {
-    if (turbo && this.uiTreeCache && Date.now() - this.uiTreeCache.timestamp < this.uiTreeCacheTTL) {
-      return this.uiTreeCache.xml;
+    if (turbo) {
+      const cached = this.uiTreeCache.get();
+      if (cached !== null) return cached;
     }
 
     let xml: string;
@@ -436,7 +310,7 @@ export class AdbClient {
       xml = this.exec("shell cat /sdcard/ui.xml");
     }
 
-    this.uiTreeCache = { xml, timestamp: Date.now() };
+    this.uiTreeCache.set(xml);
     return xml;
   }
 
@@ -444,8 +318,9 @@ export class AdbClient {
    * Get UI hierarchy XML async (non-blocking)
    */
   async getUiHierarchyAsync(turbo?: boolean): Promise<string> {
-    if (turbo && this.uiTreeCache && Date.now() - this.uiTreeCache.timestamp < this.uiTreeCacheTTL) {
-      return this.uiTreeCache.xml;
+    if (turbo) {
+      const cached = this.uiTreeCache.get();
+      if (cached !== null) return cached;
     }
 
     let xml: string;
@@ -457,7 +332,7 @@ export class AdbClient {
       xml = await this.execAsync("shell cat /sdcard/ui.xml");
     }
 
-    this.uiTreeCache = { xml, timestamp: Date.now() };
+    this.uiTreeCache.set(xml);
     return xml;
   }
 
@@ -508,18 +383,7 @@ export class AdbClient {
    * Press key (async, non-blocking — for turbo mode).
    */
   async pressKeyAsync(key: string, deviceIdOverride?: string): Promise<void> {
-    const keyCodes: Record<string, number> = {
-      "BACK": 4, "HOME": 3, "MENU": 82, "ENTER": 66, "TAB": 61,
-      "DELETE": 67, "BACKSPACE": 67, "POWER": 26, "VOLUME_UP": 24,
-      "VOLUME_DOWN": 25, "ESCAPE": 111, "SPACE": 62, "DPAD_UP": 19,
-      "DPAD_DOWN": 20, "DPAD_LEFT": 21, "DPAD_RIGHT": 22,
-    };
-
-    const keyCode = keyCodes[key.toUpperCase()] ?? parseInt(key);
-    if (isNaN(keyCode)) {
-      throw new Error(`Unknown key: ${key}`);
-    }
-
+    const keyCode = resolveKeyCode(key, ANDROID_KEYCODES_FAST);
     await this.execAsync(`shell input keyevent ${keyCode}`, deviceIdOverride);
   }
 
