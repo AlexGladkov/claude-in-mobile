@@ -4,10 +4,18 @@ import { bootstrapKernel } from "./bootstrap.js";
 import { DeviceManager } from "../device-manager.js";
 
 describe("bootstrapKernel", () => {
-  it("registers all 6 built-in plugins", () => {
+  it("registers all 7 built-in plugins", () => {
     const k = bootstrapKernel();
     const ids = k.registry.list().map((e) => e.plugin.manifest.id).sort();
-    expect(ids).toEqual(["android", "aurora", "desktop", "ios", "repl", "web"]);
+    expect(ids).toEqual([
+      "android",
+      "aurora",
+      "builtin-tools",
+      "desktop",
+      "ios",
+      "repl",
+      "web",
+    ]);
   });
 
   it("initializes all plugins to active state", async () => {

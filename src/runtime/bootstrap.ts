@@ -17,6 +17,7 @@ import { LifecycleOrchestrator } from "../kernel/lifecycle.js";
 import { CapabilityResolver } from "../kernel/resolver.js";
 import { ExternalPluginLoader } from "../kernel/external-loader.js";
 
+import { createBuiltinToolsPlugin } from "../plugins/builtin-tools/index.js";
 import { createAndroidPlugin } from "../plugins/android/index.js";
 import { createIosPlugin } from "../plugins/ios/index.js";
 import { createDesktopPlugin } from "../plugins/desktop/index.js";
@@ -51,6 +52,10 @@ export interface BootstrapOptions {
 }
 
 const DEFAULT_BUILTINS: ReadonlyArray<() => SourcePlugin> = [
+  // BuiltinToolsPlugin must run before platform plugins so meta tools and
+  // aliases are registered ahead of any plugin that may consult the registry
+  // during its own init.
+  createBuiltinToolsPlugin,
   createAndroidPlugin,
   createIosPlugin,
   createDesktopPlugin,
