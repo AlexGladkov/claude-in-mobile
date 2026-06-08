@@ -327,9 +327,12 @@ registerAliasesWithDefaults({
 // We only bootstrap REPL here — platform plugins (android/ios/desktop/web/
 // aurora) are still served by the legacy meta-tool layer; switching them over
 // is a 3.12.x scope item.
-const kernel: KernelHandle = bootstrapKernel({
-  builtins: [() => createReplPlugin()],
-});
+// Phase 4 (3.12.0): load the full set of first-party plugins through the
+// kernel. Their `init()` is currently a no-op for android/ios/desktop/web/
+// aurora — tools still register via the legacy meta-tool path below — but
+// the lifecycle is now in place so each plugin can move its tools into
+// `init(ctx).registerTool()` incrementally without touching this file.
+const kernel: KernelHandle = bootstrapKernel({});
 await kernel.initAll();
 
 const kernelToolDefs: ToolDefinition[] = [];
