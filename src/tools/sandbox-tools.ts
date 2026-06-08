@@ -143,13 +143,11 @@ export const sandboxTools: ToolDefinition[] = [
       const pkg = args.package;
       validatePackageName(pkg);
 
-      const adb = ctx.deviceManager.getAndroidClient(deviceId);
-
       // No file specified — list available preference files first.
       if (!args.file) {
         let listOutput: string;
         try {
-          listOutput = adb.shell(`run-as ${pkg} ls shared_prefs/`);
+          listOutput = ctx.deviceManager.shell(`run-as ${pkg} ls shared_prefs/`, "android", deviceId);
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           if (isRunAsFailure(msg)) return errorResult(runAsUnavailableHint(pkg));
@@ -184,7 +182,7 @@ export const sandboxTools: ToolDefinition[] = [
 
       let xmlContent: string;
       try {
-        xmlContent = adb.shell(`run-as ${pkg} cat shared_prefs/${safeFile}.xml`);
+        xmlContent = ctx.deviceManager.shell(`run-as ${pkg} cat shared_prefs/${safeFile}.xml`, "android", deviceId);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (isRunAsFailure(msg)) return errorResult(runAsUnavailableHint(pkg));
@@ -291,7 +289,6 @@ export const sandboxTools: ToolDefinition[] = [
 
       const type = args.type ?? "string";
 
-      const adb = ctx.deviceManager.getAndroidClient(deviceId);
       const xmlPath = `shared_prefs/${safeFile}.xml`;
 
       // Build sed replacement pattern based on type.
@@ -314,7 +311,7 @@ export const sandboxTools: ToolDefinition[] = [
 
       let output: string;
       try {
-        output = adb.shell(sedCmd);
+        output = ctx.deviceManager.shell(sedCmd, "android", deviceId);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (isRunAsFailure(msg)) return errorResult(runAsUnavailableHint(pkg));
@@ -370,7 +367,6 @@ export const sandboxTools: ToolDefinition[] = [
       // then starting a new string: ' -> '\''
       const shellSafeQuery = query.replace(/'/g, "'\\''");
 
-      const adb = ctx.deviceManager.getAndroidClient(deviceId);
       const dbRelPath = `databases/${rawDb}`;
       const dbAbsPath = `/data/data/${pkg}/databases/${rawDb}`;
 
@@ -380,7 +376,7 @@ export const sandboxTools: ToolDefinition[] = [
 
       for (const dbPath of [dbRelPath, dbAbsPath]) {
         try {
-          output = adb.shell(`run-as ${pkg} sqlite3 ${dbPath} '${shellSafeQuery}'`);
+          output = ctx.deviceManager.shell(`run-as ${pkg} sqlite3 ${dbPath} '${shellSafeQuery}'`, "android", deviceId);
           if (!isRunAsFailure(output)) break;
           // Treat run-as failure from the relative path attempt and try absolute.
           lastError = output;
@@ -451,11 +447,9 @@ export const sandboxTools: ToolDefinition[] = [
       validatePath(rawPath, "path");
       const safePath = sanitizeForShell(rawPath) || ".";
 
-      const adb = ctx.deviceManager.getAndroidClient(deviceId);
-
       let output: string;
       try {
-        output = adb.shell(`run-as ${pkg} ls -la ${safePath}`);
+        output = ctx.deviceManager.shell(`run-as ${pkg} ls -la ${safePath}`, "android", deviceId);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (isRunAsFailure(msg)) return errorResult(runAsUnavailableHint(pkg));
@@ -514,11 +508,9 @@ export const sandboxTools: ToolDefinition[] = [
 
       const maxBytes = Math.min(Math.max(1, args.maxBytes ?? 10_000), 50_000);
 
-      const adb = ctx.deviceManager.getAndroidClient(deviceId);
-
       let content: string;
       try {
-        content = adb.shell(`run-as ${pkg} cat ${safePath}`);
+        content = ctx.deviceManager.shell(`run-as ${pkg} cat ${safePath}`, "android", deviceId);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (isRunAsFailure(msg)) return errorResult(runAsUnavailableHint(pkg));

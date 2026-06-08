@@ -130,8 +130,10 @@ export const sensorTools: ToolDefinition[] = [
       }
 
       try {
-        const geoResult = ctx.deviceManager.getAndroidClient(deviceId).shell(
+        const geoResult = ctx.deviceManager.shell(
           `emu geo fix ${lon} ${lat} ${alt}`,
+          "android",
+          deviceId,
         );
         const output = geoResult?.trim() ?? "";
         if (output === "" || output.toLowerCase() === "ok") {
@@ -147,9 +149,11 @@ export const sensorTools: ToolDefinition[] = [
         );
       } catch {
         try {
-          ctx.deviceManager.getAndroidClient(deviceId).shell(MOCK_LOCATION_GRANT);
-          const broadcastResult = ctx.deviceManager.getAndroidClient(deviceId).shell(
+          ctx.deviceManager.shell(MOCK_LOCATION_GRANT, "android", deviceId);
+          const broadcastResult = ctx.deviceManager.shell(
             `am broadcast -a android.intent.action.MOCK_LOCATION --ef latitude ${lat} --ef longitude ${lon} --ef altitude ${alt}`,
+            "android",
+            deviceId,
           );
           return textResult(
             `GPS mock location broadcast sent (physical device):\n  Latitude:  ${lat}\n  Longitude: ${lon}\n  Altitude:  ${alt}m\n  Note: App under test must use a mock location provider to receive this.\n  Result: ${(broadcastResult ?? "").trim()}`,
@@ -197,8 +201,8 @@ export const sensorTools: ToolDefinition[] = [
       const reset = args.reset ?? false;
 
       if (reset) {
-        ctx.deviceManager.getAndroidClient(deviceId).shell(BATTERY.RESET);
-        const state = ctx.deviceManager.getAndroidClient(deviceId).shell(BATTERY.DUMP);
+        ctx.deviceManager.shell(BATTERY.RESET, "android", deviceId);
+        const state = ctx.deviceManager.shell(BATTERY.DUMP, "android", deviceId);
         return textResult(
           `Battery state reset to real hardware values.\n\nCurrent state:\n${truncateOutput(state ?? "(no output)", { maxLines: 30 })}`,
         );
@@ -219,7 +223,7 @@ export const sensorTools: ToolDefinition[] = [
       if (hasLevel) {
         const level = validateNumber(args.level, "level");
         validateBatteryLevel(Math.round(level));
-        ctx.deviceManager.getAndroidClient(deviceId).shell(BATTERY.SET_LEVEL(Math.round(level)));
+        ctx.deviceManager.shell(BATTERY.SET_LEVEL(Math.round(level)), "android", deviceId);
         results.push(`  Level set to ${Math.round(level)}%`);
       }
 
@@ -229,7 +233,7 @@ export const sensorTools: ToolDefinition[] = [
         if (code === undefined) {
           throw new ValidationError(`Unknown battery status: "${status}". Valid: charging, discharging, not-charging, full`);
         }
-        ctx.deviceManager.getAndroidClient(deviceId).shell(BATTERY.SET_STATUS(code));
+        ctx.deviceManager.shell(BATTERY.SET_STATUS(code), "android", deviceId);
         results.push(`  Status set to ${status} (code ${code})`);
       }
 
@@ -237,12 +241,12 @@ export const sensorTools: ToolDefinition[] = [
         const plugged = args.plugged as string;
         const cmds = pluggedCommands(plugged);
         for (const cmd of cmds) {
-          ctx.deviceManager.getAndroidClient(deviceId).shell(cmd);
+          ctx.deviceManager.shell(cmd, "android", deviceId);
         }
         results.push(`  Plugged set to ${plugged}`);
       }
 
-      const state = ctx.deviceManager.getAndroidClient(deviceId).shell(BATTERY.DUMP);
+      const state = ctx.deviceManager.shell(BATTERY.DUMP, "android", deviceId);
 
       return textResult(
         `Battery state updated:\n${results.join("\n")}\n\nCurrent state:\n${truncateOutput(state ?? "(no output)", { maxLines: 30 })}\n\nNote: Changes persist until 'dumpsys battery reset' or device reboot.`,
@@ -276,7 +280,7 @@ export const sensorTools: ToolDefinition[] = [
         validatePackageName(packageFilter);
       }
 
-      const raw = ctx.deviceManager.getAndroidClient(deviceId).shell("dumpsys notification --noredact");
+      const raw = ctx.deviceManager.shell("dumpsys notification --noredact", "android", deviceId);
       if (!raw) {
         return textResult("No output from dumpsys notification.");
       }
@@ -335,7 +339,7 @@ export const sensorTools: ToolDefinition[] = [
 
       if (reset) {
         try {
-          ctx.deviceManager.getAndroidClient(deviceId).shell("cmd thermalservice reset");
+          ctx.deviceManager.shell("cmd thermalservice reset", "android", deviceId);
           return textResult("Thermal override reset to real hardware state.");
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -360,8 +364,10 @@ export const sensorTools: ToolDefinition[] = [
       }
 
       try {
-        const result = ctx.deviceManager.getAndroidClient(deviceId).shell(
+        const result = ctx.deviceManager.shell(
           `cmd thermalservice override-status ${code}`,
+          "android",
+          deviceId,
         );
         const output = (result ?? "").trim();
 

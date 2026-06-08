@@ -50,14 +50,14 @@ describe("sensor_location", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
-        shell: vi.fn(() => ""),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
 
     const result = await handler({ latitude: 55.7558, longitude: 37.6173 }, ctx);
 
-    expect(shell).toHaveBeenCalledWith("emu geo fix 37.6173 55.7558 0");
+    expect(shell).toHaveBeenCalledWith("emu geo fix 37.6173 55.7558 0", "android", undefined);
     expect((result as { text: string }).text).toContain("Android emulator");
     expect((result as { text: string }).text).toContain("55.7558");
     expect((result as { text: string }).text).toContain("37.6173");
@@ -68,14 +68,14 @@ describe("sensor_location", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
-        shell: vi.fn(() => ""),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
 
     await handler({ latitude: 40.7128, longitude: -74.006 }, ctx);
 
-    expect(shell).toHaveBeenCalledWith("emu geo fix -74.006 40.7128 0");
+    expect(shell).toHaveBeenCalledWith("emu geo fix -74.006 40.7128 0", "android", undefined);
   });
 
   it("passes custom altitude to emu geo fix", async () => {
@@ -83,14 +83,14 @@ describe("sensor_location", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
-        shell: vi.fn(() => ""),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
 
     await handler({ latitude: 0, longitude: 0, altitude: 150 }, ctx);
 
-    expect(shell).toHaveBeenCalledWith("emu geo fix 0 0 150");
+    expect(shell).toHaveBeenCalledWith("emu geo fix 0 0 150", "android", undefined);
   });
 
   it("sets location on iOS simulator using xcrun simctl", async () => {
@@ -159,14 +159,14 @@ describe("sensor_location", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
-        shell: vi.fn(() => ""),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
 
     const result = await handler({ latitude: 55.0, longitude: 37.0 }, ctx);
 
-    expect(shell).toHaveBeenCalledWith("appops set com.android.shell android:mock_location allow");
+    expect(shell).toHaveBeenCalledWith("appops set com.android.shell android:mock_location allow", "android", undefined);
     expect((result as { text: string }).text).toContain("physical device");
   });
 
@@ -179,8 +179,8 @@ describe("sensor_location", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
-        shell: vi.fn(() => ""),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
 
@@ -214,14 +214,14 @@ describe("sensor_battery", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
-        shell: vi.fn(() => ""),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
 
     const result = await handler({ level: 75 }, ctx);
 
-    expect(shell).toHaveBeenCalledWith("dumpsys battery set level 75");
+    expect(shell).toHaveBeenCalledWith("dumpsys battery set level 75", "android", undefined);
     expect((result as { text: string }).text).toContain("75%");
   });
 
@@ -230,14 +230,14 @@ describe("sensor_battery", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
-        shell: vi.fn(() => ""),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
 
     await handler({ status: "charging" }, ctx);
 
-    expect(shell).toHaveBeenCalledWith("dumpsys battery set status 2");
+    expect(shell).toHaveBeenCalledWith("dumpsys battery set status 2", "android", undefined);
   });
 
   it("sets battery status — discharging maps to code 3", async () => {
@@ -245,14 +245,14 @@ describe("sensor_battery", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
-        shell: vi.fn(() => ""),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
 
     await handler({ status: "discharging" }, ctx);
 
-    expect(shell).toHaveBeenCalledWith("dumpsys battery set status 3");
+    expect(shell).toHaveBeenCalledWith("dumpsys battery set status 3", "android", undefined);
   });
 
   it("sets plugged source to ac — enables ac, disables usb and wireless", async () => {
@@ -260,16 +260,16 @@ describe("sensor_battery", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
-        shell: vi.fn(() => ""),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
 
     await handler({ plugged: "ac" }, ctx);
 
-    expect(shell).toHaveBeenCalledWith("dumpsys battery set ac 1");
-    expect(shell).toHaveBeenCalledWith("dumpsys battery set usb 0");
-    expect(shell).toHaveBeenCalledWith("dumpsys battery set wireless 0");
+    expect(shell).toHaveBeenCalledWith("dumpsys battery set ac 1", "android", undefined);
+    expect(shell).toHaveBeenCalledWith("dumpsys battery set usb 0", "android", undefined);
+    expect(shell).toHaveBeenCalledWith("dumpsys battery set wireless 0", "android", undefined);
   });
 
   it("sets plugged source to none — disables all charger sources", async () => {
@@ -277,16 +277,16 @@ describe("sensor_battery", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
-        shell: vi.fn(() => ""),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
 
     await handler({ plugged: "none" }, ctx);
 
-    expect(shell).toHaveBeenCalledWith("dumpsys battery set ac 0");
-    expect(shell).toHaveBeenCalledWith("dumpsys battery set usb 0");
-    expect(shell).toHaveBeenCalledWith("dumpsys battery set wireless 0");
+    expect(shell).toHaveBeenCalledWith("dumpsys battery set ac 0", "android", undefined);
+    expect(shell).toHaveBeenCalledWith("dumpsys battery set usb 0", "android", undefined);
+    expect(shell).toHaveBeenCalledWith("dumpsys battery set wireless 0", "android", undefined);
   });
 
   it("resets battery state when reset=true", async () => {
@@ -294,14 +294,14 @@ describe("sensor_battery", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
-        shell: vi.fn(() => ""),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
 
     const result = await handler({ reset: true }, ctx);
 
-    expect(shell).toHaveBeenCalledWith("dumpsys battery reset");
+    expect(shell).toHaveBeenCalledWith("dumpsys battery reset", "android", undefined);
     expect((result as { text: string }).text).toContain("reset to real hardware values");
   });
 
@@ -321,14 +321,14 @@ describe("sensor_battery", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
-        shell: vi.fn(() => ""),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
 
     const result = await handler({ level: 50.5 }, ctx);
 
-    expect(shell).toHaveBeenCalledWith("dumpsys battery set level 51");
+    expect(shell).toHaveBeenCalledWith("dumpsys battery set level 51", "android", undefined);
     expect((result as { text: string }).text).toContain("51%");
   });
 
@@ -344,15 +344,15 @@ describe("sensor_battery", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
-        shell: vi.fn(() => ""),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
 
     const result = await handler({ level: 80 }, ctx);
 
     // The read-back call (last shell call) is dumpsys battery with no args
-    expect(shell).toHaveBeenCalledWith("dumpsys battery");
+    expect(shell).toHaveBeenCalledWith("dumpsys battery", "android", undefined);
     expect((result as { text: string }).text).toContain("Current state");
   });
 });
@@ -396,8 +396,8 @@ describe("sensor_notifications", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
-        shell: vi.fn(() => ""),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
 
@@ -415,8 +415,8 @@ describe("sensor_notifications", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
-        shell: vi.fn(() => ""),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
 
@@ -432,8 +432,8 @@ describe("sensor_notifications", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
-        shell: vi.fn(() => ""),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
 
@@ -446,8 +446,8 @@ describe("sensor_notifications", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
-        shell: vi.fn(() => ""),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
 
@@ -489,13 +489,13 @@ describe("sensor_thermal", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
-        shell: vi.fn(() => ""),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
 
     await handler({ status: "none" }, ctx);
-    expect(shell).toHaveBeenCalledWith("cmd thermalservice override-status 0");
+    expect(shell).toHaveBeenCalledWith("cmd thermalservice override-status 0", "android", undefined);
   });
 
   it("sets thermal status moderate — sends code 2", async () => {
@@ -503,14 +503,14 @@ describe("sensor_thermal", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
-        shell: vi.fn(() => ""),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
 
     const result = await handler({ status: "moderate" }, ctx);
 
-    expect(shell).toHaveBeenCalledWith("cmd thermalservice override-status 2");
+    expect(shell).toHaveBeenCalledWith("cmd thermalservice override-status 2", "android", undefined);
     expect((result as { text: string }).text).toContain("moderate");
     expect((result as { text: string }).text).toContain("code 2");
   });
@@ -520,13 +520,13 @@ describe("sensor_thermal", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
-        shell: vi.fn(() => ""),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
 
     await handler({ status: "critical" }, ctx);
-    expect(shell).toHaveBeenCalledWith("cmd thermalservice override-status 4");
+    expect(shell).toHaveBeenCalledWith("cmd thermalservice override-status 4", "android", undefined);
   });
 
   it("sets thermal status shutdown — sends code 6", async () => {
@@ -534,13 +534,13 @@ describe("sensor_thermal", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
-        shell: vi.fn(() => ""),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
 
     await handler({ status: "shutdown" }, ctx);
-    expect(shell).toHaveBeenCalledWith("cmd thermalservice override-status 6");
+    expect(shell).toHaveBeenCalledWith("cmd thermalservice override-status 6", "android", undefined);
   });
 
   it("resets thermal state when reset=true", async () => {
@@ -548,14 +548,14 @@ describe("sensor_thermal", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
-        shell: vi.fn(() => ""),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
 
     const result = await handler({ reset: true }, ctx);
 
-    expect(shell).toHaveBeenCalledWith("cmd thermalservice reset");
+    expect(shell).toHaveBeenCalledWith("cmd thermalservice reset", "android", undefined);
     expect((result as { text: string }).text).toContain("reset to real hardware state");
   });
 
@@ -571,8 +571,8 @@ describe("sensor_thermal", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
-        shell: vi.fn(() => ""),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
 
@@ -587,8 +587,8 @@ describe("sensor_thermal", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
-        shell: vi.fn(() => ""),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
 

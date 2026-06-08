@@ -118,13 +118,12 @@ export const networkTools: ToolDefinition[] = [
         return textResult(ANDROID_ONLY_MSG("network_traffic"));
       }
 
-      const adb = ctx.deviceManager.getAndroidClient(deviceId);
       const pkg = args.package;
 
       if (pkg) {
         validatePackageName(pkg);
 
-        const uidRaw = adb.shell(`cmd package list packages -U ${pkg}`);
+        const uidRaw = ctx.deviceManager.shell(`cmd package list packages -U ${pkg}`, "android", deviceId);
         const uid = parseUid(uidRaw);
         if (!uid) {
           return textResult(`Package "${pkg}" not found on device.`);
@@ -132,7 +131,7 @@ export const networkTools: ToolDefinition[] = [
 
         let statsRaw: string;
         try {
-          statsRaw = adb.shell("cat /proc/net/xt_qtaguid/stats");
+          statsRaw = ctx.deviceManager.shell("cat /proc/net/xt_qtaguid/stats", "android", deviceId);
         } catch {
           return textResult(
             `UID ${uid} resolved for "${pkg}", but /proc/net/xt_qtaguid/stats is unavailable on this device/kernel. ` +
@@ -157,7 +156,7 @@ export const networkTools: ToolDefinition[] = [
         );
       }
 
-      const raw = adb.shell("dumpsys netstats --detail");
+      const raw = ctx.deviceManager.shell("dumpsys netstats --detail", "android", deviceId);
       const ifaces = parseNetstatsGlobal(raw);
 
       if (ifaces.length === 0) {
@@ -194,10 +193,8 @@ export const networkTools: ToolDefinition[] = [
         return textResult(ANDROID_ONLY_MSG("network_connectivity"));
       }
 
-      const adb = ctx.deviceManager.getAndroidClient(deviceId);
-
-      const connRaw = adb.shell("dumpsys connectivity 2>/dev/null | head -n 80");
-      const wifiRaw = adb.shell("dumpsys wifi 2>/dev/null | head -n 40");
+      const connRaw = ctx.deviceManager.shell("dumpsys connectivity 2>/dev/null | head -n 80", "android", deviceId);
+      const wifiRaw = ctx.deviceManager.shell("dumpsys wifi 2>/dev/null | head -n 40", "android", deviceId);
 
       const lines: string[] = ["Network Connectivity:"];
 
@@ -225,8 +222,8 @@ export const networkTools: ToolDefinition[] = [
         const dns = dnsMatches.map(m => m[1].trim()).join(", ");
         lines.push(`  DNS:             ${dns}`);
       } else {
-        const dns1 = adb.shell("getprop net.dns1").trim();
-        const dns2 = adb.shell("getprop net.dns2").trim();
+        const dns1 = ctx.deviceManager.shell("getprop net.dns1", "android", deviceId).trim();
+        const dns2 = ctx.deviceManager.shell("getprop net.dns2", "android", deviceId).trim();
         const dnsList = [dns1, dns2].filter(Boolean).join(", ");
         lines.push(`  DNS:             ${dnsList || "n/a"}`);
       }
@@ -243,7 +240,7 @@ export const networkTools: ToolDefinition[] = [
         lines.push(`  WiFi RSSI:       ${rssiMatch[1]} dBm`);
       }
 
-      const mobileType = adb.shell("getprop gsm.network.type").trim();
+      const mobileType = ctx.deviceManager.shell("getprop gsm.network.type", "android", deviceId).trim();
       if (mobileType && mobileType !== "Unknown") {
         lines.push(`  Mobile type:     ${mobileType}`);
       }
@@ -279,13 +276,12 @@ export const networkTools: ToolDefinition[] = [
         return textResult(ANDROID_ONLY_MSG("network_proxy"));
       }
 
-      const adb = ctx.deviceManager.getAndroidClient(deviceId);
       const host = args.host;
       const port = args.port;
       const clear = args.clear;
 
       if (clear) {
-        adb.shell("settings put global http_proxy :0");
+        ctx.deviceManager.shell("settings put global http_proxy :0", "android", deviceId);
         return textResult("HTTP proxy cleared.");
       }
 
@@ -301,12 +297,12 @@ export const networkTools: ToolDefinition[] = [
             `Invalid proxy port: ${resolvedPort}. Must be an integer between 1 and 65535.`,
           );
         }
-        adb.shell(`settings put global http_proxy ${host}:${resolvedPort}`);
-        const current = adb.shell("settings get global http_proxy").trim();
+        ctx.deviceManager.shell(`settings put global http_proxy ${host}:${resolvedPort}`, "android", deviceId);
+        const current = ctx.deviceManager.shell("settings get global http_proxy", "android", deviceId).trim();
         return textResult(`HTTP proxy set to ${host}:${resolvedPort}\nVerified setting: ${current}`);
       }
 
-      const current = adb.shell("settings get global http_proxy").trim();
+      const current = ctx.deviceManager.shell("settings get global http_proxy", "android", deviceId).trim();
       if (!current || current === "null" || current === ":0") {
         return textResult("HTTP proxy: not configured");
       }
@@ -334,11 +330,10 @@ export const networkTools: ToolDefinition[] = [
         throw new ValidationError("enabled must be a boolean (true or false).");
       }
 
-      const adb = ctx.deviceManager.getAndroidClient(deviceId);
       const value = enabled ? "1" : "0";
 
-      adb.shell(`settings put global airplane_mode_on ${value}`);
-      adb.shell("am broadcast -a android.intent.action.AIRPLANE_MODE");
+      ctx.deviceManager.shell(`settings put global airplane_mode_on ${value}`, "android", deviceId);
+      ctx.deviceManager.shell("am broadcast -a android.intent.action.AIRPLANE_MODE", "android", deviceId);
 
       const state = enabled ? "ENABLED" : "DISABLED";
       return textResult(`Airplane mode ${state}.`);

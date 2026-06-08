@@ -18,9 +18,10 @@ function makeMockContext(shellFn: () => string = () => "", overrides?: Partial<T
     deviceManager: {
       getCurrentPlatform: vi.fn(() => "android"),
       getAndroidClient: vi.fn(() => ({
-        shell: vi.fn(shellFn),
+        shell: vi.fn(() => ""),
         exec: vi.fn(() => ""),
       })),
+      shell: vi.fn(shellFn),
     } as any,
     getCachedElements: vi.fn(() => []),
     setCachedElements: vi.fn(),
@@ -128,7 +129,8 @@ describe("sandbox_prefs_read", () => {
     const ctx = makeMockContext(() => "", {
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell: shellFn, exec: vi.fn() })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => ""), exec: vi.fn() })),
+        shell: shellFn,
       } as any,
     });
     const result = await handler({ package: "com.example.app" }, ctx);
@@ -185,7 +187,8 @@ describe("sandbox_prefs_write", () => {
     const ctx = makeMockContext(() => "", {
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell: shellFn, exec: vi.fn() })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => ""), exec: vi.fn() })),
+        shell: shellFn,
       } as any,
     });
     await handler({ package: "com.example.app", file: "prefs", key: "myKey", value: "newVal", type: "string" }, ctx);
@@ -201,7 +204,8 @@ describe("sandbox_prefs_write", () => {
     const ctx = makeMockContext(() => "", {
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell: shellFn, exec: vi.fn() })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => ""), exec: vi.fn() })),
+        shell: shellFn,
       } as any,
     });
     await handler({ package: "com.example.app", file: "prefs", key: "count", value: "99", type: "int" }, ctx);
@@ -216,7 +220,8 @@ describe("sandbox_prefs_write", () => {
     const ctx = makeMockContext(() => "", {
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell: shellFn, exec: vi.fn() })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => ""), exec: vi.fn() })),
+        shell: shellFn,
       } as any,
     });
     await handler({ package: "com.example.app", file: "prefs", key: "flag", value: "false", type: "bool" }, ctx);
@@ -232,7 +237,8 @@ describe("sandbox_prefs_write", () => {
     const ctx = makeMockContext(() => "", {
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell: shellFn, exec: vi.fn() })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => ""), exec: vi.fn() })),
+        shell: shellFn,
       } as any,
     });
     const result = await handler({ package: "com.example.app", file: "prefs", key: "k", value: "v" }, ctx);
@@ -424,7 +430,8 @@ describe("sandbox_file_list", () => {
     const ctx = makeMockContext(() => "", {
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell: shellFn, exec: vi.fn() })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => ""), exec: vi.fn() })),
+        shell: shellFn,
       } as any,
     });
     await handler({ package: "com.example.app" }, ctx);
@@ -447,7 +454,8 @@ describe("sandbox_file_list", () => {
     const ctx = makeMockContext(() => "", {
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell: shellFn, exec: vi.fn() })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => ""), exec: vi.fn() })),
+        shell: shellFn,
       } as any,
     });
     const result = await handler({ package: "com.example.app" }, ctx);
@@ -460,7 +468,8 @@ describe("sandbox_file_list", () => {
     const ctx = makeMockContext(() => "", {
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell: shellFn, exec: vi.fn() })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => ""), exec: vi.fn() })),
+        shell: shellFn,
       } as any,
     });
     const result = await handler({ package: "com.example.app", path: "databases" }, ctx);
@@ -551,7 +560,8 @@ describe("sandbox_file_read", () => {
     const ctx = makeMockContext(() => "", {
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell: shellFn, exec: vi.fn() })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => ""), exec: vi.fn() })),
+        shell: shellFn,
       } as any,
     });
     const result = await handler({ package: "com.example.app", path: "files/config.json" }, ctx);
@@ -566,7 +576,8 @@ describe("sandbox_file_read", () => {
     const ctx = makeMockContext(() => "", {
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell: shellFn, exec: vi.fn() })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => ""), exec: vi.fn() })),
+        shell: shellFn,
       } as any,
     });
     const result = await handler({ package: "com.example.app", path: "files/missing.txt" }, ctx);

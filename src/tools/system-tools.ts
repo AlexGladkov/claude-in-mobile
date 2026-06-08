@@ -98,7 +98,7 @@ export const systemTools: ToolDefinition[] = [
       const sanitizedUrl = sanitizeForShell(args.url);
 
       if (platform === "android") {
-        ctx.deviceManager.getAndroidClient(deviceId).shell(AM.START_VIEW(sanitizedUrl));
+        ctx.deviceManager.shell(AM.START_VIEW(sanitizedUrl), "android", deviceId);
       } else if (platform === "ios") {
         ctx.deviceManager.getIosClient(deviceId).openUrl(args.url);
       } else {

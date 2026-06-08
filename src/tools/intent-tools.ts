@@ -207,7 +207,7 @@ export const intentTools: ToolDefinition[] = [
       if (pkg) parts.push(`-p ${pkg}`);
 
       const command = parts.join(" ");
-      const result = ctx.deviceManager.getAndroidClient(deviceId).shell(command);
+      const result = ctx.deviceManager.shell(command, "android", deviceId);
       return textResult(truncateOutput(result || "Activity launched."));
     },
   }),
@@ -257,7 +257,7 @@ export const intentTools: ToolDefinition[] = [
       if (extras.length > 0) parts.push(buildExtrasArgs(extras));
 
       const command = parts.join(" ");
-      const result = ctx.deviceManager.getAndroidClient(deviceId).shell(command);
+      const result = ctx.deviceManager.shell(command, "android", deviceId);
       return textResult(truncateOutput(result || "Broadcast sent."));
     },
   }),
@@ -302,7 +302,7 @@ export const intentTools: ToolDefinition[] = [
         if (pkg) parts.push(`-p ${pkg}`);
 
         const command = parts.join(" ");
-        const result = ctx.deviceManager.getAndroidClient(deviceId).shell(command);
+        const result = ctx.deviceManager.shell(command, "android", deviceId);
         return textResult(truncateOutput(result || `Deep link opened: ${uri}`));
       }
 
@@ -346,7 +346,7 @@ export const intentTools: ToolDefinition[] = [
         ? `dumpsys activity services ${pkg}`
         : "dumpsys activity services";
 
-      const raw = ctx.deviceManager.getAndroidClient(deviceId).shell(command);
+      const raw = ctx.deviceManager.shell(command, "android", deviceId);
 
       const lines = (raw ?? "").split("\n");
       const serviceLines: string[] = [];

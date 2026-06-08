@@ -59,7 +59,8 @@ describe("network_traffic", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
     const result = await handler({}, ctx);
@@ -70,7 +71,7 @@ describe("network_traffic", () => {
     expect(text).toContain("512.0 KB");
     expect(text).toContain("2.0 MB");
     expect(text).toContain("500");
-    expect(shell).toHaveBeenCalledWith("dumpsys netstats --detail");
+    expect(shell).toHaveBeenCalledWith("dumpsys netstats --detail", "android", undefined);
   });
 
   it("global mode: aggregates same-interface entries and shows TOTAL line", async () => {
@@ -81,7 +82,8 @@ describe("network_traffic", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
     const result = await handler({}, ctx);
@@ -101,7 +103,8 @@ describe("network_traffic", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
     const result = await handler({}, ctx);
@@ -126,7 +129,8 @@ describe("network_traffic", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
     const result = await handler({ package: "com.test.app" }, ctx);
@@ -156,7 +160,8 @@ describe("network_traffic", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
     const result = await handler({ package: "com.test.app" }, ctx);
@@ -173,7 +178,8 @@ describe("network_traffic", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
     const result = await handler({ package: "com.ghost.app" }, ctx);
@@ -197,7 +203,8 @@ describe("network_traffic", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
     const result = await handler({ package: "com.test.app" }, ctx);
@@ -220,7 +227,8 @@ describe("network_traffic", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
     const result = await handler({ package: "com.idle.app" }, ctx);
@@ -270,7 +278,8 @@ describe("network_connectivity", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
     const result = await handler({}, ctx);
@@ -292,7 +301,8 @@ describe("network_connectivity", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
     const result = await handler({}, ctx);
@@ -313,7 +323,8 @@ describe("network_connectivity", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
     const result = await handler({}, ctx);
@@ -333,7 +344,8 @@ describe("network_connectivity", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
     const result = await handler({}, ctx);
@@ -366,13 +378,14 @@ describe("network_proxy", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
     const result = await handler({}, ctx);
     const text = (result as { text: string }).text;
     expect(text).toContain("192.168.1.200:8888");
-    expect(shell).toHaveBeenCalledWith("settings get global http_proxy");
+    expect(shell).toHaveBeenCalledWith("settings get global http_proxy", "android", undefined);
   });
 
   it("GET mode: returns not-configured when proxy is null", async () => {
@@ -380,7 +393,8 @@ describe("network_proxy", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
     const result = await handler({}, ctx);
@@ -392,7 +406,8 @@ describe("network_proxy", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
     const result = await handler({}, ctx);
@@ -404,13 +419,14 @@ describe("network_proxy", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
     const result = await handler({ host: "proxy.corp.com", port: 3128 }, ctx);
     const text = (result as { text: string }).text;
     expect(text).toContain("proxy.corp.com:3128");
-    expect(shell).toHaveBeenCalledWith("settings put global http_proxy proxy.corp.com:3128");
+    expect(shell).toHaveBeenCalledWith("settings put global http_proxy proxy.corp.com:3128", "android", undefined);
   });
 
   it("SET mode: defaults port to 8080 when port is not specified", async () => {
@@ -418,13 +434,14 @@ describe("network_proxy", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
     const result = await handler({ host: "192.168.1.100" }, ctx);
     const text = (result as { text: string }).text;
     expect(text).toContain("8080");
-    expect(shell).toHaveBeenCalledWith("settings put global http_proxy 192.168.1.100:8080");
+    expect(shell).toHaveBeenCalledWith("settings put global http_proxy 192.168.1.100:8080", "android", undefined);
   });
 
   it("SET mode: throws ValidationError for invalid hostname with semicolon", async () => {
@@ -457,13 +474,14 @@ describe("network_proxy", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
     const result = await handler({ clear: true }, ctx);
     const text = (result as { text: string }).text;
     expect(text).toContain("cleared");
-    expect(shell).toHaveBeenCalledWith("settings put global http_proxy :0");
+    expect(shell).toHaveBeenCalledWith("settings put global http_proxy :0", "android", undefined);
   });
 });
 
@@ -490,14 +508,15 @@ describe("network_airplane", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
     const result = await handler({ enabled: true }, ctx);
     const text = (result as { text: string }).text;
     expect(text).toContain("ENABLED");
-    expect(shell).toHaveBeenCalledWith("settings put global airplane_mode_on 1");
-    expect(shell).toHaveBeenCalledWith("am broadcast -a android.intent.action.AIRPLANE_MODE");
+    expect(shell).toHaveBeenCalledWith("settings put global airplane_mode_on 1", "android", undefined);
+    expect(shell).toHaveBeenCalledWith("am broadcast -a android.intent.action.AIRPLANE_MODE", "android", undefined);
   });
 
   it("disables airplane mode: calls shell with value=0 and broadcasts intent", async () => {
@@ -505,14 +524,15 @@ describe("network_airplane", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
+        shell,
       } as any,
     });
     const result = await handler({ enabled: false }, ctx);
     const text = (result as { text: string }).text;
     expect(text).toContain("DISABLED");
-    expect(shell).toHaveBeenCalledWith("settings put global airplane_mode_on 0");
-    expect(shell).toHaveBeenCalledWith("am broadcast -a android.intent.action.AIRPLANE_MODE");
+    expect(shell).toHaveBeenCalledWith("settings put global airplane_mode_on 0", "android", undefined);
+    expect(shell).toHaveBeenCalledWith("am broadcast -a android.intent.action.AIRPLANE_MODE", "android", undefined);
   });
 
   it("throws ValidationError when enabled is not a boolean", async () => {
