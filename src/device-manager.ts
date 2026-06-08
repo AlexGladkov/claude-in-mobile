@@ -32,7 +32,43 @@ import type { CompressOptions } from "./utils/image.js";
 import type { RawLaunchOptions } from "./desktop/types.js";
 import { WebViewInspector } from "./adb/webview.js";
 
-export type Platform = "android" | "ios" | "desktop" | "aurora" | "browser";
+/**
+ * First-party platform identifiers. Listed explicitly so consumers (IDE
+ * autocomplete, exhaustive switches that opt in via `assertNever`) still
+ * see the canonical names.
+ */
+export type BuiltinPlatform = "android" | "ios" | "desktop" | "aurora" | "browser";
+
+/**
+ * Open platform identifier. Accepts any string at the type level, but
+ * preserves IDE autocomplete for the built-in names via the
+ * `string & {}` "branded string" trick. Third-party plugins can declare
+ * `platform: "tizen"` without a core edit.
+ *
+ * Migrating code:
+ *   - `switch (p)` over the closed union no longer triggers an exhaustive
+ *     check. If you rely on exhaustiveness, narrow to `BuiltinPlatform`
+ *     first via `isBuiltinPlatform(p)` and call `assertNever(p)` in the
+ *     `default` branch.
+ *   - `Platform` continues to be the right type for arguments — both
+ *     `"android"` and an arbitrary string are accepted.
+ */
+export type Platform = BuiltinPlatform | (string & {});
+
+export const BUILTIN_PLATFORMS: ReadonlyArray<BuiltinPlatform> = [
+  "android",
+  "ios",
+  "desktop",
+  "aurora",
+  "browser",
+];
+
+export const isBuiltinPlatform = (p: string): p is BuiltinPlatform =>
+  (BUILTIN_PLATFORMS as readonly string[]).includes(p);
+
+export const assertNever = (p: never): never => {
+  throw new Error(`Unhandled platform: ${String(p)}`);
+};
 
 export interface Device {
   id: string;
