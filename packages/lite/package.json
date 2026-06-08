@@ -31,7 +31,7 @@
     "dist"
   ],
   "dependencies": {
-    "claude-in-mobile": "*",
+    "claude-in-mobile": "^3.12.0",
     "@modelcontextprotocol/sdk": "^1.0.0"
   },
   "devDependencies": {
