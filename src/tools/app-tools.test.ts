@@ -72,7 +72,7 @@ describe("app_launch", () => {
   it("accepts valid package name", async () => {
     const ctx = makeMockContext();
     const result = await handler({ package: "com.android.settings" }, ctx);
-    expect(result).toEqual({ text: "launched" });
+    expect((result as { text: string }).text).toBe("launched");
   });
 });
 
@@ -101,7 +101,7 @@ describe("app_stop", () => {
   it("accepts valid package name", async () => {
     const ctx = makeMockContext();
     const result = await handler({ package: "com.android.settings" }, ctx);
-    expect(result).toEqual({ text: "Stopped: com.android.settings" });
+    expect((result as { text: string }).text).toBe("Stopped: com.android.settings");
   });
 });
 
@@ -130,11 +130,11 @@ describe("app_restart", () => {
       } as any,
     });
     const result = await handler({ package: "com.android.settings", delayMs: 0 }, ctx);
-    expect(stopSpy).toHaveBeenCalledWith("com.android.settings", undefined, undefined);
-    expect(launchSpy).toHaveBeenCalledWith("com.android.settings", undefined, undefined);
+    expect(stopSpy).toHaveBeenCalledWith("com.android.settings", "android", undefined);
+    expect(launchSpy).toHaveBeenCalledWith("com.android.settings", "android", undefined);
     // stop must precede launch
     expect(stopSpy.mock.invocationCallOrder[0]).toBeLessThan(launchSpy.mock.invocationCallOrder[0]);
-    expect(result).toEqual({ text: "Restarted: com.android.settings (delay=0ms). launched" });
+    expect((result as { text: string }).text).toBe("Restarted: com.android.settings (delay=0ms). launched");
   });
 
   it("clamps delayMs to 10000ms max", async () => {
@@ -172,6 +172,6 @@ describe("app_install", () => {
   it("accepts valid APK path", async () => {
     const ctx = makeMockContext();
     const result = await handler({ path: "/sdcard/downloads/app.apk" }, ctx);
-    expect(result).toEqual({ text: "installed" });
+    expect((result as { text: string }).text).toBe("installed");
   });
 });

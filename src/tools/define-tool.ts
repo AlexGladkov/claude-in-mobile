@@ -4,7 +4,7 @@ import type { ToolContext } from "./context.js";
 import type { ToolDefinition } from "./registry.js";
 import { runToolSafely } from "../utils/run-tool-safely.js";
 import type { ToolResult } from "../utils/tool-result.js";
-import { errorResult } from "../utils/tool-result.js";
+import { ValidationError } from "../errors.js";
 
 export interface DefineToolOptions<S extends z.ZodTypeAny> {
   name: string;
@@ -24,9 +24,13 @@ export interface DefineToolOptions<S extends z.ZodTypeAny> {
  *
  * Responsibilities:
  *   - Generate JSON Schema (`tool.inputSchema`) from zod — single source.
- *   - Validate `args` at runtime; invalid input becomes structured error
- *     result with code `INVALID_ARGS`, not a thrown ZodError.
- *   - Wrap handler with `runToolSafely` so thrown errors are normalised.
+ *   - Validate `args` at runtime; invalid input THROWS `ValidationError`
+ *     (a `MobileError` subclass) so existing tests that assert
+ *     `.rejects.toThrow(ValidationError)` keep working and so the typed
+ *     error vocabulary is consistent across hand-coded and zod-validated
+ *     tools.
+ *   - Wrap handler with `runToolSafely` so unknown thrown errors are
+ *     normalised; `MobileError` (including `ValidationError`) propagates.
  */
 export function defineTool<S extends z.ZodTypeAny>(
   opts: DefineToolOptions<S>,
@@ -57,7 +61,7 @@ export function defineTool<S extends z.ZodTypeAny>(
         const issues = parsed.error.issues
           .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
           .join("; ");
-        return errorResult(`[INVALID_ARGS] ${issues}`);
+        throw new ValidationError(issues);
       }
       return safeHandler(parsed.data, ctx);
     },

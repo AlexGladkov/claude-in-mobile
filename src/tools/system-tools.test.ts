@@ -53,8 +53,7 @@ describe("system_wait_log", () => {
 
   it("rejects empty pattern", async () => {
     const ctx = makeMockContext();
-    const result = await handler({ pattern: "" }, ctx);
-    expect((result as { text: string }).text).toContain("required");
+    await expect(handler({ pattern: "" }, ctx)).rejects.toThrow(/required|empty/);
   });
 
   it("rejects invalid regex", async () => {

@@ -1,8 +1,9 @@
 import type { ToolDefinition } from "./registry.js";
+import { defineTool, z } from "./define-tool.js";
 import type { Platform } from "../device-manager.js";
 import { getUiElements } from "./helpers/get-elements.js";
 import { ALL_RULES, getRuleById } from "../a11y/rules/index.js";
-import { calculateScore, calculateRelativeScore, calculateCategoryScores, generateActionItems } from "../a11y/score.js";
+import { calculateRelativeScore, calculateCategoryScores, generateActionItems } from "../a11y/score.js";
 import {
   formatAuditReport,
   formatAuditSummary,
@@ -10,11 +11,12 @@ import {
   formatRuleDetail,
   formatDetailedReport,
 } from "../a11y/formatter.js";
-import type { A11yIssue, A11yReport, A11ySeverity, A11yRuleResult, A11yDetailedReport, A11yCategory } from "../a11y/types.js";
+import type { A11yIssue, A11ySeverity, A11yRuleResult, A11yDetailedReport, A11yCategory } from "../a11y/types.js";
 import { getCategoryForRule } from "../a11y/categories.js";
 import type { UiElement } from "../adb/ui-parser.js";
 import { truncateOutput } from "../utils/truncate.js";
 import { ValidationError, A11yRuleNotFoundError } from "../errors.js";
+import { textResult, errorResult } from "../utils/tool-result.js";
 
 const VALID_STANDARDS = new Set(["A", "AA", "AAA"]);
 const VALID_SEVERITIES = new Set(["critical", "serious", "moderate", "minor"]);
@@ -54,7 +56,7 @@ function runAudit(
 
   const ruleResults: A11yRuleResult[] = [];
   const passedRules: string[] = [];
-  let allIssues: A11yIssue[] = [];
+  const allIssues: A11yIssue[] = [];
 
   for (const rule of ALL_RULES) {
     if (!rule.platforms.includes(platform as "android" | "ios" | "desktop")) {
@@ -83,12 +85,10 @@ function runAudit(
     }
   }
 
-  // Calculate scores BEFORE severity filter
   const score = calculateRelativeScore(ruleResults);
   const categories = calculateCategoryScores(ruleResults);
   const actionItems = generateActionItems(ruleResults);
 
-  // Apply severity filter for display only
   let displayIssues = allIssues;
   if (severityFilter) {
     displayIssues = allIssues.filter((i) => i.severity === severityFilter);
@@ -121,55 +121,50 @@ function runAudit(
 
 const MAX_AUDIT_ELEMENTS = 2000;
 
+const deviceIdField = z
+  .string()
+  .describe("Target device ID for multi-device. If omitted, uses active device.")
+  .optional();
+
+const a11yPlatformEnum = z
+  .enum(["android", "ios", "desktop"])
+  .optional()
+  .describe("Target platform");
+
 export const accessibilityTools: ToolDefinition[] = [
-  // 1. audit
-  {
-    tool: {
-      name: "accessibility_audit",
-      description:
-        "Run full accessibility audit on current screen. Returns score, issues grouped by severity, and passed rules.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          platform: {
-            type: "string",
-            enum: ["android", "ios", "desktop"],
-            description: "Target platform",
-          },
-          standard: {
-            type: "string",
-            enum: ["A", "AA", "AAA"],
-            description: "WCAG conformance level (default: AA)",
-          },
-          severity: {
-            type: "string",
-            enum: ["critical", "serious", "moderate", "minor"],
-            description: "Filter issues by severity",
-          },
-          compact: {
-            type: "boolean",
-            description:
-              "Compact output: one line per issue, no descriptions (default: false)",
-          },
-          detailed: {
-            type: "boolean",
-            description: "Include category breakdown and action items (default: false)",
-          },
-          category: {
-            type: "string",
-            enum: ["labels", "touch-targets", "focus", "states"],
-            description: "Filter to specific category",
-          },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-      },
-    },
+  defineTool({
+    name: "accessibility_audit",
+    description:
+      "Run full accessibility audit on current screen. Returns score, issues grouped by severity, and passed rules.",
+    schema: z.object({
+      platform: a11yPlatformEnum,
+      standard: z
+        .string()
+        .optional()
+        .describe("WCAG conformance level (A, AA, AAA — default: AA)"),
+      severity: z
+        .string()
+        .optional()
+        .describe("Filter issues by severity (critical, serious, moderate, minor)"),
+      compact: z
+        .boolean()
+        .optional()
+        .describe("Compact output: one line per issue, no descriptions (default: false)"),
+      detailed: z
+        .boolean()
+        .optional()
+        .describe("Include category breakdown and action items (default: false)"),
+      category: z
+        .enum(["labels", "touch-targets", "focus", "states"])
+        .optional()
+        .describe("Filter to specific category"),
+      deviceId: deviceIdField,
+    }),
     handler: async (args, ctx) => {
-      const platform =
+      const platform: Platform =
         (args.platform as Platform | undefined) ??
         ctx.deviceManager.getCurrentPlatform() ??
         "android";
-      const deviceId = args.deviceId as string | undefined;
       const standard = validateStandard(args.standard);
       const severityFilter = validateSeverityFilter(args.severity);
       const compact = args.compact === true;
@@ -192,7 +187,6 @@ export const accessibilityTools: ToolDefinition[] = [
         severityFilter,
       );
 
-      // Apply category filter if specified
       let filteredReport = report;
       if (categoryFilter) {
         const filteredIssues = report.issues.filter((issue) => {
@@ -207,54 +201,32 @@ export const accessibilityTools: ToolDefinition[] = [
         : formatAuditReport(filteredReport, { compact, passwordIndices });
 
       const hasFail = report.issueCount.critical > 0 || report.score < 100;
+      const finalText = truncateOutput(text + truncatedNote);
 
-      return {
-        text: truncateOutput(text + truncatedNote),
-        ...(hasFail ? { isError: true } : {}),
-      };
+      return hasFail ? errorResult(finalText) : textResult(finalText);
     },
-  },
+  }),
 
-  // 2. check
-  {
-    tool: {
-      name: "accessibility_check",
-      description:
-        "Check accessibility of a specific element found by text, resourceId, or index.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          platform: {
-            type: "string",
-            enum: ["android", "ios", "desktop"],
-            description: "Target platform",
-          },
-          text: {
-            type: "string",
-            description: "Find element by text content (partial match)",
-          },
-          resourceId: {
-            type: "string",
-            description: "Find element by resource ID (partial match)",
-          },
-          index: {
-            type: "number",
-            description: "Find element by index",
-          },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-      },
-    },
+  defineTool({
+    name: "accessibility_check",
+    description:
+      "Check accessibility of a specific element found by text, resourceId, or index.",
+    schema: z.object({
+      platform: a11yPlatformEnum,
+      text: z.string().optional().describe("Find element by text content (partial match)"),
+      resourceId: z.string().optional().describe("Find element by resource ID (partial match)"),
+      index: z.number().optional().describe("Find element by index"),
+      deviceId: deviceIdField,
+    }),
     handler: async (args, ctx) => {
-      const platform =
+      const platform: Platform =
         (args.platform as Platform | undefined) ??
         ctx.deviceManager.getCurrentPlatform() ??
         "android";
-      const deviceId = args.deviceId as string | undefined;
 
-      const text = args.text as string | undefined;
-      const resourceId = args.resourceId as string | undefined;
-      const elementIndex = args.index as number | undefined;
+      const text = args.text;
+      const resourceId = args.resourceId;
+      const elementIndex = args.index;
 
       if (text === undefined && resourceId === undefined && elementIndex === undefined) {
         throw new ValidationError(
@@ -264,7 +236,6 @@ export const accessibilityTools: ToolDefinition[] = [
 
       const { elements } = await getUiElements(ctx, platform);
 
-      // Find matching element
       let target: UiElement | undefined;
 
       if (elementIndex !== undefined) {
@@ -291,52 +262,30 @@ export const accessibilityTools: ToolDefinition[] = [
         );
       }
 
-      // Run all rules on just this element
-      const { report, passwordIndices } = runAudit(
-        [target],
-        platform,
-        "AA",
-      );
+      const { report, passwordIndices } = runAudit([target], platform, "AA");
 
       const output = formatAuditReport(report, { compact: false, passwordIndices });
       const hasFail = report.issueCount.total > 0;
+      const finalText = truncateOutput(output);
 
-      return {
-        text: truncateOutput(output),
-        ...(hasFail ? { isError: true } : {}),
-      };
+      return hasFail ? errorResult(finalText) : textResult(finalText);
     },
-  },
+  }),
 
-  // 3. summary
-  {
-    tool: {
-      name: "accessibility_summary",
-      description:
-        "Quick accessibility summary: score + issue counts only (short output).",
-      inputSchema: {
-        type: "object",
-        properties: {
-          platform: {
-            type: "string",
-            enum: ["android", "ios", "desktop"],
-            description: "Target platform",
-          },
-          standard: {
-            type: "string",
-            enum: ["A", "AA", "AAA"],
-            description: "WCAG conformance level (default: AA)",
-          },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-      },
-    },
+  defineTool({
+    name: "accessibility_summary",
+    description:
+      "Quick accessibility summary: score + issue counts only (short output).",
+    schema: z.object({
+      platform: a11yPlatformEnum,
+      standard: z.string().optional().describe("WCAG conformance level (A, AA, AAA — default: AA)"),
+      deviceId: deviceIdField,
+    }),
     handler: async (args, ctx) => {
-      const platform =
+      const platform: Platform =
         (args.platform as Platform | undefined) ??
         ctx.deviceManager.getCurrentPlatform() ??
         "android";
-      const deviceId = args.deviceId as string | undefined;
       const standard = validateStandard(args.standard);
 
       const { elements } = await getUiElements(ctx, platform);
@@ -345,41 +294,29 @@ export const accessibilityTools: ToolDefinition[] = [
       const text = formatAuditSummary(report);
       const hasFail = report.issueCount.critical > 0 || report.score < 100;
 
-      return {
-        text,
-        ...(hasFail ? { isError: true } : {}),
-      };
+      return hasFail ? errorResult(text) : textResult(text);
     },
-  },
+  }),
 
-  // 4. rules
-  {
-    tool: {
-      name: "accessibility_rules",
-      description:
-        "List all accessibility rules or show details of a specific rule.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          ruleId: {
-            type: "string",
-            description: "Specific rule ID to show details for",
-          },
-        },
-      },
-    },
+  defineTool({
+    name: "accessibility_rules",
+    description:
+      "List all accessibility rules or show details of a specific rule.",
+    schema: z.object({
+      ruleId: z.string().optional().describe("Specific rule ID to show details for"),
+    }),
     handler: async (args) => {
-      const ruleId = args.ruleId as string | undefined;
+      const ruleId = args.ruleId;
 
       if (ruleId) {
         const rule = getRuleById(ruleId);
         if (!rule) {
           throw new A11yRuleNotFoundError(ruleId);
         }
-        return { text: formatRuleDetail(rule) };
+        return textResult(formatRuleDetail(rule));
       }
 
-      return { text: formatRuleList(ALL_RULES) };
+      return textResult(formatRuleList(ALL_RULES));
     },
-  },
+  }),
 ];

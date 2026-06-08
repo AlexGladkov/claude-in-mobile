@@ -1,5 +1,5 @@
 import type { ToolDefinition } from "./registry.js";
-import type { Platform } from "../device-manager.js";
+import { defineTool, z } from "./define-tool.js";
 import {
   parseUiHierarchy,
   findElements,
@@ -13,40 +13,49 @@ import {
 } from "../adb/ui-parser.js";
 import { DeviceNotFoundError, DeviceOfflineError, AdbNotInstalledError } from "../errors.js";
 import { getUiElements } from "./helpers/get-elements.js";
-import { getString, getNumber, getBoolean, requireString } from "./helpers/args-parser.js";
+import { parseCommonArgs } from "../utils/parse-common-args.js";
+import { textResult, errorResult } from "../utils/tool-result.js";
+import { sleep } from "../utils/sleep.js";
+
+const platformEnum = z
+  .enum(["android", "ios", "desktop", "aurora", "browser"])
+  .describe("Target platform. If not specified, uses the active target.")
+  .optional();
+
+const deviceIdField = z
+  .string()
+  .describe("Target device ID for multi-device. If omitted, uses active device.")
+  .optional();
 
 export const uiTools: ToolDefinition[] = [
-  {
-    tool: {
-      name: "ui_tree",
-      description: "Get UI hierarchy (accessibility tree). Shows elements, text, IDs, coordinates.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          showAll: { type: "boolean", description: "Show all elements including non-interactive ones", default: false },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-      },
-    },
+  defineTool({
+    name: "ui_tree",
+    description: "Get UI hierarchy (accessibility tree). Shows elements, text, IDs, coordinates.",
+    schema: z.object({
+      showAll: z.boolean().default(false).describe("Show all elements including non-interactive ones"),
+      compact: z.boolean().optional().describe("Interactive elements only — shortest format."),
+      format: z.string().optional().describe("'semantic' for role-grouped output (~3x token reduction)."),
+      fresh: z.boolean().optional().describe("Bypass the 2-second dedup cache."),
+      platform: platformEnum,
+      deviceId: deviceIdField,
+    }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
-      const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
+      const { deviceId, platform: currentPlatform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      const platform = args.platform;
 
       if (currentPlatform === "ios") {
         try {
           const json = await ctx.deviceManager.getUiHierarchy("ios", deviceId);
           const tree = JSON.parse(json);
           const formatted = ctx.formatIOSUITree(tree);
-          return { text: formatted };
+          return textResult(formatted);
         } catch (error: unknown) {
           const msg = error instanceof Error ? error.message : String(error);
-          return {
-            text: `iOS UI inspection requires WebDriverAgent.\n\n` +
-                  `Install: npm install -g appium && appium driver install xcuitest\n\n` +
-                  `Error: ${msg}`
-          };
+          return textResult(
+            `iOS UI inspection requires WebDriverAgent.\n\n` +
+              `Install: npm install -g appium && appium driver install xcuitest\n\n` +
+              `Error: ${msg}`,
+          );
         }
       }
 
@@ -54,215 +63,204 @@ export const uiTools: ToolDefinition[] = [
 
       if (currentPlatform === "desktop") {
         const { truncateOutput } = await import("../utils/truncate.js");
-        return { text: truncateOutput(xml, { maxChars: 15_000 }) };
+        return textResult(truncateOutput(xml, { maxChars: 15_000 }));
       }
 
-      // Android: parse XML and format
       const parsedElements = parseUiHierarchy(xml);
       ctx.setCachedElements("android", parsedElements);
-      // Semantic format — grouped by role, ~3x token reduction
-      const format = getString(args, "format");
-      if (format === "semantic") {
-        return { text: formatUiTreeSemantic(parsedElements) };
+      if (args.format === "semantic") {
+        return textResult(formatUiTreeSemantic(parsedElements));
       }
 
-      const showAll = getBoolean(args, "showAll");
-      const compact = getBoolean(args, "compact");
+      const showAll = args.showAll;
+      const compact = args.compact ?? false;
       const tree = formatUiTree(parsedElements, { showAll, compact });
 
-      // Dedup cache: if identical output within 2s, return short notice
-      const fresh = getBoolean(args, "fresh");
+      const fresh = args.fresh ?? false;
       const cacheKey = `android:${showAll}:${compact}`;
       const cached = fresh ? undefined : ctx.lastUiTreeMap.get(cacheKey);
       const now = Date.now();
       if (cached && cached.text === tree && (now - cached.timestamp) < 2000) {
         const ago = now - cached.timestamp;
-        return { text: `UI unchanged (cached ${ago}ms ago). ${parsedElements.length} elements.` };
+        return textResult(`UI unchanged (cached ${ago}ms ago). ${parsedElements.length} elements.`);
       }
       ctx.lastUiTreeMap.set(cacheKey, { text: tree, timestamp: now });
 
-      return { text: tree };
+      return textResult(tree);
     },
-  },
-  {
-    tool: {
-      name: "ui_find",
-      description: "Find UI elements by text, resourceId, className, or label",
-      inputSchema: {
-        type: "object",
-        properties: {
-          text: { type: "string", description: "Find by text (partial match, case-insensitive)" },
-          label: { type: "string", description: "iOS: Find by accessibility label" },
-          resourceId: { type: "string", description: "Android: Find by resource ID (partial match)" },
-          className: { type: "string", description: "Find by class name (Android: full class, iOS: XCUIElementType*)" },
-          clickable: { type: "boolean", description: "Android: Filter by clickable state" },
-          visible: { type: "boolean", description: "iOS: Filter by visibility" },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-      },
-    },
+  }),
+
+  defineTool({
+    name: "ui_find",
+    description: "Find UI elements by text, resourceId, className, or label",
+    schema: z.object({
+      text: z.string().optional().describe("Find by text (partial match, case-insensitive)"),
+      label: z.string().optional().describe("iOS: Find by accessibility label"),
+      resourceId: z.string().optional().describe("Android: Find by resource ID (partial match)"),
+      className: z.string().optional().describe("Find by class name (Android: full class, iOS: XCUIElementType*)"),
+      clickable: z.boolean().optional().describe("Android: Filter by clickable state"),
+      visible: z.boolean().optional().describe("iOS: Filter by visibility"),
+      platform: platformEnum,
+      deviceId: deviceIdField,
+    }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
-      const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
+      const { deviceId, platform: currentPlatform } = parseCommonArgs(args as Record<string, unknown>, ctx);
 
       if (currentPlatform === "ios") {
         try {
           const iosClient = ctx.deviceManager.getIosClient(deviceId);
           const elements = await iosClient.findElements({
-            text: getString(args, "text"),
-            label: getString(args, "label"),
-            type: getString(args, "className"),
-            visible: typeof args.visible === "boolean" ? args.visible : undefined,
+            text: args.text,
+            label: args.label,
+            type: args.className,
+            visible: args.visible,
           });
 
           if (elements.length === 0) {
-            return { text: "No elements found" };
+            return textResult("No elements found");
           }
 
           const list = elements.slice(0, 20).map((el, i) =>
-            `[${i}] <${el.type}> "${el.label}" @ (${el.rect.x}, ${el.rect.y})`
-          ).join('\n');
+            `[${i}] <${el.type}> "${el.label}" @ (${el.rect.x}, ${el.rect.y})`,
+          ).join("\n");
 
-          return { text: `Found ${elements.length} element(s):\n${list}` };
+          return textResult(`Found ${elements.length} element(s):\n${list}`);
         } catch (error: unknown) {
           const msg = error instanceof Error ? error.message : String(error);
-          return {
-            text: `Find element failed: ${msg}\n\n` +
-                  `Make sure WebDriverAgent is installed (see get_ui error for details)`
-          };
+          return textResult(
+            `Find element failed: ${msg}\n\n` +
+              `Make sure WebDriverAgent is installed (see get_ui error for details)`,
+          );
         }
       }
 
       const { elements: parsedEls } = await getUiElements(ctx, "android");
 
       const found = findElements(parsedEls, {
-        text: getString(args, "text"),
-        resourceId: getString(args, "resourceId"),
-        className: getString(args, "className"),
-        clickable: typeof args.clickable === "boolean" ? args.clickable : undefined,
+        text: args.text,
+        resourceId: args.resourceId,
+        className: args.className,
+        clickable: args.clickable,
       });
 
       if (found.length === 0) {
-        return { text: "No elements found matching criteria" };
+        return textResult("No elements found matching criteria");
       }
 
       const list = found.slice(0, 20).map(formatElement).join("\n");
-      return { text: `Found ${found.length} element(s):\n${list}${found.length > 20 ? "\n..." : ""}` };
+      return textResult(`Found ${found.length} element(s):\n${list}${found.length > 20 ? "\n..." : ""}`);
     },
-  },
-  {
-    tool: {
-      name: "ui_find_tap",
-      description: "Fuzzy tap by natural language element description (Android only). When the matched element is a non-clickable label (common in grid/list items where the parent ViewGroup owns the gesture), walks up to the smallest containing clickable ancestor by default — set walkToClickable=false to tap the matched element directly.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          description: { type: "string", description: "Natural language description of the element to tap, e.g., 'submit button', 'settings', 'back'" },
-          minConfidence: { type: "number", description: "Minimum confidence score (0-100) to accept a match (default: 30)", default: 30 },
-          walkToClickable: { type: "boolean", description: "If matched element is non-clickable (e.g., a TextView label), walk up to the smallest containing clickable ancestor. Default true. Set false to tap the matched element directly even if non-clickable (rare).", default: true },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-        required: ["description"],
-      },
-    },
+  }),
+
+  defineTool({
+    name: "ui_find_tap",
+    description:
+      "Fuzzy tap by natural language element description (Android only). When the matched element is a non-clickable label (common in grid/list items where the parent ViewGroup owns the gesture), walks up to the smallest containing clickable ancestor by default — set walkToClickable=false to tap the matched element directly.",
+    schema: z.object({
+      description: z
+        .string()
+        .describe("Natural language description of the element to tap, e.g., 'submit button', 'settings', 'back'"),
+      minConfidence: z
+        .number()
+        .default(30)
+        .describe("Minimum confidence score (0-100) to accept a match (default: 30)"),
+      walkToClickable: z
+        .boolean()
+        .default(true)
+        .describe(
+          "If matched element is non-clickable (e.g., a TextView label), walk up to the smallest containing clickable ancestor. Default true. Set false to tap the matched element directly even if non-clickable (rare).",
+        ),
+      platform: platformEnum,
+      deviceId: deviceIdField,
+    }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
-      const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
+      const { deviceId, platform: currentPlatform } = parseCommonArgs(args as Record<string, unknown>, ctx);
 
       if (currentPlatform !== "android") {
-        return { text: "ui(action:'find_tap') is only available for Android. Use tap with coordinates for iOS/Desktop." };
+        return textResult("ui(action:'find_tap') is only available for Android. Use tap with coordinates for iOS/Desktop.");
       }
 
-      const description = requireString(args, "description");
-      const minConfidence = getNumber(args, "minConfidence") ?? 30;
-      const walkToClickable = typeof args.walkToClickable === "boolean" ? args.walkToClickable : true;
+      const description = args.description;
+      const minConfidence = args.minConfidence;
+      const walkToClickable = args.walkToClickable;
 
       const { elements: tapElements } = await getUiElements(ctx, "android");
 
       const match = findBestMatch(tapElements, description, { walkToClickable });
 
       if (!match) {
-        return { text: `No element found matching "${description}". Try using ui(action:'tree') or ui(action:'analyze') to see available elements.` };
+        return textResult(
+          `No element found matching "${description}". Try using ui(action:'tree') or ui(action:'analyze') to see available elements.`,
+        );
       }
 
       if (match.confidence < minConfidence) {
-        return {
-          text: `Best match has low confidence (${match.confidence}%): ${match.reason}\n` +
-                `Element: ${formatElement(match.element)}\n` +
-                `Set minConfidence lower or use tap with coordinates.`
-        };
+        return textResult(
+          `Best match has low confidence (${match.confidence}%): ${match.reason}\n` +
+            `Element: ${formatElement(match.element)}\n` +
+            `Set minConfidence lower or use tap with coordinates.`,
+        );
       }
 
       await ctx.deviceManager.tap(match.element.centerX, match.element.centerY, "android", undefined, deviceId);
 
-      return {
-        text: `Tapped "${description}" (${match.confidence}% confidence)\n` +
-              `Match: ${match.reason}\n` +
-              `Coordinates: (${match.element.centerX}, ${match.element.centerY})`
-      };
+      return textResult(
+        `Tapped "${description}" (${match.confidence}% confidence)\n` +
+          `Match: ${match.reason}\n` +
+          `Coordinates: (${match.element.centerX}, ${match.element.centerY})`,
+      );
     },
-  },
-  {
-    tool: {
-      name: "ui_tap_text",
-      description: "Tap element by text via Accessibility API (Desktop/macOS only)",
-      inputSchema: {
-        type: "object",
-        properties: {
-          text: { type: "string", description: "Text to search for (partial match, case-insensitive)" },
-          pid: { type: "number", description: "Process ID of the target application. Get from get_window_info. Optional if a native app was launched/attached." },
-          exactMatch: { type: "boolean", description: "If true, requires exact text match (default: false)", default: false },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-        required: ["text"],
-      },
-    },
+  }),
+
+  defineTool({
+    name: "ui_tap_text",
+    description: "Tap element by text via Accessibility API (Desktop/macOS only)",
+    schema: z.object({
+      text: z.string().describe("Text to search for (partial match, case-insensitive)"),
+      pid: z
+        .number()
+        .optional()
+        .describe(
+          "Process ID of the target application. Get from get_window_info. Optional if a native app was launched/attached.",
+        ),
+      exactMatch: z.boolean().default(false).describe("If true, requires exact text match (default: false)"),
+      platform: platformEnum,
+      deviceId: deviceIdField,
+    }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
-      const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
+      const { platform: currentPlatform } = parseCommonArgs(args as Record<string, unknown>, ctx);
 
       if (currentPlatform !== "desktop") {
-        return { text: "ui(action:'tap_text') is only available for Desktop (macOS). Use ui(action:'find_tap') for Android or input(action:'tap') with coordinates for iOS." };
+        return textResult(
+          "ui(action:'tap_text') is only available for Desktop (macOS). Use ui(action:'find_tap') for Android or input(action:'tap') with coordinates for iOS.",
+        );
       }
 
-      const text = requireString(args, "text");
-      const pid = getNumber(args, "pid");
-      const exactMatch = getBoolean(args, "exactMatch");
+      const text = args.text;
+      const pid = args.pid;
+      const exactMatch = args.exactMatch;
 
       const result = await ctx.deviceManager.getDesktopClient().tapByText(text, pid, exactMatch);
 
       if (result.success) {
-        return {
-          text: `OK: Tapped "${text}" (element: ${result.elementRole ?? "unknown"})\n` +
-                `Cursor was NOT moved - background automation successful.`
-        };
-      } else {
-        return {
-          text: `FAIL: Failed to tap "${text}": ${result.error}`
-        };
+        return textResult(
+          `OK: Tapped "${text}" (element: ${result.elementRole ?? "unknown"})\n` +
+            `Cursor was NOT moved - background automation successful.`,
+        );
       }
+      return textResult(`FAIL: Failed to tap "${text}": ${result.error}`);
     },
-  },
-  {
-    tool: {
-      name: "ui_analyze",
-      description: "Structured screen analysis: buttons, inputs, text, scrollable areas, dialogs",
-      inputSchema: {
-        type: "object",
-        properties: {
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-      },
-    },
+  }),
+
+  defineTool({
+    name: "ui_analyze",
+    description: "Structured screen analysis: buttons, inputs, text, scrollable areas, dialogs",
+    schema: z.object({
+      platform: platformEnum,
+      deviceId: deviceIdField,
+    }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
-      const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
+      const { deviceId, platform: currentPlatform } = parseCommonArgs(args as Record<string, unknown>, ctx);
       let screenElements: UiElement[] = [];
       let activity: string | undefined;
 
@@ -272,14 +270,14 @@ export const uiTools: ToolDefinition[] = [
       } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : String(error);
         if (currentPlatform === "ios") {
-          return {
-            text: `iOS UI inspection requires WebDriverAgent.\n\n` +
-                  `Install: npm install -g appium && appium driver install xcuitest\n\n` +
-                  `Error: ${msg}`
-          };
+          return textResult(
+            `iOS UI inspection requires WebDriverAgent.\n\n` +
+              `Install: npm install -g appium && appium driver install xcuitest\n\n` +
+              `Error: ${msg}`,
+          );
         }
         if (currentPlatform === "desktop") {
-          return { text: `Desktop UI hierarchy not available: ${msg}` };
+          return textResult(`Desktop UI hierarchy not available: ${msg}`);
         }
         throw error;
       }
@@ -295,43 +293,37 @@ export const uiTools: ToolDefinition[] = [
 
       if (!currentPlatform || !["android", "ios", "desktop"].includes(currentPlatform)) {
         if (currentPlatform) {
-          return { text: `ui(action:'analyze') is not supported for platform: ${currentPlatform}` };
+          return textResult(`ui(action:'analyze') is not supported for platform: ${currentPlatform}`);
         }
       }
 
       const analysis = analyzeScreen(screenElements, activity);
-      return { text: formatScreenAnalysis(analysis) };
+      return textResult(formatScreenAnalysis(analysis));
     },
-  },
-  {
-    tool: {
-      name: "ui_wait",
-      description: "Wait for UI element to appear (polling with timeout)",
-      inputSchema: {
-        type: "object",
-        properties: {
-          text: { type: "string", description: "Element text to wait for (partial match, case-insensitive)" },
-          resourceId: { type: "string", description: "Android: resource ID to wait for (partial match)" },
-          className: { type: "string", description: "Class name to wait for" },
-          timeout: { type: "number", description: "Max wait time in ms (default: 5000)", default: 5000 },
-          interval: { type: "number", description: "Poll interval in ms (default: 500)", default: 500 },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-      },
-    },
+  }),
+
+  defineTool({
+    name: "ui_wait",
+    description: "Wait for UI element to appear (polling with timeout)",
+    schema: z.object({
+      text: z.string().optional().describe("Element text to wait for (partial match, case-insensitive)"),
+      resourceId: z.string().optional().describe("Android: resource ID to wait for (partial match)"),
+      className: z.string().optional().describe("Class name to wait for"),
+      timeout: z.number().default(5000).describe("Max wait time in ms (default: 5000)"),
+      interval: z.number().default(500).describe("Poll interval in ms (default: 500)"),
+      platform: platformEnum,
+      deviceId: deviceIdField,
+    }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
-      const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
-      const timeout = getNumber(args, "timeout") ?? 5000;
-      const interval = getNumber(args, "interval") ?? 500;
-      const searchText = getString(args, "text");
-      const searchId = getString(args, "resourceId");
-      const searchClass = getString(args, "className");
+      const { platform: currentPlatform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      const timeout = args.timeout;
+      const interval = args.interval;
+      const searchText = args.text;
+      const searchId = args.resourceId;
+      const searchClass = args.className;
 
       if (!searchText && !searchId && !searchClass) {
-        return { text: "Provide at least one search criteria: text, resourceId, or className" };
+        return textResult("Provide at least one search criteria: text, resourceId, or className");
       }
 
       const startTime = Date.now();
@@ -348,10 +340,10 @@ export const uiTools: ToolDefinition[] = [
 
           if (found.length > 0) {
             const elapsed = Date.now() - startTime;
-            return {
-              text: `Element found after ${elapsed}ms:\n${formatElement(found[0])}\n` +
-                    (found.length > 1 ? `(${found.length} total matches)` : "")
-            };
+            return textResult(
+              `Element found after ${elapsed}ms:\n${formatElement(found[0])}\n` +
+                (found.length > 1 ? `(${found.length} total matches)` : ""),
+            );
           }
         } catch (pollErr: unknown) {
           if (pollErr instanceof DeviceNotFoundError || pollErr instanceof DeviceOfflineError || pollErr instanceof AdbNotInstalledError) {
@@ -359,35 +351,31 @@ export const uiTools: ToolDefinition[] = [
           }
         }
 
-        await new Promise(resolve => setTimeout(resolve, interval));
+        await sleep(interval);
       }
 
-      return { text: `Timeout after ${timeout}ms: element not found (text=${searchText ?? ""}, resourceId=${searchId ?? ""}, className=${searchClass ?? ""})` };
+      return textResult(
+        `Timeout after ${timeout}ms: element not found (text=${searchText ?? ""}, resourceId=${searchId ?? ""}, className=${searchClass ?? ""})`,
+      );
     },
-  },
-  {
-    tool: {
-      name: "ui_assert_visible",
-      description: "Assert element is visible on screen (pass/fail)",
-      inputSchema: {
-        type: "object",
-        properties: {
-          text: { type: "string", description: "Element text to check for (partial match)" },
-          resourceId: { type: "string", description: "Android: resource ID to check for" },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-      },
-    },
+  }),
+
+  defineTool({
+    name: "ui_assert_visible",
+    description: "Assert element is visible on screen (pass/fail)",
+    schema: z.object({
+      text: z.string().optional().describe("Element text to check for (partial match)"),
+      resourceId: z.string().optional().describe("Android: resource ID to check for"),
+      platform: platformEnum,
+      deviceId: deviceIdField,
+    }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
-      const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
-      const searchText = getString(args, "text");
-      const searchId = getString(args, "resourceId");
+      const { platform: currentPlatform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      const searchText = args.text;
+      const searchId = args.resourceId;
 
       if (!searchText && !searchId) {
-        return { text: "Provide text or resourceId to assert" };
+        return textResult("Provide text or resourceId to assert");
       }
 
       const { elements } = await getUiElements(ctx, currentPlatform);
@@ -398,34 +386,28 @@ export const uiTools: ToolDefinition[] = [
       });
 
       if (found.length > 0) {
-        return { text: `PASS: Element visible -- ${formatElement(found[0])}` };
+        return textResult(`PASS: Element visible -- ${formatElement(found[0])}`);
       }
-      return { text: `FAIL: Element not visible (text=${searchText ?? ""}, resourceId=${searchId ?? ""})`, isError: true };
+      return errorResult(`FAIL: Element not visible (text=${searchText ?? ""}, resourceId=${searchId ?? ""})`);
     },
-  },
-  {
-    tool: {
-      name: "ui_assert_gone",
-      description: "Assert element does NOT exist on screen (pass/fail)",
-      inputSchema: {
-        type: "object",
-        properties: {
-          text: { type: "string", description: "Element text that should NOT be present" },
-          resourceId: { type: "string", description: "Android: resource ID that should NOT be present" },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-      },
-    },
+  }),
+
+  defineTool({
+    name: "ui_assert_gone",
+    description: "Assert element does NOT exist on screen (pass/fail)",
+    schema: z.object({
+      text: z.string().optional().describe("Element text that should NOT be present"),
+      resourceId: z.string().optional().describe("Android: resource ID that should NOT be present"),
+      platform: platformEnum,
+      deviceId: deviceIdField,
+    }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
-      const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
-      const searchText = getString(args, "text");
-      const searchId = getString(args, "resourceId");
+      const { platform: currentPlatform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      const searchText = args.text;
+      const searchId = args.resourceId;
 
       if (!searchText && !searchId) {
-        return { text: "Provide text or resourceId to assert absence" };
+        return textResult("Provide text or resourceId to assert absence");
       }
 
       const { elements } = await getUiElements(ctx, currentPlatform);
@@ -436,9 +418,9 @@ export const uiTools: ToolDefinition[] = [
       });
 
       if (found.length === 0) {
-        return { text: `PASS: Element not present (text=${searchText ?? ""}, resourceId=${searchId ?? ""})` };
+        return textResult(`PASS: Element not present (text=${searchText ?? ""}, resourceId=${searchId ?? ""})`);
       }
-      return { text: `FAIL: Element exists -- ${formatElement(found[0])}`, isError: true };
+      return errorResult(`FAIL: Element exists -- ${formatElement(found[0])}`);
     },
-  },
+  }),
 ];

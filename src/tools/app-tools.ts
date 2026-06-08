@@ -1,124 +1,116 @@
 import type { ToolDefinition } from "./registry.js";
-import type { ToolContext } from "./context.js";
-import type { Platform } from "../device-manager.js";
+import { defineTool, z } from "./define-tool.js";
 import { validatePackageName, validatePath } from "../utils/sanitize.js";
+import { parseCommonArgs } from "../utils/parse-common-args.js";
+import { textResult } from "../utils/tool-result.js";
+import { sleep } from "../utils/sleep.js";
+
+const platformEnum = z
+  .enum(["android", "ios", "desktop", "aurora", "browser"])
+  .describe("Target platform. If not specified, uses the active target.")
+  .optional();
+
+const deviceIdField = z
+  .string()
+  .describe("Target device ID for multi-device. If omitted, uses active device.")
+  .optional();
+
+const commonFields = {
+  platform: platformEnum,
+  deviceId: deviceIdField,
+} as const;
 
 export const appTools: ToolDefinition[] = [
-  {
-    tool: {
-      name: "app_launch",
-      description: "Launch app by package name or bundle ID",
-      inputSchema: {
-        type: "object",
-        properties: {
-          package: { type: "string", description: "Package name (Android) or bundle ID (iOS), e.g., com.android.settings or com.apple.Preferences" },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-        required: ["package"],
-      },
-    },
+  defineTool({
+    name: "app_launch",
+    description: "Launch app by package name or bundle ID",
+    schema: z.object({
+      package: z
+        .string()
+        .describe(
+          "Package name (Android) or bundle ID (iOS), e.g., com.android.settings or com.apple.Preferences",
+        ),
+      ...commonFields,
+    }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
-      validatePackageName(args.package as string);
-      const result = await ctx.deviceManager.launchApp(args.package as string, platform, deviceId);
-      return { text: result };
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      validatePackageName(args.package);
+      const result = await ctx.deviceManager.launchApp(args.package, platform, deviceId);
+      return textResult(result);
     },
-  },
-  {
-    tool: {
-      name: "app_stop",
-      description: "Force stop an app",
-      inputSchema: {
-        type: "object",
-        properties: {
-          package: { type: "string", description: "Package name (Android) or bundle ID (iOS)" },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-        required: ["package"],
-      },
-    },
-    handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
-      validatePackageName(args.package as string);
-      ctx.deviceManager.stopApp(args.package as string, platform, deviceId);
-      return { text: `Stopped: ${args.package}` };
-    },
-  },
-  {
-    tool: {
-      name: "app_install",
-      description: "Install APK (Android) or .app bundle (iOS)",
-      inputSchema: {
-        type: "object",
-        properties: {
-          path: { type: "string", description: "Path to APK (Android) or .app bundle (iOS)" },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-        required: ["path"],
-      },
-    },
-    handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
-      validatePath(args.path as string, "install_path");
-      const result = ctx.deviceManager.installApp(args.path as string, platform, deviceId);
-      return { text: result };
-    },
-  },
-  {
-    tool: {
-      name: "app_restart",
-      description: "Force-stop then re-launch an app. Common pattern for clearing in-memory state without uninstall.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          package: { type: "string", description: "Package name (Android) or bundle ID (iOS)" },
-          delayMs: { type: "number", description: "Delay between stop and launch in ms (default: 500). Useful so OS releases resources.", default: 500 },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-        required: ["package"],
-      },
-    },
-    handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
-      const pkg = args.package as string;
-      validatePackageName(pkg);
-      const delayMs = Math.max(0, Math.min((args.delayMs as number) ?? 500, 10_000));
+  }),
 
-      ctx.deviceManager.stopApp(pkg, platform, deviceId);
-      if (delayMs > 0) {
-        await new Promise(resolve => setTimeout(resolve, delayMs));
-      }
-      const launchResult = await ctx.deviceManager.launchApp(pkg, platform, deviceId);
-      return { text: `Restarted: ${pkg} (delay=${delayMs}ms). ${launchResult}` };
-    },
-  },
-  {
-    tool: {
-      name: "app_list",
-      description: "List installed apps (Aurora only)",
-      inputSchema: {
-        type: "object",
-        properties: {
-          platform: { const: "aurora" },
-        },
-        required: [],
-      },
-    },
+  defineTool({
+    name: "app_stop",
+    description: "Force stop an app",
+    schema: z.object({
+      package: z.string().describe("Package name (Android) or bundle ID (iOS)"),
+      ...commonFields,
+    }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      validatePackageName(args.package);
+      ctx.deviceManager.stopApp(args.package, platform, deviceId);
+      return textResult(`Stopped: ${args.package}`);
+    },
+  }),
+
+  defineTool({
+    name: "app_install",
+    description: "Install APK (Android) or .app bundle (iOS)",
+    schema: z.object({
+      path: z.string().describe("Path to APK (Android) or .app bundle (iOS)"),
+      ...commonFields,
+    }),
+    handler: async (args, ctx) => {
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      validatePath(args.path, "install_path");
+      const result = ctx.deviceManager.installApp(args.path, platform, deviceId);
+      return textResult(result);
+    },
+  }),
+
+  defineTool({
+    name: "app_restart",
+    description:
+      "Force-stop then re-launch an app. Common pattern for clearing in-memory state without uninstall.",
+    schema: z.object({
+      package: z.string().describe("Package name (Android) or bundle ID (iOS)"),
+      delayMs: z
+        .number()
+        .default(500)
+        .describe(
+          "Delay between stop and launch in ms (default: 500). Useful so OS releases resources.",
+        ),
+      ...commonFields,
+    }),
+    handler: async (args, ctx) => {
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      validatePackageName(args.package);
+      const delayMs = Math.max(0, Math.min(args.delayMs, 10_000));
+
+      ctx.deviceManager.stopApp(args.package, platform, deviceId);
+      if (delayMs > 0) {
+        await sleep(delayMs);
+      }
+      const launchResult = await ctx.deviceManager.launchApp(args.package, platform, deviceId);
+      return textResult(`Restarted: ${args.package} (delay=${delayMs}ms). ${launchResult}`);
+    },
+  }),
+
+  defineTool({
+    name: "app_list",
+    description: "List installed apps (Aurora only)",
+    schema: z.object({
+      platform: z.literal("aurora").optional(),
+    }),
+    handler: async (args, ctx) => {
+      const { platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
       if (platform !== "aurora") {
-        return { text: "list_apps is only available for Aurora OS." };
+        return textResult("list_apps is only available for Aurora OS.");
       }
       const packages = ctx.deviceManager.getAuroraClient().listPackages();
-      return { text: `Installed packages (${packages.length}):\n${packages.join("\n")}` };
+      return textResult(`Installed packages (${packages.length}):\n${packages.join("\n")}`);
     },
-  },
+  }),
 ];

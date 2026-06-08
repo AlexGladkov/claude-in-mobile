@@ -1,91 +1,87 @@
 import type { ToolDefinition } from "./registry.js";
-import type { ToolContext } from "./context.js";
-import type { Platform } from "../device-manager.js";
+import { defineTool, z } from "./define-tool.js";
 import { validatePackageName, validatePermission } from "../utils/sanitize.js";
+import { parseCommonArgs } from "../utils/parse-common-args.js";
+import { textResult } from "../utils/tool-result.js";
+
+const platformEnum = z
+  .enum(["android", "ios", "desktop", "aurora", "browser"])
+  .describe("Target platform. If not specified, uses the active target.")
+  .optional();
+
+const deviceIdField = z
+  .string()
+  .describe("Target device ID for multi-device. If omitted, uses active device.")
+  .optional();
+
+const commonFields = {
+  platform: platformEnum,
+  deviceId: deviceIdField,
+} as const;
 
 export const permissionTools: ToolDefinition[] = [
-  {
-    tool: {
-      name: "permission_grant",
-      description: "Grant app permission (Android runtime / iOS privacy)",
-      inputSchema: {
-        type: "object",
-        properties: {
-          package: { type: "string", description: "Package name (Android) or bundle ID (iOS)" },
-          permission: { type: "string", description: "Permission to grant. Android: android.permission.CAMERA, android.permission.ACCESS_FINE_LOCATION, etc. iOS: camera, microphone, photos, location, contacts, calendar, reminders, motion, health, speech-recognition" },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-        required: ["package", "permission"],
-      },
-    },
+  defineTool({
+    name: "permission_grant",
+    description: "Grant app permission (Android runtime / iOS privacy)",
+    schema: z.object({
+      package: z.string().describe("Package name (Android) or bundle ID (iOS)"),
+      permission: z
+        .string()
+        .describe(
+          "Permission to grant. Android: android.permission.CAMERA, android.permission.ACCESS_FINE_LOCATION, etc. iOS: camera, microphone, photos, location, contacts, calendar, reminders, motion, health, speech-recognition",
+        ),
+      ...commonFields,
+    }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
-      validatePackageName(args.package as string);
-      validatePermission(args.permission as string);
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      validatePackageName(args.package);
+      validatePermission(args.permission);
       const result = ctx.deviceManager.grantPermission(
-        args.package as string,
-        args.permission as string,
+        args.package,
+        args.permission,
         platform,
-        deviceId
+        deviceId,
       );
-      return { text: result };
+      return textResult(result);
     },
-  },
-  {
-    tool: {
-      name: "permission_revoke",
-      description: "Revoke app permission",
-      inputSchema: {
-        type: "object",
-        properties: {
-          package: { type: "string", description: "Package name (Android) or bundle ID (iOS)" },
-          permission: { type: "string", description: "Permission to revoke. Same values as grant_permission" },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-        required: ["package", "permission"],
-      },
-    },
+  }),
+
+  defineTool({
+    name: "permission_revoke",
+    description: "Revoke app permission",
+    schema: z.object({
+      package: z.string().describe("Package name (Android) or bundle ID (iOS)"),
+      permission: z
+        .string()
+        .describe("Permission to revoke. Same values as grant_permission"),
+      ...commonFields,
+    }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
-      validatePackageName(args.package as string);
-      validatePermission(args.permission as string);
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      validatePackageName(args.package);
+      validatePermission(args.permission);
       const result = ctx.deviceManager.revokePermission(
-        args.package as string,
-        args.permission as string,
+        args.package,
+        args.permission,
         platform,
-        deviceId
+        deviceId,
       );
-      return { text: result };
+      return textResult(result);
     },
-  },
-  {
-    tool: {
-      name: "permission_reset",
-      description: "Reset all permissions for an app",
-      inputSchema: {
-        type: "object",
-        properties: {
-          package: { type: "string", description: "Package name (Android) or bundle ID (iOS)" },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-        required: ["package"],
-      },
-    },
+  }),
+
+  defineTool({
+    name: "permission_reset",
+    description: "Reset all permissions for an app",
+    schema: z.object({
+      package: z.string().describe("Package name (Android) or bundle ID (iOS)"),
+      ...commonFields,
+    }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
-      validatePackageName(args.package as string);
-      const result = ctx.deviceManager.resetPermissions(
-        args.package as string,
-        platform,
-        deviceId
-      );
-      return { text: result };
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      validatePackageName(args.package);
+      const result = ctx.deviceManager.resetPermissions(args.package, platform, deviceId);
+      return textResult(result);
     },
-  },
+  }),
 ];
