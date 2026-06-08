@@ -5,6 +5,87 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.12.0] — 2026-06-08
+
+Abstraction, pluginability & scalability refactor. Foundation release for
+the microkernel migration originally outlined in ADR 0001/0002. All changes
+land additively — existing MCP clients, plugin authors, and the legacy
+DeviceManager facade keep working unchanged. The architecture report driving
+the work is at `swarm-report/abstraction-pluginability-2026-06-08.md`.
+
+### Added
+
+- **Shared tool-layer helpers** (Phase 1):
+  - `src/constants/timeouts.ts` — single source for ADB/DESKTOP/WDA/KERNEL/
+    FLOW/RECORDER/SYNC/PERFORMANCE/SCREEN/CLIPBOARD timeouts.
+  - `src/utils/sleep.ts` — replaces the 15 inline `new Promise(r =>
+    setTimeout)` snippets.
+  - `src/utils/tool-result.ts` — `textResult/errorResult/jsonResult`
+    builders carrying both MCP `content[]` and legacy `text` for non-breaking
+    migration.
+  - `src/utils/run-tool-safely.ts` — HOC that converts unknown thrown errors
+    into structured `errorResult` while re-throwing `MobileError` so typed
+    error contracts (and tests) stay intact.
+  - `src/utils/parse-common-args.ts` — extracts `{deviceId, platform}` once,
+    centralising a ~125-callsite pattern.
+  - `src/adb/commands.ts` — hoists `adb shell` strings (battery, mock
+    location, pidof, am, input, screen) into typed builders for one-place
+    edits and easier security review.
+
+- **`defineTool({name, schema, handler})`** (Phase 2): builds a
+  `ToolDefinition` from a zod schema. JSON Schema is generated via the
+  built-in `z.toJSONSchema()` so the hand-maintained `inputSchema` no longer
+  drifts from the runtime cast. `system-tools.ts` is fully migrated (11
+  tools) as the pilot; the remaining 24 `*-tools.ts` continue to compile
+  and pass via the legacy path and migrate file-by-file post-release.
+  Adds `zod ^4.4.3` as a direct dependency.
+
+- **Capability-narrowing API** (Phase 3): `DeviceManager.getAdapter()` is
+  now public. `requireAppManagement(adapter)`, `requirePermissions(adapter)`,
+  and `requireShell(adapter)` in `adapters/platform-adapter.ts` throw a
+  typed `CapabilityNotSupportedError` instead of forcing every tool to roll
+  its own `if (platform !== "android")` early return.
+
+- **Full kernel plugin set** (Phase 4): `bootstrapKernel` now loads the
+  android/ios/desktop/web/aurora plugins alongside REPL. Their `init()` is
+  still a no-op — meta-tools continue to register via the legacy path — but
+  every first-party plugin is finally under kernel lifecycle so tool
+  registration can move into `init(ctx).registerTool()` incrementally.
+
+- **External plugin discovery** (Phase 5, opt-in): new
+  `src/kernel/external-loader.ts` walks `~/.claude-in-mobile/plugins/<id>/`
+  (plus any `additionalRoots`), resolves each entry via `package.json`
+  `main`/`module`, dynamically imports it and registers the factory.
+  `apiVersion` is gated before registration; broken plugins are logged and
+  skipped, never thrown. Enabled via
+  `CLAUDE_IN_MOBILE_EXTERNAL_PLUGINS=1`. ADR 0001's deferred filesystem
+  loader has landed.
+
+- **Declarative UI scoring** (Phase 6): `findBestMatch()` in `adb/ui-parser`
+  used to inline a 7-branch if/else cascade with magic numbers
+  (100/95/80/75/60/40/35). Extracted into `src/adb/ui-scoring.ts` as a
+  declarative `DEFAULT_SCORING_RULES` table plus `CLICKABLE_BOOST` constant.
+  `ui-parser.ts` shrinks 996 → ~952 LOC.
+
+### Changed
+
+- **`@claude-in-mobile/plugin-api` → 1.0.0** (was 1.0.0-alpha.0). The
+  contract has been stable since 3.10; third-party plugin authors can now
+  declare a production-grade dep without anchoring to a pre-release.
+- `DeviceManager.getAndroidClient` / `getIosClient` / `getAuroraClient` are
+  now `@deprecated`. Existing 107 callsites continue to work; new code
+  should use `getAdapter(platform, deviceId)` + capability type guards.
+
+### Notes
+
+Items intentionally deferred from the refactor report and **out of scope
+for 3.12.0**: opening the `Platform` union to `string` (breaking change to
+~50 switch-by-platform sites, needs a major bump); decomposition of the
+remaining god objects (`desktop/client.ts` 966, `adb/client.ts` 776,
+`flow-tools.ts` 761) — each is its own surgical split; `release.yml` matrix
+parametrisation and `@claude-in-mobile/core` + per-platform plugin npm
+split. All tracked for 3.13.x.
+
 ## [3.11.5] — 2026-06-07
 
 ### Fixed
