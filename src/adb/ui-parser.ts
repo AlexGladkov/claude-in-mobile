@@ -1,3 +1,5 @@
+import { scoreElement } from "./ui-scoring.js";
+
 export interface Bounds {
   x1: number;
   y1: number;
@@ -717,58 +719,14 @@ export function findBestMatch(
 ): { element: UiElement; confidence: number; reason: string } | null {
   const desc = description.toLowerCase().trim();
 
-  // Score each element
+  // Score each element via the declarative table in `ui-scoring.ts`.
   const scored = elements
     .filter(el => el.enabled && (el.width > 0 && el.height > 0))
     .map(el => {
-      let score = 0;
-      let reason = "";
-
       const text = el.text.toLowerCase();
       const contentDesc = el.contentDesc.toLowerCase();
       const id = getShortId(el.resourceId).toLowerCase().replace(/_/g, " ");
-
-      // Exact text match
-      if (text === desc) {
-        score = 100;
-        reason = `exact text match: "${el.text}"`;
-      }
-      // Exact content description match
-      else if (contentDesc === desc) {
-        score = 95;
-        reason = `exact description: "${el.contentDesc}"`;
-      }
-      // Text contains description
-      else if (text.includes(desc)) {
-        score = 80;
-        reason = `text contains: "${el.text}"`;
-      }
-      // Content description contains
-      else if (contentDesc.includes(desc)) {
-        score = 75;
-        reason = `description contains: "${el.contentDesc}"`;
-      }
-      // ID match (common patterns like btn_submit, button_ok)
-      else if (id.includes(desc) || id.includes(desc.replace(/ /g, "_"))) {
-        score = 60;
-        reason = `ID match: "${el.resourceId}"`;
-      }
-      // Partial word match in text
-      else if (desc.split(" ").some(word => text.includes(word) && word.length > 2)) {
-        score = 40;
-        reason = `partial text match: "${el.text}"`;
-      }
-      // Partial word match in description
-      else if (desc.split(" ").some(word => contentDesc.includes(word) && word.length > 2)) {
-        score = 35;
-        reason = `partial description match: "${el.contentDesc}"`;
-      }
-
-      // Boost clickable elements
-      if (score > 0 && el.clickable) {
-        score += 10;
-      }
-
+      const { score, reason } = scoreElement({ text, contentDesc, id, desc, element: el });
       return { element: el, score, reason };
     })
     .filter(s => s.score > 0)
