@@ -35,10 +35,12 @@ the work is at `swarm-report/abstraction-pluginability-2026-06-08.md`.
 - **`defineTool({name, schema, handler})`** (Phase 2): builds a
   `ToolDefinition` from a zod schema. JSON Schema is generated via the
   built-in `z.toJSONSchema()` so the hand-maintained `inputSchema` no longer
-  drifts from the runtime cast. `system-tools.ts` is fully migrated (11
-  tools) as the pilot; the remaining 24 `*-tools.ts` continue to compile
-  and pass via the legacy path and migrate file-by-file post-release.
-  Adds `zod ^4.4.3` as a direct dependency.
+  drifts from the runtime cast. Schema-validation failure throws
+  `ValidationError` (a `MobileError` subclass) which `runToolSafely`
+  re-throws so the typed-error contract propagates cleanly to MCP callers.
+  **All 25 `*-tools.ts` files** now use `defineTool` — the legacy
+  `ToolDefinition` path remains supported by the registry but no
+  first-party tool uses it. Adds `zod ^4.4.3` as a direct dependency.
 
 - **Capability-narrowing API** (Phase 3): `DeviceManager.getAdapter()` is
   now public. `requireAppManagement(adapter)`, `requirePermissions(adapter)`,
@@ -46,11 +48,13 @@ the work is at `swarm-report/abstraction-pluginability-2026-06-08.md`.
   typed `CapabilityNotSupportedError` instead of forcing every tool to roll
   its own `if (platform !== "android")` early return.
 
-- **Full kernel plugin set** (Phase 4): `bootstrapKernel` now loads the
-  android/ios/desktop/web/aurora plugins alongside REPL. Their `init()` is
-  still a no-op — meta-tools continue to register via the legacy path — but
-  every first-party plugin is finally under kernel lifecycle so tool
-  registration can move into `init(ctx).registerTool()` incrementally.
+- **Full kernel plugin set + BuiltinToolsPlugin** (Phase 4): `bootstrapKernel`
+  loads android/ios/desktop/web/aurora plugins alongside REPL, plus a new
+  first-party `BuiltinToolsPlugin` (`src/plugins/builtin-tools/`, capability
+  `meta-tools`) that owns the cross-platform meta-tool registration,
+  v3.0/v3.1 backward-compat aliases, and `MODULE_METADATA`. `src/index.ts`
+  drops from 599 to 432 LOC; all 20 `*-meta.ts` imports moved into the new
+  plugin.
 
 - **External plugin discovery** (Phase 5, opt-in): new
   `src/kernel/external-loader.ts` walks `~/.claude-in-mobile/plugins/<id>/`
@@ -67,6 +71,51 @@ the work is at `swarm-report/abstraction-pluginability-2026-06-08.md`.
   declarative `DEFAULT_SCORING_RULES` table plus `CLICKABLE_BOOST` constant.
   `ui-parser.ts` shrinks 996 → ~952 LOC.
 
+- **Open `Platform` union** (D1): `Platform` is now
+  `BuiltinPlatform | (string & {})`. The branded-string trick keeps IDE
+  autocomplete for the five canonical IDs while letting third-party plugins
+  declare an arbitrary `platform: "tizen"` without forking core. Exports
+  `BUILTIN_PLATFORMS`, `isBuiltinPlatform`, and `assertNever` for callers
+  that still want exhaustive narrowing.
+
+- **Polymorphic shell routing** (D3): 24 production callsites moved off the
+  deprecated raw-client accessors onto `DeviceManager.shell(cmd, platform,
+  deviceId)` which routes via `getAdapter` + `hasShell` guard. Test mocks
+  updated in lockstep. Six callsites remain on `getAndroidClient()` for
+  genuinely platform-specific methods (getCurrentActivity, raw adb exec,
+  push/pull, iOS findElement, WebViewInspector setup).
+
+- **God-object decomposition** (D5):
+  - `desktop/client.ts`: 966 → 679 LOC. Extracted
+    `desktop/permission-allowlist.ts`, `desktop/log-ring.ts`,
+    `desktop/launchers.ts`.
+  - `adb/client.ts`: 776 → 640 LOC. Extracted `adb/exec.ts`,
+    `adb/text-escape.ts`, `adb/ui-tree-cache.ts`, `adb/keycodes.ts`.
+  - `flow-tools.ts`: 756 → 6 LOC (barrel) + `flow/` directory
+    (run/batch/parallel/common).
+  - `sync-tools.ts`: 711 → 26 LOC (barrel) + `sync/` directory
+    (create-group/run/assert-cross/status/list/destroy/common).
+  - `performance-tools.ts`: 639 → 28 LOC (barrel) + `performance/`
+    directory (snapshot/baseline/compare/monitor/crashes/framestats/common).
+  All extracted symbols re-exported from the original module so existing
+  imports keep working with zero test impact.
+
+- **Parametrised release matrix** (D6): `release.yml` `update-homebrew` and
+  `verify-checksums` jobs no longer hardcode `darwin-arm64` /
+  `darwin-x86_64`. They discover the platform list from the actual artifact
+  filenames (`update-homebrew` builds a `{platform: sha}` JSON map;
+  `verify-checksums` queries the GitHub Releases API for `*.tar.gz`
+  assets). Adding a third arch is now a one-line edit to the build matrix.
+
+- **Per-platform npm shim packages** (D7): five new publishable workspaces:
+  `@claude-in-mobile/plugin-{android,ios,desktop,web,aurora}` at 3.12.0.
+  Each is a ~20 LOC re-export shim of the corresponding plugin from the
+  main package via the new `claude-in-mobile/plugins/*` exports map. The
+  actual implementation continues to live in the main pkg; the shims
+  establish publishable topology so third parties can declare a hard
+  dependency on a specific platform plugin today, and so the 4.0.0
+  source-move is a one-step relocation.
+
 ### Changed
 
 - **`@claude-in-mobile/plugin-api` → 1.0.0** (was 1.0.0-alpha.0). The
@@ -78,13 +127,20 @@ the work is at `swarm-report/abstraction-pluginability-2026-06-08.md`.
 
 ### Notes
 
-Items intentionally deferred from the refactor report and **out of scope
-for 3.12.0**: opening the `Platform` union to `string` (breaking change to
-~50 switch-by-platform sites, needs a major bump); decomposition of the
-remaining god objects (`desktop/client.ts` 966, `adb/client.ts` 776,
-`flow-tools.ts` 761) — each is its own surgical split; `release.yml` matrix
-parametrisation and `@claude-in-mobile/core` + per-platform plugin npm
-split. All tracked for 3.13.x.
+Every item from the original refactor plan (Phases 1-7 + D1-D7) is in
+this release. Items that remain for a future major (4.0.0) are pure
+breaking changes that would force consumers to rewrite:
+
+- Moving the per-platform plugin source out of the main pkg into the
+  shim workspaces (the topology is ready; the file move + dependency
+  flip is the breaking change).
+- Removing the deprecated `getAndroidClient` / `getIosClient` /
+  `getAuroraClient` accessors entirely (six callsites still reach
+  platform-specific methods that have no `CorePlatformAdapter` equivalent
+  — those need the adapter contract widened first).
+- Tightening `ToolResult` to model image content blocks natively
+  (currently the few image-returning tools cast through `as unknown as
+  ToolResult`).
 
 ## [3.11.5] — 2026-06-07
 
