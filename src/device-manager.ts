@@ -142,7 +142,19 @@ export class DeviceManager {
    * When deviceId is provided, auto-detect is skipped (the caller knows
    * which device to target) and global state is NOT mutated.
    */
-  private getAdapter(platform?: Platform, deviceId?: string): CorePlatformAdapter {
+  /**
+   * Resolve a platform's CorePlatformAdapter.
+   *
+   * Phase 3 of the abstraction refactor: tools should depend on the
+   * capability-segregated interfaces here (CorePlatformAdapter +
+   * AppManagementAdapter / PermissionAdapter / ShellAdapter via type guards)
+   * rather than the legacy `getAndroidClient()/getIosClient()/...` accessors.
+   *
+   * @param platform target platform, defaults to active
+   * @param deviceId per-call device target; when provided, auto-detect and
+   *                 global-state mutation are skipped
+   */
+  getAdapter(platform?: Platform, deviceId?: string): CorePlatformAdapter {
     const target = platform ?? this.activeTarget;
     const adapter = this.adapters.get(target);
     if (!adapter) {
@@ -543,8 +555,9 @@ export class DeviceManager {
     return adapter.shell(command, deviceId);
   }
 
-  // ============ Raw client accessors (used by tools directly) ============
+  // ============ Raw client accessors (legacy — prefer getAdapter + capability guards) ============
 
+  /** @deprecated Use `getAdapter("android", deviceId)` + capability type guards from `adapters/platform-adapter.ts`. */
   getAndroidClient(deviceId?: string): AdbClient {
     const adapter = this.adapters.get("android");
     if (!adapter || !(adapter instanceof AndroidAdapter)) {
@@ -553,6 +566,7 @@ export class DeviceManager {
     return adapter.getClient(deviceId);
   }
 
+  /** @deprecated Use `getAdapter("ios", deviceId)` + capability type guards. */
   getIosClient(deviceId?: string): IosClient {
     const adapter = this.adapters.get("ios");
     if (!adapter || !(adapter instanceof IosAdapter)) {
@@ -561,6 +575,7 @@ export class DeviceManager {
     return adapter.getClient(deviceId);
   }
 
+  /** @deprecated Use `getAdapter("aurora")` + capability type guards. */
   getAuroraClient(): AuroraClient {
     const adapter = this.adapters.get("aurora");
     if (!adapter || !(adapter instanceof AuroraAdapter)) {
