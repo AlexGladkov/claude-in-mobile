@@ -7,11 +7,13 @@ export type ToolHandler<TArgs = Record<string, unknown>, TCtx = unknown> = (
 ) => Promise<ToolResult>;
 
 /**
- * Wrap a tool handler so any thrown error becomes a structured error result
- * instead of propagating out of the MCP boundary.
+ * Wrap a tool handler so unknown thrown errors become a structured error result.
  *
- * MobileError preserves its code; unknown errors are wrapped with the fallback
- * code so call-sites get a stable error vocabulary.
+ * MobileError is re-thrown unchanged — the MCP layer + existing tests rely on
+ * typed errors propagating with their code intact. Only non-MobileError throws
+ * (TypeError, ReferenceError, ad-hoc `throw new Error(...)`, etc.) are converted
+ * to `errorResult` with the fallback code, ensuring the MCP boundary never sees
+ * an uncaught exception.
  */
 export function runToolSafely<TArgs, TCtx>(
   handler: ToolHandler<TArgs, TCtx>,
@@ -21,9 +23,7 @@ export function runToolSafely<TArgs, TCtx>(
     try {
       return await handler(args, ctx);
     } catch (err) {
-      if (err instanceof MobileError) {
-        return errorResult(`[${err.code}] ${err.message}`);
-      }
+      if (err instanceof MobileError) throw err;
       const message = err instanceof Error ? err.message : String(err);
       return errorResult(`[${fallbackCode}] ${message}`);
     }

@@ -108,7 +108,8 @@
     "chrome-launcher": "^1.1.0",
     "chrome-remote-interface": "^0.33.0",
     "google-auth-library": "^10.6.2",
-    "jimp": "^1.6.0"
+    "jimp": "^1.6.0",
+    "zod": "^4.4.3"
   },
   "optionalDependencies": {
     "sharp": "^0.33.0"
@@ -120,5 +121,8 @@
     "@types/node": "^22.10.0",
     "typescript": "^5.7.0",
     "vitest": "^4.0.18"
-  }
+  },
+  "bundleDependencies": [
+    "@claude-in-mobile/plugin-api"
+  ]
 }
