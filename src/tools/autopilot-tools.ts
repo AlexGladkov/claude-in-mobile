@@ -25,6 +25,9 @@ import { createLazySingleton } from "../utils/lazy.js";
 import { truncateOutput } from "../utils/truncate.js";
 import { ValidationError } from "../errors.js";
 import { validatePackageName } from "../utils/sanitize.js";
+import { defineTool, z } from "./define-tool.js";
+import { parseCommonArgs } from "../utils/parse-common-args.js";
+import { textResult } from "../utils/tool-result.js";
 
 const getStore = createLazySingleton(() => new ExplorationStore());
 
@@ -34,17 +37,35 @@ const DEFAULT_STRATEGY: ExplorationStrategy = "smart";
 const DEFAULT_MAX_SCREENS = 20;
 const DEFAULT_MAX_ACTIONS = 100;
 const DEFAULT_CONFIDENCE = 0.6;
-const VALID_STRATEGIES = new Set(["bfs", "dfs", "smart"]);
-const VALID_FORMATS = new Set(["flow_run", "steps"]);
+
+// Shared zod fragments
+const platformEnum = z
+  .enum(["android", "ios", "desktop"])
+  .describe("Target platform")
+  .optional();
+const deviceIdField = z
+  .string()
+  .describe("Target device ID for multi-device. If omitted, uses active device.")
+  .optional();
+
+const originalSelectorSchema = z
+  .object({
+    text: z.string().optional().describe("Original text"),
+    resourceId: z.string().optional().describe("Original resource ID"),
+    className: z.string().optional().describe("Original class name"),
+    bounds: z
+      .object({
+        x1: z.number(),
+        y1: z.number(),
+        x2: z.number(),
+        y2: z.number(),
+      })
+      .optional()
+      .describe("Original bounds"),
+  })
+  .describe("Original selector that no longer matches");
 
 // ── Helpers ──
-
-function resolvePlatform(
-  argPlatform: string | undefined,
-  ctx: Parameters<ToolDefinition["handler"]>[1],
-): string {
-  return argPlatform ?? ctx.deviceManager.getCurrentPlatform() ?? "android";
-}
 
 function formatExplorationSummary(
   result: { id: string; package: string; date: string; screens: number },
@@ -56,70 +77,49 @@ function formatExplorationSummary(
 
 export const autopilotTools: ToolDefinition[] = [
   // 1. explore
-  {
-    tool: {
-      name: "autopilot_explore",
-      description:
-        "Automatically navigate the app, building a navigation graph of screens and transitions. Uses screen fingerprinting to avoid revisiting screens.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          platform: {
-            type: "string",
-            enum: ["android", "ios", "desktop"],
-            description: "Target platform",
-          },
-          package: {
-            type: "string",
-            description: "App package name (e.g. 'com.example.app')",
-          },
-          strategy: {
-            type: "string",
-            enum: ["bfs", "dfs", "smart"],
-            description: "Exploration strategy (default: smart). BFS for breadth, DFS for depth, smart for hybrid.",
-          },
-          maxScreens: {
-            type: "number",
-            description: "Maximum screens to discover (default: 20, max: 100)",
-          },
-          maxActions: {
-            type: "number",
-            description: "Maximum actions to perform (default: 100, max: 500)",
-          },
-          dryRun: {
-            type: "boolean",
-            description: "Analyze without performing actions (default: false)",
-          },
-        },
-        required: ["package"],
-      },
-    },
+  defineTool({
+    name: "autopilot_explore",
+    description:
+      "Automatically navigate the app, building a navigation graph of screens and transitions. Uses screen fingerprinting to avoid revisiting screens.",
+    schema: z.object({
+      platform: platformEnum,
+      package: z
+        .string()
+        .min(1, "package is required for explore")
+        .describe("App package name (e.g. 'com.example.app')"),
+      strategy: z
+        .enum(["bfs", "dfs", "smart"])
+        .optional()
+        .describe(
+          "Exploration strategy (default: smart). BFS for breadth, DFS for depth, smart for hybrid.",
+        ),
+      maxScreens: z
+        .number()
+        .optional()
+        .describe("Maximum screens to discover (default: 20, max: 100)"),
+      maxActions: z
+        .number()
+        .optional()
+        .describe("Maximum actions to perform (default: 100, max: 500)"),
+      dryRun: z
+        .boolean()
+        .optional()
+        .describe("Analyze without performing actions (default: false)"),
+    }),
     handler: async (args, ctx) => {
-      const platform = resolvePlatform(args.platform as string | undefined, ctx);
-      const pkg = args.package as string;
-      if (!pkg) throw new ValidationError("package is required for explore");
+      const { platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      const pkg = args.package;
       validatePackageName(pkg);
 
-      const strategy = (args.strategy as string | undefined) ?? DEFAULT_STRATEGY;
-      if (!VALID_STRATEGIES.has(strategy)) {
-        throw new ValidationError(
-          `Invalid strategy: "${strategy}". Valid: bfs, dfs, smart`,
-        );
-      }
+      const strategy = (args.strategy ?? DEFAULT_STRATEGY) as ExplorationStrategy;
 
-      const maxScreens = Math.min(
-        Math.max((args.maxScreens as number) ?? DEFAULT_MAX_SCREENS, 1),
-        100,
-      );
-      const maxActions = Math.min(
-        Math.max((args.maxActions as number) ?? DEFAULT_MAX_ACTIONS, 1),
-        500,
-      );
+      const maxScreens = Math.min(Math.max(args.maxScreens ?? DEFAULT_MAX_SCREENS, 1), 100);
+      const maxActions = Math.min(Math.max(args.maxActions ?? DEFAULT_MAX_ACTIONS, 1), 500);
       const dryRun = args.dryRun === true;
 
       const result = await explore(ctx, platform, {
         package: pkg,
-        strategy: strategy as ExplorationStrategy,
+        strategy,
         maxScreens,
         maxActions,
         dryRun,
@@ -155,45 +155,33 @@ export const autopilotTools: ToolDefinition[] = [
       lines.push("");
       lines.push(`Next: autopilot(action:'generate', explorationId:'${result.id}') to create test scenarios.`);
 
-      return { text: truncateOutput(lines.join("\n")) };
+      return textResult(truncateOutput(lines.join("\n")));
     },
-  },
+  }),
 
   // 2. generate
-  {
-    tool: {
-      name: "autopilot_generate",
-      description:
-        "Generate test scenarios from exploration data. Creates flow_run-compatible test steps for all unique paths.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          explorationId: {
-            type: "string",
-            description: "Exploration ID from a previous explore run",
-          },
-          format: {
-            type: "string",
-            enum: ["flow_run", "steps"],
-            description: "Output format (default: flow_run). flow_run: ready for flow(action:'run'). steps: human-readable.",
-          },
-        },
-        required: ["explorationId"],
-      },
-    },
+  defineTool({
+    name: "autopilot_generate",
+    description:
+      "Generate test scenarios from exploration data. Creates flow_run-compatible test steps for all unique paths.",
+    schema: z.object({
+      explorationId: z
+        .string()
+        .min(1, "explorationId is required for generate")
+        .describe("Exploration ID from a previous explore run"),
+      format: z
+        .enum(["flow_run", "steps"])
+        .optional()
+        .describe(
+          "Output format (default: flow_run). flow_run: ready for flow(action:'run'). steps: human-readable.",
+        ),
+    }),
     handler: async (args) => {
-      const explorationId = args.explorationId as string;
-      if (!explorationId) throw new ValidationError("explorationId is required for generate");
-
-      const format = (args.format as string | undefined) ?? "flow_run";
-      if (!VALID_FORMATS.has(format)) {
-        throw new ValidationError(
-          `Invalid format: "${format}". Valid: flow_run, steps`,
-        );
-      }
+      const explorationId = args.explorationId;
+      const format = (args.format ?? "flow_run") as TestFormat;
 
       const exploration = await getStore().getExploration(explorationId);
-      const suite = generateTests(exploration, format as TestFormat);
+      const suite = generateTests(exploration, format);
 
       await getStore().saveTests(suite);
 
@@ -211,60 +199,28 @@ export const autopilotTools: ToolDefinition[] = [
       lines.push("");
       lines.push(`Tests saved. Use autopilot(action:'tests', explorationId:'${explorationId}') to view.`);
 
-      return { text: truncateOutput(lines.join("\n")) };
+      return textResult(truncateOutput(lines.join("\n")));
     },
-  },
+  }),
 
   // 3. heal
-  {
-    tool: {
-      name: "autopilot_heal",
-      description:
-        "Self-heal a broken test step by finding the best matching element on the current screen. Uses fuzzy matching on text, resourceId, className, and bounds.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          platform: {
-            type: "string",
-            enum: ["android", "ios", "desktop"],
-            description: "Target platform",
-          },
-          originalSelector: {
-            type: "object",
-            description: "Original selector that no longer matches",
-            properties: {
-              text: { type: "string", description: "Original text" },
-              resourceId: { type: "string", description: "Original resource ID" },
-              className: { type: "string", description: "Original class name" },
-              bounds: {
-                type: "object",
-                description: "Original bounds",
-                properties: {
-                  x1: { type: "number" },
-                  y1: { type: "number" },
-                  x2: { type: "number" },
-                  y2: { type: "number" },
-                },
-              },
-            },
-          },
-          confidence: {
-            type: "number",
-            description: "Minimum confidence threshold 0-1 (default: 0.6)",
-          },
-        },
-        required: ["originalSelector"],
-      },
-    },
+  defineTool({
+    name: "autopilot_heal",
+    description:
+      "Self-heal a broken test step by finding the best matching element on the current screen. Uses fuzzy matching on text, resourceId, className, and bounds.",
+    schema: z.object({
+      platform: platformEnum,
+      originalSelector: originalSelectorSchema,
+      confidence: z
+        .number()
+        .optional()
+        .describe("Minimum confidence threshold 0-1 (default: 0.6)"),
+    }),
     handler: async (args, ctx) => {
-      const platform = resolvePlatform(args.platform as string | undefined, ctx);
-      const selector = args.originalSelector as OriginalSelector | undefined;
-      if (!selector) throw new ValidationError("originalSelector is required for heal");
+      const { platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      const selector = args.originalSelector as OriginalSelector;
 
-      const confidence = Math.min(
-        Math.max((args.confidence as number) ?? DEFAULT_CONFIDENCE, 0),
-        1,
-      );
+      const confidence = Math.min(Math.max(args.confidence ?? DEFAULT_CONFIDENCE, 0), 1);
 
       const { elements } = await getUiElements(ctx, platform as Platform);
       const result = healSelector(elements, selector, confidence);
@@ -283,28 +239,23 @@ export const autopilotTools: ToolDefinition[] = [
         `  center: (${result.healedSelector.centerX}, ${result.healedSelector.centerY})`,
       ];
 
-      return { text: lines.join("\n") };
+      return textResult(lines.join("\n"));
     },
-  },
+  }),
 
   // 4. status
-  {
-    tool: {
-      name: "autopilot_status",
-      description:
-        "Get exploration status. If explorationId is provided, shows details. Otherwise lists all explorations.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          explorationId: {
-            type: "string",
-            description: "Specific exploration ID (optional — omit to list all)",
-          },
-        },
-      },
-    },
+  defineTool({
+    name: "autopilot_status",
+    description:
+      "Get exploration status. If explorationId is provided, shows details. Otherwise lists all explorations.",
+    schema: z.object({
+      explorationId: z
+        .string()
+        .optional()
+        .describe("Specific exploration ID (optional — omit to list all)"),
+    }),
     handler: async (args) => {
-      const explorationId = args.explorationId as string | undefined;
+      const explorationId = args.explorationId;
 
       if (explorationId) {
         const exploration = await getStore().getExploration(explorationId);
@@ -329,13 +280,13 @@ export const autopilotTools: ToolDefinition[] = [
           lines.push(`  ${screen.id}: ${screen.title ?? "(untitled)"} [${screen.elements.length} elements]`);
         }
 
-        return { text: truncateOutput(lines.join("\n")) };
+        return textResult(truncateOutput(lines.join("\n")));
       }
 
       // List all explorations
       const explorations = await getStore().listExplorations();
       if (explorations.length === 0) {
-        return { text: "No explorations found. Use autopilot(action:'explore') to start." };
+        return textResult("No explorations found. Use autopilot(action:'explore') to start.");
       }
 
       const lines: string[] = [
@@ -346,36 +297,27 @@ export const autopilotTools: ToolDefinition[] = [
         lines.push(formatExplorationSummary(e));
       }
 
-      return { text: lines.join("\n") };
+      return textResult(lines.join("\n"));
     },
-  },
+  }),
 
   // 5. tests
-  {
-    tool: {
-      name: "autopilot_tests",
-      description:
-        "List or get generated test scenarios for an exploration.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          explorationId: {
-            type: "string",
-            description: "Exploration ID",
-          },
-          testId: {
-            type: "string",
-            description: "Specific test ID (optional — omit to list all)",
-          },
-        },
-        required: ["explorationId"],
-      },
-    },
+  defineTool({
+    name: "autopilot_tests",
+    description: "List or get generated test scenarios for an exploration.",
+    schema: z.object({
+      explorationId: z
+        .string()
+        .min(1, "explorationId is required for tests")
+        .describe("Exploration ID"),
+      testId: z
+        .string()
+        .optional()
+        .describe("Specific test ID (optional — omit to list all)"),
+    }),
     handler: async (args) => {
-      const explorationId = args.explorationId as string;
-      if (!explorationId) throw new ValidationError("explorationId is required for tests");
-
-      const testId = args.testId as string | undefined;
+      const explorationId = args.explorationId;
+      const testId = args.testId;
       const suite = await getStore().getTests(explorationId);
 
       if (testId) {
@@ -407,7 +349,7 @@ export const autopilotTools: ToolDefinition[] = [
           }
         }
 
-        return { text: truncateOutput(lines.join("\n")) };
+        return textResult(truncateOutput(lines.join("\n")));
       }
 
       // List all tests
@@ -421,7 +363,7 @@ export const autopilotTools: ToolDefinition[] = [
         lines.push(`${test.id}: ${test.name} (${test.steps.length} steps)`);
       }
 
-      return { text: lines.join("\n") };
+      return textResult(lines.join("\n"));
     },
-  },
+  }),
 ];

@@ -11,7 +11,7 @@
  */
 
 import type { ToolDefinition } from "./registry.js";
-import type { Platform } from "../device-manager.js";
+import type { ToolContext } from "./context.js";
 import type { PerfSnapshot, PerfCompareMetric, PerfCompareResult, PerfMonitorResult } from "../perf/types.js";
 import {
   collectAndroidSnapshot,
@@ -30,6 +30,11 @@ import { createLazySingleton } from "../utils/lazy.js";
 import { truncateOutput } from "../utils/truncate.js";
 import { ValidationError, PerfCollectionError } from "../errors.js";
 import { validatePackageName, validateBaselineName } from "../utils/sanitize.js";
+import { defineTool, z } from "./define-tool.js";
+import { parseCommonArgs } from "../utils/parse-common-args.js";
+import { textResult, errorResult } from "../utils/tool-result.js";
+import { sleep } from "../utils/sleep.js";
+import { PERFORMANCE } from "../constants/timeouts.js";
 
 const getStore = createLazySingleton(() => new PerfBaselineStore());
 
@@ -38,13 +43,23 @@ const getStore = createLazySingleton(() => new PerfBaselineStore());
 const DEFAULT_THRESHOLDS = { memory: 20, cpu: 30, fps: 10 };
 const DEFAULT_MONITOR_DURATION_MS = 5000;
 const DEFAULT_MONITOR_INTERVAL_MS = 1000;
-const MAX_MONITOR_DURATION_MS = 30000;
-const MIN_MONITOR_INTERVAL_MS = 500;
+const MAX_MONITOR_DURATION_MS = PERFORMANCE.MAX_MONITOR_DURATION_MS;
+const MIN_MONITOR_INTERVAL_MS = PERFORMANCE.POLL_INTERVAL_MS;
+
+// Shared zod fragments
+const platformEnum = z
+  .enum(["android", "ios", "desktop", "aurora", "browser"])
+  .optional()
+  .describe("Target platform");
+const deviceIdField = z
+  .string()
+  .optional()
+  .describe("Target device ID for multi-device. If omitted, uses active device.");
 
 // ── Helpers ──
 
 async function collectSnapshot(
-  ctx: Parameters<ToolDefinition["handler"]>[1],
+  ctx: ToolContext,
   platform: string,
   packageName?: string,
   deviceId?: string,
@@ -72,13 +87,6 @@ async function collectSnapshot(
   }
 
   throw new ValidationError(`Performance collection is not supported for platform "${platform}". Supported: android, desktop, ios.`);
-}
-
-function resolvePlatform(
-  argPlatform: string | undefined,
-  ctx: Parameters<ToolDefinition["handler"]>[1],
-): string {
-  return argPlatform ?? ctx.deviceManager.getCurrentPlatform() ?? "android";
 }
 
 function buildCompareMetrics(
@@ -138,93 +146,69 @@ function buildCompareMetrics(
 
 export const performanceTools: ToolDefinition[] = [
   // 1. snapshot
-  {
-    tool: {
-      name: "performance_snapshot",
-      description:
-        "Collect current performance metrics: memory, CPU, FPS, battery, crash count. Returns formatted report.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          platform: {
-            type: "string",
-            enum: ["android", "ios", "desktop"],
-            description: "Target platform",
-          },
-          packageName: {
-            type: "string",
-            description: "App package name (Android). Auto-detected from foreground if not provided.",
-          },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-      },
-    },
+  defineTool({
+    name: "performance_snapshot",
+    description:
+      "Collect current performance metrics: memory, CPU, FPS, battery, crash count. Returns formatted report.",
+    schema: z.object({
+      platform: platformEnum,
+      packageName: z
+        .string()
+        .optional()
+        .describe("App package name (Android). Auto-detected from foreground if not provided."),
+      deviceId: deviceIdField,
+    }),
     handler: async (args, ctx) => {
-      const deviceId = args.deviceId as string | undefined;
-      const platform = resolvePlatform(args.platform as string | undefined, ctx);
-      const packageName = args.packageName as string | undefined;
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      const packageName = args.packageName;
 
       const snapshot = await collectSnapshot(ctx, platform, packageName, deviceId);
       const text = formatSnapshot(snapshot);
 
-      return { text: truncateOutput(text) };
+      return textResult(truncateOutput(text));
     },
-  },
+  }),
 
   // 2. baseline
-  {
-    tool: {
-      name: "performance_baseline",
-      description:
-        "Save current performance metrics as a named baseline for later comparison.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          name: {
-            type: "string",
-            description: "Baseline name (e.g. 'login-flow', 'idle-state')",
-          },
-          platform: {
-            type: "string",
-            enum: ["android", "ios", "desktop"],
-            description: "Target platform",
-          },
-          packageName: {
-            type: "string",
-            description: "App package name (Android). Auto-detected if not provided.",
-          },
-          overwrite: {
-            type: "boolean",
-            description: "Overwrite existing baseline (default: false)",
-            default: false,
-          },
-          samples: {
-            type: "number",
-            description: "Number of samples to average (default: 3, max: 10)",
-            default: 3,
-          },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-        required: ["name"],
-      },
-    },
+  defineTool({
+    name: "performance_baseline",
+    description:
+      "Save current performance metrics as a named baseline for later comparison.",
+    schema: z.object({
+      name: z
+        .string({ error: "name is required for baseline" })
+        .min(1, "name is required for baseline")
+        .describe("Baseline name (e.g. 'login-flow', 'idle-state')"),
+      platform: platformEnum,
+      packageName: z
+        .string()
+        .optional()
+        .describe("App package name (Android). Auto-detected if not provided."),
+      overwrite: z
+        .boolean()
+        .optional()
+        .describe("Overwrite existing baseline (default: false)"),
+      samples: z
+        .number()
+        .optional()
+        .describe("Number of samples to average (default: 3, max: 10)"),
+      deviceId: deviceIdField,
+    }),
     handler: async (args, ctx) => {
-      const deviceId = args.deviceId as string | undefined;
-      const name = args.name as string;
-      if (!name) throw new ValidationError("name is required for baseline");
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      const name = args.name;
       validateBaselineName(name, "baseline_name");
 
-      const platform = resolvePlatform(args.platform as string | undefined, ctx);
-      const packageName = args.packageName as string | undefined;
+      const packageName = args.packageName;
       const overwrite = args.overwrite === true;
-      const sampleCount = Math.min(Math.max((args.samples as number) ?? 3, 1), 10);
+      const sampleCount = Math.min(Math.max(args.samples ?? 3, 1), 10);
 
       // Collect multiple samples and average
       const snapshots: PerfSnapshot[] = [];
       for (let i = 0; i < sampleCount; i++) {
         snapshots.push(await collectSnapshot(ctx, platform, packageName, deviceId));
         if (i < sampleCount - 1) {
-          await new Promise((r) => setTimeout(r, 500));
+          await sleep(500);
         }
       }
 
@@ -232,65 +216,50 @@ export const performanceTools: ToolDefinition[] = [
       const baseline = await getStore().save(name, platform, averaged, overwrite);
 
       const text = `Performance baseline saved: ${baseline.name} (${baseline.platform})\n${formatSnapshot(baseline.snapshot)}`;
-      return { text: truncateOutput(text) };
+      return textResult(truncateOutput(text));
     },
-  },
+  }),
 
   // 3. compare
-  {
-    tool: {
-      name: "performance_compare",
-      description:
-        "Compare current performance against a saved baseline. Returns PASS/FAIL per metric with thresholds.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          name: {
-            type: "string",
-            description: "Baseline name to compare against",
-          },
-          platform: {
-            type: "string",
-            enum: ["android", "ios", "desktop"],
-            description: "Target platform",
-          },
-          packageName: {
-            type: "string",
-            description: "App package name (Android). Auto-detected if not provided.",
-          },
-          memoryThreshold: {
-            type: "number",
-            description: "Max allowed memory change % (default: 20)",
-            default: 20,
-          },
-          cpuThreshold: {
-            type: "number",
-            description: "Max allowed CPU change % (default: 30)",
-            default: 30,
-          },
-          fpsThreshold: {
-            type: "number",
-            description: "Max allowed FPS drop % (default: 10)",
-            default: 10,
-          },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-        required: ["name"],
-      },
-    },
+  defineTool({
+    name: "performance_compare",
+    description:
+      "Compare current performance against a saved baseline. Returns PASS/FAIL per metric with thresholds.",
+    schema: z.object({
+      name: z
+        .string({ error: "name is required for compare" })
+        .min(1, "name is required for compare")
+        .describe("Baseline name to compare against"),
+      platform: platformEnum,
+      packageName: z
+        .string()
+        .optional()
+        .describe("App package name (Android). Auto-detected if not provided."),
+      memoryThreshold: z
+        .number()
+        .optional()
+        .describe("Max allowed memory change % (default: 20)"),
+      cpuThreshold: z
+        .number()
+        .optional()
+        .describe("Max allowed CPU change % (default: 30)"),
+      fpsThreshold: z
+        .number()
+        .optional()
+        .describe("Max allowed FPS drop % (default: 10)"),
+      deviceId: deviceIdField,
+    }),
     handler: async (args, ctx) => {
-      const deviceId = args.deviceId as string | undefined;
-      const name = args.name as string;
-      if (!name) throw new ValidationError("name is required for compare");
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      const name = args.name;
       validateBaselineName(name, "baseline_name");
 
-      const platform = resolvePlatform(args.platform as string | undefined, ctx);
-      const packageName = args.packageName as string | undefined;
+      const packageName = args.packageName;
 
       const thresholds = {
-        memory: (args.memoryThreshold as number) ?? DEFAULT_THRESHOLDS.memory,
-        cpu: (args.cpuThreshold as number) ?? DEFAULT_THRESHOLDS.cpu,
-        fps: (args.fpsThreshold as number) ?? DEFAULT_THRESHOLDS.fps,
+        memory: args.memoryThreshold ?? DEFAULT_THRESHOLDS.memory,
+        cpu: args.cpuThreshold ?? DEFAULT_THRESHOLDS.cpu,
+        fps: args.fpsThreshold ?? DEFAULT_THRESHOLDS.fps,
       };
 
       const baseline = await getStore().get(name, platform);
@@ -305,60 +274,41 @@ export const performanceTools: ToolDefinition[] = [
         metrics,
       };
 
-      const text = formatCompare(result);
-
-      return {
-        text: truncateOutput(text),
-        ...(hasFail ? { isError: true } : {}),
-      };
+      const text = truncateOutput(formatCompare(result));
+      return hasFail ? errorResult(text) : textResult(text);
     },
-  },
+  }),
 
   // 4. monitor
-  {
-    tool: {
-      name: "performance_monitor",
-      description:
-        "Monitor performance over a duration, collecting periodic samples. Returns min/max/avg stats.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          platform: {
-            type: "string",
-            enum: ["android", "ios", "desktop"],
-            description: "Target platform",
-          },
-          packageName: {
-            type: "string",
-            description: "App package name (Android). Auto-detected if not provided.",
-          },
-          duration: {
-            type: "number",
-            description: "Monitoring duration in ms (default: 5000, max: 30000)",
-            default: 5000,
-          },
-          interval: {
-            type: "number",
-            description: "Sampling interval in ms (default: 1000, min: 500)",
-            default: 1000,
-          },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-      },
-    },
+  defineTool({
+    name: "performance_monitor",
+    description:
+      "Monitor performance over a duration, collecting periodic samples. Returns min/max/avg stats.",
+    schema: z.object({
+      platform: platformEnum,
+      packageName: z
+        .string()
+        .optional()
+        .describe("App package name (Android). Auto-detected if not provided."),
+      duration: z
+        .number()
+        .optional()
+        .describe("Monitoring duration in ms (default: 5000, max: 30000)"),
+      interval: z
+        .number()
+        .optional()
+        .describe("Sampling interval in ms (default: 1000, min: 500)"),
+      deviceId: deviceIdField,
+    }),
     handler: async (args, ctx) => {
-      const deviceId = args.deviceId as string | undefined;
-      const platform = resolvePlatform(args.platform as string | undefined, ctx);
-      const packageName = args.packageName as string | undefined;
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      const packageName = args.packageName;
 
       const duration = Math.min(
-        Math.max((args.duration as number) ?? DEFAULT_MONITOR_DURATION_MS, MIN_MONITOR_INTERVAL_MS),
+        Math.max(args.duration ?? DEFAULT_MONITOR_DURATION_MS, MIN_MONITOR_INTERVAL_MS),
         MAX_MONITOR_DURATION_MS,
       );
-      const interval = Math.max(
-        (args.interval as number) ?? DEFAULT_MONITOR_INTERVAL_MS,
-        MIN_MONITOR_INTERVAL_MS,
-      );
+      const interval = Math.max(args.interval ?? DEFAULT_MONITOR_INTERVAL_MS, MIN_MONITOR_INTERVAL_MS);
 
       const snapshots: PerfSnapshot[] = [];
       const warnings: string[] = [];
@@ -374,7 +324,7 @@ export const performanceTools: ToolDefinition[] = [
 
         const elapsed = Date.now() - startTime;
         if (elapsed + interval < duration) {
-          await new Promise((r) => setTimeout(r, interval));
+          await sleep(interval);
         } else {
           break;
         }
@@ -389,73 +339,49 @@ export const performanceTools: ToolDefinition[] = [
       const result = aggregateSnapshots(snapshots, actualDuration, warnings);
       const text = formatMonitor(result, platform);
 
-      return { text: truncateOutput(text) };
+      return textResult(truncateOutput(text));
     },
-  },
+  }),
 
   // 5. crashes
-  {
-    tool: {
-      name: "performance_crashes",
-      description:
-        "Query recent crashes, ANRs, and native crashes from device logs.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          platform: {
-            type: "string",
-            enum: ["android", "ios", "desktop"],
-            description: "Target platform",
-          },
-          packageName: {
-            type: "string",
-            description: "App package name (Android). Auto-detected if not provided.",
-          },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-      },
-    },
+  defineTool({
+    name: "performance_crashes",
+    description: "Query recent crashes, ANRs, and native crashes from device logs.",
+    schema: z.object({
+      platform: platformEnum,
+      packageName: z
+        .string()
+        .optional()
+        .describe("App package name (Android). Auto-detected if not provided."),
+      deviceId: deviceIdField,
+    }),
     handler: async (args, ctx) => {
-      const deviceId = args.deviceId as string | undefined;
-      const platform = resolvePlatform(args.platform as string | undefined, ctx);
-      const packageName = args.packageName as string | undefined;
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      const packageName = args.packageName;
 
       const snapshot = await collectSnapshot(ctx, platform, packageName, deviceId);
-      const text = formatCrashes(snapshot.crashes, platform);
+      const text = truncateOutput(formatCrashes(snapshot.crashes, platform));
       const hasCrashes = snapshot.crashes.length > 0;
 
-      return {
-        text: truncateOutput(text),
-        ...(hasCrashes ? { isError: true } : {}),
-      };
+      return hasCrashes ? errorResult(text) : textResult(text);
     },
-  },
+  }),
 
   // 6. framestats
-  {
-    tool: {
-      name: "performance_framestats",
-      description:
-        "Collect frame rendering statistics from GPU profiling. Returns frame time percentiles (p50/p90/p99), jank rate, and slow render percentage. Android only.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          platform: {
-            type: "string",
-            enum: ["android", "ios", "desktop"],
-            description: "Target platform (must be android)",
-          },
-          packageName: {
-            type: "string",
-            description: "App package name. Auto-detected from foreground if not provided.",
-          },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-      },
-    },
+  defineTool({
+    name: "performance_framestats",
+    description:
+      "Collect frame rendering statistics from GPU profiling. Returns frame time percentiles (p50/p90/p99), jank rate, and slow render percentage. Android only.",
+    schema: z.object({
+      platform: platformEnum,
+      packageName: z
+        .string()
+        .optional()
+        .describe("App package name. Auto-detected from foreground if not provided."),
+      deviceId: deviceIdField,
+    }),
     handler: async (args, ctx) => {
-      const deviceId = args.deviceId as string | undefined;
-      const platform = resolvePlatform(args.platform as string | undefined, ctx);
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
 
       if (platform !== "android") {
         throw new ValidationError(
@@ -464,7 +390,7 @@ export const performanceTools: ToolDefinition[] = [
       }
 
       const adb = ctx.deviceManager.getAndroidClient(deviceId);
-      let pkg = args.packageName as string | undefined;
+      let pkg = args.packageName;
       if (!pkg) {
         pkg = detectForegroundPackage(adb);
       }
@@ -478,7 +404,7 @@ export const performanceTools: ToolDefinition[] = [
 
       // Reset gfxinfo stats
       adb.exec(`shell dumpsys gfxinfo ${pkg} reset`);
-      await new Promise((r) => setTimeout(r, 100));
+      await sleep(100);
 
       // Collect framestats
       const rawOutput: string = adb.exec(`shell dumpsys gfxinfo ${pkg} framestats`);
@@ -486,9 +412,9 @@ export const performanceTools: ToolDefinition[] = [
       const stats = parseFrameStats(rawOutput);
       const text = formatFrameStats(stats, pkg);
 
-      return { text: truncateOutput(text) };
+      return textResult(truncateOutput(text));
     },
-  },
+  }),
 ];
 
 // ── Aggregation helpers ──

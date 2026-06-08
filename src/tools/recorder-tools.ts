@@ -1,7 +1,6 @@
 import type { ToolDefinition } from "./registry.js";
 import { getRegisteredToolNames } from "./registry.js";
 import type { ToolContext } from "./context.js";
-import type { Platform } from "../device-manager.js";
 import { ScenarioStore, MAX_STEPS_PER_SCENARIO } from "../utils/scenario-store.js";
 import type { Scenario, ScenarioStep, ScenarioEntry } from "../utils/scenario-store.js";
 import { createLazySingleton } from "../utils/lazy.js";
@@ -13,6 +12,10 @@ import {
   ValidationError,
   MobileError,
 } from "../errors.js";
+import { defineTool, z } from "./define-tool.js";
+import { textResult } from "../utils/tool-result.js";
+import { sleep } from "../utils/sleep.js";
+import { RECORDER } from "../constants/timeouts.js";
 
 const getStore = createLazySingleton(() => new ScenarioStore());
 
@@ -144,7 +147,7 @@ function formatStepCompact(step: ScenarioStep, i: number): string {
 
 // ── Playback engine ──
 
-const PLAYBACK_MAX_STEP_TIMEOUT = 30_000;
+const PLAYBACK_MAX_STEP_TIMEOUT = RECORDER.PLAYBACK_MAX_STEP_TIMEOUT_MS;
 const PLAYBACK_MAX_DURATION = 120_000;
 const PLAYBACK_MAX_SPEED = 10;
 
@@ -220,7 +223,7 @@ async function executePlayback(
 
     // Inter-step delay
     if (step.delayBeforeMs > 0 && speed > 0) {
-      await new Promise(r => setTimeout(r, Math.round(step.delayBeforeMs / speed)));
+      await sleep(Math.round(step.delayBeforeMs / speed));
     }
 
     const stepStart = Date.now();
@@ -287,39 +290,37 @@ function formatPlaybackResults(scenario: Scenario, results: PlaybackResult[], to
   return `${statusLine}\n\n${lines.join("\n")}`;
 }
 
+// Shared zod fragments
+const platformEnum = z
+  .enum(["android", "ios", "desktop", "aurora", "browser"])
+  .optional()
+  .describe("Target platform");
+
 // ── Tool definitions ──
 
 export const recorderTools: ToolDefinition[] = [
   // 1. start
-  {
-    tool: {
-      name: "recorder_start",
-      description: "Begin recording user interactions as a test scenario",
-      inputSchema: {
-        type: "object",
-        properties: {
-          name: { type: "string", description: "Scenario name (e.g. 'login-flow')" },
-          platform: {
-            type: "string",
-            enum: ["android", "ios", "desktop", "aurora", "browser"],
-            description: "Target platform",
-          },
-          tags: { type: "array", items: { type: "string" }, description: "Tags for categorizing" },
-          description: { type: "string", description: "Scenario description" },
-          overwrite: { type: "boolean", description: "Overwrite existing (default: false)", default: false },
-        },
-        required: ["name"],
-      },
-    },
+  defineTool({
+    name: "recorder_start",
+    description: "Begin recording user interactions as a test scenario",
+    schema: z.object({
+      name: z
+        .string({ error: "name is required for recorder start" })
+        .min(1, "name is required for recorder start")
+        .describe("Scenario name (e.g. 'login-flow')"),
+      platform: platformEnum,
+      tags: z.array(z.string()).optional().describe("Tags for categorizing"),
+      description: z.string().optional().describe("Scenario description"),
+      overwrite: z.boolean().optional().describe("Overwrite existing (default: false)"),
+    }),
     handler: async (args, ctx) => {
-      const name = args.name as string;
-      if (!name) throw new ValidationError("name is required for recorder start");
+      const name = args.name;
 
       if (activeRecording) {
         throw new RecorderAlreadyActiveError(activeRecording.name);
       }
 
-      const platform = (args.platform as string) ?? ctx.deviceManager.getCurrentPlatform() ?? "android";
+      const platform = args.platform ?? ctx.deviceManager.getCurrentPlatform() ?? "android";
 
       // Check if scenario exists (unless overwrite)
       if (args.overwrite !== true) {
@@ -336,29 +337,24 @@ export const recorderTools: ToolDefinition[] = [
       activeRecording = {
         name,
         platform,
-        description: (args.description as string) ?? "",
-        tags: (args.tags as string[]) ?? [],
+        description: args.description ?? "",
+        tags: args.tags ?? [],
         steps: [],
         startedAt: Date.now(),
         lastStepAt: Date.now(),
       };
 
-      return { text: `Recording started: "${name}" (${platform}). All tool calls will be captured. Use recorder(action:'stop') to save.` };
+      return textResult(`Recording started: "${name}" (${platform}). All tool calls will be captured. Use recorder(action:'stop') to save.`);
     },
-  },
+  }),
 
   // 2. stop
-  {
-    tool: {
-      name: "recorder_stop",
-      description: "Stop recording and save scenario (or discard)",
-      inputSchema: {
-        type: "object",
-        properties: {
-          discard: { type: "boolean", description: "Discard without saving (default: false)", default: false },
-        },
-      },
-    },
+  defineTool({
+    name: "recorder_stop",
+    description: "Stop recording and save scenario (or discard)",
+    schema: z.object({
+      discard: z.boolean().optional().describe("Discard without saving (default: false)"),
+    }),
     handler: async (args) => {
       if (!activeRecording) throw new RecorderNotActiveError();
 
@@ -366,7 +362,7 @@ export const recorderTools: ToolDefinition[] = [
       activeRecording = null;
 
       if (args.discard === true) {
-        return { text: `Recording discarded: "${recording.name}" — ${recording.steps.length} steps dropped.` };
+        return textResult(`Recording discarded: "${recording.name}" — ${recording.steps.length} steps dropped.`);
       }
 
       // Re-index steps
@@ -395,20 +391,18 @@ export const recorderTools: ToolDefinition[] = [
       };
 
       const entry = await store.save(scenario, { overwrite: true });
-      return { text: `Recording saved: "${entry.name}" (${entry.platform}) — ${entry.stepCount} steps` };
+      return textResult(`Recording saved: "${entry.name}" (${entry.platform}) — ${entry.stepCount} steps`);
     },
-  },
+  }),
 
   // 3. status
-  {
-    tool: {
-      name: "recorder_status",
-      description: "Get current recording state",
-      inputSchema: { type: "object", properties: {} },
-    },
+  defineTool({
+    name: "recorder_status",
+    description: "Get current recording state",
+    schema: z.object({}),
     handler: async () => {
       if (!activeRecording) {
-        return { text: "No recording in progress. Use recorder(action:'start') to begin." };
+        return textResult("No recording in progress. Use recorder(action:'start') to begin.");
       }
 
       const elapsed = Date.now() - activeRecording.startedAt;
@@ -423,30 +417,26 @@ export const recorderTools: ToolDefinition[] = [
         last5.forEach((s, i) => lines.push(formatStepCompact(s, activeRecording!.steps.length - last5.length + i)));
       }
 
-      return { text: lines.join("\n") };
+      return textResult(lines.join("\n"));
     },
-  },
+  }),
 
   // 4. add_step
-  {
-    tool: {
-      name: "recorder_add_step",
-      description: "Manually add a step to the active recording",
-      inputSchema: {
-        type: "object",
-        properties: {
-          action_name: { type: "string", description: "Tool action name (e.g. 'ui_assert_visible')" },
-          args: { type: "object", description: "Step arguments" },
-          label: { type: "string", description: "Human-readable label" },
-        },
-        required: ["action_name"],
-      },
-    },
+  defineTool({
+    name: "recorder_add_step",
+    description: "Manually add a step to the active recording",
+    schema: z.object({
+      action_name: z
+        .string({ error: "action_name is required" })
+        .min(1, "action_name is required")
+        .describe("Tool action name (e.g. 'ui_assert_visible')"),
+      args: z.record(z.string(), z.unknown()).optional().describe("Step arguments"),
+      label: z.string().optional().describe("Human-readable label"),
+    }),
     handler: async (args) => {
       if (!activeRecording) throw new RecorderNotActiveError();
 
-      const actionName = args.action_name as string;
-      if (!actionName) throw new ValidationError("action_name is required");
+      const actionName = args.action_name;
 
       if (activeRecording.steps.length >= MAX_STEPS_PER_SCENARIO) {
         throw new ValidationError(`Max steps (${MAX_STEPS_PER_SCENARIO}) reached`);
@@ -457,36 +447,30 @@ export const recorderTools: ToolDefinition[] = [
         index: activeRecording.steps.length,
         type: classifyStepType(actionName),
         action: actionName,
-        args: (args.args as Record<string, unknown>) ?? {},
+        args: args.args ?? {},
         timestampMs: now - activeRecording.startedAt,
         delayBeforeMs: 0,
-        ...(args.label ? { label: args.label as string } : {}),
+        ...(args.label ? { label: args.label } : {}),
       };
 
       activeRecording.steps.push(step);
       activeRecording.lastStepAt = now;
 
-      return { text: `+${step.index + 1}. ${step.action}${step.label ? ` (${step.label})` : ""} (added)` };
+      return textResult(`+${step.index + 1}. ${step.action}${step.label ? ` (${step.label})` : ""} (added)`);
     },
-  },
+  }),
 
   // 5. remove_step
-  {
-    tool: {
-      name: "recorder_remove_step",
-      description: "Remove a step from the active recording by index",
-      inputSchema: {
-        type: "object",
-        properties: {
-          stepIndex: { type: "number", description: "Step index to remove (1-based)" },
-        },
-        required: ["stepIndex"],
-      },
-    },
+  defineTool({
+    name: "recorder_remove_step",
+    description: "Remove a step from the active recording by index",
+    schema: z.object({
+      stepIndex: z.number().describe("Step index to remove (1-based)"),
+    }),
     handler: async (args) => {
       if (!activeRecording) throw new RecorderNotActiveError();
 
-      const idx = (args.stepIndex as number) - 1;
+      const idx = args.stepIndex - 1;
       if (idx < 0 || idx >= activeRecording.steps.length) {
         throw new ValidationError(`Step index out of range. Valid: 1-${activeRecording.steps.length}`);
       }
@@ -495,64 +479,48 @@ export const recorderTools: ToolDefinition[] = [
       // Re-index
       activeRecording.steps.forEach((s, i) => { s.index = i; });
 
-      return { text: `-${idx + 1}. ${removed.action} (removed). ${activeRecording.steps.length} steps remaining.` };
+      return textResult(`-${idx + 1}. ${removed.action} (removed). ${activeRecording.steps.length} steps remaining.`);
     },
-  },
+  }),
 
   // 6. list
-  {
-    tool: {
-      name: "recorder_list",
-      description: "List saved test scenarios",
-      inputSchema: {
-        type: "object",
-        properties: {
-          platform: {
-            type: "string",
-            enum: ["android", "ios", "desktop", "aurora", "browser"],
-            description: "Filter by platform",
-          },
-          tag: { type: "string", description: "Filter by tag" },
-        },
-      },
-    },
+  defineTool({
+    name: "recorder_list",
+    description: "List saved test scenarios",
+    schema: z.object({
+      platform: platformEnum,
+      tag: z.string().optional().describe("Filter by tag"),
+    }),
     handler: async (args) => {
-      const platform = args.platform as string | undefined;
-      const tag = args.tag as string | undefined;
+      const platform = args.platform;
+      const tag = args.tag;
       const entries = await getStore().list(platform, tag);
 
       if (entries.length === 0) {
         const filter = [platform, tag].filter(Boolean).join(", ");
-        return { text: `No scenarios found${filter ? ` (filter: ${filter})` : ""}. Use recorder(action:'start') to create one.` };
+        return textResult(`No scenarios found${filter ? ` (filter: ${filter})` : ""}. Use recorder(action:'start') to create one.`);
       }
 
       const header = `Scenarios${platform ? ` (${platform})` : ""}: ${entries.length} total`;
       const list = entries.map((e, i) => `  ${i + 1}. ${formatEntry(e)}`).join("\n");
-      return { text: `${header}\n${list}` };
+      return textResult(`${header}\n${list}`);
     },
-  },
+  }),
 
   // 7. show
-  {
-    tool: {
-      name: "recorder_show",
-      description: "Display contents of a saved scenario",
-      inputSchema: {
-        type: "object",
-        properties: {
-          name: { type: "string", description: "Scenario name" },
-          platform: {
-            type: "string",
-            enum: ["android", "ios", "desktop", "aurora", "browser"],
-          },
-        },
-        required: ["name"],
-      },
-    },
+  defineTool({
+    name: "recorder_show",
+    description: "Display contents of a saved scenario",
+    schema: z.object({
+      name: z
+        .string({ error: "name is required" })
+        .min(1, "name is required")
+        .describe("Scenario name"),
+      platform: platformEnum,
+    }),
     handler: async (args, ctx) => {
-      const name = args.name as string;
-      if (!name) throw new ValidationError("name is required");
-      const platform = (args.platform as string) ?? ctx.deviceManager.getCurrentPlatform() ?? "android";
+      const name = args.name;
+      const platform = args.platform ?? ctx.deviceManager.getCurrentPlatform() ?? "android";
 
       const scenario = await getStore().get(name, platform);
       const tags = scenario.tags.length > 0 ? `\nTags: ${scenario.tags.join(", ")}` : "";
@@ -569,64 +537,54 @@ export const recorderTools: ToolDefinition[] = [
         lines.push(formatStepCompact(step, i));
       });
 
-      return { text: lines.join("\n") };
+      return textResult(lines.join("\n"));
     },
-  },
+  }),
 
   // 8. delete
-  {
-    tool: {
-      name: "recorder_delete",
-      description: "Delete a saved scenario",
-      inputSchema: {
-        type: "object",
-        properties: {
-          name: { type: "string", description: "Scenario name" },
-          platform: {
-            type: "string",
-            enum: ["android", "ios", "desktop", "aurora", "browser"],
-          },
-        },
-        required: ["name"],
-      },
-    },
+  defineTool({
+    name: "recorder_delete",
+    description: "Delete a saved scenario",
+    schema: z.object({
+      name: z
+        .string({ error: "name is required" })
+        .min(1, "name is required")
+        .describe("Scenario name"),
+      platform: platformEnum,
+    }),
     handler: async (args, ctx) => {
-      const name = args.name as string;
-      if (!name) throw new ValidationError("name is required");
-      const platform = (args.platform as string) ?? ctx.deviceManager.getCurrentPlatform() ?? "android";
+      const name = args.name;
+      const platform = args.platform ?? ctx.deviceManager.getCurrentPlatform() ?? "android";
 
       await getStore().delete(name, platform);
-      return { text: `Deleted scenario: ${name} (${platform})` };
+      return textResult(`Deleted scenario: ${name} (${platform})`);
     },
-  },
+  }),
 
   // 9. play
-  {
-    tool: {
-      name: "recorder_play",
-      description: "Replay a saved scenario. Executes all steps sequentially with optional speed/timeout control.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          name: { type: "string", description: "Scenario name" },
-          platform: {
-            type: "string",
-            enum: ["android", "ios", "desktop", "aurora", "browser"],
-          },
-          speed: { type: "number", description: "Speed multiplier (default: 1.0, 0 = no delays)", default: 1.0 },
-          stopOnFail: { type: "boolean", description: "Stop on first failure (default: true)", default: true },
-          stepTimeout: { type: "number", description: "Per-step timeout ms (default: 5000)", default: 5000 },
-          maxDuration: { type: "number", description: "Max total ms (default: 60000)", default: 60000 },
-          fromStep: { type: "number", description: "Start from step N (1-indexed)" },
-          toStep: { type: "number", description: "End at step N (1-indexed)" },
-          dryRun: { type: "boolean", description: "Print steps without executing", default: false },
-        },
-        required: ["name"],
-      },
-    },
+  defineTool({
+    name: "recorder_play",
+    description:
+      "Replay a saved scenario. Executes all steps sequentially with optional speed/timeout control.",
+    schema: z.object({
+      name: z
+        .string({ error: "name is required for play" })
+        .min(1, "name is required for play")
+        .describe("Scenario name"),
+      platform: platformEnum,
+      speed: z
+        .number()
+        .optional()
+        .describe("Speed multiplier (default: 1.0, 0 = no delays)"),
+      stopOnFail: z.boolean().optional().describe("Stop on first failure (default: true)"),
+      stepTimeout: z.number().optional().describe("Per-step timeout ms (default: 5000)"),
+      maxDuration: z.number().optional().describe("Max total ms (default: 60000)"),
+      fromStep: z.number().optional().describe("Start from step N (1-indexed)"),
+      toStep: z.number().optional().describe("End at step N (1-indexed)"),
+      dryRun: z.boolean().optional().describe("Print steps without executing"),
+    }),
     handler: async (args, ctx, depth = 0) => {
-      const name = args.name as string;
-      if (!name) throw new ValidationError("name is required for play");
+      const name = args.name;
 
       if (activeRecording) {
         throw new MobileError(
@@ -635,49 +593,47 @@ export const recorderTools: ToolDefinition[] = [
         );
       }
 
-      const platform = (args.platform as string) ?? ctx.deviceManager.getCurrentPlatform() ?? "android";
+      const platform = args.platform ?? ctx.deviceManager.getCurrentPlatform() ?? "android";
       const scenario = await getStore().get(name, platform);
 
       const { results, totalMs } = await executePlayback(scenario, ctx, {
-        speed: args.speed as number,
-        stopOnFail: args.stopOnFail as boolean,
-        stepTimeout: args.stepTimeout as number,
-        maxDuration: args.maxDuration as number,
-        fromStep: args.fromStep as number,
-        toStep: args.toStep as number,
-        dryRun: args.dryRun as boolean,
-      }, depth);
+        speed: args.speed,
+        stopOnFail: args.stopOnFail,
+        stepTimeout: args.stepTimeout,
+        maxDuration: args.maxDuration,
+        fromStep: args.fromStep,
+        toStep: args.toStep,
+        dryRun: args.dryRun,
+      }, depth ?? 0);
 
       const text = formatPlaybackResults(scenario, results, totalMs);
       const failed = results.some(r => r.status === "FAIL");
 
-      return { text, ...(failed ? { isError: true } : {}) };
+      const result = textResult(text);
+      if (failed) result.isError = true;
+      return result;
     },
-  },
+  }),
 
   // 10. export
-  {
-    tool: {
-      name: "recorder_export",
-      description: "Export scenario as flow_steps (for flow_run) or markdown checklist",
-      inputSchema: {
-        type: "object",
-        properties: {
-          name: { type: "string", description: "Scenario name" },
-          platform: {
-            type: "string",
-            enum: ["android", "ios", "desktop", "aurora", "browser"],
-          },
-          format: { type: "string", enum: ["flow_steps", "markdown"], description: "Export format (default: flow_steps)" },
-        },
-        required: ["name"],
-      },
-    },
+  defineTool({
+    name: "recorder_export",
+    description: "Export scenario as flow_steps (for flow_run) or markdown checklist",
+    schema: z.object({
+      name: z
+        .string({ error: "name is required for export" })
+        .min(1, "name is required for export")
+        .describe("Scenario name"),
+      platform: platformEnum,
+      format: z
+        .enum(["flow_steps", "markdown"])
+        .optional()
+        .describe("Export format (default: flow_steps)"),
+    }),
     handler: async (args, ctx) => {
-      const name = args.name as string;
-      if (!name) throw new ValidationError("name is required for export");
-      const platform = (args.platform as string) ?? ctx.deviceManager.getCurrentPlatform() ?? "android";
-      const format = (args.format as string) ?? "flow_steps";
+      const name = args.name;
+      const platform = args.platform ?? ctx.deviceManager.getCurrentPlatform() ?? "android";
+      const format = args.format ?? "flow_steps";
       const scenario = await getStore().get(name, platform);
 
       if (format === "markdown") {
@@ -692,7 +648,7 @@ export const recorderTools: ToolDefinition[] = [
             : "";
           lines.push(`- [ ] ${i + 1}. ${step.action}${argsStr}${label}`);
         });
-        return { text: `Exported ${scenario.name} as markdown:\n\n${lines.join("\n")}` };
+        return textResult(`Exported ${scenario.name} as markdown:\n\n${lines.join("\n")}`);
       }
 
       // flow_steps format
@@ -704,7 +660,7 @@ export const recorderTools: ToolDefinition[] = [
       }));
 
       const json = JSON.stringify({ steps: flowSteps }, null, 2);
-      return { text: `Exported ${scenario.name} as flow_steps (${scenario.steps.length} steps):\n\n${json}\n\nUse with: flow(action:'run', steps: <above>)` };
+      return textResult(`Exported ${scenario.name} as flow_steps (${scenario.steps.length} steps):\n\n${json}\n\nUse with: flow(action:'run', steps: <above>)`);
     },
-  },
+  }),
 ];

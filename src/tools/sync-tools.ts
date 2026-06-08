@@ -13,6 +13,10 @@ import {
 import { validateBaselineName } from "../utils/sanitize.js";
 import { validateDeviceId } from "../utils/sanitize.js";
 import { truncateOutput } from "../utils/truncate.js";
+import { defineTool, z } from "./define-tool.js";
+import { textResult, errorResult } from "../utils/tool-result.js";
+import { sleep } from "../utils/sleep.js";
+import { SYNC } from "../constants/timeouts.js";
 
 // ── Types ──
 
@@ -61,7 +65,7 @@ const SYNC_MAX_GROUPS = 5;
 const SYNC_MAX_ROLES = 10;
 const SYNC_MAX_STEPS = 30;
 const SYNC_MAX_DURATION = 120_000;
-const SYNC_BARRIER_TIMEOUT = 30_000;
+const SYNC_BARRIER_TIMEOUT = SYNC.BARRIER_TIMEOUT_MS;
 const SYNC_TTL_MS = 5 * 60 * 1000;
 const SYNC_ASSERT_MAX_RETRIES = 5;
 const SYNC_ASSERT_RETRY_DELAY = 500;
@@ -358,11 +362,6 @@ function formatSyncResult(result: SyncRunResult, group: SyncGroup): string {
         continue;
       }
 
-      // Find barrier timing for this step
-      const barrierTiming = result.barrierTimings.find(
-        bt => bt.role === role.name && roleResults.indexOf(r) < roleResults.length
-      );
-
       lines.push(`  ${r.stepIndex}. ${r.action}: ${r.status} — ${r.message} (${r.durationMs}ms)`);
     }
 
@@ -387,36 +386,34 @@ function formatSyncResult(result: SyncRunResult, group: SyncGroup): string {
   return lines.join("\n");
 }
 
+// Zod schemas
+const roleSchema = z.object({
+  name: z.string().describe("Role name (e.g. 'sender', 'receiver')"),
+  deviceId: z.string().describe("Device ID for this role"),
+});
+
+const stepSchema = z.object({
+  role: z.string().describe("Which role executes this step"),
+  action: z.string().describe("Tool action to execute"),
+  args: z.record(z.string(), z.unknown()).optional().describe("Action arguments"),
+  barrier: z.string().optional().describe("Barrier name — all roles with this barrier wait for each other"),
+  label: z.string().optional().describe("Step label"),
+  on_error: z.enum(["stop", "skip", "retry"]).optional().describe("Error handling (default: stop)"),
+});
+
 // ── Tool handlers ──
 
 export const syncTools: ToolDefinition[] = [
   // create_group
-  {
-    tool: {
-      name: "sync_create_group",
-      description: "Create a sync group of 2+ devices with named roles for coordinated testing.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          name: { type: "string", description: "Group name (e.g. 'chat-test')" },
-          roles: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                name: { type: "string", description: "Role name (e.g. 'sender', 'receiver')" },
-                deviceId: { type: "string", description: "Device ID for this role" },
-              },
-              required: ["name", "deviceId"],
-            },
-            description: "Role-to-device mapping (min 2, max 10)",
-          },
-        },
-        required: ["name", "roles"],
-      },
-    },
+  defineTool({
+    name: "sync_create_group",
+    description: "Create a sync group of 2+ devices with named roles for coordinated testing.",
+    schema: z.object({
+      name: z.string().describe("Group name (e.g. 'chat-test')"),
+      roles: z.array(roleSchema).describe("Role-to-device mapping (min 2, max 10)"),
+    }),
     handler: async (args) => {
-      const name = args.name as string;
+      const name = args.name;
       const roles = args.roles as SyncGroupRole[];
 
       validateBaselineName(name, "sync group name");
@@ -463,48 +460,27 @@ export const syncTools: ToolDefinition[] = [
       activeGroups.set(name, group);
 
       const roleLines = roles.map(r => `  ${r.name}: ${r.deviceId}`).join("\n");
-      return { text: `Sync group "${name}" created (${roles.length} devices)\n${roleLines}` };
+      return textResult(`Sync group "${name}" created (${roles.length} devices)\n${roleLines}`);
     },
-  },
+  }),
 
   // run
-  {
-    tool: {
-      name: "sync_run",
-      description: "Execute coordinated steps across devices with barrier synchronization.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          group: { type: "string", description: "Sync group name" },
-          steps: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                role: { type: "string", description: "Which role executes this step" },
-                action: { type: "string", description: "Tool action to execute" },
-                args: { type: "object", description: "Action arguments" },
-                barrier: { type: "string", description: "Barrier name — all roles with this barrier wait for each other" },
-                label: { type: "string", description: "Step label" },
-                on_error: { type: "string", enum: ["stop", "skip", "retry"], description: "Error handling (default: stop)" },
-              },
-              required: ["role", "action"],
-            },
-            description: "Sync steps with role targeting and barriers",
-          },
-          maxDuration: { type: "number", description: "Max total duration ms (default: 60000)" },
-        },
-        required: ["group", "steps"],
-      },
-    },
+  defineTool({
+    name: "sync_run",
+    description: "Execute coordinated steps across devices with barrier synchronization.",
+    schema: z.object({
+      group: z.string().describe("Sync group name"),
+      steps: z.array(stepSchema).describe("Sync steps with role targeting and barriers"),
+      maxDuration: z.number().optional().describe("Max total duration ms (default: 60000)"),
+    }),
     handler: async (args, ctx, depth = 0) => {
-      if (depth > MAX_RECURSION_DEPTH) {
+      if ((depth ?? 0) > MAX_RECURSION_DEPTH) {
         throw new MobileError(`Maximum recursion depth (${MAX_RECURSION_DEPTH}) exceeded.`, "MAX_RECURSION");
       }
 
-      const groupName = args.group as string;
+      const groupName = args.group;
       const steps = args.steps as SyncStep[];
-      const maxDuration = Math.min((args.maxDuration as number) || 60_000, SYNC_MAX_DURATION);
+      const maxDuration = Math.min(args.maxDuration || 60_000, SYNC_MAX_DURATION);
 
       const group = getGroup(groupName);
 
@@ -534,48 +510,42 @@ export const syncTools: ToolDefinition[] = [
         }
       }
 
-      const result = await executeSync(group, steps, ctx, depth, maxDuration);
-      return { text: formatSyncResult(result, group) };
+      const result = await executeSync(group, steps, ctx, depth ?? 0, maxDuration);
+      return textResult(formatSyncResult(result, group));
     },
-  },
+  }),
 
   // assert_cross
-  {
-    tool: {
-      name: "sync_assert_cross",
-      description: "Cross-device assertion: perform action on source device, verify result on target device with retries.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          group: { type: "string", description: "Sync group name" },
-          source_role: { type: "string", description: "Role that performs the source action" },
-          source_action: { type: "string", description: "Action to execute on source device" },
-          source_args: { type: "object", description: "Source action arguments" },
-          target_role: { type: "string", description: "Role that verifies the result" },
-          target_action: { type: "string", description: "Assertion action on target device" },
-          target_args: { type: "object", description: "Target action arguments" },
-          delay_ms: { type: "number", description: "Delay between source and target (default: 1000)" },
-          retries: { type: "number", description: "Max target assertion retries (default: 3)" },
-          label: { type: "string", description: "Assertion label" },
-        },
-        required: ["group", "source_role", "source_action", "target_role", "target_action"],
-      },
-    },
+  defineTool({
+    name: "sync_assert_cross",
+    description: "Cross-device assertion: perform action on source device, verify result on target device with retries.",
+    schema: z.object({
+      group: z.string().describe("Sync group name"),
+      source_role: z.string().describe("Role that performs the source action"),
+      source_action: z.string().describe("Action to execute on source device"),
+      source_args: z.record(z.string(), z.unknown()).optional().describe("Source action arguments"),
+      target_role: z.string().describe("Role that verifies the result"),
+      target_action: z.string().describe("Assertion action on target device"),
+      target_args: z.record(z.string(), z.unknown()).optional().describe("Target action arguments"),
+      delay_ms: z.number().optional().describe("Delay between source and target (default: 1000)"),
+      retries: z.number().optional().describe("Max target assertion retries (default: 3)"),
+      label: z.string().optional().describe("Assertion label"),
+    }),
     handler: async (args, ctx, depth = 0) => {
-      if (depth > MAX_RECURSION_DEPTH) {
+      if ((depth ?? 0) > MAX_RECURSION_DEPTH) {
         throw new MobileError(`Maximum recursion depth (${MAX_RECURSION_DEPTH}) exceeded.`, "MAX_RECURSION");
       }
 
-      const groupName = args.group as string;
-      const sourceRole = args.source_role as string;
-      const sourceAction = args.source_action as string;
+      const groupName = args.group;
+      const sourceRole = args.source_role;
+      const sourceAction = args.source_action;
       const sourceArgs = (args.source_args ?? {}) as Record<string, unknown>;
-      const targetRole = args.target_role as string;
-      const targetAction = args.target_action as string;
+      const targetRole = args.target_role;
+      const targetAction = args.target_action;
       const targetArgs = (args.target_args ?? {}) as Record<string, unknown>;
-      const delayMs = Math.min((args.delay_ms as number) || SYNC_ASSERT_DEFAULT_DELAY, 30_000);
-      const retries = Math.min((args.retries as number) || 3, SYNC_ASSERT_MAX_RETRIES);
-      const label = (args.label as string) || `${sourceAction} → ${targetAction}`;
+      const delayMs = Math.min(args.delay_ms || SYNC_ASSERT_DEFAULT_DELAY, 30_000);
+      const retries = Math.min(args.retries || 3, SYNC_ASSERT_MAX_RETRIES);
+      const label = args.label || `${sourceAction} → ${targetAction}`;
 
       const group = getGroup(groupName);
       const sourceDeviceId = getDeviceIdForRole(group, sourceRole);
@@ -600,22 +570,21 @@ export const syncTools: ToolDefinition[] = [
         const result = await ctx.handleTool(
           sourceAction,
           { ...sourceArgs, deviceId: sourceDeviceId },
-          depth + 1,
+          (depth ?? 0) + 1,
         );
         sourceText = typeof result === "object" && result !== null && "text" in result
           ? (result as { text: string }).text
           : JSON.stringify(result);
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
-        return {
-          text: `Cross-assert FAILED (${label})\n  source [${sourceRole}]: ${sourceAction} FAIL — ${msg} (${Date.now() - sourceStart}ms)`,
-          isError: true,
-        };
+        return errorResult(
+          `Cross-assert FAILED (${label})\n  source [${sourceRole}]: ${sourceAction} FAIL — ${msg} (${Date.now() - sourceStart}ms)`,
+        );
       }
       const sourceMs = Date.now() - sourceStart;
 
       // Delay
-      await new Promise(r => setTimeout(r, delayMs));
+      await sleep(delayMs);
 
       // Target assertion with retries
       let lastError = "";
@@ -624,57 +593,50 @@ export const syncTools: ToolDefinition[] = [
           const result = await ctx.handleTool(
             targetAction,
             { ...targetArgs, deviceId: targetDeviceId },
-            depth + 1,
+            (depth ?? 0) + 1,
           );
           const targetText = typeof result === "object" && result !== null && "text" in result
             ? (result as { text: string }).text
             : JSON.stringify(result);
 
           const totalMs = Date.now() - totalStart;
-          return {
-            text: [
+          return textResult(
+            [
               `Cross-assert PASSED (${label}) — ${totalMs}ms`,
               `  source [${sourceRole}]: ${sourceAction} OK — ${truncateOutput(sourceText, { maxChars: 150, maxLines: 2 })} (${sourceMs}ms)`,
               `  delay: ${delayMs}ms`,
               `  target [${targetRole}]: ${targetAction} OK — ${truncateOutput(targetText, { maxChars: 150, maxLines: 2 })} (attempt ${attempt}/${retries})`,
             ].join("\n"),
-          };
+          );
         } catch (error) {
           lastError = error instanceof Error ? error.message : String(error);
           if (attempt < retries) {
-            await new Promise(r => setTimeout(r, SYNC_ASSERT_RETRY_DELAY));
+            await sleep(SYNC_ASSERT_RETRY_DELAY);
           }
         }
       }
 
       const totalMs = Date.now() - totalStart;
-      return {
-        text: [
+      return errorResult(
+        [
           `Cross-assert FAILED (${label}) — ${totalMs}ms`,
           `  source [${sourceRole}]: ${sourceAction} OK — ${truncateOutput(sourceText, { maxChars: 150, maxLines: 2 })} (${sourceMs}ms)`,
           `  delay: ${delayMs}ms`,
           `  target [${targetRole}]: ${targetAction} FAIL after ${retries} retries — ${lastError}`,
         ].join("\n"),
-        isError: true,
-      };
+      );
     },
-  },
+  }),
 
   // status
-  {
-    tool: {
-      name: "sync_status",
-      description: "Show details of a sync group and its last run result.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          group: { type: "string", description: "Sync group name" },
-        },
-        required: ["group"],
-      },
-    },
+  defineTool({
+    name: "sync_status",
+    description: "Show details of a sync group and its last run result.",
+    schema: z.object({
+      group: z.string().describe("Sync group name"),
+    }),
     handler: async (args) => {
-      const group = getGroup(args.group as string);
+      const group = getGroup(args.group);
       const ageMs = Date.now() - group.createdAt;
       const ageSec = Math.round(ageMs / 1000);
       const ttlRemaining = Math.max(0, Math.round((SYNC_TTL_MS - ageMs) / 1000));
@@ -695,20 +657,18 @@ export const syncTools: ToolDefinition[] = [
         lines.push("  Last run: none");
       }
 
-      return { text: lines.join("\n") };
+      return textResult(lines.join("\n"));
     },
-  },
+  }),
 
   // list
-  {
-    tool: {
-      name: "sync_list",
-      description: "List all active sync groups.",
-      inputSchema: { type: "object", properties: {} },
-    },
+  defineTool({
+    name: "sync_list",
+    description: "List all active sync groups.",
+    schema: z.object({}),
     handler: async () => {
       if (activeGroups.size === 0) {
-        return { text: "No active sync groups." };
+        return textResult("No active sync groups.");
       }
 
       const lines = ["Sync groups:"];
@@ -719,32 +679,26 @@ export const syncTools: ToolDefinition[] = [
         lines.push(`  ${group.name} — ${group.roles.length} devices (${status})`);
       }
 
-      return { text: lines.join("\n") };
+      return textResult(lines.join("\n"));
     },
-  },
+  }),
 
   // destroy
-  {
-    tool: {
-      name: "sync_destroy",
-      description: "Destroy a sync group and release resources.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          group: { type: "string", description: "Sync group name" },
-        },
-        required: ["group"],
-      },
-    },
+  defineTool({
+    name: "sync_destroy",
+    description: "Destroy a sync group and release resources.",
+    schema: z.object({
+      group: z.string().describe("Sync group name"),
+    }),
     handler: async (args) => {
-      const name = args.group as string;
+      const name = args.group;
       if (!activeGroups.has(name)) {
         throw new SyncGroupNotFoundError(name);
       }
       destroyGroupInternal(name);
-      return { text: `Sync group "${name}" destroyed.` };
+      return textResult(`Sync group "${name}" destroyed.`);
     },
-  },
+  }),
 ];
 
 // ── Cleanup (for testing) ──

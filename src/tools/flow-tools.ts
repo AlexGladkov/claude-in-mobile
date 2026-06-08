@@ -7,6 +7,10 @@ import { DeviceNotFoundError, DeviceOfflineError, AdbNotInstalledError, Validati
 import { MAX_RECURSION_DEPTH } from "./context.js";
 import { truncateOutput } from "../utils/truncate.js";
 import { applyScale } from "./helpers/resolve-element.js";
+import { defineTool, z } from "./define-tool.js";
+import { textResult } from "../utils/tool-result.js";
+import { sleep } from "../utils/sleep.js";
+import { FLOW } from "../constants/timeouts.js";
 
 // Actions explicitly blocked from flow execution (security-sensitive).
 // Everything else registered in the registry is allowed.
@@ -28,9 +32,9 @@ function isFlowActionAllowed(actionName: string): boolean {
   return getRegisteredToolNames().has(actionName);
 }
 
-const FLOW_MAX_STEPS = 20;
+const FLOW_MAX_STEPS = FLOW.MAX_STEPS;
 const BATCH_MAX_COMMANDS = 50;
-const FLOW_MAX_DURATION = 60000;
+const FLOW_MAX_DURATION = FLOW.MAX_DURATION_MS;
 const FLOW_MAX_REPEAT = 10;
 const PARALLEL_MAX_DEVICES = 10;
 
@@ -67,7 +71,7 @@ async function collectCompactUiTree(
 ): Promise<string> {
   const elements = await Promise.race([
     ctx.getElementsForPlatform(platform),
-    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("ui tree timeout")), 800)),
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("ui tree timeout")), FLOW.UI_TREE_TIMEOUT_MS)),
   ]);
   const interactive = elements.filter(
     (el: UiElement) => !el.password && (el.clickable || el.scrollable || el.className.includes("EditText")),
@@ -253,40 +257,59 @@ function formatFlowResults(
   return lines.join("\n") + diagBlock;
 }
 
+// Zod schemas
+const platformEnum = z
+  .enum(["android", "ios", "desktop", "aurora", "browser"])
+  .optional()
+  .describe("Target platform. If not specified, uses the active target.");
+
+const batchCommandSchema = z.object({
+  name: z.string().describe("Tool name (e.g., 'input_tap', 'system_wait', 'input_text')"),
+  arguments: z.record(z.string(), z.unknown()).optional().describe("Tool arguments"),
+});
+
+const flowStepSchema = z.object({
+  action: z.string().describe("Any registered tool name except system_shell and browser_evaluate"),
+  args: z.record(z.string(), z.unknown()).optional().describe("Tool arguments"),
+  if_not_found: z
+    .enum(["skip", "scroll_down", "scroll_up", "fail"])
+    .optional()
+    .describe("Fallback when element not found (for tap/find actions)"),
+  repeat: z
+    .object({
+      times: z.number().optional().describe("Repeat N times (max 10)"),
+      until_found: z.string().optional().describe("Repeat until element with this text appears"),
+      until_not_found: z.string().optional().describe("Repeat until element with this text disappears"),
+    })
+    .optional()
+    .describe("Loop control"),
+  on_error: z.enum(["stop", "skip", "retry"]).optional().describe("Error handling (default: stop)"),
+  label: z.string().optional().describe("Label for logging"),
+});
+
 export const flowTools: ToolDefinition[] = [
-  {
-    tool: {
-      name: "flow_batch",
-      description: "Execute multiple commands in one round-trip. Set turbo:true for UI context per step (experimental).",
-      inputSchema: {
-        type: "object",
-        properties: {
-          commands: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                name: { type: "string", description: "Tool name (e.g., 'input_tap', 'system_wait', 'input_text')" },
-                arguments: { type: "object", description: "Tool arguments" },
-              },
-              required: ["name"],
-            },
-            description: "Array of commands to execute sequentially",
-          },
-          stopOnError: { type: "boolean", description: "Stop execution on first error (default: true)", default: true },
-          turbo: { type: "boolean", description: "[experimental] Rich UI feedback per step. Compact UI tree after each step, screenshot on failure.", default: false },
-        },
-        required: ["commands"],
-      },
-    },
+  defineTool({
+    name: "flow_batch",
+    description: "Execute multiple commands in one round-trip. Set turbo:true for UI context per step (experimental).",
+    schema: z.object({
+      commands: z
+        .array(batchCommandSchema)
+        .optional()
+        .describe("Array of commands to execute sequentially"),
+      stopOnError: z.boolean().optional().describe("Stop execution on first error (default: true)"),
+      turbo: z
+        .boolean()
+        .optional()
+        .describe("[experimental] Rich UI feedback per step. Compact UI tree after each step, screenshot on failure."),
+    }),
     handler: async (args, ctx, _depth = 0) => {
-      if (_depth! > MAX_RECURSION_DEPTH) {
+      if ((_depth ?? 0) > MAX_RECURSION_DEPTH) {
         throw new Error(`Maximum recursion depth (${MAX_RECURSION_DEPTH}) exceeded. Nested batch_commands/run_flow calls are limited to prevent stack overflow.`);
       }
 
-      const commands = args.commands as Array<{ name: string; arguments?: Record<string, unknown> }>;
+      const commands = args.commands as Array<{ name: string; arguments?: Record<string, unknown> }> | undefined;
       const stopOnError = args.stopOnError !== false;
-      const turbo = (args.turbo as boolean) ?? ctx.turboDefault;
+      const turbo = args.turbo ?? ctx.turboDefault;
 
       if (!commands || commands.length === 0) {
         throw new ValidationError("No commands provided.");
@@ -389,60 +412,37 @@ export const flowTools: ToolDefinition[] = [
         for (const ss of turboScreenshots) {
           content.push({ type: "image", data: ss.data, mimeType: ss.mimeType });
         }
-        return { content };
+        // Multi-content (text+image) escape hatch — cast through unknown because
+        // the canonical ToolResult shape only allows text blocks. Image responses
+        // are valid MCP content but live outside the strict text-only type.
+        return { content, text: textBlock } as unknown as ReturnType<typeof textResult>;
       }
 
-      return { text: textBlock };
+      return textResult(textBlock);
     },
-  },
-  {
-    tool: {
-      name: "flow_run",
-      description: "Multi-step automation flow with conditionals, loops, error handling. Use for E2E testing instead of calling tools one-by-one. Set turbo:true for UI context per step (experimental). Max 20 steps.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          steps: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: {
-                action: { type: "string", description: "Any registered tool name except system_shell and browser_evaluate" },
-                args: { type: "object", description: "Tool arguments" },
-                if_not_found: { type: "string", enum: ["skip", "scroll_down", "scroll_up", "fail"], description: "Fallback when element not found (for tap/find actions)" },
-                repeat: {
-                  type: "object",
-                  properties: {
-                    times: { type: "number", description: "Repeat N times (max 10)" },
-                    until_found: { type: "string", description: "Repeat until element with this text appears" },
-                    until_not_found: { type: "string", description: "Repeat until element with this text disappears" },
-                  },
-                  description: "Loop control",
-                },
-                on_error: { type: "string", enum: ["stop", "skip", "retry"], description: "Error handling (default: stop)" },
-                label: { type: "string", description: "Label for logging" },
-              },
-              required: ["action"],
-            },
-            description: "Steps to execute sequentially",
-          },
-          maxDuration: { type: "number", description: "Max total duration in ms (default: 30000, max: 60000)", default: 30000 },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-          turbo: { type: "boolean", description: "[experimental] Rich UI feedback per step. Compact UI tree after each step, screenshot on failure.", default: false },
-        },
-        required: ["steps"],
-      },
-    },
+  }),
+  defineTool({
+    name: "flow_run",
+    description: "Multi-step automation flow with conditionals, loops, error handling. Use for E2E testing instead of calling tools one-by-one. Set turbo:true for UI context per step (experimental). Max 20 steps.",
+    schema: z.object({
+      steps: z.array(flowStepSchema).optional().describe("Steps to execute sequentially"),
+      maxDuration: z.number().optional().describe("Max total duration in ms (default: 30000, max: 60000)"),
+      platform: platformEnum,
+      turbo: z
+        .boolean()
+        .optional()
+        .describe("[experimental] Rich UI feedback per step. Compact UI tree after each step, screenshot on failure."),
+    }),
     handler: async (args, ctx, _depth = 0) => {
-      if (_depth! > MAX_RECURSION_DEPTH) {
+      if ((_depth ?? 0) > MAX_RECURSION_DEPTH) {
         throw new Error(`Maximum recursion depth (${MAX_RECURSION_DEPTH}) exceeded. Nested batch_commands/run_flow calls are limited to prevent stack overflow.`);
       }
 
       const platform = args.platform as Platform | undefined;
-      const steps = args.steps as FlowStep[];
+      const steps = args.steps as FlowStep[] | undefined;
       const maxDuration = Math.min((args.maxDuration as number) ?? 30000, FLOW_MAX_DURATION);
       const currentPlatform = (platform ?? ctx.deviceManager.getCurrentPlatform()) as string;
-      const turbo = (args.turbo as boolean) ?? ctx.turboDefault;
+      const turbo = args.turbo ?? ctx.turboDefault;
 
       if (!steps || steps.length === 0) {
         throw new ValidationError("No steps provided.");
@@ -498,16 +498,18 @@ export const flowTools: ToolDefinition[] = [
       }
 
       /** Build the final return value, factoring in turbo multi-content. */
-      function buildReturn(totalMs: number, diagBlock: string = ""): { text: string } | { content: ContentBlock[] } {
+      function buildReturn(totalMs: number, diagBlock: string = "") {
         const text = formatFlowResults(results, totalMs, diagBlock, turboContexts);
         if (turbo && turboScreenshots.length > 0) {
           const content: ContentBlock[] = [{ type: "text", text }];
           for (const ss of turboScreenshots) {
             content.push({ type: "image", data: ss.data, mimeType: ss.mimeType });
           }
-          return { content };
+          // See note in flow_batch — multi-content (text+image) requires casting
+          // because ToolResult is text-only in the canonical typing.
+          return { content, text } as unknown as ReturnType<typeof textResult>;
         }
-        return { text };
+        return textResult(text);
       }
 
       for (let i = 0; i < steps.length; i++) {
@@ -591,7 +593,7 @@ export const flowTools: ToolDefinition[] = [
                   throw condErr;
                 }
               }
-              await new Promise(resolve => setTimeout(resolve, turbo ? 100 : 300));
+              await sleep(turbo ? FLOW.STEP_DELAY_TURBO_MS : FLOW.STEP_DELAY_NORMAL_MS);
             }
           } catch (error: unknown) {
             const durationMs = Date.now() - stepStart;
@@ -608,7 +610,7 @@ export const flowTools: ToolDefinition[] = [
               } else if (step.if_not_found === "scroll_down" || step.if_not_found === "scroll_up") {
                 try {
                   await ctx.handleTool("swipe", { direction: step.if_not_found === "scroll_down" ? "up" : "down", platform: currentPlatform }, (_depth ?? 0) + 1);
-                  await new Promise(resolve => setTimeout(resolve, turbo ? 100 : 300));
+                  await sleep(turbo ? FLOW.STEP_DELAY_TURBO_MS : FLOW.STEP_DELAY_NORMAL_MS);
                   const retryResult = await ctx.handleTool(step.action, stepArgs, (_depth ?? 0) + 1);
                   const retryText = typeof retryResult === "object" && retryResult !== null && "text" in retryResult
                     ? (retryResult as { text: string }).text
@@ -639,7 +641,7 @@ export const flowTools: ToolDefinition[] = [
             }
 
             if (onError === "retry" && iter < maxIterations - 1) {
-              await new Promise(resolve => setTimeout(resolve, turbo ? 100 : 300));
+              await sleep(turbo ? FLOW.STEP_DELAY_TURBO_MS : FLOW.STEP_DELAY_NORMAL_MS);
               if (Date.now() - flowStart > maxDuration) break;
               continue;
             }
@@ -655,7 +657,7 @@ export const flowTools: ToolDefinition[] = [
               await collectTurboContext(i + 1, false);
               if (!turbo) {
                 const diag = await collectFailureDiag(ctx, currentPlatform, i + 1);
-                return { text: formatFlowResults(results, Date.now() - flowStart, diag) };
+                return textResult(formatFlowResults(results, Date.now() - flowStart, diag));
               }
               return buildReturn(Date.now() - flowStart);
             }
@@ -671,7 +673,7 @@ export const flowTools: ToolDefinition[] = [
           if (!lastStepResult.success && (step.on_error ?? "stop") === "stop") {
             if (!turbo) {
               const diag = await collectFailureDiag(ctx, currentPlatform, i + 1);
-              return { text: formatFlowResults(results, Date.now() - flowStart, diag) };
+              return textResult(formatFlowResults(results, Date.now() - flowStart, diag));
             }
             return buildReturn(Date.now() - flowStart);
           }
@@ -681,37 +683,30 @@ export const flowTools: ToolDefinition[] = [
       if (!turbo) {
         const lastFailed = results.length > 0 && !results[results.length - 1].success;
         const diag = lastFailed ? await collectFailureDiag(ctx, currentPlatform, results.length) : "";
-        return { text: formatFlowResults(results, Date.now() - flowStart, diag) };
+        return textResult(formatFlowResults(results, Date.now() - flowStart, diag));
       }
       return buildReturn(Date.now() - flowStart);
     },
-  },
-  {
-    tool: {
-      name: "flow_parallel",
-      description: "Run same action on multiple devices in parallel. Uses Promise.allSettled for concurrent execution.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          action: { type: "string", description: "Tool name to execute on each device" },
-          args: { type: "object", description: "Arguments for the action (deviceId will be injected per device)" },
-          devices: {
-            type: "array",
-            items: { type: "string" },
-            description: "Array of device IDs to target. Use device(action:'list') to get available devices.",
-          },
-        },
-        required: ["action", "devices"],
-      },
-    },
+  }),
+  defineTool({
+    name: "flow_parallel",
+    description: "Run same action on multiple devices in parallel. Uses Promise.allSettled for concurrent execution.",
+    schema: z.object({
+      action: z.string().describe("Tool name to execute on each device"),
+      args: z.record(z.string(), z.unknown()).optional().describe("Arguments for the action (deviceId will be injected per device)"),
+      devices: z
+        .array(z.string())
+        .optional()
+        .describe("Array of device IDs to target. Use device(action:'list') to get available devices."),
+    }),
     handler: async (args, ctx, _depth = 0) => {
-      if (_depth! > MAX_RECURSION_DEPTH) {
+      if ((_depth ?? 0) > MAX_RECURSION_DEPTH) {
         throw new Error(`Maximum recursion depth (${MAX_RECURSION_DEPTH}) exceeded. Nested flow calls are limited to prevent stack overflow.`);
       }
 
-      const action = args.action as string;
+      const action = args.action;
       const actionArgs = (args.args ?? {}) as Record<string, unknown>;
-      const devices = args.devices as string[];
+      const devices = args.devices as string[] | undefined;
 
       if (!devices || devices.length === 0) {
         throw new ValidationError("No devices specified.");
@@ -755,7 +750,7 @@ export const flowTools: ToolDefinition[] = [
       const failed = results.filter(r => r.status === "rejected").length;
       lines.push(`\n${devices.length - failed}/${devices.length} OK`);
 
-      return { text: lines.join("\n") };
+      return textResult(lines.join("\n"));
     },
-  },
+  }),
 ];
