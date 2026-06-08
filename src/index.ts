@@ -18,7 +18,7 @@ import { MobileError, isRetryable, getRecoveryHints } from "./errors.js";
 import { getGlobalMetrics } from "./utils/metrics.js";
 import { ALWAYS_VISIBLE, PROFILE_VISIBLE, VALID_PROFILES, MODULE_METADATA, ALL_HIDEABLE_MODULES, type MobileProfile } from "./profiles.js";
 import { recordCall, detectAntiPattern } from "./utils/anti-patterns.js";
-import { bootstrapKernel, type KernelHandle } from "./runtime/bootstrap.js";
+import { bootstrapKernel, bootstrapKernelAsync, type KernelHandle } from "./runtime/bootstrap.js";
 import { createReplPlugin } from "./plugins/repl/index.js";
 import type { ToolDefinition as PluginToolDefinition } from "@claude-in-mobile/plugin-api";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
@@ -332,7 +332,14 @@ registerAliasesWithDefaults({
 // aurora — tools still register via the legacy meta-tool path below — but
 // the lifecycle is now in place so each plugin can move its tools into
 // `init(ctx).registerTool()` incrementally without touching this file.
-const kernel: KernelHandle = bootstrapKernel({});
+// `CLAUDE_IN_MOBILE_EXTERNAL_PLUGINS=1` opts in to filesystem discovery from
+// `~/.claude-in-mobile/plugins/`. Off by default in 3.12.0 — third-party
+// authors can already publish plugins against `@claude-in-mobile/plugin-api`,
+// the env flag avoids surprising existing installs while the contract settles.
+const enableExternal = process.env.CLAUDE_IN_MOBILE_EXTERNAL_PLUGINS === "1";
+const kernel: KernelHandle = enableExternal
+  ? await bootstrapKernelAsync({ externalPlugins: true })
+  : bootstrapKernel({});
 await kernel.initAll();
 
 const kernelToolDefs: ToolDefinition[] = [];

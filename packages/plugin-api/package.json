@@ -1,6 +1,6 @@
 {
   "name": "@claude-in-mobile/plugin-api",
-  "version": "1.0.0-alpha.0",
+  "version": "1.0.0",
   "description": "Public plugin contract for claude-in-mobile microkernel. Provides Capability enum, SourcePlugin/PluginManifest/PluginContext types, EventBus topics. Versioned independently of the product.",
   "type": "module",
   "main": "dist/index.js",

@@ -103,7 +103,7 @@
     "README.md"
   ],
   "dependencies": {
-    "@claude-in-mobile/plugin-api": "1.0.0-alpha.0",
+    "@claude-in-mobile/plugin-api": "1.0.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "chrome-launcher": "^1.1.0",
     "chrome-remote-interface": "^0.33.0",

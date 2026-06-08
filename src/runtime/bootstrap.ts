@@ -15,6 +15,7 @@ import { InMemoryEventBus } from "../kernel/eventbus.js";
 import { InMemoryRegistry, type PluginRegistry } from "../kernel/registry.js";
 import { LifecycleOrchestrator } from "../kernel/lifecycle.js";
 import { CapabilityResolver } from "../kernel/resolver.js";
+import { ExternalPluginLoader } from "../kernel/external-loader.js";
 
 import { createAndroidPlugin } from "../plugins/android/index.js";
 import { createIosPlugin } from "../plugins/ios/index.js";
@@ -38,6 +39,15 @@ export interface BootstrapOptions {
   logger?: Logger;
   configFor?: (pluginId: string) => Record<string, unknown>;
   builtins?: ReadonlyArray<() => SourcePlugin>;
+  /**
+   * Discover third-party plugins from the filesystem.
+   * - `true`  → scan `~/.claude-in-mobile/plugins/` (default off — opt-in for now)
+   * - object  → forwarded to `ExternalPluginLoader` for custom roots/api versions
+   */
+  externalPlugins?: boolean | {
+    additionalRoots?: ReadonlyArray<string>;
+    supportedApiVersions?: ReadonlyArray<string>;
+  };
 }
 
 const DEFAULT_BUILTINS: ReadonlyArray<() => SourcePlugin> = [
@@ -57,6 +67,23 @@ function consoleLogger(): Logger {
     warn: (m, meta) => console.error(`[warn] ${m}`, meta ?? ""),
     error: (m, meta) => console.error(`[error] ${m}`, meta ?? ""),
   };
+}
+
+export async function bootstrapKernelAsync(options: BootstrapOptions = {}): Promise<KernelHandle> {
+  const handle = bootstrapKernel(options);
+  if (options.externalPlugins) {
+    const loaderOpts =
+      typeof options.externalPlugins === "object" ? options.externalPlugins : {};
+    const loader = new ExternalPluginLoader({
+      ...loaderOpts,
+      logger: options.logger,
+    });
+    const discovered = await loader.discover();
+    for (const d of discovered) {
+      handle.registry.register(d.factory());
+    }
+  }
+  return handle;
 }
 
 export function bootstrapKernel(options: BootstrapOptions = {}): KernelHandle {
