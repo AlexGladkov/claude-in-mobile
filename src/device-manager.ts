@@ -3,10 +3,20 @@
  *
  * D9.1 split: was a 688-LOC file that mixed routing, default adapter
  * factory, kernel↔adapter bridging, and device resolution. Now a pure
- * facade composing three helpers from src/device/:
- *   - client-cache       — default 5-platform adapter factory
- *   - kernel-device-locator — KernelHandleView bridge
- *   - device-resolver    — listDevices aggregation + deviceId lookup
+ * facade composing helpers from src/device/:
+ *   - client-cache           — default 5-platform adapter factory
+ *   - kernel-device-locator  — KernelHandleView bridge
+ *   - device-resolver        — listDevices aggregation + deviceId lookup
+ *
+ * D9.1b split: ~25 thin delegation methods (tap/swipe/launchApp/perms/
+ * logs/screenshot/...) extracted into capability proxies under
+ * src/device/proxies/. The facade now owns:
+ *   - adapter resolution (getAdapter w/ FIX #8 auto-detect)
+ *   - target management (set/getTarget, activeDevice/activeTarget)
+ *   - desktop lifecycle + cleanup
+ *   - device listing/resolution
+ *   - legacy raw client accessors (@deprecated)
+ * Capability ops are 1-line delegations to the appropriate proxy.
  *
  * Public API of `DeviceManager` and re-exported types (`Platform`,
  * `BuiltinPlatform`, `Device`, `KernelHandleView`, …) is unchanged so
@@ -14,18 +24,12 @@
  *
  * ISP: The adapters map stores CorePlatformAdapter (the universal contract).
  * Capability-specific operations (app management, permissions, shell) use
- * type guards to narrow before calling.
+ * type guards inside proxies to narrow before calling.
  *
  * FIX #8: auto-detect device when no deviceId is selected -- see getAdapter().
  */
 
 import type { CorePlatformAdapter } from "./adapters/platform-adapter.js";
-import {
-  hasAppManagement,
-  hasPermissions,
-  hasShell,
-  hasSyncScreenshot,
-} from "./adapters/platform-adapter.js";
 import { AndroidAdapter } from "./adapters/android-adapter.js";
 import { IosAdapter } from "./adapters/ios-adapter.js";
 import { DesktopAdapter } from "./adapters/desktop-adapter.js";
@@ -47,6 +51,11 @@ import {
   type KernelHandleView,
 } from "./device/kernel-device-locator.js";
 import { listAllDevices, resolveDevice } from "./device/device-resolver.js";
+import { InputProxy } from "./device/proxies/input-proxy.js";
+import { AppProxy } from "./device/proxies/app-proxy.js";
+import { PermissionProxy } from "./device/proxies/permission-proxy.js";
+import { LogProxy } from "./device/proxies/log-proxy.js";
+import { ScreenProxy } from "./device/proxies/screen-proxy.js";
 
 // Re-export platform types so the ~125 existing call sites that import
 // `Platform`, `Device`, `BuiltinPlatform`, etc. from "./device-manager.js"
@@ -70,6 +79,12 @@ export class DeviceManager {
   private activeTarget: Platform = "android";
   private webViewInspector?: WebViewInspector;
 
+  private readonly inputProxy: InputProxy;
+  private readonly appProxy: AppProxy;
+  private readonly permissionProxy: PermissionProxy;
+  private readonly logProxy: LogProxy;
+  private readonly screenProxy: ScreenProxy;
+
   /**
    * Build a DeviceManager whose adapters come from the microkernel registry.
    * See `kernel-device-locator.ts` for the bridging logic.
@@ -85,14 +100,21 @@ export class DeviceManager {
     if (config) {
       this.adapters = config.adapters;
       this.activeTarget = config.activeTarget ?? "android";
-      return;
+    } else {
+      const { adapters, envSeededTarget } = buildDefaultAdapters();
+      this.adapters = adapters;
+      if (envSeededTarget) {
+        this.activeTarget = envSeededTarget;
+      }
     }
 
-    const { adapters, envSeededTarget } = buildDefaultAdapters();
-    this.adapters = adapters;
-    if (envSeededTarget) {
-      this.activeTarget = envSeededTarget;
-    }
+    const resolver = (platform?: Platform, deviceId?: string) =>
+      this.getAdapter(platform, deviceId);
+    this.inputProxy = new InputProxy(resolver);
+    this.appProxy = new AppProxy(resolver);
+    this.permissionProxy = new PermissionProxy(resolver);
+    this.logProxy = new LogProxy(resolver);
+    this.screenProxy = new ScreenProxy(resolver);
   }
 
   /**
@@ -106,10 +128,6 @@ export class DeviceManager {
    * FIX #8: If the adapter has no selected device, attempt auto-detection.
    * When deviceId is provided, auto-detect is skipped and global state is
    * NOT mutated.
-   *
-   * @param platform target platform, defaults to active
-   * @param deviceId per-call device target; when provided, auto-detect and
-   *                 global-state mutation are skipped
    */
   getAdapter(platform?: Platform, deviceId?: string): CorePlatformAdapter {
     const target = platform ?? this.activeTarget;
@@ -117,19 +135,8 @@ export class DeviceManager {
     if (!adapter) {
       throw new Error(`Unknown platform: ${target}`);
     }
-
-    // Desktop and Browser return immediately -- the adapter itself guards state
-    // where needed. Logs/clearLogs work even when stopped.
-    if (target === "desktop" || target === "browser") {
-      return adapter;
-    }
-
-    // Per-call deviceId: skip auto-detect, don't mutate global state
-    if (deviceId) {
-      return adapter;
-    }
-
-    // FIX #8 -- auto-detect device when none is selected.
+    if (target === "desktop" || target === "browser") return adapter;
+    if (deviceId) return adapter;
     if (!adapter.getSelectedDeviceId()) {
       const detected = adapter.autoDetectDevice();
       if (detected) {
@@ -138,7 +145,6 @@ export class DeviceManager {
         this.activeTarget = detected.platform;
       }
     }
-
     return adapter;
   }
 
@@ -152,17 +158,12 @@ export class DeviceManager {
     if (this.activeTarget === "desktop") {
       const desktop = this.adapters.get("desktop");
       if (desktop instanceof DesktopAdapter) {
-        const state = desktop.getState();
-        return { target: "desktop", status: state.status };
+        return { target: "desktop", status: desktop.getState().status };
       }
       return { target: "desktop", status: "not available" };
     }
-
     const device = this.activeDevice;
-    if (device) {
-      return { target: device.platform, status: device.state };
-    }
-
+    if (device) return { target: device.platform, status: device.state };
     return { target: this.activeTarget, status: "no device" };
   }
 
@@ -253,40 +254,24 @@ export class DeviceManager {
   }
 
   setDevice(deviceId: string, platform?: Platform): Device {
-    // Desktop is special-cased: it's a singleton "device" tied to lifecycle.
     if (deviceId === "desktop" || platform === "desktop") {
       if (!this.isDesktopRunning()) {
         throw new Error("Desktop app is not running. Use desktop(action:'launch') first.");
       }
       this.activeTarget = "desktop";
-      return {
-        id: "desktop",
-        name: "Desktop App",
-        platform: "desktop",
-        state: "running",
-        isSimulator: false,
-      };
+      return { id: "desktop", name: "Desktop App", platform: "desktop", state: "running", isSimulator: false };
     }
-
     const listing = listAllDevices(this.adapters);
     const { device } = resolveDevice(deviceId, platform, listing);
-
     this.activeDevice = device;
     this.activeTarget = device.platform;
     this.adapters.get(device.platform)?.selectDevice(device.id);
-
     return device;
   }
 
   getActiveDevice(): Device | undefined {
     if (this.activeTarget === "desktop" && this.isDesktopRunning()) {
-      return {
-        id: "desktop",
-        name: "Desktop App",
-        platform: "desktop",
-        state: "running",
-        isSimulator: false,
-      };
+      return { id: "desktop", name: "Desktop App", platform: "desktop", state: "running", isSimulator: false };
     }
     return this.activeDevice;
   }
@@ -295,7 +280,7 @@ export class DeviceManager {
     return this.activeTarget;
   }
 
-  // ============ Unified Commands (delegate to adapters) ============
+  // ============ Screen ops (proxy) ============
 
   async screenshot(
     platform?: Platform,
@@ -303,175 +288,123 @@ export class DeviceManager {
     options?: CompressOptions & { monitorIndex?: number },
     deviceId?: string,
   ): Promise<{ data: string; mimeType: string }> {
-    return this.screenshotAsync(platform, compress, options, deviceId);
+    return this.screenProxy.screenshot(platform, compress, options, deviceId);
   }
 
   async getScreenshotBuffer(platform?: Platform, deviceId?: string): Promise<Buffer> {
-    return this.getScreenshotBufferAsync(platform, deviceId);
+    return this.screenProxy.getScreenshotBuffer(platform, deviceId);
   }
 
   screenshotRaw(platform?: Platform): string {
-    const adapter = this.getAdapter(platform);
-    if (!hasSyncScreenshot(adapter)) {
-      throw new Error(`screenshotRaw is not supported for ${adapter.platform}. Use screenshotAsync.`);
-    }
-    return adapter.screenshotRaw();
+    return this.screenProxy.screenshotRaw(platform);
   }
+
+  async screenshotAsync(
+    platform?: Platform,
+    compress: boolean = true,
+    options?: CompressOptions & { monitorIndex?: number },
+    deviceId?: string,
+  ): Promise<{ data: string; mimeType: string }> {
+    return this.screenProxy.screenshotAsync(platform, compress, options, deviceId);
+  }
+
+  async getScreenshotBufferAsync(platform?: Platform, deviceId?: string): Promise<Buffer> {
+    return this.screenProxy.getScreenshotBufferAsync(platform, deviceId);
+  }
+
+  async getUiHierarchy(platform?: Platform, deviceId?: string, turbo?: boolean): Promise<string> {
+    return this.screenProxy.getUiHierarchy(platform, deviceId, turbo);
+  }
+
+  async getUiHierarchyAsync(platform?: Platform, deviceId?: string, turbo?: boolean): Promise<string> {
+    return this.screenProxy.getUiHierarchy(platform, deviceId, turbo);
+  }
+
+  // ============ Input ops (proxy) ============
 
   async tap(x: number, y: number, platform?: Platform, targetPid?: number, deviceId?: string): Promise<void> {
-    const adapter = this.getAdapter(platform, deviceId);
-    await adapter.tap(x, y, targetPid, deviceId);
+    return this.inputProxy.tap(x, y, platform, targetPid, deviceId);
   }
 
-  async doubleTap(
-    x: number,
-    y: number,
-    intervalMs: number = 100,
-    platform?: Platform,
-    deviceId?: string,
-  ): Promise<void> {
-    const adapter = this.getAdapter(platform, deviceId);
-    await adapter.doubleTap(x, y, intervalMs, deviceId);
+  async doubleTap(x: number, y: number, intervalMs: number = 100, platform?: Platform, deviceId?: string): Promise<void> {
+    return this.inputProxy.doubleTap(x, y, intervalMs, platform, deviceId);
   }
 
-  async longPress(
-    x: number,
-    y: number,
-    durationMs: number = 1000,
-    platform?: Platform,
-    deviceId?: string,
-  ): Promise<void> {
-    const adapter = this.getAdapter(platform, deviceId);
-    await adapter.longPress(x, y, durationMs, deviceId);
+  async longPress(x: number, y: number, durationMs: number = 1000, platform?: Platform, deviceId?: string): Promise<void> {
+    return this.inputProxy.longPress(x, y, durationMs, platform, deviceId);
   }
 
   async swipe(
-    x1: number,
-    y1: number,
-    x2: number,
-    y2: number,
-    durationMs: number = 300,
-    platform?: Platform,
-    deviceId?: string,
+    x1: number, y1: number, x2: number, y2: number,
+    durationMs: number = 300, platform?: Platform, deviceId?: string,
   ): Promise<void> {
-    const adapter = this.getAdapter(platform, deviceId);
-    await adapter.swipe(x1, y1, x2, y2, durationMs, deviceId);
+    return this.inputProxy.swipe(x1, y1, x2, y2, durationMs, platform, deviceId);
   }
 
   async swipeDirection(
     direction: "up" | "down" | "left" | "right",
-    platform?: Platform,
-    deviceId?: string,
+    platform?: Platform, deviceId?: string,
   ): Promise<void> {
-    const adapter = this.getAdapter(platform, deviceId);
-    await adapter.swipeDirection(direction, deviceId);
+    return this.inputProxy.swipeDirection(direction, platform, deviceId);
   }
 
   async inputText(text: string, platform?: Platform, targetPid?: number, deviceId?: string): Promise<void> {
-    const adapter = this.getAdapter(platform, deviceId);
-    await adapter.inputText(text, targetPid, deviceId);
+    return this.inputProxy.inputText(text, platform, targetPid, deviceId);
   }
 
   async pressKey(key: string, platform?: Platform, targetPid?: number, deviceId?: string): Promise<void> {
-    const adapter = this.getAdapter(platform, deviceId);
-    await adapter.pressKey(key, targetPid, deviceId);
+    return this.inputProxy.pressKey(key, platform, targetPid, deviceId);
   }
 
-  // ============ App management (guarded by type guard) ============
+  // ============ App ops (proxy) ============
 
   async launchApp(packageOrBundleId: string, platform?: Platform, deviceId?: string): Promise<string> {
-    const adapter = this.getAdapter(platform, deviceId);
-    if (!hasAppManagement(adapter)) {
-      throw new Error(`App management is not supported for ${adapter.platform}. ${
-        adapter.platform === "browser" ? "Use browser_open instead." : ""
-      }`);
-    }
-    return adapter.launchApp(packageOrBundleId, deviceId);
+    return this.appProxy.launchApp(packageOrBundleId, platform, deviceId);
   }
 
   stopApp(packageOrBundleId: string, platform?: Platform, deviceId?: string): void {
-    const adapter = this.getAdapter(platform, deviceId);
-    if (!hasAppManagement(adapter)) {
-      throw new Error(`App management is not supported for ${adapter.platform}. ${
-        adapter.platform === "browser" ? "Use browser_close instead." : ""
-      }`);
-    }
-    adapter.stopApp(packageOrBundleId, deviceId);
+    this.appProxy.stopApp(packageOrBundleId, platform, deviceId);
   }
 
   installApp(path: string, platform?: Platform, deviceId?: string): string {
-    const adapter = this.getAdapter(platform, deviceId);
-    if (!hasAppManagement(adapter)) {
-      throw new Error(`App installation is not supported for ${adapter.platform}.`);
-    }
-    return adapter.installApp(path, deviceId);
+    return this.appProxy.installApp(path, platform, deviceId);
   }
 
-  // ============ Permissions (guarded by type guard) ============
+  // ============ Permission ops (proxy) ============
 
-  grantPermission(
-    packageOrBundleId: string,
-    permission: string,
-    platform?: Platform,
-    deviceId?: string,
-  ): string {
-    const adapter = this.getAdapter(platform, deviceId);
-    if (!hasPermissions(adapter)) {
-      throw new Error(
-        `Permission management is not supported for ${adapter.platform}. ` +
-        `Supported platforms: android, ios.`,
-      );
-    }
-    return adapter.grantPermission(packageOrBundleId, permission, deviceId);
+  grantPermission(packageOrBundleId: string, permission: string, platform?: Platform, deviceId?: string): string {
+    return this.permissionProxy.grantPermission(packageOrBundleId, permission, platform, deviceId);
   }
 
-  revokePermission(
-    packageOrBundleId: string,
-    permission: string,
-    platform?: Platform,
-    deviceId?: string,
-  ): string {
-    const adapter = this.getAdapter(platform, deviceId);
-    if (!hasPermissions(adapter)) {
-      throw new Error(
-        `Permission management is not supported for ${adapter.platform}. ` +
-        `Supported platforms: android, ios.`,
-      );
-    }
-    return adapter.revokePermission(packageOrBundleId, permission, deviceId);
+  revokePermission(packageOrBundleId: string, permission: string, platform?: Platform, deviceId?: string): string {
+    return this.permissionProxy.revokePermission(packageOrBundleId, permission, platform, deviceId);
   }
 
   resetPermissions(packageOrBundleId: string, platform?: Platform, deviceId?: string): string {
-    const adapter = this.getAdapter(platform, deviceId);
-    if (!hasPermissions(adapter)) {
-      throw new Error(
-        `Permission management is not supported for ${adapter.platform}. ` +
-        `Supported platforms: android, ios.`,
-      );
-    }
-    return adapter.resetPermissions(packageOrBundleId, deviceId);
+    return this.permissionProxy.resetPermissions(packageOrBundleId, platform, deviceId);
   }
 
-  // ============ UI ============
-
-  async getUiHierarchy(platform?: Platform, deviceId?: string, turbo?: boolean): Promise<string> {
-    const adapter = this.getAdapter(platform, deviceId);
-    return adapter.getUiHierarchy(deviceId, turbo);
-  }
-
-  async getUiHierarchyAsync(platform?: Platform, deviceId?: string, turbo?: boolean): Promise<string> {
-    const adapter = this.getAdapter(platform, deviceId);
-    return adapter.getUiHierarchy(deviceId, turbo);
-  }
-
-  // ============ Shell (guarded by type guard) ============
+  // ============ Shell / Logs / System (proxy) ============
 
   shell(command: string, platform?: Platform, deviceId?: string): string {
-    const adapter = this.getAdapter(platform, deviceId);
-    if (!hasShell(adapter)) {
-      throw new Error(`Shell is not supported for ${adapter.platform}.`);
-    }
-    return adapter.shell(command, deviceId);
+    return this.logProxy.shell(command, platform, deviceId);
+  }
+
+  getLogs(
+    options: {
+      platform?: Platform; level?: string; tag?: string;
+      lines?: number; package?: string; deviceId?: string;
+    } = {},
+  ): string {
+    return this.logProxy.getLogs(options);
+  }
+
+  clearLogs(platform?: Platform, deviceId?: string): string {
+    return this.logProxy.clearLogs(platform, deviceId);
+  }
+
+  async getSystemInfo(platform?: Platform, deviceId?: string): Promise<string> {
+    return this.logProxy.getSystemInfo(platform, deviceId);
   }
 
   // ============ Raw client accessors (legacy — prefer getAdapter + capability guards) ============
@@ -508,60 +441,6 @@ export class DeviceManager {
       this.webViewInspector = new WebViewInspector(this.getAndroidClient());
     }
     return this.webViewInspector;
-  }
-
-  // ============ Async screenshot helpers ============
-
-  async screenshotAsync(
-    platform?: Platform,
-    compress: boolean = true,
-    options?: CompressOptions & { monitorIndex?: number },
-    deviceId?: string,
-  ): Promise<{ data: string; mimeType: string }> {
-    const adapter = this.getAdapter(platform, deviceId);
-    return adapter.screenshotAsync(compress, options, deviceId);
-  }
-
-  async getScreenshotBufferAsync(platform?: Platform, deviceId?: string): Promise<Buffer> {
-    const adapter = this.getAdapter(platform, deviceId);
-    return adapter.getScreenshotBufferAsync(deviceId);
-  }
-
-  // ============ Logs & System (guarded by type guard) ============
-
-  getLogs(
-    options: {
-      platform?: Platform;
-      level?: string;
-      tag?: string;
-      lines?: number;
-      package?: string;
-      deviceId?: string;
-    } = {},
-  ): string {
-    const adapter = this.getAdapter(options.platform, options.deviceId);
-    if (!hasShell(adapter)) {
-      throw new Error(`Logs are not supported for ${adapter.platform}.`);
-    }
-    return adapter.getLogs({
-      level: options.level,
-      tag: options.tag,
-      lines: options.lines,
-      package: options.package,
-    }, options.deviceId);
-  }
-
-  clearLogs(platform?: Platform, deviceId?: string): string {
-    const adapter = this.getAdapter(platform, deviceId);
-    if (!hasShell(adapter)) {
-      throw new Error(`Logs are not supported for ${adapter.platform}.`);
-    }
-    return adapter.clearLogs(deviceId);
-  }
-
-  async getSystemInfo(platform?: Platform, deviceId?: string): Promise<string> {
-    const adapter = this.getAdapter(platform, deviceId);
-    return adapter.getSystemInfo(deviceId);
   }
 }
 
