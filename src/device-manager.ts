@@ -1,8 +1,16 @@
 /**
  * DeviceManager -- thin orchestrator that delegates to platform adapters.
  *
- * Refactored from a 715-line God Object into a ~230-line routing layer.
- * All platform-specific logic lives in src/adapters/*.
+ * D9.1 split: was a 688-LOC file that mixed routing, default adapter
+ * factory, kernel↔adapter bridging, and device resolution. Now a pure
+ * facade composing three helpers from src/device/:
+ *   - client-cache       — default 5-platform adapter factory
+ *   - kernel-device-locator — KernelHandleView bridge
+ *   - device-resolver    — listDevices aggregation + deviceId lookup
+ *
+ * Public API of `DeviceManager` and re-exported types (`Platform`,
+ * `BuiltinPlatform`, `Device`, `KernelHandleView`, …) is unchanged so
+ * the ~125 existing import sites keep compiling.
  *
  * ISP: The adapters map stores CorePlatformAdapter (the universal contract).
  * Capability-specific operations (app management, permissions, shell) use
@@ -32,72 +40,28 @@ import type { CompressOptions } from "./utils/image.js";
 import type { RawLaunchOptions } from "./desktop/types.js";
 import { WebViewInspector } from "./adb/webview.js";
 
-/**
- * First-party platform identifiers. Listed explicitly so consumers (IDE
- * autocomplete, exhaustive switches that opt in via `assertNever`) still
- * see the canonical names.
- */
-export type BuiltinPlatform = "android" | "ios" | "desktop" | "aurora" | "browser";
+import type { Device, Platform } from "./platform-types.js";
+import { buildDefaultAdapters } from "./device/client-cache.js";
+import {
+  adaptersFromKernel,
+  type KernelHandleView,
+} from "./device/kernel-device-locator.js";
+import { listAllDevices, resolveDevice } from "./device/device-resolver.js";
 
-/**
- * Open platform identifier. Accepts any string at the type level, but
- * preserves IDE autocomplete for the built-in names via the
- * `string & {}` "branded string" trick. Third-party plugins can declare
- * `platform: "tizen"` without a core edit.
- *
- * Migrating code:
- *   - `switch (p)` over the closed union no longer triggers an exhaustive
- *     check. If you rely on exhaustiveness, narrow to `BuiltinPlatform`
- *     first via `isBuiltinPlatform(p)` and call `assertNever(p)` in the
- *     `default` branch.
- *   - `Platform` continues to be the right type for arguments — both
- *     `"android"` and an arbitrary string are accepted.
- */
-export type Platform = BuiltinPlatform | (string & {});
-
-export const BUILTIN_PLATFORMS: ReadonlyArray<BuiltinPlatform> = [
-  "android",
-  "ios",
-  "desktop",
-  "aurora",
-  "browser",
-];
-
-export const isBuiltinPlatform = (p: string): p is BuiltinPlatform =>
-  (BUILTIN_PLATFORMS as readonly string[]).includes(p);
-
-export const assertNever = (p: never): never => {
-  throw new Error(`Unhandled platform: ${String(p)}`);
-};
-
-export interface Device {
-  id: string;
-  name: string;
-  platform: Platform;
-  state: string;
-  isSimulator: boolean;
-}
+// Re-export platform types so the ~125 existing call sites that import
+// `Platform`, `Device`, `BuiltinPlatform`, etc. from "./device-manager.js"
+// keep working without churn.
+export type { BuiltinPlatform, Platform, Device } from "./platform-types.js";
+export {
+  BUILTIN_PLATFORMS,
+  isBuiltinPlatform,
+  assertNever,
+} from "./platform-types.js";
+export type { KernelHandleView } from "./device/kernel-device-locator.js";
 
 export interface DeviceManagerConfig {
   adapters: Map<Platform, CorePlatformAdapter>;
   activeTarget?: Platform;
-}
-
-/**
- * Structural view of the microkernel handle used by `DeviceManager.fromKernel`.
- * Defined structurally so device-manager.ts does NOT import from `plugins/**`
- * — preserves the layering rule from ADR 0001 (plugins must not import the
- * legacy facade, and the facade must not statically depend on plugin modules).
- */
-export interface KernelHandleView {
-  registry: {
-    list(): readonly {
-      plugin: {
-        manifest: { id: string };
-        adapter?: CorePlatformAdapter;
-      };
-    }[];
-  };
 }
 
 export class DeviceManager {
@@ -108,25 +72,13 @@ export class DeviceManager {
 
   /**
    * Build a DeviceManager whose adapters come from the microkernel registry.
-   *
-   * Plugins that expose an `adapter` field contribute one adapter per
-   * `manifest.id`. Other plugins are skipped (e.g. future plugins with no
-   * adapter-style integration). This is the bridge between the legacy facade
-   * and the new plugin runtime used during the 3.11.x migration window.
+   * See `kernel-device-locator.ts` for the bridging logic.
    */
   static fromKernel(
     handle: KernelHandleView,
-    activeTarget: Platform = "android"
+    activeTarget: Platform = "android",
   ): DeviceManager {
-    const adapters = new Map<Platform, CorePlatformAdapter>();
-    for (const entry of handle.registry.list()) {
-      const id = entry.plugin.manifest.id as Platform;
-      const adapter = entry.plugin.adapter;
-      if (adapter) {
-        adapters.set(id, adapter);
-      }
-    }
-    return new DeviceManager({ adapters, activeTarget });
+    return new DeviceManager({ adapters: adaptersFromKernel(handle), activeTarget });
   }
 
   constructor(config?: DeviceManagerConfig) {
@@ -136,48 +88,13 @@ export class DeviceManager {
       return;
     }
 
-    // Default: create all 5 adapters (full mode)
-    const androidDeviceId = process.env.DEVICE_ID ?? process.env.ANDROID_SERIAL ?? undefined;
-    const iosDeviceId = process.env.IOS_DEVICE_ID ?? undefined;
-
-    const androidAdapter = androidDeviceId
-      ? new AndroidAdapter(new AdbClient(androidDeviceId))
-      : new AndroidAdapter();
-
-    const iosAdapter = iosDeviceId
-      ? new IosAdapter(new IosClient(iosDeviceId))
-      : new IosAdapter();
-
-    const desktopAdapter = new DesktopAdapter();
-    const auroraAdapter = new AuroraAdapter();
-    const browserAdapter = new BrowserAdapter();
-
-    this.adapters = new Map<Platform, CorePlatformAdapter>([
-      ["android", androidAdapter],
-      ["ios", iosAdapter],
-      ["desktop", desktopAdapter],
-      ["aurora", auroraAdapter],
-      ["browser", browserAdapter],
-    ]);
-
-    // If env var specified a device, set it as active target
-    if (androidDeviceId) {
-      this.activeTarget = "android";
-    } else if (iosDeviceId) {
-      this.activeTarget = "ios";
+    const { adapters, envSeededTarget } = buildDefaultAdapters();
+    this.adapters = adapters;
+    if (envSeededTarget) {
+      this.activeTarget = envSeededTarget;
     }
   }
 
-  /**
-   * Resolve the correct adapter for a given platform (or the active platform).
-   *
-   * FIX #8: If the adapter has no selected device, attempt auto-detection.
-   * This ensures commands work after a server restart without requiring
-   * an explicit set_device call.
-   *
-   * When deviceId is provided, auto-detect is skipped (the caller knows
-   * which device to target) and global state is NOT mutated.
-   */
   /**
    * Resolve a platform's CorePlatformAdapter.
    *
@@ -185,6 +102,10 @@ export class DeviceManager {
    * capability-segregated interfaces here (CorePlatformAdapter +
    * AppManagementAdapter / PermissionAdapter / ShellAdapter via type guards)
    * rather than the legacy `getAndroidClient()/getIosClient()/...` accessors.
+   *
+   * FIX #8: If the adapter has no selected device, attempt auto-detection.
+   * When deviceId is provided, auto-detect is skipped and global state is
+   * NOT mutated.
    *
    * @param platform target platform, defaults to active
    * @param deviceId per-call device target; when provided, auto-detect and
@@ -198,7 +119,7 @@ export class DeviceManager {
     }
 
     // Desktop and Browser return immediately -- the adapter itself guards state
-    // where needed (actions, screenshots, UI). Logs/clearLogs work even when stopped.
+    // where needed. Logs/clearLogs work even when stopped.
     if (target === "desktop" || target === "browser") {
       return adapter;
     }
@@ -313,28 +234,14 @@ export class DeviceManager {
     return adapter.isRunning();
   }
 
-  // ============ Device Management ============
+  // ============ Device Management (delegates to device-resolver) ============
 
-  /**
-   * Aggregate device list across adapters. Captures structural errors (e.g.
-   * ADB_NOT_INSTALLED) per-platform so callers can surface root cause instead of
-   * an empty list. Returns devices found and a parallel `errors` array.
-   */
   getAllDevicesWithErrors(): { devices: Device[]; errors: { platform: Platform; error: Error }[] } {
-    const devices: Device[] = [];
-    const errors: { platform: Platform; error: Error }[] = [];
-    for (const [platform, adapter] of this.adapters.entries()) {
-      try {
-        devices.push(...adapter.listDevices());
-      } catch (e) {
-        errors.push({ platform, error: e instanceof Error ? e : new Error(String(e)) });
-      }
-    }
-    return { devices, errors };
+    return listAllDevices(this.adapters);
   }
 
   getAllDevices(): Device[] {
-    return this.getAllDevicesWithErrors().devices;
+    return listAllDevices(this.adapters).devices;
   }
 
   getDevices(platform?: Platform): Device[] {
@@ -346,7 +253,7 @@ export class DeviceManager {
   }
 
   setDevice(deviceId: string, platform?: Platform): Device {
-    // Handle desktop special case
+    // Desktop is special-cased: it's a singleton "device" tied to lifecycle.
     if (deviceId === "desktop" || platform === "desktop") {
       if (!this.isDesktopRunning()) {
         throw new Error("Desktop app is not running. Use desktop(action:'launch') first.");
@@ -361,36 +268,12 @@ export class DeviceManager {
       };
     }
 
-    const { devices, errors } = this.getAllDevicesWithErrors();
-
-    // Find device by ID
-    let device = devices.find((d) => d.id === deviceId);
-
-    // If platform specified but device not found, try to match any booted device on that platform
-    if (!device && platform) {
-      device = devices.find(
-        (d) =>
-          d.platform === platform &&
-          (d.state === "device" || d.state === "booted" || d.state === "connected"),
-      );
-    }
-
-    if (!device) {
-      // If a target platform's adapter failed structurally (e.g. ADB_NOT_INSTALLED), surface
-      // that — `Device not found` is misleading when the real cause is the toolchain itself.
-      const relevant = platform
-        ? errors.find((e) => e.platform === platform)
-        : errors[0];
-      if (relevant) throw relevant.error;
-      throw new Error(`Device not found: ${deviceId}`);
-    }
+    const listing = listAllDevices(this.adapters);
+    const { device } = resolveDevice(deviceId, platform, listing);
 
     this.activeDevice = device;
     this.activeTarget = device.platform;
-
-    // Propagate to the adapter
-    const adapter = this.adapters.get(device.platform);
-    adapter?.selectDevice(device.id);
+    this.adapters.get(device.platform)?.selectDevice(device.id);
 
     return device;
   }
@@ -536,7 +419,7 @@ export class DeviceManager {
     if (!hasPermissions(adapter)) {
       throw new Error(
         `Permission management is not supported for ${adapter.platform}. ` +
-        `Supported platforms: android, ios.`
+        `Supported platforms: android, ios.`,
       );
     }
     return adapter.grantPermission(packageOrBundleId, permission, deviceId);
@@ -552,7 +435,7 @@ export class DeviceManager {
     if (!hasPermissions(adapter)) {
       throw new Error(
         `Permission management is not supported for ${adapter.platform}. ` +
-        `Supported platforms: android, ios.`
+        `Supported platforms: android, ios.`,
       );
     }
     return adapter.revokePermission(packageOrBundleId, permission, deviceId);
@@ -563,7 +446,7 @@ export class DeviceManager {
     if (!hasPermissions(adapter)) {
       throw new Error(
         `Permission management is not supported for ${adapter.platform}. ` +
-        `Supported platforms: android, ios.`
+        `Supported platforms: android, ios.`,
       );
     }
     return adapter.resetPermissions(packageOrBundleId, deviceId);
