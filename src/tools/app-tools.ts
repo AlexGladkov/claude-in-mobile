@@ -1,19 +1,10 @@
 import type { ToolDefinition } from "./registry.js";
 import { defineTool, z } from "./define-tool.js";
+import { platformEnum, deviceIdField } from "./common-schema.js";
 import { validatePackageName, validatePath } from "../utils/sanitize.js";
 import { parseCommonArgs } from "../utils/parse-common-args.js";
 import { textResult } from "../utils/tool-result.js";
 import { sleep } from "../utils/sleep.js";
-
-const platformEnum = z
-  .enum(["android", "ios", "desktop", "aurora", "browser"])
-  .describe("Target platform. If not specified, uses the active target.")
-  .optional();
-
-const deviceIdField = z
-  .string()
-  .describe("Target device ID for multi-device. If omitted, uses active device.")
-  .optional();
 
 const commonFields = {
   platform: platformEnum,

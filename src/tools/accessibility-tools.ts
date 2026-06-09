@@ -1,5 +1,6 @@
 import type { ToolDefinition } from "./registry.js";
 import { defineTool, z } from "./define-tool.js";
+import { deviceIdField } from "./common-schema.js";
 import type { Platform } from "../device-manager.js";
 import { getUiElements } from "./helpers/get-elements.js";
 import { ALL_RULES, getRuleById } from "../a11y/rules/index.js";
@@ -120,11 +121,6 @@ function runAudit(
 }
 
 const MAX_AUDIT_ELEMENTS = 2000;
-
-const deviceIdField = z
-  .string()
-  .describe("Target device ID for multi-device. If omitted, uses active device.")
-  .optional();
 
 const a11yPlatformEnum = z
   .enum(["android", "ios", "desktop"])

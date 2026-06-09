@@ -125,11 +125,59 @@ the work is at `swarm-report/abstraction-pluginability-2026-06-08.md`.
   now `@deprecated`. Existing 107 callsites continue to work; new code
   should use `getAdapter(platform, deviceId)` + capability type guards.
 
+### D8 — Second-wave abstraction (2026-06-09)
+
+Follow-up to the 3.12.0 architecture review (see
+`swarm-report/abstraction-plugin-scalability-2026-06-09.md`). Five
+behaviour-preserving refactors, all additive:
+
+- **D8.1 — common-schema (`src/tools/common-schema.ts`).** Shared
+  `platformEnum` derived from `BUILTIN_PLATFORMS` (single source of
+  truth) and `deviceIdField`. Replaces duplicated literals across 15
+  `*-tools.ts` files. Adding a new platform now propagates to every
+  tool schema automatically. Net −108 LOC.
+- **D8.2 — `dispatchByPlatform` helper (`src/tools/helpers/dispatch.ts`).**
+  Replaces 5 multi-branch platform `if/else` chains in
+  `system-tools.ts`, `intent-tools.ts` (×2), `performance/common.ts`,
+  `sensor-tools.ts`. Single-branch guards intentionally left for a
+  future `requirePlatform` helper.
+- **D8.3 — meta-tool descriptor barrel (`src/tools/meta/index.ts`).**
+  `BuiltinToolsPlugin.init` no longer hardcodes 20 `xMeta`/`xAliases`
+  imports; the plugin shrinks 287 → 141 LOC and iterates a single
+  `META_TOOL_DESCRIPTORS` array. Adding a meta tool: 1 edit site
+  (was 3). Profile gating + alias precedence preserved.
+- **D8.4 — `RuntimeContext` extraction (`src/runtime/runtime-context.ts`).**
+  Tool registry, recorder state, and per-device shared caches moved
+  into a `RuntimeContext` class with a lazy default singleton. Removes
+  10 module-level `let`/mutable slots from `registry.ts`,
+  `recorder-tools.ts`, `context/shared-state.ts`. Public API and
+  every legacy top-level function unchanged. Tests can inject fresh
+  contexts via `createRuntimeContext()` / `resetDefaultRuntimeContext()`.
+- **D8.5 — `ui-parser` split (`src/adb/ui-parser/`).** Old 954-LOC
+  monolith becomes a 43-LOC facade that re-exports
+  `node-parser.ts` / `element-builder.ts` /
+  `formatters/{semantic,compact,full}.ts`. Strategy-pattern
+  `FORMATTERS` registry. No call-site changes.
+
+All five validated: `tsc --noEmit` clean, 1107/1107 vitest pass,
+`node dist/index.js --help` exits 0, dynamic ESM import of
+`dist/browser/client.js` resolves `BrowserClient`.
+
+Deferred to 4.0.0 (require breaking changes):
+- True multi-session `Session` resolved per MCP request (current
+  `RuntimeContext` is structurally ready; transport rewire is the
+  breaking part).
+- `requirePlatform`/`assertPlatform` helper normalising 17 remaining
+  single-branch platform guards.
+- Hoisting `context.ts`'s module-level `deviceManager` singleton into
+  `RuntimeContext` (touches `ToolContext` shape).
+
 ### Notes
 
 Every item from the original refactor plan (Phases 1-7 + D1-D7) is in
-this release. Items that remain for a future major (4.0.0) are pure
-breaking changes that would force consumers to rewrite:
+this release, plus the D8 second-wave above. Items that remain for a
+future major (4.0.0) are pure breaking changes that would force
+consumers to rewrite:
 
 - Moving the per-platform plugin source out of the main pkg into the
   shim workspaces (the topology is ready; the file move + dependency

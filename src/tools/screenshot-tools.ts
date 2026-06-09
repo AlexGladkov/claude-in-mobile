@@ -1,6 +1,7 @@
 import type { ToolDefinition } from "./registry.js";
 import type { Platform } from "../device-manager.js";
 import { defineTool, z } from "./define-tool.js";
+import { platformEnum, deviceIdField } from "./common-schema.js";
 import { parseCommonArgs } from "../utils/parse-common-args.js";
 import { textResult, type ToolResult } from "../utils/tool-result.js";
 import { sleep } from "../utils/sleep.js";
@@ -28,16 +29,6 @@ async function waitForStableScreenshot(getBuffer: () => Promise<Buffer>): Promis
   }
   return prev; // Return last capture even if not fully stable
 }
-
-const platformEnum = z
-  .enum(["android", "ios", "desktop", "aurora", "browser"])
-  .describe("Target platform. If not specified, uses the active target.")
-  .optional();
-
-const deviceIdField = z
-  .string()
-  .describe("Target device ID for multi-device. If omitted, uses active device.")
-  .optional();
 
 export const screenshotTools: ToolDefinition[] = [
   defineTool({

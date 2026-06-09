@@ -4,6 +4,7 @@
 
 import type { ToolDefinition } from "./registry.js";
 import { defineTool, z } from "./define-tool.js";
+import { deviceIdField } from "./common-schema.js";
 import { ValidationError } from "../errors.js";
 import { truncateOutput } from "../utils/truncate.js";
 import { validatePackageName } from "../utils/sanitize.js";
@@ -17,11 +18,6 @@ const ANDROID_ONLY_MSG = (tool: string) =>
 
 /** Hostname validation: alphanumeric, dots, hyphens; must start with alphanumeric. */
 const HOST_RE = /^[a-zA-Z0-9][a-zA-Z0-9.\-]*$/;
-
-const deviceIdField = z
-  .string()
-  .describe("Target device ID for multi-device. If omitted, uses active device.")
-  .optional();
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

@@ -13,25 +13,26 @@ import {
   MobileError,
 } from "../errors.js";
 import { defineTool, z } from "./define-tool.js";
+import { platformEnum } from "./common-schema.js";
 import { textResult } from "../utils/tool-result.js";
 import { sleep } from "../utils/sleep.js";
 import { RECORDER } from "../constants/timeouts.js";
+import { getDefaultRuntimeContext } from "../runtime/runtime-context.js";
 
 const getStore = createLazySingleton(() => new ScenarioStore());
 
 // ── Recording state ──
+// State lives in `RecorderState` (owned by the default RuntimeContext).
+// Helpers below provide a local, drop-in equivalent of the previous
+// module-level `activeRecording` variable.
 
-interface RecordingState {
-  name: string;
-  platform: string;
-  description: string;
-  tags: string[];
-  steps: ScenarioStep[];
-  startedAt: number;
-  lastStepAt: number;
+function getActive() {
+  return getDefaultRuntimeContext().recorder.get();
 }
 
-let activeRecording: RecordingState | null = null;
+function setActive(v: ReturnType<typeof getActive>) {
+  getDefaultRuntimeContext().recorder.set(v);
+}
 
 // ── Recording blocklist ──
 
@@ -91,10 +92,11 @@ function isSensitiveInput(action: string, args: Record<string, unknown>): boolea
 // ── Public recording API (called from index.ts handleTool) ──
 
 export function isRecording(): boolean {
-  return activeRecording !== null;
+  return getActive() !== null;
 }
 
 export function captureStep(action: string, args: Record<string, unknown>, depth: number): void {
+  const activeRecording = getActive();
   if (!activeRecording) return;
   if (depth !== 0) return;
   if (RECORDING_BLOCKLIST.has(action)) return;
@@ -290,12 +292,6 @@ function formatPlaybackResults(scenario: Scenario, results: PlaybackResult[], to
   return `${statusLine}\n\n${lines.join("\n")}`;
 }
 
-// Shared zod fragments
-const platformEnum = z
-  .enum(["android", "ios", "desktop", "aurora", "browser"])
-  .optional()
-  .describe("Target platform");
-
 // ── Tool definitions ──
 
 export const recorderTools: ToolDefinition[] = [
@@ -316,8 +312,9 @@ export const recorderTools: ToolDefinition[] = [
     handler: async (args, ctx) => {
       const name = args.name;
 
-      if (activeRecording) {
-        throw new RecorderAlreadyActiveError(activeRecording.name);
+      const existingActive = getActive();
+      if (existingActive) {
+        throw new RecorderAlreadyActiveError(existingActive.name);
       }
 
       const platform = args.platform ?? ctx.deviceManager.getCurrentPlatform() ?? "android";
@@ -334,7 +331,7 @@ export const recorderTools: ToolDefinition[] = [
         }
       }
 
-      activeRecording = {
+      setActive({
         name,
         platform,
         description: args.description ?? "",
@@ -342,7 +339,7 @@ export const recorderTools: ToolDefinition[] = [
         steps: [],
         startedAt: Date.now(),
         lastStepAt: Date.now(),
-      };
+      });
 
       return textResult(`Recording started: "${name}" (${platform}). All tool calls will be captured. Use recorder(action:'stop') to save.`);
     },
@@ -356,10 +353,11 @@ export const recorderTools: ToolDefinition[] = [
       discard: z.boolean().optional().describe("Discard without saving (default: false)"),
     }),
     handler: async (args) => {
+      const activeRecording = getActive();
       if (!activeRecording) throw new RecorderNotActiveError();
 
       const recording = activeRecording;
-      activeRecording = null;
+      setActive(null);
 
       if (args.discard === true) {
         return textResult(`Recording discarded: "${recording.name}" — ${recording.steps.length} steps dropped.`);
@@ -401,6 +399,7 @@ export const recorderTools: ToolDefinition[] = [
     description: "Get current recording state",
     schema: z.object({}),
     handler: async () => {
+      const activeRecording = getActive();
       if (!activeRecording) {
         return textResult("No recording in progress. Use recorder(action:'start') to begin.");
       }
@@ -434,6 +433,7 @@ export const recorderTools: ToolDefinition[] = [
       label: z.string().optional().describe("Human-readable label"),
     }),
     handler: async (args) => {
+      const activeRecording = getActive();
       if (!activeRecording) throw new RecorderNotActiveError();
 
       const actionName = args.action_name;
@@ -468,6 +468,7 @@ export const recorderTools: ToolDefinition[] = [
       stepIndex: z.number().describe("Step index to remove (1-based)"),
     }),
     handler: async (args) => {
+      const activeRecording = getActive();
       if (!activeRecording) throw new RecorderNotActiveError();
 
       const idx = args.stepIndex - 1;
@@ -586,7 +587,7 @@ export const recorderTools: ToolDefinition[] = [
     handler: async (args, ctx, depth = 0) => {
       const name = args.name;
 
-      if (activeRecording) {
+      if (getActive()) {
         throw new MobileError(
           "Cannot play while recording. Use recorder(action:'stop') first.",
           "RECORDER_ALREADY_ACTIVE"

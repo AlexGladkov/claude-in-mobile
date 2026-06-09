@@ -10,8 +10,9 @@ import { PerfBaselineStore } from "../../utils/perf-baseline-store.js";
 import { createLazySingleton } from "../../utils/lazy.js";
 import { ValidationError, PerfCollectionError } from "../../errors.js";
 import { validatePackageName } from "../../utils/sanitize.js";
-import { z } from "../define-tool.js";
+import { platformEnum as basePlatformEnum, deviceIdField as baseDeviceIdField } from "../common-schema.js";
 import { PERFORMANCE } from "../../constants/timeouts.js";
+import { dispatchByPlatform } from "../helpers/dispatch.js";
 
 export const getStore = createLazySingleton(() => new PerfBaselineStore());
 
@@ -23,15 +24,9 @@ export const DEFAULT_MONITOR_INTERVAL_MS = 1000;
 export const MAX_MONITOR_DURATION_MS = PERFORMANCE.MAX_MONITOR_DURATION_MS;
 export const MIN_MONITOR_INTERVAL_MS = PERFORMANCE.POLL_INTERVAL_MS;
 
-// Shared zod fragments
-export const platformEnum = z
-  .enum(["android", "ios", "desktop", "aurora", "browser"])
-  .optional()
-  .describe("Target platform");
-export const deviceIdField = z
-  .string()
-  .optional()
-  .describe("Target device ID for multi-device. If omitted, uses active device.");
+// Re-exported shared zod fragments (centralised in tools/common-schema.ts).
+export const platformEnum = basePlatformEnum;
+export const deviceIdField = baseDeviceIdField;
 
 // ── Helpers ──
 
@@ -41,29 +36,30 @@ export async function collectSnapshot(
   packageName?: string,
   deviceId?: string,
 ): Promise<PerfSnapshot> {
-  if (platform === "android") {
-    const adb = ctx.deviceManager.getAndroidClient(deviceId);
-    let pkg = packageName;
-    if (!pkg) {
-      pkg = detectForegroundPackage(adb);
-    }
-    if (!pkg) {
-      throw new PerfCollectionError("android", "Could not detect foreground package. Provide packageName explicitly.");
-    }
-    validatePackageName(pkg);
-    return collectAndroidSnapshot(adb, pkg);
-  }
-
-  if (platform === "desktop") {
-    const desktop = ctx.deviceManager.getDesktopClient();
-    return collectDesktopSnapshot(desktop);
-  }
-
-  if (platform === "ios") {
-    return collectIosSnapshot();
-  }
-
-  throw new ValidationError(`Performance collection is not supported for platform "${platform}". Supported: android, desktop, ios.`);
+  return Promise.resolve(
+    dispatchByPlatform<PerfSnapshot>(platform, {
+      android: () => {
+        const adb = ctx.deviceManager.getAndroidClient(deviceId);
+        let pkg = packageName;
+        if (!pkg) {
+          pkg = detectForegroundPackage(adb);
+        }
+        if (!pkg) {
+          throw new PerfCollectionError("android", "Could not detect foreground package. Provide packageName explicitly.");
+        }
+        validatePackageName(pkg);
+        return collectAndroidSnapshot(adb, pkg);
+      },
+      desktop: () => {
+        const desktop = ctx.deviceManager.getDesktopClient();
+        return collectDesktopSnapshot(desktop);
+      },
+      ios: () => collectIosSnapshot(),
+      unsupported: (p) => {
+        throw new ValidationError(`Performance collection is not supported for platform "${p}". Supported: android, desktop, ios.`);
+      },
+    }),
+  );
 }
 
 export function buildCompareMetrics(

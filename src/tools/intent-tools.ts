@@ -1,10 +1,12 @@
 import type { ToolDefinition } from "./registry.js";
 import { defineTool, z } from "./define-tool.js";
+import { platformEnum, deviceIdField } from "./common-schema.js";
 import { validatePackageName, sanitizeForShell, validateUrl } from "../utils/sanitize.js";
 import { ValidationError } from "../errors.js";
 import { truncateOutput } from "../utils/truncate.js";
 import { parseCommonArgs } from "../utils/parse-common-args.js";
 import { textResult } from "../utils/tool-result.js";
+import { dispatchByPlatform } from "./helpers/dispatch.js";
 
 // ─── Validation helpers ───────────────────────────────────────────────────────
 
@@ -93,16 +95,6 @@ function buildExtrasArgs(extras: ExtraItem[]): string {
 
 // ─── Schema helpers ───────────────────────────────────────────────────────────
 
-const platformEnum = z
-  .enum(["android", "ios", "desktop", "aurora", "browser"])
-  .describe("Target platform. If not specified, uses the active target.")
-  .optional();
-
-const deviceIdField = z
-  .string()
-  .describe("Target device ID for multi-device. If omitted, uses active device.")
-  .optional();
-
 const extraItemSchema = z.object({
   key: z.string().describe("Extra key name."),
   value: z.union([z.string(), z.number(), z.boolean()]).describe(
@@ -157,58 +149,56 @@ export const intentTools: ToolDefinition[] = [
     handler: async (args, ctx) => {
       const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
 
-      if (platform === "ios") {
-        return textResult(
-          "iOS does not support Android-style intent launching. Use intent_deeplink with a URI to open content on iOS via xcrun simctl openurl.",
-        );
-      }
+      return dispatchByPlatform(platform, {
+        android: () => {
+          const intentAction = args.intentAction;
+          const component = args.component;
+          const data = args.data;
+          const category = args.category;
+          const extras = (args.extras as ExtraItem[] | undefined) ?? [];
+          const flags = args.flags ?? [];
+          const pkg = args.package;
 
-      if (platform !== "android") {
-        return textResult(
-          `intent_start is only supported on Android (current platform: ${platform}).`,
-        );
-      }
+          if (intentAction) validateIntentAction(intentAction);
+          if (component) validateComponent(component);
+          if (pkg) validatePackageName(pkg);
 
-      const intentAction = args.intentAction;
-      const component = args.component;
-      const data = args.data;
-      const category = args.category;
-      const extras = (args.extras as ExtraItem[] | undefined) ?? [];
-      const flags = args.flags ?? [];
-      const pkg = args.package;
+          const parts: string[] = ["am start"];
 
-      if (intentAction) validateIntentAction(intentAction);
-      if (component) validateComponent(component);
-      if (pkg) validatePackageName(pkg);
+          if (intentAction) parts.push(`-a ${intentAction}`);
+          if (component) parts.push(`-n ${component}`);
+          if (data) {
+            const safeData = sanitizeForShell(data);
+            parts.push(`-d '${safeData}'`);
+          }
+          if (category) {
+            if (!INTENT_ACTION_RE.test(category)) {
+              throw new ValidationError(
+                `Invalid category: "${category}". Only alphanumeric characters, dots, and underscores are allowed.`,
+              );
+            }
+            parts.push(`-c ${category}`);
+          }
+          if (extras.length > 0) {
+            parts.push(buildExtrasArgs(extras));
+          }
+          if (flags.length > 0) {
+            const combined = flags.reduce((acc, f) => acc | resolveFlag(f), 0);
+            parts.push(`-f 0x${combined.toString(16)}`);
+          }
+          if (pkg) parts.push(`-p ${pkg}`);
 
-      const parts: string[] = ["am start"];
-
-      if (intentAction) parts.push(`-a ${intentAction}`);
-      if (component) parts.push(`-n ${component}`);
-      if (data) {
-        const safeData = sanitizeForShell(data);
-        parts.push(`-d '${safeData}'`);
-      }
-      if (category) {
-        if (!INTENT_ACTION_RE.test(category)) {
-          throw new ValidationError(
-            `Invalid category: "${category}". Only alphanumeric characters, dots, and underscores are allowed.`,
-          );
-        }
-        parts.push(`-c ${category}`);
-      }
-      if (extras.length > 0) {
-        parts.push(buildExtrasArgs(extras));
-      }
-      if (flags.length > 0) {
-        const combined = flags.reduce((acc, f) => acc | resolveFlag(f), 0);
-        parts.push(`-f 0x${combined.toString(16)}`);
-      }
-      if (pkg) parts.push(`-p ${pkg}`);
-
-      const command = parts.join(" ");
-      const result = ctx.deviceManager.shell(command, "android", deviceId);
-      return textResult(truncateOutput(result || "Activity launched."));
+          const command = parts.join(" ");
+          const result = ctx.deviceManager.shell(command, "android", deviceId);
+          return textResult(truncateOutput(result || "Activity launched."));
+        },
+        ios: () =>
+          textResult(
+            "iOS does not support Android-style intent launching. Use intent_deeplink with a URI to open content on iOS via xcrun simctl openurl.",
+          ),
+        unsupported: (p) =>
+          textResult(`intent_start is only supported on Android (current platform: ${p}).`),
+      });
     },
   }),
 
@@ -293,30 +283,31 @@ export const intentTools: ToolDefinition[] = [
 
       if (pkg) validatePackageName(pkg);
 
-      if (platform === "android") {
-        const parts: string[] = [
-          "am start",
-          "-a android.intent.action.VIEW",
-          `-d '${safeUri}'`,
-        ];
-        if (pkg) parts.push(`-p ${pkg}`);
+      return dispatchByPlatform(platform, {
+        android: () => {
+          const parts: string[] = [
+            "am start",
+            "-a android.intent.action.VIEW",
+            `-d '${safeUri}'`,
+          ];
+          if (pkg) parts.push(`-p ${pkg}`);
 
-        const command = parts.join(" ");
-        const result = ctx.deviceManager.shell(command, "android", deviceId);
-        return textResult(truncateOutput(result || `Deep link opened: ${uri}`));
-      }
-
-      if (platform === "ios") {
-        if (uri.startsWith("http://") || uri.startsWith("https://")) {
-          validateUrl(uri);
-        }
-        ctx.deviceManager.getIosClient(deviceId).openUrl(uri);
-        return textResult(`Deep link opened on iOS: ${uri}`);
-      }
-
-      return textResult(
-        `intent_deeplink is only supported on Android and iOS (current platform: ${platform}).`,
-      );
+          const command = parts.join(" ");
+          const result = ctx.deviceManager.shell(command, "android", deviceId);
+          return textResult(truncateOutput(result || `Deep link opened: ${uri}`));
+        },
+        ios: () => {
+          if (uri.startsWith("http://") || uri.startsWith("https://")) {
+            validateUrl(uri);
+          }
+          ctx.deviceManager.getIosClient(deviceId).openUrl(uri);
+          return textResult(`Deep link opened on iOS: ${uri}`);
+        },
+        unsupported: (p) =>
+          textResult(
+            `intent_deeplink is only supported on Android and iOS (current platform: ${p}).`,
+          ),
+      });
     },
   }),
 

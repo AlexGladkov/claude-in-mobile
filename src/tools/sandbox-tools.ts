@@ -3,6 +3,7 @@ import { validatePackageName, validatePath, sanitizeForShell } from "../utils/sa
 import { ValidationError } from "../errors.js";
 import { truncateOutput } from "../utils/truncate.js";
 import { defineTool, z } from "./define-tool.js";
+import { deviceIdField } from "./common-schema.js";
 import { parseCommonArgs } from "../utils/parse-common-args.js";
 import { textResult, errorResult } from "../utils/tool-result.js";
 
@@ -97,15 +98,12 @@ function isRunAsFailure(output: string): boolean {
   );
 }
 
-// Shared zod fragments
+// Sandbox-specific platform enum: same values as the shared one, but with a
+// custom description explaining the Android-only behaviour.
 const androidPlatformEnum = z
   .enum(["android", "ios", "desktop", "aurora", "browser"])
   .optional()
   .describe("Target platform. Sandbox access is Android-only.");
-const deviceIdField = z
-  .string()
-  .optional()
-  .describe("Target device ID for multi-device. If omitted, uses active device.");
 
 // ---------------------------------------------------------------------------
 // Tool definitions

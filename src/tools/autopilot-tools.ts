@@ -26,6 +26,7 @@ import { truncateOutput } from "../utils/truncate.js";
 import { ValidationError } from "../errors.js";
 import { validatePackageName } from "../utils/sanitize.js";
 import { defineTool, z } from "./define-tool.js";
+import { deviceIdField } from "./common-schema.js";
 import { parseCommonArgs } from "../utils/parse-common-args.js";
 import { textResult } from "../utils/tool-result.js";
 
@@ -38,14 +39,10 @@ const DEFAULT_MAX_SCREENS = 20;
 const DEFAULT_MAX_ACTIONS = 100;
 const DEFAULT_CONFIDENCE = 0.6;
 
-// Shared zod fragments
+// Shared zod fragments — narrower platform set than the global one.
 const platformEnum = z
   .enum(["android", "ios", "desktop"])
   .describe("Target platform")
-  .optional();
-const deviceIdField = z
-  .string()
-  .describe("Target device ID for multi-device. If omitted, uses active device.")
   .optional();
 
 const originalSelectorSchema = z

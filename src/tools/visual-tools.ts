@@ -3,6 +3,7 @@ import type { ToolContext } from "./context.js";
 import type { Platform } from "../device-manager.js";
 import { Jimp } from "jimp";
 import { defineTool, z } from "./define-tool.js";
+import { platformEnum, deviceIdField } from "./common-schema.js";
 import { BaselineStore, BaselineEntry } from "../utils/baseline-store.js";
 import {
   generateDiffOverlay,
@@ -55,15 +56,6 @@ function formatEntry(e: BaselineEntry): string {
   const date = e.updatedAt.split("T")[0];
   return `${e.name} (${e.platform}) — ${e.width}x${e.height}, ${formatSize(e.fileSize)}, ${date}${tags}`;
 }
-
-const platformEnum = z
-  .enum(["android", "ios", "desktop", "aurora", "browser"])
-  .optional();
-
-const deviceIdField = z
-  .string()
-  .describe("Target device ID for multi-device. If omitted, uses active device.")
-  .optional();
 
 const ignoreRegionSchema = z.object({
   x: z.number(),

@@ -1,5 +1,6 @@
 import type { ToolDefinition } from "./registry.js";
 import { defineTool, z } from "./define-tool.js";
+import { platformEnum, deviceIdField } from "./common-schema.js";
 import { truncateOutput } from "../utils/truncate.js";
 import {
   validateShellCommand,
@@ -11,16 +12,7 @@ import { parseCommonArgs } from "../utils/parse-common-args.js";
 import { textResult } from "../utils/tool-result.js";
 import { sleep } from "../utils/sleep.js";
 import { AM, PIDOF } from "../adb/commands.js";
-
-const platformEnum = z
-  .enum(["android", "ios", "desktop", "aurora", "browser"])
-  .describe("Target platform. If not specified, uses the active target.")
-  .optional();
-
-const deviceIdField = z
-  .string()
-  .describe("Target device ID for multi-device. If omitted, uses active device.")
-  .optional();
+import { dispatchByPlatform } from "./helpers/dispatch.js";
 
 const commonFields = {
   platform: platformEnum,
@@ -97,16 +89,18 @@ export const systemTools: ToolDefinition[] = [
       validateUrl(args.url);
       const sanitizedUrl = sanitizeForShell(args.url);
 
-      if (platform === "android") {
-        ctx.deviceManager.shell(AM.START_VIEW(sanitizedUrl), "android", deviceId);
-      } else if (platform === "ios") {
-        ctx.deviceManager.getIosClient(deviceId).openUrl(args.url);
-      } else {
-        return textResult(
-          `open_url is not supported for ${platform} platform. Supported: android, ios.`,
-        );
-      }
-      return textResult(`Opened URL: ${args.url}`);
+      return dispatchByPlatform(platform, {
+        android: () => {
+          ctx.deviceManager.shell(AM.START_VIEW(sanitizedUrl), "android", deviceId);
+          return textResult(`Opened URL: ${args.url}`);
+        },
+        ios: () => {
+          ctx.deviceManager.getIosClient(deviceId).openUrl(args.url);
+          return textResult(`Opened URL: ${args.url}`);
+        },
+        unsupported: (p) =>
+          textResult(`open_url is not supported for ${p} platform. Supported: android, ios.`),
+      });
     },
   }),
 
