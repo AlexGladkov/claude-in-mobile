@@ -10,21 +10,17 @@
  *
  * D9.1b split: ~25 thin delegation methods (tap/swipe/launchApp/perms/
  * logs/screenshot/...) extracted into capability proxies under
- * src/device/proxies/. The facade now owns:
- *   - adapter resolution (getAdapter w/ FIX #8 auto-detect)
- *   - target management (set/getTarget, activeDevice/activeTarget)
- *   - desktop lifecycle + cleanup
- *   - device listing/resolution
- *   - legacy raw client accessors (@deprecated)
- * Capability ops are 1-line delegations to the appropriate proxy.
+ * src/device/proxies/.
+ *
+ * D9.1c split: desktop lifecycle and device selection extracted into
+ *   - desktop-facade — launch/stop/cleanup/getClient/isRunning + browser accessor
+ *   - device-facade  — listAll, setDevice, getActive, getTarget, target tracking
+ * The orchestrator now only owns getAdapter() (with FIX #8 auto-detect),
+ * legacy raw client accessors, and webview inspector caching.
  *
  * Public API of `DeviceManager` and re-exported types (`Platform`,
  * `BuiltinPlatform`, `Device`, `KernelHandleView`, …) is unchanged so
  * the ~125 existing import sites keep compiling.
- *
- * ISP: The adapters map stores CorePlatformAdapter (the universal contract).
- * Capability-specific operations (app management, permissions, shell) use
- * type guards inside proxies to narrow before calling.
  *
  * FIX #8: auto-detect device when no deviceId is selected -- see getAdapter().
  */
@@ -32,7 +28,6 @@
 import type { CorePlatformAdapter } from "./adapters/platform-adapter.js";
 import { AndroidAdapter } from "./adapters/android-adapter.js";
 import { IosAdapter } from "./adapters/ios-adapter.js";
-import { DesktopAdapter } from "./adapters/desktop-adapter.js";
 import { AuroraAdapter } from "./adapters/aurora-adapter.js";
 import { BrowserAdapter } from "./adapters/browser-adapter.js";
 
@@ -50,12 +45,13 @@ import {
   adaptersFromKernel,
   type KernelHandleView,
 } from "./device/kernel-device-locator.js";
-import { listAllDevices, resolveDevice } from "./device/device-resolver.js";
 import { InputProxy } from "./device/proxies/input-proxy.js";
 import { AppProxy } from "./device/proxies/app-proxy.js";
 import { PermissionProxy } from "./device/proxies/permission-proxy.js";
 import { LogProxy } from "./device/proxies/log-proxy.js";
 import { ScreenProxy } from "./device/proxies/screen-proxy.js";
+import { DesktopFacade } from "./device/proxies/desktop-facade.js";
+import { DeviceFacade } from "./device/proxies/device-facade.js";
 
 // Re-export platform types so the ~125 existing call sites that import
 // `Platform`, `Device`, `BuiltinPlatform`, etc. from "./device-manager.js"
@@ -75,8 +71,6 @@ export interface DeviceManagerConfig {
 
 export class DeviceManager {
   private adapters: Map<Platform, CorePlatformAdapter>;
-  private activeDevice?: Device;
-  private activeTarget: Platform = "android";
   private webViewInspector?: WebViewInspector;
 
   private readonly inputProxy: InputProxy;
@@ -84,6 +78,8 @@ export class DeviceManager {
   private readonly permissionProxy: PermissionProxy;
   private readonly logProxy: LogProxy;
   private readonly screenProxy: ScreenProxy;
+  private readonly desktopFacade: DesktopFacade;
+  private readonly deviceFacade: DeviceFacade;
 
   /**
    * Build a DeviceManager whose adapters come from the microkernel registry.
@@ -97,16 +93,18 @@ export class DeviceManager {
   }
 
   constructor(config?: DeviceManagerConfig) {
+    let initialTarget: Platform = "android";
     if (config) {
       this.adapters = config.adapters;
-      this.activeTarget = config.activeTarget ?? "android";
+      initialTarget = config.activeTarget ?? "android";
     } else {
       const { adapters, envSeededTarget } = buildDefaultAdapters();
       this.adapters = adapters;
-      if (envSeededTarget) {
-        this.activeTarget = envSeededTarget;
-      }
+      if (envSeededTarget) initialTarget = envSeededTarget;
     }
+
+    this.desktopFacade = new DesktopFacade(this.adapters);
+    this.deviceFacade = new DeviceFacade(this.adapters, this.desktopFacade, initialTarget);
 
     const resolver = (platform?: Platform, deviceId?: string) =>
       this.getAdapter(platform, deviceId);
@@ -120,17 +118,12 @@ export class DeviceManager {
   /**
    * Resolve a platform's CorePlatformAdapter.
    *
-   * Phase 3 of the abstraction refactor: tools should depend on the
-   * capability-segregated interfaces here (CorePlatformAdapter +
-   * AppManagementAdapter / PermissionAdapter / ShellAdapter via type guards)
-   * rather than the legacy `getAndroidClient()/getIosClient()/...` accessors.
-   *
    * FIX #8: If the adapter has no selected device, attempt auto-detection.
    * When deviceId is provided, auto-detect is skipped and global state is
    * NOT mutated.
    */
   getAdapter(platform?: Platform, deviceId?: string): CorePlatformAdapter {
-    const target = platform ?? this.activeTarget;
+    const target = platform ?? this.deviceFacade.getCurrentPlatform();
     const adapter = this.adapters.get(target);
     if (!adapter) {
       throw new Error(`Unknown platform: ${target}`);
@@ -141,144 +134,36 @@ export class DeviceManager {
       const detected = adapter.autoDetectDevice();
       if (detected) {
         adapter.selectDevice(detected.id);
-        this.activeDevice = detected;
-        this.activeTarget = detected.platform;
+        this.deviceFacade.recordAutoDetected(detected);
       }
     }
     return adapter;
   }
 
-  // ============ Target Management ============
+  // ============ Target / Device Management (delegates to DeviceFacade) ============
 
-  setTarget(target: Platform): void {
-    this.activeTarget = target;
-  }
+  setTarget(target: Platform): void { this.deviceFacade.setTarget(target); }
+  getTarget(): { target: Platform; status: string } { return this.deviceFacade.getTarget(); }
+  getAllDevicesWithErrors() { return this.deviceFacade.getAllDevicesWithErrors(); }
+  getAllDevices(): Device[] { return this.deviceFacade.getAllDevices(); }
+  getDevices(platform?: Platform): Device[] { return this.deviceFacade.getDevices(platform); }
+  setDevice(deviceId: string, platform?: Platform): Device { return this.deviceFacade.setDevice(deviceId, platform); }
+  getActiveDevice(): Device | undefined { return this.deviceFacade.getActiveDevice(); }
+  getCurrentPlatform(): Platform { return this.deviceFacade.getCurrentPlatform(); }
 
-  getTarget(): { target: Platform; status: string } {
-    if (this.activeTarget === "desktop") {
-      const desktop = this.adapters.get("desktop");
-      if (desktop instanceof DesktopAdapter) {
-        return { target: "desktop", status: desktop.getState().status };
-      }
-      return { target: "desktop", status: "not available" };
-    }
-    const device = this.activeDevice;
-    if (device) return { target: device.platform, status: device.state };
-    return { target: this.activeTarget, status: "no device" };
-  }
-
-  // ============ Desktop Specific ============
+  // ============ Desktop / Browser (delegates to DesktopFacade) ============
 
   async launchDesktopApp(options: RawLaunchOptions): Promise<string> {
-    const desktop = this.adapters.get("desktop");
-    if (!desktop || !(desktop instanceof DesktopAdapter)) {
-      throw new Error("Desktop adapter is not available in this configuration.");
-    }
-    await desktop.launch(options);
-    this.activeTarget = "desktop";
-    if (options.mode === "bundle") {
-      const target = options.bundleId ?? options.appPath ?? "app";
-      return `Desktop automation started. App launched: ${target}`;
-    }
-    if (options.mode === "attach" && options.pid !== undefined) {
-      return `Desktop automation started. Attached to process PID ${options.pid}`;
-    }
-    if (options.projectPath) {
-      return `Desktop automation started. Also launching app from ${options.projectPath}`;
-    }
-    return "Desktop automation started (companion only)";
+    const msg = await this.desktopFacade.launch(options);
+    this.deviceFacade.setTarget("desktop");
+    return msg;
   }
 
-  async stopDesktopApp(): Promise<void> {
-    const desktop = this.adapters.get("desktop");
-    if (!desktop || !(desktop instanceof DesktopAdapter)) {
-      throw new Error("Desktop adapter is not available in this configuration.");
-    }
-    await desktop.stop();
-  }
-
-  async cleanup(): Promise<void> {
-    const desktop = this.adapters.get("desktop");
-    if (desktop instanceof DesktopAdapter) {
-      try { await desktop.stop(); } catch {}
-    }
-    const ios = this.adapters.get("ios");
-    if (ios instanceof IosAdapter) {
-      try { ios.getClient().cleanup(); } catch {}
-    }
-    try { this.webViewInspector?.cleanup(); } catch {}
-    const browser = this.adapters.get("browser");
-    if (browser instanceof BrowserAdapter) {
-      try { await browser.cleanup(); } catch {}
-    }
-  }
-
-  getBrowserAdapter(): BrowserAdapter {
-    const adapter = this.adapters.get("browser");
-    if (!adapter || !(adapter instanceof BrowserAdapter)) {
-      throw new Error("Browser adapter is not available in this configuration.");
-    }
-    return adapter;
-  }
-
-  getDesktopClient(): DesktopClient {
-    const adapter = this.adapters.get("desktop");
-    if (!adapter || !(adapter instanceof DesktopAdapter)) {
-      throw new Error("Desktop adapter is not available in this configuration.");
-    }
-    return adapter.getClient();
-  }
-
-  isDesktopRunning(): boolean {
-    const adapter = this.adapters.get("desktop");
-    if (!adapter || !(adapter instanceof DesktopAdapter)) return false;
-    return adapter.isRunning();
-  }
-
-  // ============ Device Management (delegates to device-resolver) ============
-
-  getAllDevicesWithErrors(): { devices: Device[]; errors: { platform: Platform; error: Error }[] } {
-    return listAllDevices(this.adapters);
-  }
-
-  getAllDevices(): Device[] {
-    return listAllDevices(this.adapters).devices;
-  }
-
-  getDevices(platform?: Platform): Device[] {
-    if (platform) {
-      const adapter = this.adapters.get(platform);
-      return adapter ? adapter.listDevices() : [];
-    }
-    return this.getAllDevices();
-  }
-
-  setDevice(deviceId: string, platform?: Platform): Device {
-    if (deviceId === "desktop" || platform === "desktop") {
-      if (!this.isDesktopRunning()) {
-        throw new Error("Desktop app is not running. Use desktop(action:'launch') first.");
-      }
-      this.activeTarget = "desktop";
-      return { id: "desktop", name: "Desktop App", platform: "desktop", state: "running", isSimulator: false };
-    }
-    const listing = listAllDevices(this.adapters);
-    const { device } = resolveDevice(deviceId, platform, listing);
-    this.activeDevice = device;
-    this.activeTarget = device.platform;
-    this.adapters.get(device.platform)?.selectDevice(device.id);
-    return device;
-  }
-
-  getActiveDevice(): Device | undefined {
-    if (this.activeTarget === "desktop" && this.isDesktopRunning()) {
-      return { id: "desktop", name: "Desktop App", platform: "desktop", state: "running", isSimulator: false };
-    }
-    return this.activeDevice;
-  }
-
-  getCurrentPlatform(): Platform {
-    return this.activeTarget;
-  }
+  async stopDesktopApp(): Promise<void> { return this.desktopFacade.stop(); }
+  async cleanup(): Promise<void> { return this.desktopFacade.cleanup(this.webViewInspector); }
+  getBrowserAdapter(): BrowserAdapter { return this.desktopFacade.getBrowser(); }
+  getDesktopClient(): DesktopClient { return this.desktopFacade.getClient(); }
+  isDesktopRunning(): boolean { return this.desktopFacade.isRunning(); }
 
   // ============ Screen ops (proxy) ============
 

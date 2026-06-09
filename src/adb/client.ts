@@ -1,6 +1,6 @@
 import { execFileSync } from "child_process";
 import { resolveAdbPath } from "./resolver.js";
-import { validatePackageName, validatePermission, validateDeviceId, validateLogTag, validateLogTimestamp } from "../utils/sanitize.js";
+import { validatePackageName, validatePermission, validateDeviceId } from "../utils/sanitize.js";
 import {
   EXEC_TIMEOUT_MS,
   execAdb,
@@ -11,6 +11,18 @@ import {
 import { escapeAndroidInputText, splitArgs } from "./text-escape.js";
 import { UiTreeCache } from "./ui-tree-cache.js";
 import { ANDROID_KEYCODES, ANDROID_KEYCODES_FAST, resolveKeyCode } from "./keycodes.js";
+import {
+  parseDevicesOutput,
+  parseScreenSize,
+  parseCurrentActivityFromActivities,
+  parseCurrentFocusFromWindows,
+  parseFocusFromDumpsysWindow,
+  parseClipboardBroadcast,
+  parseLaunchActivity,
+  stripDumpPrefix,
+  splitActionAndUiXml,
+} from "./parsers.js";
+import { buildLogcatArgs, filterLogsByPackage, type LogcatOptions } from "./logcat.js";
 
 // Re-export helpers so existing imports of `src/adb/client.js` keep working.
 export { escapeAndroidInputText, splitArgs } from "./text-escape.js";
@@ -102,22 +114,7 @@ export class AdbClient {
   getDevices(): Device[] {
     const adbBin = resolveAdbPath();
     const output = execFileSync(adbBin, ["devices", "-l"], { encoding: "utf-8", timeout: EXEC_TIMEOUT_MS });
-    const lines = output.split("\n").slice(1); // Skip header
-
-    return lines
-      .filter(line => line.trim())
-      .map(line => {
-        const parts = line.split(/\s+/);
-        const id = parts[0];
-        const state = parts[1];
-        const modelMatch = line.match(/model:(\S+)/);
-
-        return {
-          id,
-          state,
-          model: modelMatch?.[1]
-        };
-      });
+    return parseDevicesOutput(output);
   }
 
   /**
@@ -207,8 +204,7 @@ export class AdbClient {
     } catch {
       try {
         const result = this.exec("shell am broadcast -a clipper.get");
-        const match = result.match(/data="([^"]*)"/);
-        return match?.[1] ?? "(clipboard not available)";
+        return parseClipboardBroadcast(result) ?? "(clipboard not available)";
       } catch {
         return "(clipboard access not available — requires API 29+ or clipper app)";
       }
@@ -234,10 +230,7 @@ export class AdbClient {
    */
   swipeDirection(direction: "up" | "down" | "left" | "right", distance: number = 800): void {
     // Get screen size
-    const sizeOutput = this.exec("shell wm size");
-    const match = sizeOutput.match(/(\d+)x(\d+)/);
-    const width = match ? parseInt(match[1]) : 1080;
-    const height = match ? parseInt(match[2]) : 1920;
+    const { width, height } = parseScreenSize(this.exec("shell wm size"));
 
     const centerX = Math.floor(width / 2);
     const centerY = Math.floor(height / 2);
@@ -283,16 +276,6 @@ export class AdbClient {
   }
 
   /**
-   * Strip the "UI hierachy dumped to: /dev/tty" prefix that some devices
-   * prepend when dumping to stdout via /dev/tty.
-   */
-  private stripDumpPrefix(raw: string): string {
-    const idx = raw.indexOf("<?xml");
-    if (idx > 0) return raw.slice(idx);
-    return raw;
-  }
-
-  /**
    * Get UI hierarchy XML (sync — blocks event loop)
    */
   getUiHierarchy(turbo?: boolean): string {
@@ -304,7 +287,7 @@ export class AdbClient {
     let xml: string;
     if (turbo) {
       // Single ADB call: pipe XML directly to stdout
-      xml = this.stripDumpPrefix(this.exec("exec-out uiautomator dump /dev/tty"));
+      xml = stripDumpPrefix(this.exec("exec-out uiautomator dump /dev/tty"));
     } else {
       this.exec("shell uiautomator dump /sdcard/ui.xml");
       xml = this.exec("shell cat /sdcard/ui.xml");
@@ -326,7 +309,7 @@ export class AdbClient {
     let xml: string;
     if (turbo) {
       // Single ADB call: pipe XML directly to stdout
-      xml = this.stripDumpPrefix(await this.execAsync("exec-out uiautomator dump /dev/tty"));
+      xml = stripDumpPrefix(await this.execAsync("exec-out uiautomator dump /dev/tty"));
     } else {
       await this.execAsync("shell uiautomator dump /sdcard/ui.xml");
       xml = await this.execAsync("shell cat /sdcard/ui.xml");
@@ -348,21 +331,7 @@ export class AdbClient {
   async execWithUiDump(actionCommand: string, deviceIdOverride?: string): Promise<{ actionOutput: string; uiXml: string }> {
     const combined = `${actionCommand} && uiautomator dump /dev/tty`;
     const raw = await this.execArgsAsync(["shell", "sh", "-c", combined], deviceIdOverride);
-
-    // Split output: everything before XML is action output, XML starts with <?xml or <hierarchy
-    const xmlStart = raw.indexOf("<?xml");
-    const xmlStartAlt = raw.indexOf("<hierarchy");
-    const splitIdx = xmlStart >= 0 ? xmlStart : xmlStartAlt;
-
-    if (splitIdx < 0) {
-      // No XML found — dump may have failed, return action output only
-      return { actionOutput: raw.trim(), uiXml: "" };
-    }
-
-    const actionOutput = raw.substring(0, splitIdx).trim();
-    const uiXml = this.stripDumpPrefix(raw.substring(splitIdx));
-
-    return { actionOutput, uiXml };
+    return splitActionAndUiXml(raw);
   }
 
   /**
@@ -403,11 +372,11 @@ export class AdbClient {
     // Try to get launch activity
     try {
       const output = this.exec(`shell cmd package resolve-activity --brief ${packageName}`);
-      const activity = output.split("\n").find(line => line.includes("/"));
+      const activity = parseLaunchActivity(output);
 
       if (activity) {
-        this.exec(`shell am start -n ${activity.trim()}`);
-        return `Launched ${activity.trim()}`;
+        this.exec(`shell am start -n ${activity}`);
+        return `Launched ${activity}`;
       }
     } catch {
       // Fallback: use monkey to launch
@@ -479,44 +448,21 @@ export class AdbClient {
    */
   getCurrentActivity(): string {
     try {
-      // Get focused activity (works on most Android versions)
       const output = this.exec("shell dumpsys activity activities");
-
-      // Try different patterns for different Android versions
-      const patterns = [
-        /mResumedActivity[^}]*?(\S+\/\.\S+)/,           // Android 10+
-        /mResumedActivity[^}]*?(\S+\/\S+)/,             // Generic
-        /resumedActivity[^}]*?(\S+\/\S+)/,              // Some versions
-        /topResumedActivity[^}]*?(\S+\/\S+)/,           // Android 12+
-        /mFocusedActivity[^}]*?(\S+\/\S+)/,             // Older Android
-        /ResumedActivity[^}]*?(\S+\/\S+)/i,             // Case-insensitive fallback
-      ];
-
-      for (const pattern of patterns) {
-        const match = output.match(pattern);
-        if (match?.[1]) {
-          return match[1];
-        }
-      }
+      const resumed = parseCurrentActivityFromActivities(output);
+      if (resumed) return resumed;
 
       // Fallback: try getting current focus from window manager
       const wmOutput = this.exec("shell dumpsys window windows");
-      const focusMatch = wmOutput.match(/mCurrentFocus[^}]*?(\S+\/\S+)/);
-      if (focusMatch?.[1]) {
-        return focusMatch[1];
-      }
+      const focused = parseCurrentFocusFromWindows(wmOutput);
+      if (focused) return focused;
 
       return "unknown";
     } catch {
       // Try alternative method — Node-side filter replaces device-side `| grep`.
       try {
         const output = this.execArgs(["shell", "dumpsys", "window"]);
-        const filtered = output
-          .split("\n")
-          .filter(line => /mCurrentFocus|mFocusedApp/.test(line))
-          .join("\n");
-        const match = filtered.match(/(\S+\/\S+)/);
-        return match?.[1] ?? "unknown";
+        return parseFocusFromDumpsysWindow(output) ?? "unknown";
       } catch {
         return "unknown (could not determine)";
       }
@@ -527,12 +473,7 @@ export class AdbClient {
    * Get screen size
    */
   getScreenSize(): { width: number; height: number } {
-    const output = this.exec("shell wm size");
-    const match = output.match(/(\d+)x(\d+)/);
-    return {
-      width: match ? parseInt(match[1]) : 1080,
-      height: match ? parseInt(match[2]) : 1920
-    };
+    return parseScreenSize(this.exec("shell wm size"));
   }
 
   /**
@@ -553,46 +494,10 @@ export class AdbClient {
    * Get device logs (logcat)
    * @param options - filter options
    */
-  getLogs(options: {
-    tag?: string;
-    level?: "V" | "D" | "I" | "W" | "E" | "F";
-    lines?: number;
-    since?: string;
-    package?: string;
-  } = {}): string {
-    const args: string[] = ["shell", "logcat", "-d"];
-
-    if (options.level) {
-      args.push(`*:${options.level}`);
-    }
-
-    if (options.tag) {
-      validateLogTag(options.tag);
-      args.push("-s", options.tag);
-    }
-
-    if (options.lines) {
-      args.push("-t", String(Math.trunc(options.lines)));
-    }
-
-    if (options.since) {
-      validateLogTimestamp(options.since);
-      args.push("-t", options.since);
-    }
-
+  getLogs(options: LogcatOptions = {}): string {
+    const args = buildLogcatArgs(options);
     const output = this.execArgs(args);
-
-    // Filter by package if specified
-    if (options.package) {
-      const lines = output.split("\n");
-      const filtered = lines.filter(line =>
-        line.includes(options.package!) ||
-        line.match(/^\d+-\d+\s+\d+:\d+/) // Keep timestamp lines
-      );
-      return filtered.join("\n");
-    }
-
-    return output;
+    return options.package ? filterLogsByPackage(output, options.package) : output;
   }
 
   /**

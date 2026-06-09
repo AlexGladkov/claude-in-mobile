@@ -6,9 +6,10 @@ import { ChildProcess, spawn, execFileSync } from "child_process";
 import { EventEmitter } from "events";
 import * as readline from "readline";
 import { GradleLauncher } from "./gradle.js";
-import { MobileError } from "../errors.js";
 import { findCompanionAppPath } from "./permission-allowlist.js";
 import { LogRing } from "./log-ring.js";
+import { normalizeLaunchOptions } from "./launch-options.js";
+import { DESKTOP } from "../constants/timeouts.js";
 import {
   AttachLauncher,
   BundleAppLauncher,
@@ -28,6 +29,7 @@ export {
   validateAttachPid,
 } from "./permission-allowlist.js";
 export { LogRing } from "./log-ring.js";
+export { normalizeLaunchOptions } from "./launch-options.js";
 export {
   AttachLauncher,
   BundleAppLauncher,
@@ -62,65 +64,6 @@ import type {
 } from "./types.js";
 
 const MAX_RESTARTS = 3;
-const REQUEST_TIMEOUT = 45000; // 45 seconds (AppleScript can be slow on macOS with many processes)
-
-/**
- * Normalise a flat RawLaunchOptions into the strict discriminated-union LaunchOptions.
- * Throws on conflicting fields (e.g. mode:"gradle" + pid).
- */
-export function normalizeLaunchOptions(raw: RawLaunchOptions): LaunchOptions {
-  // Detect conflicting params: mode-specific fields must not bleed across modes
-  if (raw.mode === "gradle" && (raw.bundleId !== undefined || raw.appPath !== undefined || raw.pid !== undefined)) {
-    throw new MobileError(
-      `Conflicting launch parameters: mode "gradle" does not accept bundleId, appPath, or pid`,
-      "INVALID_LAUNCH_OPTIONS"
-    );
-  }
-  if (raw.mode === "bundle" && (raw.pid !== undefined || raw.projectPath !== undefined)) {
-    throw new MobileError(
-      `Conflicting launch parameters: mode "bundle" does not accept pid or projectPath`,
-      "INVALID_LAUNCH_OPTIONS"
-    );
-  }
-  if (raw.mode === "attach" && (raw.bundleId !== undefined || raw.appPath !== undefined || raw.projectPath !== undefined)) {
-    throw new MobileError(
-      `Conflicting launch parameters: mode "attach" does not accept bundleId, appPath, or projectPath`,
-      "INVALID_LAUNCH_OPTIONS"
-    );
-  }
-
-  if (raw.mode) {
-    // Explicit mode — build typed object (do not cast)
-    switch (raw.mode) {
-      case "gradle":
-        if (!raw.projectPath) throw new MobileError(`mode "gradle" requires projectPath`, "INVALID_LAUNCH_OPTIONS");
-        return { mode: "gradle", projectPath: raw.projectPath, task: raw.task, jvmArgs: raw.jvmArgs, env: raw.env };
-      case "bundle":
-        if (!raw.bundleId && !raw.appPath) throw new MobileError(`mode "bundle" requires bundleId or appPath`, "INVALID_LAUNCH_OPTIONS");
-        // After the check, at least one is defined — split to satisfy the XOR union type
-        if (raw.bundleId) {
-          return { mode: "bundle", bundleId: raw.bundleId, appPath: raw.appPath, env: raw.env };
-        }
-        return { mode: "bundle", appPath: raw.appPath!, env: raw.env };
-      case "attach":
-        if (raw.pid === undefined) throw new MobileError(`mode "attach" requires pid`, "INVALID_LAUNCH_OPTIONS");
-        return { mode: "attach", pid: raw.pid };
-      case "companion-only":
-        return { mode: "companion-only" };
-      default:
-        throw new MobileError(
-          `Unknown launch mode: "${raw.mode}". Valid values: gradle, bundle, attach, companion-only`,
-          "INVALID_LAUNCH_OPTIONS"
-        );
-    }
-  }
-
-  // Legacy: infer mode from fields present
-  if (raw.projectPath) {
-    return { mode: "gradle", projectPath: raw.projectPath, task: raw.task, jvmArgs: raw.jvmArgs, env: raw.env };
-  }
-  return { mode: "companion-only" };
-}
 
 interface PendingRequest {
   resolve: (value: unknown) => void;
@@ -439,7 +382,7 @@ export class DesktopClient extends EventEmitter {
       const timeout = setTimeout(() => {
         this.pendingRequests.delete(id);
         reject(new Error(`Request timeout: ${method}`));
-      }, REQUEST_TIMEOUT);
+      }, DESKTOP.RPC_TIMEOUT_MS);
 
       this.pendingRequests.set(id, {
         resolve: resolve as (value: unknown) => void,
