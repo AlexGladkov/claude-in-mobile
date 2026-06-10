@@ -36,7 +36,7 @@ const PROVIDERS = ["google", "huawei", "rustore", "apple"];
 const ACTIONS = [
   "upload", "set_notes", "submit", "get_releases", "discard",
   "promote", "halt_rollout", "get_versions",
-  "build", "status", "distribute",
+  "build",
 ];
 
 export const storeMeta: ToolDefinition = {
@@ -45,7 +45,7 @@ export const storeMeta: ToolDefinition = {
     description:
       "App store management (Google Play, Huawei, RuStore, Apple TestFlight). " +
       "Google: upload -> set_notes -> submit. " +
-      "Apple (provider:'apple'): build -> upload -> status (poll) -> set_notes -> distribute. " +
+      "Apple (provider:'apple'): build -> upload -> get_releases (poll) -> set_notes -> promote. " +
       "Use provider param to select store.",
     inputSchema: {
       type: "object",
@@ -53,7 +53,7 @@ export const storeMeta: ToolDefinition = {
         action: {
           type: "string",
           enum: ACTIONS,
-          description: "Action to perform (build/status/distribute are apple-only)",
+          description: "Action to perform (build is apple-only)",
         },
         provider: {
           type: "string",
@@ -91,12 +91,12 @@ export const storeMeta: ToolDefinition = {
         scheme: { type: "string", description: "Xcode scheme (apple build, default: auto-pick Release)" },
         configuration: { type: "string", description: "Build configuration (apple build, default: Release)" },
         ipaPath: { type: "string", description: "Absolute path to .ipa (apple upload)" },
-        version: { type: "string", description: "Marketing version filter, e.g. 1.2.3 (apple status)" },
-        buildId: { type: "string", description: "ASC build ID — default: latest VALID build (apple set_notes/distribute/submit)" },
+        version: { type: "string", description: "Marketing version filter, e.g. 1.2.3 (apple get_releases)" },
+        buildId: { type: "string", description: "ASC build ID — default: latest VALID build (apple set_notes/promote/submit)" },
         whatsNew: { type: "string", description: 'TestFlight "What to Test" text (apple set_notes)' },
         locale: { type: "string", description: "BCP-47 locale, default en-US (apple set_notes)" },
-        groupName: { type: "string", description: "TestFlight beta group name (apple distribute)" },
-        submitReview: { type: "boolean", description: "Auto-submit external groups for beta review (apple distribute, default: true)" },
+        groupName: { type: "string", description: "TestFlight beta group name (apple promote)" },
+        submitReview: { type: "boolean", description: "Auto-submit external groups for beta review (apple promote, default: true)" },
       },
       required: ["action"],
     },
@@ -135,8 +135,8 @@ export const storeAliases: Record<string, { tool: string; defaults: Record<strin
   // Apple TestFlight
   testflight_build: { tool: "store", defaults: { action: "build", provider: "apple" } },
   testflight_upload: { tool: "store", defaults: { action: "upload", provider: "apple" } },
-  testflight_status: { tool: "store", defaults: { action: "status", provider: "apple" } },
+  testflight_status: { tool: "store", defaults: { action: "get_releases", provider: "apple" } },
   testflight_set_notes: { tool: "store", defaults: { action: "set_notes", provider: "apple" } },
-  testflight_distribute: { tool: "store", defaults: { action: "distribute", provider: "apple" } },
+  testflight_distribute: { tool: "store", defaults: { action: "promote", provider: "apple" } },
   testflight_submit: { tool: "store", defaults: { action: "submit", provider: "apple" } },
 };

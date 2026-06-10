@@ -196,16 +196,16 @@ describe("appstore_upload", () => {
       issuerId: ENV_AUTH.issuerId,
     });
     expect(result.text).toContain("5-15 minutes");
-    expect(result.text).toContain("appstore_status");
+    expect(result.text).toContain("appstore_get_releases");
   });
 });
 
 // ──────────────────────────────────────────────
-// appstore_status
+// appstore_get_releases
 // ──────────────────────────────────────────────
 
-describe("appstore_status", () => {
-  const handler = findHandler("appstore_status");
+describe("appstore_get_releases", () => {
+  const handler = findHandler("appstore_get_releases");
 
   it("renders a table and suggests re-polling while PROCESSING", async () => {
     ascMocks.getBuilds.mockResolvedValue([
@@ -289,11 +289,11 @@ describe("appstore_set_notes", () => {
 });
 
 // ──────────────────────────────────────────────
-// appstore_distribute
+// appstore_promote
 // ──────────────────────────────────────────────
 
-describe("appstore_distribute", () => {
-  const handler = findHandler("appstore_distribute");
+describe("appstore_promote", () => {
+  const handler = findHandler("appstore_promote");
 
   beforeEach(() => {
     ascMocks.getBuilds.mockResolvedValue([build("b1", "42", "VALID")]);
@@ -380,11 +380,11 @@ describe("appstore_submit", () => {
 // ──────────────────────────────────────────────
 
 describe("store meta — apple provider", () => {
-  it("dispatches provider:apple action:status to the appstore handler", async () => {
+  it("dispatches provider:apple action:get_releases to the appstore handler", async () => {
     ascMocks.getBuilds.mockResolvedValue([build("b1", "42", "VALID")]);
 
     const result = await storeMeta.handler(
-      { action: "status", provider: "apple", bundleId: "com.example.app" },
+      { action: "get_releases", provider: "apple", bundleId: "com.example.app" },
       dummyCtx,
     );
 
@@ -392,18 +392,21 @@ describe("store meta — apple provider", () => {
     expect(result.text).toContain("42");
   });
 
-  it("rejects apple-only actions for unknown providers", async () => {
+  it("rejects actions for unknown providers", async () => {
     await expect(
-      storeMeta.handler({ action: "status", provider: "amazon" }, dummyCtx),
+      storeMeta.handler({ action: "get_releases", provider: "amazon" }, dummyCtx),
     ).rejects.toThrow(MobileError);
   });
 
-  it("exposes apple in the provider enum and build/status/distribute in actions", () => {
+  it("exposes apple in the provider enum and the unified action vocabulary", () => {
     const props = storeMeta.tool.inputSchema.properties as Record<string, { enum?: string[] }>;
     expect(props.provider.enum).toContain("apple");
-    for (const a of ["build", "status", "distribute", "upload", "set_notes", "submit"]) {
-      expect(props.action.enum).toContain(a);
-    }
+    expect(props.action.enum).toEqual([
+      "upload", "set_notes", "submit", "get_releases", "discard",
+      "promote", "halt_rollout", "get_versions", "build",
+    ]);
+    expect(props.action.enum).not.toContain("status");
+    expect(props.action.enum).not.toContain("distribute");
   });
 
   it("maps testflight_* aliases to the store meta with apple defaults", () => {
@@ -415,9 +418,9 @@ describe("store meta — apple provider", () => {
       tool: "store",
       defaults: { action: "build", provider: "apple" },
     });
-    expect(storeAliases.testflight_status.defaults).toEqual({ action: "status", provider: "apple" });
+    expect(storeAliases.testflight_status.defaults).toEqual({ action: "get_releases", provider: "apple" });
     expect(storeAliases.testflight_set_notes.defaults).toEqual({ action: "set_notes", provider: "apple" });
-    expect(storeAliases.testflight_distribute.defaults).toEqual({ action: "distribute", provider: "apple" });
+    expect(storeAliases.testflight_distribute.defaults).toEqual({ action: "promote", provider: "apple" });
     expect(storeAliases.testflight_submit.defaults).toEqual({ action: "submit", provider: "apple" });
   });
 
@@ -435,6 +438,6 @@ describe("store meta — apple provider", () => {
       keyId: ENV_AUTH.keyId,
       issuerId: ENV_AUTH.issuerId,
     });
-    expect(result.text).toContain("appstore_status");
+    expect(result.text).toContain("appstore_get_releases");
   });
 });

@@ -1,8 +1,8 @@
 /**
  * App Store Connect / TestFlight tools (provider "apple" in the store meta).
  *
- * Pipeline: appstore_build -> appstore_upload -> appstore_status (poll) ->
- *           appstore_set_notes -> appstore_distribute (-> appstore_submit).
+ * Pipeline: appstore_build -> appstore_upload -> appstore_get_releases (poll) ->
+ *           appstore_set_notes -> appstore_promote (-> appstore_submit).
  *
  * SECURITY: auth is resolved from env ONLY (getAscAuthFromEnv) — key material
  * never enters tool arguments or results. Every LLM-supplied argument is
@@ -92,7 +92,7 @@ async function resolveBuild(
     const states = builds.map((b) => `${b.version}: ${b.processingState}`).join(", ") || "no builds found";
     throw new MobileError(
       `No VALID (processed) build found for ${bundleId} (${states}). ` +
-        "Wait for processing to finish — check with appstore_status — then retry.",
+        "Wait for processing to finish — check with appstore_get_releases — then retry.",
       "TESTFLIGHT_NO_VALID_BUILD",
     );
   }
@@ -201,15 +201,15 @@ export const appStoreTools: ToolDefinition[] = [
       await uploadIpa({ ipaPath: args.ipaPath, keyId: auth.keyId, issuerId: auth.issuerId });
       return textResult(
         "Upload accepted by App Store Connect. Processing typically takes 5-15 minutes.\n" +
-          "Poll with appstore_status until the build state is VALID, then appstore_distribute.",
+          "Poll with appstore_get_releases until the build state is VALID, then appstore_promote.",
       );
     },
   }),
 
   defineTool({
-    name: "appstore_status",
+    name: "appstore_get_releases",
     description:
-      "Show recent TestFlight builds and their processing state for an app. " +
+      "List TestFlight builds with processing state. " +
       "Single poll per call — re-call while a build is PROCESSING.",
     schema: z.object({
       bundleId: z.string().describe("App bundle ID (e.g. com.example.app)"),
@@ -232,7 +232,7 @@ export const appStoreTools: ToolDefinition[] = [
       let out = `Builds for ${app.name} (${args.bundleId}):\n${renderBuildsTable(builds)}`;
       if (builds.some((b) => b.processingState === "PROCESSING")) {
         out +=
-          "\n\nA build is still PROCESSING — call appstore_status again in ~30s " +
+          "\n\nA build is still PROCESSING — call appstore_get_releases again in ~30s " +
           "(processing typically takes 5-15 minutes).";
       }
       return textResult(out);
@@ -268,9 +268,10 @@ export const appStoreTools: ToolDefinition[] = [
   }),
 
   defineTool({
-    name: "appstore_distribute",
+    name: "appstore_promote",
     description:
-      "Add a TestFlight build to a beta group by group name (defaults to the latest VALID build). " +
+      "Promote a TestFlight build: add it to a beta group by group name " +
+      "(defaults to the latest VALID build). " +
       "External groups are auto-submitted for beta review unless submitReview=false.",
     schema: z.object({
       bundleId: z.string().describe("App bundle ID"),
