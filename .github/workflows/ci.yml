@@ -19,6 +19,9 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
       - run: npm ci
+      # plugin-api workspace must emit dist/types before main tsc can
+      # resolve @claude-in-mobile/plugin-api (3.11.1-class regression)
+      - run: npm run build --workspace=packages/plugin-api
       - run: npx tsc --noEmit
       - run: npx vitest run
 
@@ -31,6 +34,8 @@ jobs:
           node-version: 22
           cache: 'npm'
       - run: npm ci
+      # see comment in `test` job — workspace types required for tsc
+      - run: npm run build --workspace=packages/plugin-api
       - run: npx tsc --noEmit
 
   cargo-test:

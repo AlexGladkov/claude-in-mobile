@@ -1,0 +1,31 @@
+# cargo-audit policy. Each ignore must carry a justification and an owner
+# review date. Remove entries as upstream fixes land.
+
+[advisories]
+ignore = [
+  # rsa 0.9.x — Marvin timing side-channel (key recovery). No fixed release
+  # exists upstream. Usage here: signing Google Play API JWTs with our own
+  # service-account key in a local CLI process — no remote attacker-timed
+  # decryption oracle, so the practical risk is negligible. Re-check on every
+  # release: https://rustsec.org/advisories/RUSTSEC-2023-0071
+  "RUSTSEC-2023-0071",
+
+  # core2 — unmaintained + yanked. Transitive: image -> ravif -> rav1e ->
+  # bitstream-io -> core2. Drops out when image/ravif move off rav1e 0.8.
+  "RUSTSEC-2026-0105",
+
+  # paste — unmaintained proc-macro. Transitive via rav1e (same chain as
+  # core2). Compile-time only, no runtime exposure.
+  "RUSTSEC-2024-0436",
+
+  # rand 0.8.5 — unsound with a custom logger via rand::rng(). We are on
+  # rand 0.9.4 directly; the 0.8.5 copy is a transitive pin we cannot bump.
+  # We do not install a custom logger in the CLI.
+  "RUSTSEC-2026-0097",
+]
+
+# core2 0.4.0 is yanked but pinned transitively (image -> ravif -> rav1e).
+# Nothing to upgrade until the rav1e chain moves. Re-enable when the
+# RUSTSEC-2026-0105 ignore above is removed.
+[yanked]
+enabled = false

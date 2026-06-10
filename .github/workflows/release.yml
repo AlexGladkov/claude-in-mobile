@@ -175,9 +175,10 @@ jobs:
             BASE=$(basename "$f" .tar.gz.sha256)
             PLATFORM="${BASE#claude-in-mobile-${VERSION}-}"
             SHA=$(awk '{print $1}' "$f")
-            MAP=$(echo "$MAP" | jq --arg p "$PLATFORM" --arg s "$SHA" '. + {($p): $s}')
+            MAP=$(echo "$MAP" | jq -c --arg p "$PLATFORM" --arg s "$SHA" '. + {($p): $s}')
             PLATFORMS+=("$PLATFORM")
           done
+          # jq -c keeps MAP single-line: GITHUB_OUTPUT rejects multiline values
           echo "map=$MAP" >> "$GITHUB_OUTPUT"
           echo "platforms=${PLATFORMS[*]}" >> "$GITHUB_OUTPUT"
           echo "Discovered platforms: ${PLATFORMS[*]}"
