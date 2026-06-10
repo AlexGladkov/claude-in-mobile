@@ -56,3 +56,14 @@ export const CLIPBOARD = {
   POLL_MS: 100,
   SETTLE_MS: 200,
 } as const;
+
+export const XCODE = {
+  /** `xcodebuild archive` of a real app can take 10+ min on cold DerivedData. */
+  ARCHIVE_TIMEOUT_MS: 15 * 60_000,
+  /** `-exportArchive` re-signs the bundle; usually < 2 min, 10 gives headroom. */
+  EXPORT_TIMEOUT_MS: 10 * 60_000,
+  /** altool upload to App Store Connect — network-bound for large IPAs. */
+  UPLOAD_TIMEOUT_MS: 10 * 60_000,
+  /** `xcodebuild -list -json` resolves SPM deps on first run — not instant. */
+  LIST_TIMEOUT_MS: 60_000,
+} as const;

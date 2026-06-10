@@ -176,6 +176,54 @@ export function validateBundleId(id: string): void {
   }
 }
 
+// A1: Validate App Store Connect key ID — exactly 10 uppercase alphanumeric chars
+const ASC_KEY_ID_RE = /^[A-Z0-9]{10}$/;
+
+export function validateAscKeyId(v: string): void {
+  if (!ASC_KEY_ID_RE.test(v)) {
+    throw new MobileError(
+      `Invalid ASC key ID: "${v}". Expected 10 uppercase alphanumeric characters (e.g. 2X9R4HXF34)`,
+      "INVALID_ASC_KEY_ID"
+    );
+  }
+}
+
+// A2: Validate App Store Connect issuer ID — UUID format
+const ASC_ISSUER_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function validateAscIssuerId(v: string): void {
+  if (!ASC_ISSUER_ID_RE.test(v)) {
+    throw new MobileError(
+      `Invalid ASC issuer ID: "${v}". Expected UUID format (e.g. 69a6de70-03db-47e3-e053-5b8c7c11a4d1)`,
+      "INVALID_ASC_ISSUER_ID"
+    );
+  }
+}
+
+// A3: Validate Xcode scheme name — passed to xcodebuild via argv, whitelist anyway
+const XCODE_SCHEME_RE = /^[A-Za-z0-9 _.\-]{1,128}$/;
+
+export function validateXcodeScheme(v: string): void {
+  if (!XCODE_SCHEME_RE.test(v)) {
+    throw new MobileError(
+      `Invalid Xcode scheme: "${v}". Use letters, digits, spaces, underscores, dots, hyphens. 1-128 chars.`,
+      "INVALID_XCODE_SCHEME"
+    );
+  }
+}
+
+// A4: Validate version string — 1 to 3 numeric components (e.g. "1", "1.2", "1.2.3")
+const VERSION_STRING_RE = /^[0-9]+(\.[0-9]+){0,2}$/;
+
+export function validateVersionString(v: string): void {
+  if (!VERSION_STRING_RE.test(v)) {
+    throw new MobileError(
+      `Invalid version string: "${v}". Expected 1-3 numeric components (e.g. 1.2.3)`,
+      "INVALID_VERSION_STRING"
+    );
+  }
+}
+
 // V1: Validate baseline/screen name — whitelist regex
 const BASELINE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.\-]{0,127}$/;
 const WINDOWS_RESERVED = new Set(["CON","PRN","AUX","NUL","COM1","COM2","COM3","COM4","COM5","COM6","COM7","COM8","COM9","LPT1","LPT2","LPT3","LPT4","LPT5","LPT6","LPT7","LPT8","LPT9"]);
@@ -215,5 +263,7 @@ export function sanitizeErrorMessage(msg: string): string {
   return msg
     .replace(/Bearer\s+[A-Za-z0-9\-._~+/]+=*/g, "Bearer [REDACTED]")
     .replace(/token[=:]\s*[A-Za-z0-9\-._~+/]+=*/gi, "token=[REDACTED]")
-    .replace(/key[=:]\s*[A-Za-z0-9\-._~+/]+=*/gi, "key=[REDACTED]");
+    .replace(/key[=:]\s*[A-Za-z0-9\-._~+/]+=*/gi, "key=[REDACTED]")
+    // Standalone JWTs (header always base64url-encodes '{"' as "eyJ")
+    .replace(/eyJ[A-Za-z0-9._-]+/g, "[REDACTED_JWT]");
 }
