@@ -93,6 +93,17 @@ issue #43 ERR_REQUIRE_ESM пролежал между 3.10.3 и 3.11.2 и сло
 
 Все обязательны. Любой fail = `git reset` и обратно на стадию 1.
 
+- [ ] **Branch CI зелёный.** `gh run list --branch <release-branch> --limit 3`
+  — если последние прогоны красные, разобраться ДО тега. Урок v3.12.0:
+  ci.yml падал с Phase 5 (tsc без сборки workspace plugin-api), заметили
+  только после пуша тега.
+- [ ] **После любого `npm audit fix` / правки зависимостей:** полный
+  rebuild lockfile (`rm -rf node_modules package-lock.json && npm install`,
+  НЕ `--package-lock-only` — он сохраняет стейловые резолюции и теряет
+  optional-dep ветки других платформ), восстановить postinstall-симлинк
+  `node_modules/claude-in-mobile`, и прогнать `npm ci` на чистом клоне
+  (`git clone --depth 1 file://… /tmp/ci-sim && cd /tmp/ci-sim && npm ci`).
+
 - [ ] `npm run build` — zero TypeScript errors. Если падает на
   `@claude-in-mobile/plugin-api` — это регрессия workspace build script
   (см. 3.11.1).
@@ -195,6 +206,10 @@ issue #43 ERR_REQUIRE_ESM пролежал между 3.10.3 и 3.11.2 и сло
   на новую версию.
 - [ ] **Homebrew:** `brew update && brew upgrade claude-in-mobile` —
   переходит на новую версию. `claude-in-mobile --version` → `X.Y.Z`.
+  Если brew просит trust — `brew trust alexgladkov/claude-in-mobile`.
+  Если `--version` показывает старую версию при обновлённом Cellar —
+  проверить `ls -la $(which claude-in-mobile)`: npm-g симлинк может
+  перекрывать brew-бинарь (тот же prefix); обновить и npm-g копию.
 - [ ] **Smoke новой установки:**
   `claude-in-mobile repl-supervisor < /dev/null` (если REPL plugin
   затронут) → `{"event":"ready","apiVersion":"1"}`.
