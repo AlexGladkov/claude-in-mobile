@@ -163,6 +163,73 @@ All five validated: `tsc --noEmit` clean, 1107/1107 vitest pass,
 `node dist/index.js --help` exits 0, dynamic ESM import of
 `dist/browser/client.js` resolves `BrowserClient`.
 
+### D9 — God-object elimination, three iterations (2026-06-09)
+
+Closed the loop on the D8 review: every production file that could be
+split without harming a load-bearing state machine was split. 15 splits
+across 3 iterations, all behaviour-preserving, 1107/1107 tests after each.
+
+- **iter1:** `device-manager.ts` 688→571 (extracted `src/device/`
+  client-cache / device-resolver / kernel-device-locator + `platform-types.ts`);
+  `recorder-tools.ts` 667→15 (`src/tools/recorder/` redaction / capture /
+  playback / tools); `ui-parser/element-builder.ts` 481→31
+  (element-finders / screen-analyzer / diff-engine); `utils/image.ts`
+  721→34 (`src/utils/image/` types / backend / encode / compress /
+  compare / drawing / overlay / annotate).
+- **iter2:** `sandbox-tools.ts` 533→3 (per-tool files under
+  `src/tools/sandbox/`); `sensor-tools.ts` 452→15 (`src/tools/sensor/`,
+  battery/thermal status-code tables hoisted to `constants.ts`);
+  `ui-tools.ts` 417→36 (`src/tools/ui/`, `maxChars` hardcode hoisted to
+  `src/constants/truncation.ts`); `index.ts` 432→169
+  (`src/runtime/` mcp-instructions / mcp-server / cli);
+  `device-manager.ts` 571→450 (capability proxies
+  `src/device/proxies/{input,app,permission,log,screen}-proxy.ts`).
+- **iter3:** `device-manager.ts` 450→335 (desktop-facade +
+  device-facade); `errors.ts` 457→7 (12 category modules under
+  `src/errors/`); `adb/client.ts` 640→545 (`parsers.ts`, `logcat.ts`);
+  `ios/client.ts` 687→524 (simctl-exec / simctl-commands /
+  simctl-parsers / wda-payloads / wda-errors / keymap / types);
+  `desktop/client.ts` 679→622 (`launch-options.ts`); `browser/client.ts`
+  587→408 (cdp-helpers / snapshot-builder / key-map).
+- Remaining >400 LOC files (desktop 622, adb 545, ios 524, browser 408)
+  are deliberate stops: RPC state machine, security-sensitive exec
+  surfaces, WDA retry orchestration, CDP session lifecycle. Splitting
+  further would trade encapsulation for a metric.
+
+### Security
+
+Three-consilium audit of the full 3.12.0 diff (injection / memory leaks /
+capability boundaries) found **zero regressions from the refactor** and six
+pre-existing issues, all fixed in this release:
+
+- **Browser URL validation switched from denylist to allowlist** — only
+  `http:`/`https:` reach CDP `Page.navigate`; `data:`, `javascript:`,
+  `blob:`, `ftp:` now throw `BrowserSecurityError` (was: passed the old
+  denylist). `src/browser/types.ts`, `client.ts`.
+- **Browser CDP listener leak fixed** — every navigation/reload
+  registered a persistent `Page.loadEventFired` handler that was never
+  removed; long sessions accumulated handlers unbounded. Converted to
+  one-shot promise form with timeout race. `src/browser/client.ts`.
+- **Desktop crash-restart now disposes the old child process** —
+  listeners, stdout/stderr streams and the readline interface are
+  detached (and the process killed if still alive) before respawn;
+  `waitForReady` cleans up its `once("ready")` listener on all three
+  outcomes. `src/desktop/client.ts`.
+- **External plugin loader path containment** — a plugin's
+  `package.json` `main` is now verified to resolve inside the plugin
+  directory; `main: "../../.."` escapes are skipped with a warning
+  (fail closed). `src/kernel/external-loader.ts`.
+- **Sandbox prefs-write quote escaping** — `'`/`"` in values are escaped
+  for the device-side single-quoted `sed` program (`'` → `'\''`),
+  closing a run-as-scoped injection. `src/tools/sandbox/prefs-write.ts`.
+
+### E2E
+
+- New on-device smoke harness `scripts/smoke-e2e.mjs` — JSON-RPC stdio
+  client driving the built server. 16/16 pass on Android emulator
+  (Pixel 9 Pro, API 35), iOS Simulator (iPhone 17 Pro, iOS 26.0) and
+  headless Chrome (CDP). Reports in `swarm-report/e2e-d8d9-2026-06-09/`.
+
 Deferred to 4.0.0 (require breaking changes):
 - True multi-session `Session` resolved per MCP request (current
   `RuntimeContext` is structurally ready; transport rewire is the
