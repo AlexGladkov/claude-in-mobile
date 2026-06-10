@@ -1,45 +1,44 @@
 import type { ToolDefinition } from "./registry.js";
-import type { ToolContext } from "./context.js";
 import type { Platform } from "../device-manager.js";
+import { defineTool, z } from "./define-tool.js";
+import { textResult } from "../utils/tool-result.js";
+
+const platformEnum = z.enum(["android", "ios", "desktop", "aurora", "browser"]);
 
 export const deviceTools: ToolDefinition[] = [
-  {
-    tool: {
-      name: "device_list",
-      description: "List connected devices and emulators",
-      inputSchema: {
-        type: "object",
-        properties: {
-          platform: {
-            type: "string",
-            enum: ["android", "ios", "desktop", "aurora", "browser"],
-            description: "Filter by platform (android/ios). If not specified, shows all.",
-          },
-        },
-      },
-    },
+  defineTool({
+    name: "device_list",
+    description: "List connected devices and emulators",
+    schema: z.object({
+      platform: platformEnum
+        .optional()
+        .describe("Filter by platform (android/ios). If not specified, shows all."),
+    }),
     handler: async (args, ctx) => {
       const platform = args.platform as Platform | undefined;
       const devices = ctx.deviceManager.getDevices(platform);
       if (devices.length === 0) {
-        return { text: "No devices connected. Make sure ADB/Xcode is running and a device/emulator/simulator is connected." };
+        return textResult(
+          "No devices connected. Make sure ADB/Xcode is running and a device/emulator/simulator is connected.",
+        );
       }
 
       const activeDevice = ctx.deviceManager.getActiveDevice();
       const { target: activeTarget } = ctx.deviceManager.getTarget();
 
-      const android = devices.filter(d => d.platform === "android");
-      const ios = devices.filter(d => d.platform === "ios");
-      const desktop = devices.filter(d => d.platform === "desktop");
-      const aurora = devices.filter(d => d.platform === "aurora");
-      const browser = devices.filter(d => d.platform === "browser");
+      const android = devices.filter((d) => d.platform === "android");
+      const ios = devices.filter((d) => d.platform === "ios");
+      const desktop = devices.filter((d) => d.platform === "desktop");
+      const aurora = devices.filter((d) => d.platform === "aurora");
+      const browser = devices.filter((d) => d.platform === "browser");
 
       let result = "Connected devices:\n";
 
       if (android.length > 0) {
         result += "\nAndroid:\n";
         for (const d of android) {
-          const active = activeDevice?.id === d.id && activeTarget === "android" ? " [ACTIVE]" : "";
+          const active =
+            activeDevice?.id === d.id && activeTarget === "android" ? " [ACTIVE]" : "";
           const type = d.isSimulator ? "emulator" : "physical";
           result += `  • ${d.id} - ${d.name} (${type}, ${d.state})${active}\n`;
         }
@@ -48,7 +47,8 @@ export const deviceTools: ToolDefinition[] = [
       if (ios.length > 0) {
         result += "\niOS:\n";
         for (const d of ios) {
-          const active = activeDevice?.id === d.id && activeTarget === "ios" ? " [ACTIVE]" : "";
+          const active =
+            activeDevice?.id === d.id && activeTarget === "ios" ? " [ACTIVE]" : "";
           const type = d.isSimulator ? "simulator" : "physical";
           result += `  • ${d.id} - ${d.name} (${type}, ${d.state})${active}\n`;
         }
@@ -65,7 +65,8 @@ export const deviceTools: ToolDefinition[] = [
       if (aurora.length > 0) {
         result += "\nAurora:\n";
         for (const d of aurora) {
-          const active = activeDevice?.id === d.id && activeTarget === "aurora" ? " [ACTIVE]" : "";
+          const active =
+            activeDevice?.id === d.id && activeTarget === "aurora" ? " [ACTIVE]" : "";
           result += `  • ${d.id} - ${d.name} (${d.state})${active}\n`;
         }
       }
@@ -78,69 +79,45 @@ export const deviceTools: ToolDefinition[] = [
         }
       }
 
-      return { text: result.trim() };
+      return textResult(result.trim());
     },
-  },
-  {
-    tool: {
-      name: "device_set",
-      description: "Select active device for subsequent commands. Sets global state — all following tool calls will target this device until changed. For parallel multi-device workflows, prefer passing deviceId directly to each tool call instead of using device_set, which avoids race conditions from shared mutable state.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          deviceId: {
-            type: "string",
-            description: "Device ID from device(action:'list')",
-          },
-          platform: {
-            type: "string",
-            enum: ["android", "ios", "desktop", "aurora", "browser"],
-            description: "Target platform. If not specified, uses the active target.",
-          },
-        },
-        required: ["deviceId"],
-      },
-    },
+  }),
+
+  defineTool({
+    name: "device_set",
+    description:
+      "Select active device for subsequent commands. Sets global state — all following tool calls will target this device until changed. For parallel multi-device workflows, prefer passing deviceId directly to each tool call instead of using device_set, which avoids race conditions from shared mutable state.",
+    schema: z.object({
+      deviceId: z.string().describe("Device ID from device(action:'list')"),
+      platform: platformEnum
+        .optional()
+        .describe("Target platform. If not specified, uses the active target."),
+    }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const device = ctx.deviceManager.setDevice(args.deviceId as string, platform);
-      return { text: `Device set to: ${device.name} (${device.platform}, ${device.id})` };
+      const device = ctx.deviceManager.setDevice(args.deviceId, args.platform as Platform | undefined);
+      return textResult(`Device set to: ${device.name} (${device.platform}, ${device.id})`);
     },
-  },
-  {
-    tool: {
-      name: "device_set_target",
-      description: "Switch active platform (android/ios/desktop/aurora/browser)",
-      inputSchema: {
-        type: "object",
-        properties: {
-          target: {
-            type: "string",
-            enum: ["android", "ios", "desktop", "aurora", "browser"],
-            description: "Target platform to switch to",
-          },
-        },
-        required: ["target"],
-      },
-    },
+  }),
+
+  defineTool({
+    name: "device_set_target",
+    description: "Switch active platform (android/ios/desktop/aurora/browser)",
+    schema: z.object({
+      target: platformEnum.describe("Target platform to switch to"),
+    }),
     handler: async (args, ctx) => {
-      const target = args.target as Platform;
-      ctx.deviceManager.setTarget(target);
-      return { text: `Target set to: ${target}` };
+      ctx.deviceManager.setTarget(args.target as Platform);
+      return textResult(`Target set to: ${args.target}`);
     },
-  },
-  {
-    tool: {
-      name: "device_get_target",
-      description: "Get current active platform and status",
-      inputSchema: {
-        type: "object",
-        properties: {},
-      },
-    },
+  }),
+
+  defineTool({
+    name: "device_get_target",
+    description: "Get current active platform and status",
+    schema: z.object({}),
     handler: async (_args, ctx) => {
       const { target, status } = ctx.deviceManager.getTarget();
-      return { text: `Current target: ${target} (${status})` };
+      return textResult(`Current target: ${target} (${status})`);
     },
-  },
+  }),
 ];

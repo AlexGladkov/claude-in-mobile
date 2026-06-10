@@ -53,8 +53,7 @@ describe("system_wait_log", () => {
 
   it("rejects empty pattern", async () => {
     const ctx = makeMockContext();
-    const result = await handler({ pattern: "" }, ctx);
-    expect((result as { text: string }).text).toContain("required");
+    await expect(handler({ pattern: "" }, ctx)).rejects.toThrow(/required|empty/);
   });
 
   it("rejects invalid regex", async () => {
@@ -222,7 +221,7 @@ describe("system_pid_of", () => {
     });
     const result = await handler({ package: "com.example.app" }, ctx);
     expect((result as { text: string }).text).toBe("12345");
-    expect(shell).toHaveBeenCalledWith("pidof -s com.example.app", undefined, undefined);
+    expect(shell).toHaveBeenCalledWith("pidof -s com.example.app", "android", undefined);
   });
 
   it("returns 0 (not running) when pidof outputs empty", async () => {

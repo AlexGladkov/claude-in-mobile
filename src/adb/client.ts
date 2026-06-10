@@ -1,46 +1,41 @@
-import { execFile, execFileSync } from "child_process";
-import { promisify } from "util";
-import { classifyAdbError } from "../errors.js";
+import { execFileSync } from "child_process";
 import { resolveAdbPath } from "./resolver.js";
-import { validatePackageName, validatePermission, validateDeviceId, validateLogTag, validateLogTimestamp } from "../utils/sanitize.js";
+import { validatePackageName, validatePermission, validateDeviceId } from "../utils/sanitize.js";
+import {
+  EXEC_TIMEOUT_MS,
+  execAdb,
+  execAdbAsync,
+  execAdbRaw,
+  execAdbRawAsync,
+} from "./exec.js";
+import { escapeAndroidInputText, splitArgs } from "./text-escape.js";
+import { UiTreeCache } from "./ui-tree-cache.js";
+import { ANDROID_KEYCODES, ANDROID_KEYCODES_FAST, resolveKeyCode } from "./keycodes.js";
+import {
+  parseDevicesOutput,
+  parseScreenSize,
+  parseCurrentActivityFromActivities,
+  parseCurrentFocusFromWindows,
+  parseFocusFromDumpsysWindow,
+  parseClipboardBroadcast,
+  parseLaunchActivity,
+  stripDumpPrefix,
+  splitActionAndUiXml,
+} from "./parsers.js";
+import { buildLogcatArgs, filterLogsByPackage, type LogcatOptions } from "./logcat.js";
 
-const execFileAsync = promisify(execFile);
-
-const EXEC_TIMEOUT_MS = 15_000;      // 15s for text commands
-const EXEC_RAW_TIMEOUT_MS = 30_000;  // 30s for binary (screenshots)
-
-/**
- * Split a whitespace-separated command into argv tokens.
- * Safe for commands that do not contain shell-quoted strings.
- * For commands with spaces inside arguments (e.g. text input), use execArgs() directly.
- */
-function splitArgs(command: string): string[] {
-  return command.split(/\s+/).filter(Boolean);
-}
-
-/**
- * Escape user text for safe embedding inside a double-quoted `input text "..."` on the
- * device shell. The OUTER context (host shell) never parses this string — it travels as a
- * single argv slot to adb (see inputText/inputTextAsync). Escaping covers only device-side
- * shell metacharacters within double quotes plus Android `input`'s `%s`-for-space quirk.
- */
-function escapeAndroidInputText(text: string): string {
-  return text
-    .replace(/[\n\r]/g, "")
-    .replace(/\\/g, "\\\\")
-    .replace(/"/g, '\\"')
-    .replace(/'/g, "\\'")
-    .replace(/`/g, "\\`")
-    .replace(/\$/g, "\\$")
-    .replace(/ /g, "%s")
-    .replace(/&/g, "\\&")
-    .replace(/\(/g, "\\(")
-    .replace(/\)/g, "\\)")
-    .replace(/</g, "\\<")
-    .replace(/>/g, "\\>")
-    .replace(/\|/g, "\\|")
-    .replace(/;/g, "\\;");
-}
+// Re-export helpers so existing imports of `src/adb/client.js` keep working.
+export { escapeAndroidInputText, splitArgs } from "./text-escape.js";
+export { UiTreeCache } from "./ui-tree-cache.js";
+export { ANDROID_KEYCODES, ANDROID_KEYCODES_FAST, resolveKeyCode } from "./keycodes.js";
+export {
+  EXEC_TIMEOUT_MS,
+  EXEC_RAW_TIMEOUT_MS,
+  execAdb,
+  execAdbAsync,
+  execAdbRaw,
+  execAdbRawAsync,
+} from "./exec.js";
 
 export interface Device {
   id: string;
@@ -52,8 +47,7 @@ export class AdbClient {
   private deviceId?: string;
 
   // Turbo: UI tree TTL cache (active only when turbo=true is passed)
-  private uiTreeCache: { xml: string; timestamp: number } | null = null;
-  private uiTreeCacheTTL = 500; // ms
+  private readonly uiTreeCache = new UiTreeCache(500);
 
   constructor(deviceId?: string) {
     if (deviceId) {
@@ -66,72 +60,21 @@ export class AdbClient {
     return this.deviceId ? `-s ${this.deviceId}` : "";
   }
 
-  /** Build device-flag argv slice for a specific deviceId override or fall back to instance default. */
-  private deviceArgs(deviceIdOverride?: string): string[] {
-    const id = deviceIdOverride ?? this.deviceId;
-    return id ? ["-s", id] : [];
-  }
-
   /**
    * SECURITY: All adb invocations route through this argv-form path (execFileSync — no /bin/sh -c).
    * Shell metacharacters in `args` are passed as literal argv slots, not parsed by the host shell.
    * This structurally prevents host-side OS Command Injection (CWE-78) — see issue #40.
    */
   private execArgs(args: string[], deviceIdOverride?: string): string {
-    const adbBin = resolveAdbPath();
-    const fullArgs = [...this.deviceArgs(deviceIdOverride), ...args];
-    try {
-      return execFileSync(adbBin, fullArgs, {
-        encoding: "utf-8",
-        timeout: EXEC_TIMEOUT_MS,
-        maxBuffer: 50 * 1024 * 1024,
-      }).trim();
-    } catch (error: unknown) {
-      const e = error as { killed?: boolean; signal?: string; stderr?: Buffer | string; message?: string };
-      const display = `adb ${fullArgs.join(" ")}`;
-      if (e.killed === true || e.signal === "SIGTERM") {
-        throw new Error(`ADB command timed out after ${EXEC_TIMEOUT_MS}ms: ${display}. Device may be disconnected or screen locked.`);
-      }
-      throw classifyAdbError(e.stderr?.toString() ?? e.message ?? String(error), display);
-    }
+    return execAdb(args, deviceIdOverride ?? this.deviceId);
   }
 
   private execArgsRaw(args: string[], deviceIdOverride?: string): Buffer {
-    const adbBin = resolveAdbPath();
-    const fullArgs = [...this.deviceArgs(deviceIdOverride), ...args];
-    try {
-      return execFileSync(adbBin, fullArgs, {
-        timeout: EXEC_RAW_TIMEOUT_MS,
-        maxBuffer: 50 * 1024 * 1024,
-      });
-    } catch (error: unknown) {
-      const e = error as { killed?: boolean; signal?: string; stderr?: Buffer | string; message?: string };
-      const display = `adb ${fullArgs.join(" ")}`;
-      if (e.killed === true || e.signal === "SIGTERM") {
-        throw new Error(`ADB command timed out after ${EXEC_RAW_TIMEOUT_MS}ms: ${display}. Device may be disconnected or screen locked.`);
-      }
-      throw classifyAdbError(e.stderr?.toString() ?? e.message ?? String(error), display);
-    }
+    return execAdbRaw(args, deviceIdOverride ?? this.deviceId);
   }
 
   private async execArgsAsync(args: string[], deviceIdOverride?: string): Promise<string> {
-    const adbBin = resolveAdbPath();
-    const fullArgs = [...this.deviceArgs(deviceIdOverride), ...args];
-    try {
-      const { stdout } = await execFileAsync(adbBin, fullArgs, {
-        timeout: EXEC_TIMEOUT_MS,
-        maxBuffer: 50 * 1024 * 1024,
-        encoding: "utf-8",
-      });
-      return stdout.trim();
-    } catch (error: unknown) {
-      const e = error as { killed?: boolean; signal?: string; stderr?: Buffer | string; message?: string };
-      const display = `adb ${fullArgs.join(" ")}`;
-      if (e.killed === true || e.signal === "SIGTERM") {
-        throw new Error(`ADB command timed out after ${EXEC_TIMEOUT_MS}ms: ${display}. Device may be disconnected or screen locked.`);
-      }
-      throw classifyAdbError(e.stderr?.toString() ?? e.message ?? String(error), display);
-    }
+    return execAdbAsync(args, deviceIdOverride ?? this.deviceId);
   }
 
   /**
@@ -162,23 +105,7 @@ export class AdbClient {
    * Execute ADB command async and return raw bytes (for screenshots)
    */
   async execRawAsync(command: string, deviceIdOverride?: string): Promise<Buffer> {
-    const adbBin = resolveAdbPath();
-    const fullArgs = [...this.deviceArgs(deviceIdOverride), ...splitArgs(command)];
-    try {
-      const { stdout } = await execFileAsync(adbBin, fullArgs, {
-        timeout: EXEC_RAW_TIMEOUT_MS,
-        maxBuffer: 50 * 1024 * 1024,
-        encoding: "buffer" as BufferEncoding,
-      });
-      return stdout as unknown as Buffer;
-    } catch (error: unknown) {
-      const e = error as { killed?: boolean; signal?: string; stderr?: Buffer | string; message?: string };
-      const display = `adb ${fullArgs.join(" ")}`;
-      if (e.killed === true || e.signal === "SIGTERM") {
-        throw new Error(`ADB command timed out after ${EXEC_RAW_TIMEOUT_MS}ms: ${display}. Device may be disconnected or screen locked.`);
-      }
-      throw classifyAdbError(e.stderr?.toString() ?? e.message ?? String(error), display);
-    }
+    return execAdbRawAsync(splitArgs(command), deviceIdOverride ?? this.deviceId);
   }
 
   /**
@@ -187,22 +114,7 @@ export class AdbClient {
   getDevices(): Device[] {
     const adbBin = resolveAdbPath();
     const output = execFileSync(adbBin, ["devices", "-l"], { encoding: "utf-8", timeout: EXEC_TIMEOUT_MS });
-    const lines = output.split("\n").slice(1); // Skip header
-
-    return lines
-      .filter(line => line.trim())
-      .map(line => {
-        const parts = line.split(/\s+/);
-        const id = parts[0];
-        const state = parts[1];
-        const modelMatch = line.match(/model:(\S+)/);
-
-        return {
-          id,
-          state,
-          model: modelMatch?.[1]
-        };
-      });
+    return parseDevicesOutput(output);
   }
 
   /**
@@ -292,8 +204,7 @@ export class AdbClient {
     } catch {
       try {
         const result = this.exec("shell am broadcast -a clipper.get");
-        const match = result.match(/data="([^"]*)"/);
-        return match?.[1] ?? "(clipboard not available)";
+        return parseClipboardBroadcast(result) ?? "(clipboard not available)";
       } catch {
         return "(clipboard access not available — requires API 29+ or clipper app)";
       }
@@ -319,10 +230,7 @@ export class AdbClient {
    */
   swipeDirection(direction: "up" | "down" | "left" | "right", distance: number = 800): void {
     // Get screen size
-    const sizeOutput = this.exec("shell wm size");
-    const match = sizeOutput.match(/(\d+)x(\d+)/);
-    const width = match ? parseInt(match[1]) : 1080;
-    const height = match ? parseInt(match[2]) : 1920;
+    const { width, height } = parseScreenSize(this.exec("shell wm size"));
 
     const centerX = Math.floor(width / 2);
     const centerY = Math.floor(height / 2);
@@ -354,49 +262,7 @@ export class AdbClient {
    * Press key by name or keycode
    */
   pressKey(key: string): void {
-    const keyCodes: Record<string, number> = {
-      "BACK": 4,
-      "HOME": 3,
-      "MENU": 82,
-      "ENTER": 66,
-      "TAB": 61,
-      "DELETE": 67,
-      "BACKSPACE": 67,
-      "POWER": 26,
-      "VOLUME_UP": 24,
-      "VOLUME_DOWN": 25,
-      "VOLUME_MUTE": 164,
-      "CAMERA": 27,
-      "APP_SWITCH": 187,
-      "DPAD_UP": 19,
-      "DPAD_DOWN": 20,
-      "DPAD_LEFT": 21,
-      "DPAD_RIGHT": 22,
-      "DPAD_CENTER": 23,
-      "SEARCH": 84,
-      "ESCAPE": 111,
-      "SPACE": 62,
-      "WAKEUP": 224,
-      "SLEEP": 223,
-      "BRIGHTNESS_UP": 221,
-      "BRIGHTNESS_DOWN": 220,
-      "MEDIA_PLAY_PAUSE": 85,
-      "MEDIA_NEXT": 87,
-      "MEDIA_PREVIOUS": 88,
-      "MEDIA_STOP": 86,
-      "MUTE": 91,
-      "NOTIFICATION": 83,
-      "SETTINGS": 176,
-      "COPY": 278,
-      "PASTE": 279,
-      "CUT": 277,
-    };
-
-    const keyCode = keyCodes[key.toUpperCase()] ?? parseInt(key);
-    if (isNaN(keyCode)) {
-      throw new Error(`Unknown key: ${key}`);
-    }
-
+    const keyCode = resolveKeyCode(key, ANDROID_KEYCODES);
     this.exec(`shell input keyevent ${keyCode}`);
   }
 
@@ -406,37 +272,28 @@ export class AdbClient {
    * so the next getUiHierarchy call fetches fresh data.
    */
   invalidateUiTreeCache(): void {
-    this.uiTreeCache = null;
-  }
-
-  /**
-   * Strip the "UI hierachy dumped to: /dev/tty" prefix that some devices
-   * prepend when dumping to stdout via /dev/tty.
-   */
-  private stripDumpPrefix(raw: string): string {
-    const idx = raw.indexOf("<?xml");
-    if (idx > 0) return raw.slice(idx);
-    return raw;
+    this.uiTreeCache.invalidate();
   }
 
   /**
    * Get UI hierarchy XML (sync — blocks event loop)
    */
   getUiHierarchy(turbo?: boolean): string {
-    if (turbo && this.uiTreeCache && Date.now() - this.uiTreeCache.timestamp < this.uiTreeCacheTTL) {
-      return this.uiTreeCache.xml;
+    if (turbo) {
+      const cached = this.uiTreeCache.get();
+      if (cached !== null) return cached;
     }
 
     let xml: string;
     if (turbo) {
       // Single ADB call: pipe XML directly to stdout
-      xml = this.stripDumpPrefix(this.exec("exec-out uiautomator dump /dev/tty"));
+      xml = stripDumpPrefix(this.exec("exec-out uiautomator dump /dev/tty"));
     } else {
       this.exec("shell uiautomator dump /sdcard/ui.xml");
       xml = this.exec("shell cat /sdcard/ui.xml");
     }
 
-    this.uiTreeCache = { xml, timestamp: Date.now() };
+    this.uiTreeCache.set(xml);
     return xml;
   }
 
@@ -444,20 +301,21 @@ export class AdbClient {
    * Get UI hierarchy XML async (non-blocking)
    */
   async getUiHierarchyAsync(turbo?: boolean): Promise<string> {
-    if (turbo && this.uiTreeCache && Date.now() - this.uiTreeCache.timestamp < this.uiTreeCacheTTL) {
-      return this.uiTreeCache.xml;
+    if (turbo) {
+      const cached = this.uiTreeCache.get();
+      if (cached !== null) return cached;
     }
 
     let xml: string;
     if (turbo) {
       // Single ADB call: pipe XML directly to stdout
-      xml = this.stripDumpPrefix(await this.execAsync("exec-out uiautomator dump /dev/tty"));
+      xml = stripDumpPrefix(await this.execAsync("exec-out uiautomator dump /dev/tty"));
     } else {
       await this.execAsync("shell uiautomator dump /sdcard/ui.xml");
       xml = await this.execAsync("shell cat /sdcard/ui.xml");
     }
 
-    this.uiTreeCache = { xml, timestamp: Date.now() };
+    this.uiTreeCache.set(xml);
     return xml;
   }
 
@@ -473,21 +331,7 @@ export class AdbClient {
   async execWithUiDump(actionCommand: string, deviceIdOverride?: string): Promise<{ actionOutput: string; uiXml: string }> {
     const combined = `${actionCommand} && uiautomator dump /dev/tty`;
     const raw = await this.execArgsAsync(["shell", "sh", "-c", combined], deviceIdOverride);
-
-    // Split output: everything before XML is action output, XML starts with <?xml or <hierarchy
-    const xmlStart = raw.indexOf("<?xml");
-    const xmlStartAlt = raw.indexOf("<hierarchy");
-    const splitIdx = xmlStart >= 0 ? xmlStart : xmlStartAlt;
-
-    if (splitIdx < 0) {
-      // No XML found — dump may have failed, return action output only
-      return { actionOutput: raw.trim(), uiXml: "" };
-    }
-
-    const actionOutput = raw.substring(0, splitIdx).trim();
-    const uiXml = this.stripDumpPrefix(raw.substring(splitIdx));
-
-    return { actionOutput, uiXml };
+    return splitActionAndUiXml(raw);
   }
 
   /**
@@ -508,18 +352,7 @@ export class AdbClient {
    * Press key (async, non-blocking — for turbo mode).
    */
   async pressKeyAsync(key: string, deviceIdOverride?: string): Promise<void> {
-    const keyCodes: Record<string, number> = {
-      "BACK": 4, "HOME": 3, "MENU": 82, "ENTER": 66, "TAB": 61,
-      "DELETE": 67, "BACKSPACE": 67, "POWER": 26, "VOLUME_UP": 24,
-      "VOLUME_DOWN": 25, "ESCAPE": 111, "SPACE": 62, "DPAD_UP": 19,
-      "DPAD_DOWN": 20, "DPAD_LEFT": 21, "DPAD_RIGHT": 22,
-    };
-
-    const keyCode = keyCodes[key.toUpperCase()] ?? parseInt(key);
-    if (isNaN(keyCode)) {
-      throw new Error(`Unknown key: ${key}`);
-    }
-
+    const keyCode = resolveKeyCode(key, ANDROID_KEYCODES_FAST);
     await this.execAsync(`shell input keyevent ${keyCode}`, deviceIdOverride);
   }
 
@@ -539,11 +372,11 @@ export class AdbClient {
     // Try to get launch activity
     try {
       const output = this.exec(`shell cmd package resolve-activity --brief ${packageName}`);
-      const activity = output.split("\n").find(line => line.includes("/"));
+      const activity = parseLaunchActivity(output);
 
       if (activity) {
-        this.exec(`shell am start -n ${activity.trim()}`);
-        return `Launched ${activity.trim()}`;
+        this.exec(`shell am start -n ${activity}`);
+        return `Launched ${activity}`;
       }
     } catch {
       // Fallback: use monkey to launch
@@ -615,44 +448,21 @@ export class AdbClient {
    */
   getCurrentActivity(): string {
     try {
-      // Get focused activity (works on most Android versions)
       const output = this.exec("shell dumpsys activity activities");
-
-      // Try different patterns for different Android versions
-      const patterns = [
-        /mResumedActivity[^}]*?(\S+\/\.\S+)/,           // Android 10+
-        /mResumedActivity[^}]*?(\S+\/\S+)/,             // Generic
-        /resumedActivity[^}]*?(\S+\/\S+)/,              // Some versions
-        /topResumedActivity[^}]*?(\S+\/\S+)/,           // Android 12+
-        /mFocusedActivity[^}]*?(\S+\/\S+)/,             // Older Android
-        /ResumedActivity[^}]*?(\S+\/\S+)/i,             // Case-insensitive fallback
-      ];
-
-      for (const pattern of patterns) {
-        const match = output.match(pattern);
-        if (match?.[1]) {
-          return match[1];
-        }
-      }
+      const resumed = parseCurrentActivityFromActivities(output);
+      if (resumed) return resumed;
 
       // Fallback: try getting current focus from window manager
       const wmOutput = this.exec("shell dumpsys window windows");
-      const focusMatch = wmOutput.match(/mCurrentFocus[^}]*?(\S+\/\S+)/);
-      if (focusMatch?.[1]) {
-        return focusMatch[1];
-      }
+      const focused = parseCurrentFocusFromWindows(wmOutput);
+      if (focused) return focused;
 
       return "unknown";
     } catch {
       // Try alternative method — Node-side filter replaces device-side `| grep`.
       try {
         const output = this.execArgs(["shell", "dumpsys", "window"]);
-        const filtered = output
-          .split("\n")
-          .filter(line => /mCurrentFocus|mFocusedApp/.test(line))
-          .join("\n");
-        const match = filtered.match(/(\S+\/\S+)/);
-        return match?.[1] ?? "unknown";
+        return parseFocusFromDumpsysWindow(output) ?? "unknown";
       } catch {
         return "unknown (could not determine)";
       }
@@ -663,12 +473,7 @@ export class AdbClient {
    * Get screen size
    */
   getScreenSize(): { width: number; height: number } {
-    const output = this.exec("shell wm size");
-    const match = output.match(/(\d+)x(\d+)/);
-    return {
-      width: match ? parseInt(match[1]) : 1080,
-      height: match ? parseInt(match[2]) : 1920
-    };
+    return parseScreenSize(this.exec("shell wm size"));
   }
 
   /**
@@ -689,46 +494,10 @@ export class AdbClient {
    * Get device logs (logcat)
    * @param options - filter options
    */
-  getLogs(options: {
-    tag?: string;
-    level?: "V" | "D" | "I" | "W" | "E" | "F";
-    lines?: number;
-    since?: string;
-    package?: string;
-  } = {}): string {
-    const args: string[] = ["shell", "logcat", "-d"];
-
-    if (options.level) {
-      args.push(`*:${options.level}`);
-    }
-
-    if (options.tag) {
-      validateLogTag(options.tag);
-      args.push("-s", options.tag);
-    }
-
-    if (options.lines) {
-      args.push("-t", String(Math.trunc(options.lines)));
-    }
-
-    if (options.since) {
-      validateLogTimestamp(options.since);
-      args.push("-t", options.since);
-    }
-
+  getLogs(options: LogcatOptions = {}): string {
+    const args = buildLogcatArgs(options);
     const output = this.execArgs(args);
-
-    // Filter by package if specified
-    if (options.package) {
-      const lines = output.split("\n");
-      const filtered = lines.filter(line =>
-        line.includes(options.package!) ||
-        line.match(/^\d+-\d+\s+\d+:\d+/) // Keep timestamp lines
-      );
-      return filtered.join("\n");
-    }
-
-    return output;
+    return options.package ? filterLogsByPackage(output, options.package) : output;
   }
 
   /**

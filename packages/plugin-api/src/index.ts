@@ -20,7 +20,12 @@ export type Capability =
   | "logs"
   | "terminal"
   | "fileTransfer"
-  | "deviceMgmt";
+  | "deviceMgmt"
+  // Marker capability for plugins that provide cross-platform meta tools
+  // (a UX surface that fans out to platform adapters). Not a platform
+  // capability — `findByCapability("screen")` should not return such
+  // plugins.
+  | "meta-tools";
 
 export const ALL_CAPABILITIES: readonly Capability[] = [
   "screen",
@@ -33,6 +38,7 @@ export const ALL_CAPABILITIES: readonly Capability[] = [
   "terminal",
   "fileTransfer",
   "deviceMgmt",
+  "meta-tools",
 ] as const;
 
 export interface PluginManifest {

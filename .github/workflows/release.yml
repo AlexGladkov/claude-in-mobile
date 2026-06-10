@@ -8,6 +8,11 @@ on:
 permissions:
   contents: write
 
+# Single source of truth for build matrix. Adding a new platform = one edit
+# here (matrix include) + ensure update-homebrew Formula template supports it.
+# Downstream jobs (release, update-homebrew, verify-checksums) discover the
+# artifacts dynamically from the upload-artifact filenames.
+
 jobs:
   build:
     strategy:
@@ -157,13 +162,26 @@ jobs:
         with:
           merge-multiple: true
 
-      - name: Read SHA256 values
+      - name: Discover platforms and SHAs
         id: sha
+        # Build a JSON map { "<platform>": "<sha>" } from the .sha256 files.
+        # Downstream consumers (Formula update, verify-checksums) iterate over
+        # this map instead of hardcoded arch names.
         run: |
-          ARM64_SHA=$(awk '{print $1}' claude-in-mobile-*-darwin-arm64.tar.gz.sha256)
-          X86_SHA=$(awk '{print $1}' claude-in-mobile-*-darwin-x86_64.tar.gz.sha256)
-          echo "arm64=$ARM64_SHA" >> "$GITHUB_OUTPUT"
-          echo "x86_64=$X86_SHA" >> "$GITHUB_OUTPUT"
+          VERSION="${{ steps.version.outputs.version }}"
+          MAP="{}"
+          PLATFORMS=()
+          for f in claude-in-mobile-${VERSION}-*.tar.gz.sha256; do
+            BASE=$(basename "$f" .tar.gz.sha256)
+            PLATFORM="${BASE#claude-in-mobile-${VERSION}-}"
+            SHA=$(awk '{print $1}' "$f")
+            MAP=$(echo "$MAP" | jq --arg p "$PLATFORM" --arg s "$SHA" '. + {($p): $s}')
+            PLATFORMS+=("$PLATFORM")
+          done
+          echo "map=$MAP" >> "$GITHUB_OUTPUT"
+          echo "platforms=${PLATFORMS[*]}" >> "$GITHUB_OUTPUT"
+          echo "Discovered platforms: ${PLATFORMS[*]}"
+          echo "Map: $MAP"
 
       - name: Checkout Homebrew tap
         uses: actions/checkout@v4
@@ -174,11 +192,15 @@ jobs:
 
       - name: Update formula
         working-directory: homebrew-tap
+        env:
+          SHA_MAP: ${{ steps.sha.outputs.map }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          python3 - "${{ steps.version.outputs.version }}" "${{ steps.sha.outputs.arm64 }}" "${{ steps.sha.outputs.x86_64 }}" <<'PYTHON'
-          import sys, re
+          python3 - <<'PYTHON'
+          import json, os, re
 
-          version, arm_sha, x86_sha = sys.argv[1], sys.argv[2], sys.argv[3]
+          version = os.environ["VERSION"]
+          sha_map = json.loads(os.environ["SHA_MAP"])
           path = "Formula/claude-in-mobile.rb"
 
           with open(path) as f:
@@ -186,7 +208,11 @@ jobs:
 
           content = re.sub(r'version ".*?"', f'version "{version}"', content)
 
-          sha_iter = iter([arm_sha, x86_sha])
+          # Replace shas in the order they appear in the Formula. The Formula
+          # template's order must match the (deterministic) platform order
+          # returned by the discovery step.
+          shas = [sha_map[p] for p in sorted(sha_map.keys())]
+          sha_iter = iter(shas)
           def replace_sha(m):
               try:
                   return f'sha256 "{next(sha_iter)}"'
@@ -220,6 +246,9 @@ jobs:
       - name: Download release assets and verify against formula
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        # Loops over every release asset matching the version, so adding a
+        # platform to the build matrix automatically enrolls it in checksum
+        # verification with no further edits here.
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           REPO="AlexGladkov/claude-in-mobile"
@@ -231,11 +260,17 @@ jobs:
           cat formula.rb
           echo "::endgroup::"
 
-          for ARCH in darwin-arm64 darwin-x86_64; do
-            ASSET="claude-in-mobile-${VERSION}-${ARCH}.tar.gz"
-            URL="https://github.com/${REPO}/releases/download/v${VERSION}/${ASSET}"
+          ASSETS=$(gh api "repos/${REPO}/releases/tags/v${VERSION}" \
+            --jq '.assets[] | select(.name | endswith(".tar.gz")) | .name')
 
-            echo "::group::Verifying ${ARCH}"
+          if [ -z "$ASSETS" ]; then
+            echo "::error::No tar.gz assets found in release v${VERSION}"
+            exit 1
+          fi
+
+          while IFS= read -r ASSET; do
+            URL="https://github.com/${REPO}/releases/download/v${VERSION}/${ASSET}"
+            echo "::group::Verifying ${ASSET}"
             echo "Downloading ${URL}"
             curl -fsSL -o "${ASSET}" "${URL}"
 
@@ -243,13 +278,13 @@ jobs:
             echo "Actual SHA256: ${ACTUAL}"
 
             if ! grep -q "${ACTUAL}" formula.rb; then
-              echo "::error::Checksum mismatch for ${ARCH}! Formula does not contain ${ACTUAL}"
+              echo "::error::Checksum mismatch for ${ASSET}! Formula does not contain ${ACTUAL}"
               FAILED=1
             else
-              echo "Checksum verified for ${ARCH}"
+              echo "Checksum verified for ${ASSET}"
             fi
             echo "::endgroup::"
-          done
+          done <<< "$ASSETS"
 
           if [ "$FAILED" -ne 0 ]; then
             echo "::error::Checksum verification failed! Release assets do not match the Homebrew formula."

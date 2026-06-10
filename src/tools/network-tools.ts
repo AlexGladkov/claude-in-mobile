@@ -1,19 +1,15 @@
 /**
  * Network tools for Android devices.
- *
- * Provides 4 tool handlers:
- *   - network_traffic:      App (or global) network traffic stats from kernel counters
- *   - network_connectivity: Active connection type, IP, DNS, WiFi state
- *   - network_proxy:        Get / set / clear the global HTTP proxy setting
- *   - network_airplane:     Enable or disable airplane mode
- *
- * All tools are Android-only — they return a clear error on other platforms.
  */
 
 import type { ToolDefinition } from "./registry.js";
+import { defineTool, z } from "./define-tool.js";
+import { deviceIdField } from "./common-schema.js";
 import { ValidationError } from "../errors.js";
 import { truncateOutput } from "../utils/truncate.js";
 import { validatePackageName } from "../utils/sanitize.js";
+import { parseCommonArgs } from "../utils/parse-common-args.js";
+import { textResult } from "../utils/tool-result.js";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -25,10 +21,6 @@ const HOST_RE = /^[a-zA-Z0-9][a-zA-Z0-9.\-]*$/;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/**
- * Format raw byte count as a human-readable string.
- * Examples: 512 → "512 B", 1536 → "1.5 KB", 2097152 → "2.0 MB"
- */
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -36,21 +28,11 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
-/**
- * Parse a uid from `cmd package list packages -U <pkg>` output.
- * The line looks like: "package:com.example.app uid:10123"
- * Returns null if not found.
- */
 function parseUid(output: string): string | null {
   const match = output.match(/uid:(\d+)/);
   return match ? match[1] : null;
 }
 
-/**
- * Parse /proc/net/xt_qtaguid/stats for a given uid.
- * File columns (space-separated): idx iface acct_tag_hex uid_tag_int cnt_set rx_bytes rx_packets tx_bytes tx_packets ...
- * Returns aggregated { rxBytes, txBytes, rxPackets, txPackets } across all interfaces and sets.
- */
 function parseQtaguidStats(raw: string, uid: string): {
   rxBytes: number;
   txBytes: number;
@@ -60,7 +42,6 @@ function parseQtaguidStats(raw: string, uid: string): {
   let rxBytes = 0, txBytes = 0, rxPackets = 0, txPackets = 0;
   for (const line of raw.split("\n")) {
     const cols = line.trim().split(/\s+/);
-    // cols[3] = uid_tag_int (uid with tag, lower 32 bits is UID)
     if (cols.length < 9) continue;
     const lineUid = String(parseInt(cols[3], 10) & 0xffffffff);
     if (lineUid !== uid) continue;
@@ -72,13 +53,6 @@ function parseQtaguidStats(raw: string, uid: string): {
   return { rxBytes, txBytes, rxPackets, txPackets };
 }
 
-/**
- * Parse a summary line from `dumpsys netstats` for global totals.
- * Looks for lines like:
- *   Xt stats:
- *     iface=wlan0 ... rxBytes=1234 rxPackets=5 txBytes=6789 txPackets=10
- * Returns an array of interface summaries.
- */
 function parseNetstatsGlobal(raw: string): Array<{
   iface: string;
   rxBytes: number;
@@ -104,10 +78,8 @@ function parseNetstatsGlobal(raw: string): Array<{
     const txBytes   = parseInt(trimmed.match(/txBytes=(\d+)/)?.[1]   ?? "0", 10);
     const txPackets = parseInt(trimmed.match(/txPackets=(\d+)/)?.[1] ?? "0", 10);
 
-    // Avoid duplicate zero-rows from header sections
     if (rxBytes === 0 && txBytes === 0 && rxPackets === 0 && txPackets === 0) continue;
 
-    // Aggregate same-interface entries (there may be multiple history buckets)
     const existing = results.find(r => r.iface === iface);
     if (existing) {
       existing.rxBytes   += rxBytes;
@@ -125,84 +97,66 @@ function parseNetstatsGlobal(raw: string): Array<{
 // ── Tool definitions ──────────────────────────────────────────────────────────
 
 export const networkTools: ToolDefinition[] = [
-  // ── 1. network_traffic ────────────────────────────────────────────────────
-  {
-    tool: {
-      name: "network_traffic",
-      description:
-        "Get network traffic statistics. If a package name is provided, shows per-app traffic (rx/tx bytes and packets) using kernel UID counters. Otherwise shows global per-interface totals from dumpsys netstats. Android only.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          package: {
-            type: "string",
-            description:
-              "App package name (e.g. com.example.app). Omit to show global interface totals.",
-          },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-        required: [],
-      },
-    },
+  defineTool({
+    name: "network_traffic",
+    description:
+      "Get network traffic statistics. If a package name is provided, shows per-app traffic (rx/tx bytes and packets) using kernel UID counters. Otherwise shows global per-interface totals from dumpsys netstats. Android only.",
+    schema: z.object({
+      package: z
+        .string()
+        .optional()
+        .describe("App package name (e.g. com.example.app). Omit to show global interface totals."),
+      deviceId: deviceIdField,
+    }),
     handler: async (args, ctx) => {
-      const deviceId = args.deviceId as string | undefined;
-      const platform = ctx.deviceManager.getCurrentPlatform();
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
       if (platform !== "android") {
-        return { text: ANDROID_ONLY_MSG("network_traffic") };
+        return textResult(ANDROID_ONLY_MSG("network_traffic"));
       }
 
-      const adb = ctx.deviceManager.getAndroidClient(deviceId);
-      const pkg = args.package as string | undefined;
+      const pkg = args.package;
 
-      // ── Per-app mode ──
       if (pkg) {
         validatePackageName(pkg);
 
-        // Step 1: resolve UID
-        const uidRaw = adb.shell(`cmd package list packages -U ${pkg}`);
+        const uidRaw = ctx.deviceManager.shell(`cmd package list packages -U ${pkg}`, "android", deviceId);
         const uid = parseUid(uidRaw);
         if (!uid) {
-          return { text: `Package "${pkg}" not found on device.` };
+          return textResult(`Package "${pkg}" not found on device.`);
         }
 
-        // Step 2: read kernel traffic counters
         let statsRaw: string;
         try {
-          statsRaw = adb.shell("cat /proc/net/xt_qtaguid/stats");
+          statsRaw = ctx.deviceManager.shell("cat /proc/net/xt_qtaguid/stats", "android", deviceId);
         } catch {
-          // Fallback: newer kernels may not have xt_qtaguid
-          return {
-            text:
-              `UID ${uid} resolved for "${pkg}", but /proc/net/xt_qtaguid/stats is unavailable on this device/kernel. ` +
-              `Try network_traffic without a package to view global interface stats.`,
-          };
+          return textResult(
+            `UID ${uid} resolved for "${pkg}", but /proc/net/xt_qtaguid/stats is unavailable on this device/kernel. ` +
+            `Try network_traffic without a package to view global interface stats.`,
+          );
         }
 
         const { rxBytes, txBytes, rxPackets, txPackets } = parseQtaguidStats(statsRaw, uid);
 
         if (rxBytes === 0 && txBytes === 0) {
-          return {
-            text:
-              `Traffic stats for ${pkg} (UID ${uid}):\n` +
-              `  No traffic recorded (app may not have sent/received data since last boot).`,
-          };
+          return textResult(
+            `Traffic stats for ${pkg} (UID ${uid}):\n` +
+            `  No traffic recorded (app may not have sent/received data since last boot).`,
+          );
         }
 
-        return {
-          text:
-            `Traffic stats for ${pkg} (UID ${uid}):\n` +
-            `  Received:      ${formatBytes(rxBytes)} (${rxPackets.toLocaleString()} packets)\n` +
-            `  Transmitted:   ${formatBytes(txBytes)} (${txPackets.toLocaleString()} packets)\n` +
-            `  Total:         ${formatBytes(rxBytes + txBytes)}`,
-        };
+        return textResult(
+          `Traffic stats for ${pkg} (UID ${uid}):\n` +
+          `  Received:      ${formatBytes(rxBytes)} (${rxPackets.toLocaleString()} packets)\n` +
+          `  Transmitted:   ${formatBytes(txBytes)} (${txPackets.toLocaleString()} packets)\n` +
+          `  Total:         ${formatBytes(rxBytes + txBytes)}`,
+        );
       }
 
-      // ── Global mode ──
-      const raw = adb.shell("dumpsys netstats --detail");
+      const raw = ctx.deviceManager.shell("dumpsys netstats --detail", "android", deviceId);
       const ifaces = parseNetstatsGlobal(raw);
 
       if (ifaces.length === 0) {
-        return { text: truncateOutput("No interface traffic data found in dumpsys netstats.") };
+        return textResult(truncateOutput("No interface traffic data found in dumpsys netstats."));
       }
 
       const lines = ["Global network traffic (per interface, cumulative since boot):"];
@@ -218,53 +172,39 @@ export const networkTools: ToolDefinition[] = [
       }
       lines.push(`  ${"TOTAL".padEnd(12)} RX: ${formatBytes(totalRx).padStart(10)}  TX: ${formatBytes(totalTx).padStart(10)}`);
 
-      return { text: lines.join("\n") };
+      return textResult(lines.join("\n"));
     },
-  },
+  }),
 
-  // ── 2. network_connectivity ───────────────────────────────────────────────
-  {
-    tool: {
-      name: "network_connectivity",
-      description:
-        "Get current network connectivity info: active network type (WiFi/Mobile/etc), connection state, IP address, DNS servers, and basic WiFi details (SSID, RSSI). Android only.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-        required: [],
-      },
-    },
+  defineTool({
+    name: "network_connectivity",
+    description:
+      "Get current network connectivity info: active network type (WiFi/Mobile/etc), connection state, IP address, DNS servers, and basic WiFi details (SSID, RSSI). Android only.",
+    schema: z.object({
+      deviceId: deviceIdField,
+    }),
     handler: async (args, ctx) => {
-      const deviceId = args.deviceId as string | undefined;
-      const platform = ctx.deviceManager.getCurrentPlatform();
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
       if (platform !== "android") {
-        return { text: ANDROID_ONLY_MSG("network_connectivity") };
+        return textResult(ANDROID_ONLY_MSG("network_connectivity"));
       }
 
-      const adb = ctx.deviceManager.getAndroidClient(deviceId);
-
-      // Limit dumpsys connectivity output — it can be thousands of lines
-      const connRaw = adb.shell("dumpsys connectivity 2>/dev/null | head -n 80");
-      const wifiRaw = adb.shell("dumpsys wifi 2>/dev/null | head -n 40");
+      const connRaw = ctx.deviceManager.shell("dumpsys connectivity 2>/dev/null | head -n 80", "android", deviceId);
+      const wifiRaw = ctx.deviceManager.shell("dumpsys wifi 2>/dev/null | head -n 40", "android", deviceId);
 
       const lines: string[] = ["Network Connectivity:"];
 
-      // ── Active network ──
       const activeTypeMatch = connRaw.match(/Active default network.*?:\s*(\S+)/i)
         ?? connRaw.match(/mActiveDefaultNetwork=.*?type:\s*(\S+)/i)
         ?? connRaw.match(/NetworkInfo\s*.*?type:\s*([\w/]+)/i);
       const activeType = activeTypeMatch?.[1] ?? "unknown";
       lines.push(`  Active network:  ${activeType}`);
 
-      // ── Connection state ──
       const isConnected = /state:\s*CONNECTED/i.test(connRaw)
         || /isConnected\(\)\s*=\s*true/i.test(connRaw)
         || /connected=true/i.test(connRaw);
       lines.push(`  Connected:       ${isConnected ? "yes" : "no"}`);
 
-      // ── IP address (IPv4 preferred) ──
       const ipv4Match = connRaw.match(/LinkAddresses:\s*\[([^\]]+)\]/i)
         ?? connRaw.match(/mLinkAddresses=\[([^\]]+)\]/i);
       const ipBlock = ipv4Match?.[1] ?? "";
@@ -273,20 +213,17 @@ export const networkTools: ToolDefinition[] = [
         ?? "n/a";
       lines.push(`  IP address:      ${ipv4}`);
 
-      // ── DNS ──
       const dnsMatches = [...connRaw.matchAll(/DnsAddresses:\s*\[([^\]]+)\]/gi)];
       if (dnsMatches.length > 0) {
         const dns = dnsMatches.map(m => m[1].trim()).join(", ");
         lines.push(`  DNS:             ${dns}`);
       } else {
-        // Fallback: getprop
-        const dns1 = adb.shell("getprop net.dns1").trim();
-        const dns2 = adb.shell("getprop net.dns2").trim();
+        const dns1 = ctx.deviceManager.shell("getprop net.dns1", "android", deviceId).trim();
+        const dns2 = ctx.deviceManager.shell("getprop net.dns2", "android", deviceId).trim();
         const dnsList = [dns1, dns2].filter(Boolean).join(", ");
         lines.push(`  DNS:             ${dnsList || "n/a"}`);
       }
 
-      // ── WiFi details ──
       const ssidMatch = wifiRaw.match(/mWifiInfo.*?SSID:\s*"?([^",\n]+)"?/i)
         ?? wifiRaw.match(/SSID:\s*"?([^",\n]+)"?/i);
       const rssiMatch = wifiRaw.match(/rssi=(-?\d+)/i)
@@ -299,65 +236,51 @@ export const networkTools: ToolDefinition[] = [
         lines.push(`  WiFi RSSI:       ${rssiMatch[1]} dBm`);
       }
 
-      // ── Mobile data ──
-      const mobileType = adb.shell("getprop gsm.network.type").trim();
+      const mobileType = ctx.deviceManager.shell("getprop gsm.network.type", "android", deviceId).trim();
       if (mobileType && mobileType !== "Unknown") {
         lines.push(`  Mobile type:     ${mobileType}`);
       }
 
-      return { text: lines.join("\n") };
+      return textResult(lines.join("\n"));
     },
-  },
+  }),
 
-  // ── 3. network_proxy ──────────────────────────────────────────────────────
-  {
-    tool: {
-      name: "network_proxy",
-      description:
-        "Get, set, or clear the global HTTP proxy for the Android device. " +
-        "GET mode (no args): show current proxy. " +
-        "SET mode (host + optional port): configure proxy. " +
-        "CLEAR mode (clear:true): remove proxy. Android only.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          host: {
-            type: "string",
-            description:
-              "Proxy hostname or IP (set mode). E.g. 192.168.1.100 or proxy.corp.com",
-          },
-          port: {
-            type: "number",
-            description: "Proxy port (set mode, default: 8080). Range: 1–65535.",
-          },
-          clear: {
-            type: "boolean",
-            description: "Clear the current proxy setting.",
-          },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-        required: [],
-      },
-    },
+  defineTool({
+    name: "network_proxy",
+    description:
+      "Get, set, or clear the global HTTP proxy for the Android device. " +
+      "GET mode (no args): show current proxy. " +
+      "SET mode (host + optional port): configure proxy. " +
+      "CLEAR mode (clear:true): remove proxy. Android only.",
+    schema: z.object({
+      host: z
+        .string()
+        .optional()
+        .describe(
+          "Proxy hostname or IP (set mode). E.g. 192.168.1.100 or proxy.corp.com",
+        ),
+      port: z
+        .number()
+        .optional()
+        .describe("Proxy port (set mode, default: 8080). Range: 1–65535."),
+      clear: z.boolean().optional().describe("Clear the current proxy setting."),
+      deviceId: deviceIdField,
+    }),
     handler: async (args, ctx) => {
-      const deviceId = args.deviceId as string | undefined;
-      const platform = ctx.deviceManager.getCurrentPlatform();
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
       if (platform !== "android") {
-        return { text: ANDROID_ONLY_MSG("network_proxy") };
+        return textResult(ANDROID_ONLY_MSG("network_proxy"));
       }
 
-      const adb = ctx.deviceManager.getAndroidClient(deviceId);
-      const host  = args.host  as string  | undefined;
-      const port  = args.port  as number  | undefined;
-      const clear = args.clear as boolean | undefined;
+      const host = args.host;
+      const port = args.port;
+      const clear = args.clear;
 
-      // ── CLEAR mode ──
       if (clear) {
-        adb.shell("settings put global http_proxy :0");
-        return { text: "HTTP proxy cleared." };
+        ctx.deviceManager.shell("settings put global http_proxy :0", "android", deviceId);
+        return textResult("HTTP proxy cleared.");
       }
 
-      // ── SET mode ──
       if (host !== undefined) {
         if (!HOST_RE.test(host)) {
           throw new ValidationError(
@@ -370,62 +293,46 @@ export const networkTools: ToolDefinition[] = [
             `Invalid proxy port: ${resolvedPort}. Must be an integer between 1 and 65535.`,
           );
         }
-        adb.shell(`settings put global http_proxy ${host}:${resolvedPort}`);
-        // Verify the write was accepted
-        const current = adb.shell("settings get global http_proxy").trim();
-        return { text: `HTTP proxy set to ${host}:${resolvedPort}\nVerified setting: ${current}` };
+        ctx.deviceManager.shell(`settings put global http_proxy ${host}:${resolvedPort}`, "android", deviceId);
+        const current = ctx.deviceManager.shell("settings get global http_proxy", "android", deviceId).trim();
+        return textResult(`HTTP proxy set to ${host}:${resolvedPort}\nVerified setting: ${current}`);
       }
 
-      // ── GET mode ──
-      const current = adb.shell("settings get global http_proxy").trim();
+      const current = ctx.deviceManager.shell("settings get global http_proxy", "android", deviceId).trim();
       if (!current || current === "null" || current === ":0") {
-        return { text: "HTTP proxy: not configured" };
+        return textResult("HTTP proxy: not configured");
       }
-      return { text: `HTTP proxy: ${current}` };
+      return textResult(`HTTP proxy: ${current}`);
     },
-  },
+  }),
 
-  // ── 4. network_airplane ───────────────────────────────────────────────────
-  {
-    tool: {
-      name: "network_airplane",
-      description:
-        "Enable or disable airplane mode on the Android device. " +
-        "Broadcasts the mode change intent so the OS applies it immediately. Android only.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          enabled: {
-            type: "boolean",
-            description: "true to enable airplane mode, false to disable it.",
-          },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-        required: ["enabled"],
-      },
-    },
+  defineTool({
+    name: "network_airplane",
+    description:
+      "Enable or disable airplane mode on the Android device. " +
+      "Broadcasts the mode change intent so the OS applies it immediately. Android only.",
+    schema: z.object({
+      enabled: z.unknown().describe("true to enable airplane mode, false to disable it."),
+      deviceId: deviceIdField,
+    }),
     handler: async (args, ctx) => {
-      const deviceId = args.deviceId as string | undefined;
-      const platform = ctx.deviceManager.getCurrentPlatform();
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
       if (platform !== "android") {
-        return { text: ANDROID_ONLY_MSG("network_airplane") };
+        return textResult(ANDROID_ONLY_MSG("network_airplane"));
       }
 
-      const enabled = args.enabled as boolean;
+      const enabled = args.enabled;
       if (typeof enabled !== "boolean") {
         throw new ValidationError("enabled must be a boolean (true or false).");
       }
 
-      const adb = ctx.deviceManager.getAndroidClient(deviceId);
       const value = enabled ? "1" : "0";
 
-      // Write the setting
-      adb.shell(`settings put global airplane_mode_on ${value}`);
-      // Broadcast so the framework reacts immediately
-      adb.shell("am broadcast -a android.intent.action.AIRPLANE_MODE");
+      ctx.deviceManager.shell(`settings put global airplane_mode_on ${value}`, "android", deviceId);
+      ctx.deviceManager.shell("am broadcast -a android.intent.action.AIRPLANE_MODE", "android", deviceId);
 
       const state = enabled ? "ENABLED" : "DISABLED";
-      return { text: `Airplane mode ${state}.` };
+      return textResult(`Airplane mode ${state}.`);
     },
-  },
+  }),
 ];

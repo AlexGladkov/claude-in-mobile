@@ -1,8 +1,12 @@
 import type { ToolDefinition } from "./registry.js";
-import type { Platform } from "../device-manager.js";
+import { defineTool, z } from "./define-tool.js";
+import { platformEnum, deviceIdField } from "./common-schema.js";
 import { validatePackageName, sanitizeForShell, validateUrl } from "../utils/sanitize.js";
 import { ValidationError } from "../errors.js";
 import { truncateOutput } from "../utils/truncate.js";
+import { parseCommonArgs } from "../utils/parse-common-args.js";
+import { textResult } from "../utils/tool-result.js";
+import { dispatchByPlatform } from "./helpers/dispatch.js";
 
 // ─── Validation helpers ───────────────────────────────────────────────────────
 
@@ -37,7 +41,6 @@ const FLAG_MAP: Record<string, number> = {
 };
 
 function resolveFlag(flag: string): number {
-  // Accept either a named constant or a numeric hex/decimal string
   if (flag in FLAG_MAP) return FLAG_MAP[flag]!;
   const num = Number(flag);
   if (!isNaN(num) && num > 0) return num;
@@ -66,13 +69,11 @@ const EXTRA_TYPE_FLAG: Record<string, string> = {
 function buildExtrasArgs(extras: ExtraItem[]): string {
   return extras
     .map(({ key, value, type }) => {
-      // Sanitize key — must be safe identifier-like string
       const safeKey = sanitizeForShell(String(key));
       if (!safeKey || safeKey.length === 0) {
         throw new ValidationError(`Extra key must not be empty after sanitization: "${key}"`);
       }
 
-      // Determine type flag, defaulting to type inference
       let flag: string;
       if (type) {
         flag = EXTRA_TYPE_FLAG[type]!;
@@ -92,207 +93,148 @@ function buildExtrasArgs(extras: ExtraItem[]): string {
     .join(" ");
 }
 
+// ─── Schema helpers ───────────────────────────────────────────────────────────
+
+const extraItemSchema = z.object({
+  key: z.string().describe("Extra key name."),
+  value: z.union([z.string(), z.number(), z.boolean()]).describe(
+    "Extra value (string, number, or boolean).",
+  ),
+  type: z
+    .enum(["string", "int", "bool", "float", "long", "uri"])
+    .optional()
+    .describe("Value type for am start flag selection. Inferred from value type when omitted."),
+});
+
 // ─── Tool definitions ─────────────────────────────────────────────────────────
 
 export const intentTools: ToolDefinition[] = [
-  // ── intent_start ────────────────────────────────────────────────────────────
-  {
-    tool: {
-      name: "intent_start",
-      description:
-        "Launch an Activity with a structured Android Intent. Supports action, component, data URI, category, typed extras, and activity flags. Android only; use intent_deeplink for iOS.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          intentAction: {
-            type: "string",
-            description:
-              "Android Intent action (e.g. 'android.intent.action.VIEW'). Not to be confused with the meta-tool 'action' routing field.",
-          },
-          component: {
-            type: "string",
-            description:
-              "Explicit component in 'package/activity' format (e.g. 'com.example.app/com.example.app.MainActivity').",
-          },
-          data: {
-            type: "string",
-            description: "Data URI for the intent (e.g. 'https://example.com' or 'content://...').",
-          },
-          category: {
-            type: "string",
-            description:
-              "Intent category (e.g. 'android.intent.category.DEFAULT').",
-          },
-          extras: {
-            type: "array",
-            description: "Typed key-value extras to attach to the intent.",
-            items: {
-              type: "object",
-              properties: {
-                key: { type: "string", description: "Extra key name." },
-                value: {
-                  description: "Extra value (string, number, or boolean).",
-                },
-                type: {
-                  type: "string",
-                  enum: ["string", "int", "bool", "float", "long", "uri"],
-                  description:
-                    "Value type for am start flag selection. Inferred from value type when omitted.",
-                },
-              },
-              required: ["key", "value"],
-            },
-          },
-          flags: {
-            type: "array",
-            description:
-              "Activity flags (e.g. ['FLAG_ACTIVITY_NEW_TASK', 'FLAG_ACTIVITY_CLEAR_TOP']).",
-            items: { type: "string" },
-          },
-          package: {
-            type: "string",
-            description: "Target package name to restrict resolution.",
-          },
-          platform: {
-            type: "string",
-            enum: ["android", "ios"],
-            description:
-              "Target platform. If not specified, uses the active target.",
-          },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-        required: [],
-      },
-    },
+  defineTool({
+    name: "intent_start",
+    description:
+      "Launch an Activity with a structured Android Intent. Supports action, component, data URI, category, typed extras, and activity flags. Android only; use intent_deeplink for iOS.",
+    schema: z.object({
+      intentAction: z
+        .string()
+        .optional()
+        .describe(
+          "Android Intent action (e.g. 'android.intent.action.VIEW'). Not to be confused with the meta-tool 'action' routing field.",
+        ),
+      component: z
+        .string()
+        .optional()
+        .describe(
+          "Explicit component in 'package/activity' format (e.g. 'com.example.app/com.example.app.MainActivity').",
+        ),
+      data: z
+        .string()
+        .optional()
+        .describe("Data URI for the intent (e.g. 'https://example.com' or 'content://...')."),
+      category: z
+        .string()
+        .optional()
+        .describe("Intent category (e.g. 'android.intent.category.DEFAULT')."),
+      extras: z
+        .array(extraItemSchema)
+        .optional()
+        .describe("Typed key-value extras to attach to the intent."),
+      flags: z
+        .array(z.string())
+        .optional()
+        .describe("Activity flags (e.g. ['FLAG_ACTIVITY_NEW_TASK', 'FLAG_ACTIVITY_CLEAR_TOP'])."),
+      package: z.string().optional().describe("Target package name to restrict resolution."),
+      platform: platformEnum,
+      deviceId: deviceIdField,
+    }),
     handler: async (args, ctx) => {
-      const deviceId = args.deviceId as string | undefined;
-      const platform = (args.platform as Platform | undefined) ?? ctx.deviceManager.getCurrentPlatform();
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
 
-      if (platform === "ios") {
-        // iOS does not support full am start semantics; direct the caller to use intent_deeplink
-        return {
-          text: "iOS does not support Android-style intent launching. Use intent_deeplink with a URI to open content on iOS via xcrun simctl openurl.",
-        };
-      }
+      return dispatchByPlatform(platform, {
+        android: () => {
+          const intentAction = args.intentAction;
+          const component = args.component;
+          const data = args.data;
+          const category = args.category;
+          const extras = (args.extras as ExtraItem[] | undefined) ?? [];
+          const flags = args.flags ?? [];
+          const pkg = args.package;
+
+          if (intentAction) validateIntentAction(intentAction);
+          if (component) validateComponent(component);
+          if (pkg) validatePackageName(pkg);
+
+          const parts: string[] = ["am start"];
+
+          if (intentAction) parts.push(`-a ${intentAction}`);
+          if (component) parts.push(`-n ${component}`);
+          if (data) {
+            const safeData = sanitizeForShell(data);
+            parts.push(`-d '${safeData}'`);
+          }
+          if (category) {
+            if (!INTENT_ACTION_RE.test(category)) {
+              throw new ValidationError(
+                `Invalid category: "${category}". Only alphanumeric characters, dots, and underscores are allowed.`,
+              );
+            }
+            parts.push(`-c ${category}`);
+          }
+          if (extras.length > 0) {
+            parts.push(buildExtrasArgs(extras));
+          }
+          if (flags.length > 0) {
+            const combined = flags.reduce((acc, f) => acc | resolveFlag(f), 0);
+            parts.push(`-f 0x${combined.toString(16)}`);
+          }
+          if (pkg) parts.push(`-p ${pkg}`);
+
+          const command = parts.join(" ");
+          const result = ctx.deviceManager.shell(command, "android", deviceId);
+          return textResult(truncateOutput(result || "Activity launched."));
+        },
+        ios: () =>
+          textResult(
+            "iOS does not support Android-style intent launching. Use intent_deeplink with a URI to open content on iOS via xcrun simctl openurl.",
+          ),
+        unsupported: (p) =>
+          textResult(`intent_start is only supported on Android (current platform: ${p}).`),
+      });
+    },
+  }),
+
+  defineTool({
+    name: "intent_broadcast",
+    description:
+      "Send an Android broadcast intent. Useful for triggering system events or communicating with broadcast receivers. Android only.",
+    schema: z.object({
+      intentAction: z
+        .string()
+        .describe(
+          "Broadcast action string (e.g. 'android.intent.action.BOOT_COMPLETED', 'com.example.MY_EVENT').",
+        ),
+      extras: z
+        .array(extraItemSchema)
+        .optional()
+        .describe("Typed key-value extras attached to the broadcast."),
+      package: z.string().optional().describe("Target package for explicit broadcasts."),
+      component: z
+        .string()
+        .optional()
+        .describe("Explicit receiver component ('package/receiver')."),
+      platform: platformEnum,
+      deviceId: deviceIdField,
+    }),
+    handler: async (args, ctx) => {
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
 
       if (platform !== "android") {
-        return {
-          text: `intent_start is only supported on Android (current platform: ${platform}).`,
-        };
+        return textResult(`intent_broadcast is Android-only. Current platform: ${platform}.`);
       }
 
-      const intentAction = args.intentAction as string | undefined;
-      const component = args.component as string | undefined;
-      const data = args.data as string | undefined;
-      const category = args.category as string | undefined;
+      const intentAction = args.intentAction;
       const extras = (args.extras as ExtraItem[] | undefined) ?? [];
-      const flags = (args.flags as string[] | undefined) ?? [];
-      const pkg = args.package as string | undefined;
-
-      // Validate inputs
-      if (intentAction) validateIntentAction(intentAction);
-      if (component) validateComponent(component);
-      if (pkg) validatePackageName(pkg);
-
-      // Build command parts
-      const parts: string[] = ["am start"];
-
-      if (intentAction) parts.push(`-a ${intentAction}`);
-      if (component) parts.push(`-n ${component}`);
-      if (data) {
-        const safeData = sanitizeForShell(data);
-        parts.push(`-d '${safeData}'`);
-      }
-      if (category) {
-        if (!INTENT_ACTION_RE.test(category)) {
-          throw new ValidationError(
-            `Invalid category: "${category}". Only alphanumeric characters, dots, and underscores are allowed.`,
-          );
-        }
-        parts.push(`-c ${category}`);
-      }
-      if (extras.length > 0) {
-        parts.push(buildExtrasArgs(extras));
-      }
-      if (flags.length > 0) {
-        // Combine all flags with bitwise OR and pass as a single -f value
-        const combined = flags.reduce((acc, f) => acc | resolveFlag(f), 0);
-        parts.push(`-f 0x${combined.toString(16)}`);
-      }
-      if (pkg) parts.push(`-p ${pkg}`);
-
-      const command = parts.join(" ");
-      const result = ctx.deviceManager.getAndroidClient(deviceId).shell(command);
-      return { text: truncateOutput(result || "Activity launched.") };
-    },
-  },
-
-  // ── intent_broadcast ────────────────────────────────────────────────────────
-  {
-    tool: {
-      name: "intent_broadcast",
-      description:
-        "Send an Android broadcast intent. Useful for triggering system events or communicating with broadcast receivers. Android only.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          intentAction: {
-            type: "string",
-            description:
-              "Broadcast action string (e.g. 'android.intent.action.BOOT_COMPLETED', 'com.example.MY_EVENT').",
-          },
-          extras: {
-            type: "array",
-            description: "Typed key-value extras attached to the broadcast.",
-            items: {
-              type: "object",
-              properties: {
-                key: { type: "string", description: "Extra key name." },
-                value: {
-                  description: "Extra value (string, number, or boolean).",
-                },
-                type: {
-                  type: "string",
-                  enum: ["string", "int", "bool", "float", "long", "uri"],
-                  description: "Value type override.",
-                },
-              },
-              required: ["key", "value"],
-            },
-          },
-          package: {
-            type: "string",
-            description: "Target package for explicit broadcasts.",
-          },
-          component: {
-            type: "string",
-            description: "Explicit receiver component ('package/receiver').",
-          },
-          platform: {
-            type: "string",
-            enum: ["android", "ios"],
-            description:
-              "Target platform. If not specified, uses the active target.",
-          },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-        required: ["intentAction"],
-      },
-    },
-    handler: async (args, ctx) => {
-      const deviceId = args.deviceId as string | undefined;
-      const platform = (args.platform as Platform | undefined) ?? ctx.deviceManager.getCurrentPlatform();
-
-      if (platform !== "android") {
-        return {
-          text: `intent_broadcast is Android-only. Current platform: ${platform}.`,
-        };
-      }
-
-      const intentAction = args.intentAction as string;
-      const extras = (args.extras as ExtraItem[] | undefined) ?? [];
-      const pkg = args.package as string | undefined;
-      const component = args.component as string | undefined;
+      const pkg = args.package;
+      const component = args.component;
 
       validateIntentAction(intentAction);
       if (pkg) validatePackageName(pkg);
@@ -305,49 +247,35 @@ export const intentTools: ToolDefinition[] = [
       if (extras.length > 0) parts.push(buildExtrasArgs(extras));
 
       const command = parts.join(" ");
-      const result = ctx.deviceManager.getAndroidClient(deviceId).shell(command);
-      return { text: truncateOutput(result || "Broadcast sent.") };
+      const result = ctx.deviceManager.shell(command, "android", deviceId);
+      return textResult(truncateOutput(result || "Broadcast sent."));
     },
-  },
+  }),
 
-  // ── intent_deeplink ─────────────────────────────────────────────────────────
-  {
-    tool: {
-      name: "intent_deeplink",
-      description:
-        "Open a deep link URI on Android or iOS. On Android uses 'am start -a VIEW', on iOS uses 'xcrun simctl openurl'.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          uri: {
-            type: "string",
-            description:
-              "Deep link URI to open (e.g. 'https://example.com/path', 'myapp://screen/details').",
-          },
-          package: {
-            type: "string",
-            description:
-              "Target package to handle the deep link (Android only). Restricts resolution to a specific app.",
-          },
-          platform: {
-            type: "string",
-            enum: ["android", "ios"],
-            description:
-              "Target platform. If not specified, uses the active target.",
-          },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-        required: ["uri"],
-      },
-    },
+  defineTool({
+    name: "intent_deeplink",
+    description:
+      "Open a deep link URI on Android or iOS. On Android uses 'am start -a VIEW', on iOS uses 'xcrun simctl openurl'.",
+    schema: z.object({
+      uri: z
+        .string()
+        .describe(
+          "Deep link URI to open (e.g. 'https://example.com/path', 'myapp://screen/details').",
+        ),
+      package: z
+        .string()
+        .optional()
+        .describe(
+          "Target package to handle the deep link (Android only). Restricts resolution to a specific app.",
+        ),
+      platform: platformEnum,
+      deviceId: deviceIdField,
+    }),
     handler: async (args, ctx) => {
-      const deviceId = args.deviceId as string | undefined;
-      const platform = (args.platform as Platform | undefined) ?? ctx.deviceManager.getCurrentPlatform();
-      const uri = args.uri as string;
-      const pkg = args.package as string | undefined;
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      const uri = args.uri;
+      const pkg = args.package;
 
-      // Validate URI — allow http/https/custom schemes for deep links
-      // Custom schemes (e.g. myapp://) are common; only block shell-injection chars
       const safeUri = sanitizeForShell(uri);
       if (!safeUri || safeUri.length === 0) {
         throw new ValidationError("URI must not be empty or consist solely of blocked characters.");
@@ -355,78 +283,62 @@ export const intentTools: ToolDefinition[] = [
 
       if (pkg) validatePackageName(pkg);
 
-      if (platform === "android") {
-        const parts: string[] = [
-          "am start",
-          "-a android.intent.action.VIEW",
-          `-d '${safeUri}'`,
-        ];
-        if (pkg) parts.push(`-p ${pkg}`);
+      return dispatchByPlatform(platform, {
+        android: () => {
+          const parts: string[] = [
+            "am start",
+            "-a android.intent.action.VIEW",
+            `-d '${safeUri}'`,
+          ];
+          if (pkg) parts.push(`-p ${pkg}`);
 
-        const command = parts.join(" ");
-        const result = ctx.deviceManager.getAndroidClient(deviceId).shell(command);
-        return { text: truncateOutput(result || `Deep link opened: ${uri}`) };
-      }
-
-      if (platform === "ios") {
-        // For http/https URIs validate fully; custom schemes are allowed as-is
-        if (uri.startsWith("http://") || uri.startsWith("https://")) {
-          validateUrl(uri);
-        }
-        ctx.deviceManager.getIosClient(deviceId).openUrl(uri);
-        return { text: `Deep link opened on iOS: ${uri}` };
-      }
-
-      return {
-        text: `intent_deeplink is only supported on Android and iOS (current platform: ${platform}).`,
-      };
-    },
-  },
-
-  // ── intent_services ─────────────────────────────────────────────────────────
-  {
-    tool: {
-      name: "intent_services",
-      description:
-        "List running Android services. Optionally filter by package name. Android only.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          package: {
-            type: "string",
-            description: "Filter results to services belonging to this package.",
-          },
-          platform: {
-            type: "string",
-            enum: ["android", "ios"],
-            description:
-              "Target platform. If not specified, uses the active target.",
-          },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
+          const command = parts.join(" ");
+          const result = ctx.deviceManager.shell(command, "android", deviceId);
+          return textResult(truncateOutput(result || `Deep link opened: ${uri}`));
         },
-        required: [],
-      },
+        ios: () => {
+          if (uri.startsWith("http://") || uri.startsWith("https://")) {
+            validateUrl(uri);
+          }
+          ctx.deviceManager.getIosClient(deviceId).openUrl(uri);
+          return textResult(`Deep link opened on iOS: ${uri}`);
+        },
+        unsupported: (p) =>
+          textResult(
+            `intent_deeplink is only supported on Android and iOS (current platform: ${p}).`,
+          ),
+      });
     },
+  }),
+
+  defineTool({
+    name: "intent_services",
+    description:
+      "List running Android services. Optionally filter by package name. Android only.",
+    schema: z.object({
+      package: z
+        .string()
+        .optional()
+        .describe("Filter results to services belonging to this package."),
+      platform: platformEnum,
+      deviceId: deviceIdField,
+    }),
     handler: async (args, ctx) => {
-      const deviceId = args.deviceId as string | undefined;
-      const platform = (args.platform as Platform | undefined) ?? ctx.deviceManager.getCurrentPlatform();
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
 
       if (platform !== "android") {
-        return {
-          text: `intent_services is Android-only. Current platform: ${platform}.`,
-        };
+        return textResult(`intent_services is Android-only. Current platform: ${platform}.`);
       }
 
-      const pkg = args.package as string | undefined;
+      const pkg = args.package;
       if (pkg) validatePackageName(pkg);
 
       const command = pkg
         ? `dumpsys activity services ${pkg}`
         : "dumpsys activity services";
 
-      const raw = ctx.deviceManager.getAndroidClient(deviceId).shell(command);
+      const raw = ctx.deviceManager.shell(command, "android", deviceId);
 
-      // Parse service entries — each block starts with "ServiceRecord{"
       const lines = (raw ?? "").split("\n");
       const serviceLines: string[] = [];
       let inServiceBlock = false;
@@ -443,7 +355,6 @@ export const intentTools: ToolDefinition[] = [
         }
 
         if (inServiceBlock) {
-          // Track basic indent depth to detect end of block
           if (trimmed.length === 0) {
             blockDepth++;
             if (blockDepth > 2) {
@@ -453,7 +364,6 @@ export const intentTools: ToolDefinition[] = [
             continue;
           }
           blockDepth = 0;
-          // Include intent, process, and running info lines
           if (
             trimmed.startsWith("intent=") ||
             trimmed.startsWith("app=") ||
@@ -473,7 +383,7 @@ export const intentTools: ToolDefinition[] = [
           ? `No running services found for package: ${pkg}`
           : "No running services found.";
 
-      return { text: truncateOutput(output) };
+      return textResult(truncateOutput(output));
     },
-  },
+  }),
 ];

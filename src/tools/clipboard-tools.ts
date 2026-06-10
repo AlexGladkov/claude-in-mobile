@@ -1,81 +1,74 @@
 import type { ToolDefinition } from "./registry.js";
 import type { ToolContext } from "./context.js";
 import type { Platform } from "../device-manager.js";
+import { defineTool, z } from "./define-tool.js";
 import { parseUiHierarchy, findByText, findByResourceId } from "../adb/ui-parser.js";
+import { parseCommonArgs } from "../utils/parse-common-args.js";
+import { textResult } from "../utils/tool-result.js";
+import { sleep } from "../utils/sleep.js";
+import { CLIPBOARD } from "../constants/timeouts.js";
 
 /**
  * Helper to get the AndroidAdapter (typed) from DeviceManager.
  * Throws if the current platform is not android.
  */
-function getAndroidAdapter(ctx: ToolContext, platform?: Platform, deviceId?: string) {
-  const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
-  if (currentPlatform !== "android") {
+function getAndroidAdapter(ctx: ToolContext, platform: Platform, deviceId?: string) {
+  if (platform !== "android") {
     throw new Error("Clipboard tools are only available on Android platform");
   }
-  // getAndroidClient() returns AdbClient which has the clipboard methods
   return ctx.deviceManager.getAndroidClient(deviceId);
 }
 
+const deviceIdField = z
+  .string()
+  .describe("Target device ID for multi-device. If omitted, uses active device.")
+  .optional();
+
 export const clipboardTools: ToolDefinition[] = [
-  {
-    tool: {
-      name: "clipboard_select",
-      description: "Select all text in focused field (Android only)",
-      inputSchema: {
-        type: "object",
-        properties: {
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-      },
-    },
+  defineTool({
+    name: "clipboard_select",
+    description: "Select all text in focused field (Android only)",
+    schema: z.object({ deviceId: deviceIdField }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
       const client = getAndroidAdapter(ctx, platform, deviceId);
       client.selectAll();
-      return { text: "Selected all text in focused input field" };
+      return textResult("Selected all text in focused input field");
     },
-  },
-  {
-    tool: {
-      name: "clipboard_copy",
-      description: "Select all and copy to clipboard (Android only)",
-      inputSchema: {
-        type: "object",
-        properties: {
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-      },
-    },
+  }),
+
+  defineTool({
+    name: "clipboard_copy",
+    description: "Select all and copy to clipboard (Android only)",
+    schema: z.object({ deviceId: deviceIdField }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
       const client = getAndroidAdapter(ctx, platform, deviceId);
       client.selectAll();
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await sleep(CLIPBOARD.POLL_MS);
       client.copyToClipboard();
-      return { text: "Selected all text and copied to clipboard" };
+      return textResult("Selected all text and copied to clipboard");
     },
-  },
-  {
-    tool: {
-      name: "clipboard_paste",
-      description: "Paste clipboard into focused field (Android only)",
-      inputSchema: {
-        type: "object",
-        properties: {
-          fieldText: { type: "string", description: "Find input field by text and tap to focus before pasting" },
-          fieldId: { type: "string", description: "Find input field by resource ID and tap to focus before pasting" },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-      },
-    },
+  }),
+
+  defineTool({
+    name: "clipboard_paste",
+    description: "Paste clipboard into focused field (Android only)",
+    schema: z.object({
+      fieldText: z
+        .string()
+        .optional()
+        .describe("Find input field by text and tap to focus before pasting"),
+      fieldId: z
+        .string()
+        .optional()
+        .describe("Find input field by resource ID and tap to focus before pasting"),
+      deviceId: deviceIdField,
+    }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
       const client = getAndroidAdapter(ctx, platform, deviceId);
 
-      // Optionally find and tap the target field first
       if (args.fieldText || args.fieldId) {
         const xml = await ctx.deviceManager.getUiHierarchyAsync("android");
         const elements = parseUiHierarchy(xml);
@@ -83,41 +76,34 @@ export const clipboardTools: ToolDefinition[] = [
 
         let found: import("../adb/ui-parser.js").UiElement[] = [];
         if (args.fieldText) {
-          found = findByText(elements, args.fieldText as string);
+          found = findByText(elements, args.fieldText);
         } else if (args.fieldId) {
-          found = findByResourceId(elements, args.fieldId as string);
+          found = findByResourceId(elements, args.fieldId);
         }
 
         if (found.length === 0) {
-          return { text: `Field not found: ${args.fieldText || args.fieldId}` };
+          return textResult(`Field not found: ${args.fieldText || args.fieldId}`);
         }
 
         const target = found[0];
         client.tap(target.centerX, target.centerY);
-        await new Promise(resolve => setTimeout(resolve, 200));
+        await sleep(CLIPBOARD.SETTLE_MS);
       }
 
       client.pasteFromClipboard();
-      return { text: "Pasted clipboard content into focused field" };
+      return textResult("Pasted clipboard content into focused field");
     },
-  },
-  {
-    tool: {
-      name: "clipboard_get_android",
-      description: "Read clipboard text from Android device",
-      inputSchema: {
-        type: "object",
-        properties: {
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-      },
-    },
+  }),
+
+  defineTool({
+    name: "clipboard_get_android",
+    description: "Read clipboard text from Android device",
+    schema: z.object({ deviceId: deviceIdField }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
       const client = getAndroidAdapter(ctx, platform, deviceId);
       const text = client.getClipboardText();
-      return { text: `Clipboard: ${text}` };
+      return textResult(`Clipboard: ${text}`);
     },
-  },
+  }),
 ];

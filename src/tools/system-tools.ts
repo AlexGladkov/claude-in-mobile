@@ -1,214 +1,225 @@
 import type { ToolDefinition } from "./registry.js";
-import type { ToolContext } from "./context.js";
-import type { Platform } from "../device-manager.js";
+import { defineTool, z } from "./define-tool.js";
+import { platformEnum, deviceIdField } from "./common-schema.js";
 import { truncateOutput } from "../utils/truncate.js";
-import { validateShellCommand, validateUrl, sanitizeForShell, validatePackageName } from "../utils/sanitize.js";
+import {
+  validateShellCommand,
+  validateUrl,
+  sanitizeForShell,
+  validatePackageName,
+} from "../utils/sanitize.js";
+import { parseCommonArgs } from "../utils/parse-common-args.js";
+import { textResult } from "../utils/tool-result.js";
+import { sleep } from "../utils/sleep.js";
+import { AM, PIDOF } from "../adb/commands.js";
+import { dispatchByPlatform } from "./helpers/dispatch.js";
+
+const commonFields = {
+  platform: platformEnum,
+  deviceId: deviceIdField,
+} as const;
 
 export const systemTools: ToolDefinition[] = [
-  {
-    tool: {
-      name: "system_activity",
-      description: "Get current foreground activity (Android only)",
-      inputSchema: {
-        type: "object",
-        properties: {
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-      },
-    },
+  defineTool({
+    name: "system_activity",
+    description: "Get current foreground activity (Android only)",
+    schema: z.object({ deviceId: deviceIdField }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
-      const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
-
-      if (currentPlatform !== "android") {
-        return { text: "activity is only available for Android." };
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      if (platform !== "android") {
+        return textResult("activity is only available for Android.");
       }
-
       const activity = ctx.deviceManager.getAndroidClient(deviceId).getCurrentActivity();
-      return { text: `Current activity: ${activity}` };
+      return textResult(`Current activity: ${activity}`);
     },
-  },
-  {
-    tool: {
-      name: "system_shell",
-      description:
-        "Execute a shell command on the device. SECURITY: shell metacharacters " +
-        "(`& | ; $ \\` ' \\\\ ( ) < > { } * ? [ ] tab newline`) are REJECTED — " +
-        "the command is NOT passed through /bin/sh and chaining/expansion does not work. " +
-        "Prefer these alternatives when applicable: ui_tap/ui_swipe for input, " +
-        "app_launch for starting apps, system_open_url for opening URLs " +
-        "(URLs with `&` in query string MUST go through system_open_url, not here). " +
-        "For multi-step operations, invoke this tool once per step.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          command: {
-            type: "string",
-            description:
-              "Single shell command, no chaining or shell metacharacters. " +
-              "Example: 'pm list packages -3' (valid), 'pm list packages | grep foo' (rejected).",
-          },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-        required: ["command"],
-      },
-    },
+  }),
+
+  defineTool({
+    name: "system_shell",
+    description:
+      "Execute a shell command on the device. SECURITY: shell metacharacters " +
+      "(`& | ; $ \\` ' \\\\ ( ) < > { } * ? [ ] tab newline`) are REJECTED — " +
+      "the command is NOT passed through /bin/sh and chaining/expansion does not work. " +
+      "Prefer these alternatives when applicable: ui_tap/ui_swipe for input, " +
+      "app_launch for starting apps, system_open_url for opening URLs " +
+      "(URLs with `&` in query string MUST go through system_open_url, not here). " +
+      "For multi-step operations, invoke this tool once per step.",
+    schema: z.object({
+      command: z
+        .string()
+        .describe(
+          "Single shell command, no chaining or shell metacharacters. " +
+            "Example: 'pm list packages -3' (valid), 'pm list packages | grep foo' (rejected).",
+        ),
+      ...commonFields,
+    }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
-      const command = args.command as string;
-      validateShellCommand(command);
-      const output = ctx.deviceManager.shell(command, platform, deviceId);
-      return { text: truncateOutput(output || "(no output)") };
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      validateShellCommand(args.command);
+      const output = ctx.deviceManager.shell(args.command, platform, deviceId);
+      return textResult(truncateOutput(output || "(no output)"));
     },
-  },
-  {
-    tool: {
-      name: "system_wait",
-      description: "Wait for specified duration (ms)",
-      inputSchema: {
-        type: "object",
-        properties: {
-          ms: { type: "number", description: "Duration in milliseconds (default: 1000, max: 30000)", default: 1000 },
-        },
-      },
-    },
+  }),
+
+  defineTool({
+    name: "system_wait",
+    description: "Wait for specified duration (ms)",
+    schema: z.object({
+      ms: z
+        .number()
+        .default(1000)
+        .describe("Duration in milliseconds (default: 1000, max: 30000)"),
+    }),
     handler: async (args) => {
-      const ms = Math.max(0, Math.min((args.ms as number) ?? 1000, 30_000));
-      await new Promise(resolve => setTimeout(resolve, ms));
-      return { text: `Waited ${ms}ms` };
+      const ms = Math.max(0, Math.min(args.ms, 30_000));
+      await sleep(ms);
+      return textResult(`Waited ${ms}ms`);
     },
-  },
-  {
-    tool: {
-      name: "system_open_url",
-      description: "Open URL in device browser",
-      inputSchema: {
-        type: "object",
-        properties: {
-          url: { type: "string", description: "URL to open" },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-        required: ["url"],
-      },
-    },
-    handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
-      const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
-      const url = args.url as string;
+  }),
 
-      validateUrl(url);
-      const sanitizedUrl = sanitizeForShell(url);
-
-      if (currentPlatform === "android") {
-        ctx.deviceManager.getAndroidClient(deviceId).shell(`am start -a android.intent.action.VIEW -d '${sanitizedUrl}'`);
-      } else if (currentPlatform === "ios") {
-        ctx.deviceManager.getIosClient(deviceId).openUrl(url);
-      } else {
-        return { text: `open_url is not supported for ${currentPlatform} platform. Supported: android, ios.` };
-      }
-      return { text: `Opened URL: ${url}` };
-    },
-  },
-  {
-    tool: {
-      name: "system_logs",
-      description: "Get device logs with optional filters",
-      inputSchema: {
-        type: "object",
-        properties: {
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-          level: { type: "string", description: "Log level filter. Android: V/D/I/W/E/F (Verbose/Debug/Info/Warning/Error/Fatal). iOS: debug/info/default/error/fault" },
-          tag: { type: "string", description: "Filter by tag (Android only)" },
-          lines: { type: "number", description: "Number of lines to return (default: 100)", default: 100 },
-          package: { type: "string", description: "Filter by package/bundle ID" },
-        },
-      },
-    },
+  defineTool({
+    name: "system_open_url",
+    description: "Open URL in device browser",
+    schema: z.object({
+      url: z.string().describe("URL to open"),
+      ...commonFields,
+    }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      validateUrl(args.url);
+      const sanitizedUrl = sanitizeForShell(args.url);
+
+      return dispatchByPlatform(platform, {
+        android: () => {
+          ctx.deviceManager.shell(AM.START_VIEW(sanitizedUrl), "android", deviceId);
+          return textResult(`Opened URL: ${args.url}`);
+        },
+        ios: () => {
+          ctx.deviceManager.getIosClient(deviceId).openUrl(args.url);
+          return textResult(`Opened URL: ${args.url}`);
+        },
+        unsupported: (p) =>
+          textResult(`open_url is not supported for ${p} platform. Supported: android, ios.`),
+      });
+    },
+  }),
+
+  defineTool({
+    name: "system_logs",
+    description: "Get device logs with optional filters",
+    schema: z.object({
+      ...commonFields,
+      level: z
+        .string()
+        .optional()
+        .describe(
+          "Log level filter. Android: V/D/I/W/E/F (Verbose/Debug/Info/Warning/Error/Fatal). iOS: debug/info/default/error/fault",
+        ),
+      tag: z.string().optional().describe("Filter by tag (Android only)"),
+      lines: z
+        .number()
+        .default(100)
+        .describe("Number of lines to return (default: 100)"),
+      package: z.string().optional().describe("Filter by package/bundle ID"),
+    }),
+    handler: async (args, ctx) => {
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
       const logs = ctx.deviceManager.getLogs({
         platform,
         deviceId,
-        level: args.level as string | undefined,
-        tag: args.tag as string | undefined,
-        lines: Math.min((args.lines as number) ?? 100, 500),
-        package: args.package as string | undefined,
+        level: args.level,
+        tag: args.tag,
+        lines: Math.min(args.lines, 500),
+        package: args.package,
       });
-      return { text: truncateOutput(logs || "(no logs)", { maxLines: 500 }) };
+      return textResult(truncateOutput(logs || "(no logs)", { maxLines: 500 }));
     },
-  },
-  {
-    tool: {
-      name: "system_wait_log",
-      description: "Wait until a regex pattern appears in device logs. Polls the log buffer at regular intervals; returns the matching line(s) plus optional context, or times out. Use after an action to wait for a known marker (e.g., 'NavigationCompleted', a custom Debug.WriteLine tag) instead of fixed system_wait + system_logs polling. Android only.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          pattern: { type: "string", description: "JavaScript regex pattern matched against each log line. Inline flags like (?i) are NOT supported — use the caseSensitive option for case-insensitive matching." },
-          caseSensitive: { type: "boolean", description: "Case-sensitive matching (default: true). Set false for case-insensitive.", default: true },
-          timeoutMs: { type: "number", description: "Max wait in ms (default: 10000, max: 30000)", default: 10000 },
-          pollIntervalMs: { type: "number", description: "Polling interval in ms (default: 250, min: 100)", default: 250 },
-          contextLines: { type: "number", description: "Extra lines after each match to return for context (default: 0, max: 20)", default: 0 },
-          level: { type: "string", description: "Pre-filter by log level. Android: V/D/I/W/E/F" },
-          tag: { type: "string", description: "Pre-filter by tag (Android only)" },
-          package: { type: "string", description: "Pre-filter by package" },
-          clearFirst: { type: "boolean", description: "Clear log buffer before polling so only new lines are scanned. Default false (scan from current buffer head).", default: false },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-        required: ["pattern"],
-      },
-    },
+  }),
+
+  defineTool({
+    name: "system_wait_log",
+    description:
+      "Wait until a regex pattern appears in device logs. Polls the log buffer at regular intervals; returns the matching line(s) plus optional context, or times out. Use after an action to wait for a known marker (e.g., 'NavigationCompleted', a custom Debug.WriteLine tag) instead of fixed system_wait + system_logs polling. Android only.",
+    schema: z.object({
+      pattern: z
+        .string()
+        .min(1, "pattern is required and must be a non-empty string.")
+        .describe(
+          "JavaScript regex pattern matched against each log line. Inline flags like (?i) are NOT supported — use the caseSensitive option for case-insensitive matching.",
+        ),
+      caseSensitive: z
+        .boolean()
+        .default(true)
+        .describe("Case-sensitive matching (default: true). Set false for case-insensitive."),
+      timeoutMs: z
+        .number()
+        .default(10_000)
+        .describe("Max wait in ms (default: 10000, max: 30000)"),
+      pollIntervalMs: z
+        .number()
+        .default(250)
+        .describe("Polling interval in ms (default: 250, min: 100)"),
+      contextLines: z
+        .number()
+        .default(0)
+        .describe("Extra lines after each match to return for context (default: 0, max: 20)"),
+      level: z.string().optional().describe("Pre-filter by log level. Android: V/D/I/W/E/F"),
+      tag: z.string().optional().describe("Pre-filter by tag (Android only)"),
+      package: z.string().optional().describe("Pre-filter by package"),
+      clearFirst: z
+        .boolean()
+        .default(false)
+        .describe(
+          "Clear log buffer before polling so only new lines are scanned. Default false (scan from current buffer head).",
+        ),
+      ...commonFields,
+    }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
-      const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
-      if (currentPlatform !== "android") {
-        return { text: "system_wait_log is only available for Android." };
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      if (platform !== "android") {
+        return textResult("system_wait_log is only available for Android.");
       }
 
-      const patternStr = args.pattern as string;
-      if (!patternStr || typeof patternStr !== "string") {
-        return { text: "pattern is required and must be a non-empty string." };
-      }
-      const caseSensitive = (args.caseSensitive as boolean) ?? true;
       let regex: RegExp;
       try {
-        regex = new RegExp(patternStr, caseSensitive ? "" : "i");
+        regex = new RegExp(args.pattern, args.caseSensitive ? "" : "i");
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { text: `Invalid regex pattern: ${msg}` };
+        return textResult(`Invalid regex pattern: ${msg}`);
       }
 
-      const timeoutMs = Math.max(0, Math.min((args.timeoutMs as number) ?? 10000, 30_000));
-      const pollIntervalMs = Math.max(100, Math.min((args.pollIntervalMs as number) ?? 250, timeoutMs || 30_000));
-      const contextLines = Math.max(0, Math.min((args.contextLines as number) ?? 0, 20));
-      const clearFirst = (args.clearFirst as boolean) ?? false;
+      const timeoutMs = Math.max(0, Math.min(args.timeoutMs, 30_000));
+      const pollIntervalMs = Math.max(
+        100,
+        Math.min(args.pollIntervalMs, timeoutMs || 30_000),
+      );
+      const contextLines = Math.max(0, Math.min(args.contextLines, 20));
 
-      if (clearFirst) {
-        try { ctx.deviceManager.clearLogs(platform, deviceId); } catch { /* best-effort */ }
+      if (args.clearFirst) {
+        try {
+          ctx.deviceManager.clearLogs(platform, deviceId);
+        } catch {
+          /* best-effort */
+        }
       }
 
       const filterArgs = {
         platform,
         deviceId,
-        level: args.level as string | undefined,
-        tag: args.tag as string | undefined,
+        level: args.level,
+        tag: args.tag,
         lines: 500,
-        package: args.package as string | undefined,
+        package: args.package,
       };
       const seen = new Set<string>();
       const start = Date.now();
       while (true) {
         let dump = "";
-        try { dump = ctx.deviceManager.getLogs(filterArgs); } catch { /* keep looping */ }
+        try {
+          dump = ctx.deviceManager.getLogs(filterArgs);
+        } catch {
+          /* keep looping */
+        }
         const lines = dump.split(/\r?\n/);
         for (let i = 0; i < lines.length; i++) {
           const line = lines[i];
@@ -216,163 +227,118 @@ export const systemTools: ToolDefinition[] = [
           seen.add(line);
           if (regex.test(line)) {
             const elapsed = Date.now() - start;
-            const context = contextLines > 0
-              ? lines.slice(i + 1, i + 1 + contextLines).filter(Boolean).join("\n")
-              : "";
-            return {
-              text: `Match found after ${elapsed}ms:\n${line}${context ? `\n${context}` : ""}`,
-            };
+            const context =
+              contextLines > 0
+                ? lines.slice(i + 1, i + 1 + contextLines).filter(Boolean).join("\n")
+                : "";
+            return textResult(
+              `Match found after ${elapsed}ms:\n${line}${context ? `\n${context}` : ""}`,
+            );
           }
         }
         if (Date.now() - start >= timeoutMs) {
-          return { text: `Timeout after ${timeoutMs}ms — pattern not found. Scanned ${seen.size} unique lines.` };
+          return textResult(
+            `Timeout after ${timeoutMs}ms — pattern not found. Scanned ${seen.size} unique lines.`,
+          );
         }
-        await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+        await sleep(pollIntervalMs);
       }
     },
-  },
-  {
-    tool: {
-      name: "system_clear_logs",
-      description: "Clear device log buffer (Android only)",
-      inputSchema: {
-        type: "object",
-        properties: {
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-      },
-    },
+  }),
+
+  defineTool({
+    name: "system_clear_logs",
+    description: "Clear device log buffer (Android only)",
+    schema: z.object({ deviceId: deviceIdField }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
       const result = ctx.deviceManager.clearLogs(platform, deviceId);
-      return { text: result };
+      return textResult(result);
     },
-  },
-  {
-    tool: {
-      name: "system_pid_of",
-      description: "Get the PID of a running app process by package name (Android only). Returns 0 when the package is not running. Useful for verifying app launch / crash detection without parsing the full ps output.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          package: { type: "string", description: "Package name, e.g., com.android.settings" },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-        required: ["package"],
-      },
-    },
+  }),
+
+  defineTool({
+    name: "system_pid_of",
+    description:
+      "Get the PID of a running app process by package name (Android only). Returns 0 when the package is not running. Useful for verifying app launch / crash detection without parsing the full ps output.",
+    schema: z.object({
+      package: z.string().describe("Package name, e.g., com.android.settings"),
+      ...commonFields,
+    }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
-      const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
-      if (currentPlatform !== "android") {
-        return { text: "system_pid_of is only available for Android." };
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      if (platform !== "android") {
+        return textResult("system_pid_of is only available for Android.");
       }
-      const pkg = args.package as string;
-      validatePackageName(pkg);
-      // pidof -s returns single PID (first match); empty output if not running.
-      // Package name is whitelist-validated, no shell injection vector.
-      const raw = ctx.deviceManager.shell(`pidof -s ${pkg}`, platform, deviceId).trim();
+      validatePackageName(args.package);
+      const raw = ctx.deviceManager.shell(PIDOF(args.package), platform, deviceId).trim();
       const pid = raw === "" ? 0 : parseInt(raw, 10);
       if (Number.isNaN(pid) || pid <= 0) {
-        return { text: `0 (not running)` };
+        return textResult("0 (not running)");
       }
-      return { text: `${pid}` };
+      return textResult(`${pid}`);
     },
-  },
-  {
-    tool: {
-      name: "system_is_running",
-      description: "Check whether an app process is currently running by package name (Android only). Returns 'true' or 'false'. Convenience wrapper around system_pid_of for quick assertions.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          package: { type: "string", description: "Package name, e.g., com.android.settings" },
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-        required: ["package"],
-      },
-    },
+  }),
+
+  defineTool({
+    name: "system_is_running",
+    description:
+      "Check whether an app process is currently running by package name (Android only). Returns 'true' or 'false'. Convenience wrapper around system_pid_of for quick assertions.",
+    schema: z.object({
+      package: z.string().describe("Package name, e.g., com.android.settings"),
+      ...commonFields,
+    }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
-      const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
-      if (currentPlatform !== "android") {
-        return { text: "system_is_running is only available for Android." };
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      if (platform !== "android") {
+        return textResult("system_is_running is only available for Android.");
       }
-      const pkg = args.package as string;
-      validatePackageName(pkg);
-      const raw = ctx.deviceManager.shell(`pidof -s ${pkg}`, platform, deviceId).trim();
+      validatePackageName(args.package);
+      const raw = ctx.deviceManager.shell(PIDOF(args.package), platform, deviceId).trim();
       const pid = raw === "" ? 0 : parseInt(raw, 10);
       const running = !Number.isNaN(pid) && pid > 0;
-      return { text: running ? `true (pid=${pid})` : "false" };
+      return textResult(running ? `true (pid=${pid})` : "false");
     },
-  },
-  {
-    tool: {
-      name: "system_info",
-      description: "Get battery and memory info",
-      inputSchema: {
-        type: "object",
-        properties: {
-          platform: { type: "string", enum: ["android", "ios", "desktop", "aurora", "browser"], description: "Target platform. If not specified, uses the active target." },
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-      },
-    },
+  }),
+
+  defineTool({
+    name: "system_info",
+    description: "Get battery and memory info",
+    schema: z.object({ ...commonFields }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
       const info = await ctx.deviceManager.getSystemInfo(platform, deviceId);
-      return { text: info };
+      return textResult(info);
     },
-  },
-  {
-    tool: {
-      name: "system_webview",
-      description: "Inspect WebView via Chrome DevTools Protocol (Android only)",
-      inputSchema: {
-        type: "object",
-        properties: {
-          deviceId: { type: "string", description: "Target device ID for multi-device. If omitted, uses active device." },
-        },
-      },
-    },
+  }),
+
+  defineTool({
+    name: "system_webview",
+    description: "Inspect WebView via Chrome DevTools Protocol (Android only)",
+    schema: z.object({ deviceId: deviceIdField }),
     handler: async (args, ctx) => {
-      const platform = args.platform as Platform | undefined;
-      const deviceId = args.deviceId as string | undefined;
-      const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform();
-
-      if (currentPlatform !== "android") {
-        return { text: "webview is only available for Android." };
+      const { platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      if (platform !== "android") {
+        return textResult("webview is only available for Android.");
       }
 
-      try {
-        const inspector = ctx.deviceManager.getWebViewInspector();
-        const result = await inspector.inspect();
+      const inspector = ctx.deviceManager.getWebViewInspector();
+      const result = await inspector.inspect();
 
-        let output = `WebView sockets found: ${result.sockets.join(", ")}\n`;
-        output += `Forwarded to port: ${result.forwardedPort}\n\n`;
+      let output = `WebView sockets found: ${result.sockets.join(", ")}\n`;
+      output += `Forwarded to port: ${result.forwardedPort}\n\n`;
 
-        if (result.targets.length === 0) {
-          output += "No active pages found in WebView.";
-        } else {
-          output += `Pages (${result.targets.length}):\n`;
-          for (const target of result.targets) {
-            output += `  • [${target.type}] "${target.title}"\n`;
-            output += `    URL: ${target.url}\n`;
-            output += `    ID: ${target.id}\n`;
-          }
+      if (result.targets.length === 0) {
+        output += "No active pages found in WebView.";
+      } else {
+        output += `Pages (${result.targets.length}):\n`;
+        for (const target of result.targets) {
+          output += `  • [${target.type}] "${target.title}"\n`;
+          output += `    URL: ${target.url}\n`;
+          output += `    ID: ${target.id}\n`;
         }
-
-        return { text: output };
-      } catch (error: unknown) {
-        const msg = error instanceof Error ? error.message : String(error);
-        return { text: `WebView inspection failed: ${msg}` };
       }
+      return textResult(output);
     },
-  },
+  }),
 ];

@@ -122,6 +122,42 @@ export function hasSyncScreenshot(adapter: CorePlatformAdapter): adapter is Core
   return "screenshotRaw" in adapter;
 }
 
+// ============ Capability requirement helpers ============
+
+export class CapabilityNotSupportedError extends Error {
+  constructor(public readonly platform: Platform, public readonly capability: string) {
+    super(`Capability '${capability}' is not supported on platform '${platform}'.`);
+    this.name = "CapabilityNotSupportedError";
+  }
+}
+
+export function requireAppManagement(
+  adapter: CorePlatformAdapter,
+): CorePlatformAdapter & AppManagementAdapter {
+  if (!hasAppManagement(adapter)) {
+    throw new CapabilityNotSupportedError(adapter.platform, "AppManagement");
+  }
+  return adapter;
+}
+
+export function requirePermissions(
+  adapter: CorePlatformAdapter,
+): CorePlatformAdapter & PermissionAdapter {
+  if (!hasPermissions(adapter)) {
+    throw new CapabilityNotSupportedError(adapter.platform, "Permissions");
+  }
+  return adapter;
+}
+
+export function requireShell(
+  adapter: CorePlatformAdapter,
+): CorePlatformAdapter & ShellAdapter {
+  if (!hasShell(adapter)) {
+    throw new CapabilityNotSupportedError(adapter.platform, "Shell");
+  }
+  return adapter;
+}
+
 // ============ Backward-compatible union ============
 
 /**

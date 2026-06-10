@@ -2,17 +2,41 @@
  * Desktop Client - communicates with Kotlin companion app via JSON-RPC
  */
 
-import { ChildProcess, spawn, execSync, execFileSync, execFile } from "child_process";
-import { promisify } from "util";
+import { ChildProcess, spawn, execFileSync } from "child_process";
 import { EventEmitter } from "events";
 import * as readline from "readline";
-import * as path from "path";
-import * as os from "os";
-import * as fs from "fs";
-import { fileURLToPath } from "url";
 import { GradleLauncher } from "./gradle.js";
-import { validateBundleId, validatePath } from "../utils/sanitize.js";
-import { MobileError } from "../errors.js";
+import { findCompanionAppPath } from "./permission-allowlist.js";
+import { LogRing } from "./log-ring.js";
+import { normalizeLaunchOptions } from "./launch-options.js";
+import { DESKTOP } from "../constants/timeouts.js";
+import {
+  AttachLauncher,
+  BundleAppLauncher,
+  GradleAppLauncher,
+  NoOpLauncher,
+  type AppLaunchStrategy,
+} from "./launchers.js";
+
+// Re-export module-scoped helpers so existing imports of `src/desktop/client.js` keep working.
+export {
+  APP_PATH_ALLOWLIST,
+  BLOCKED_COMMS,
+  findCompanionAppPath,
+  getBundleIdFromAppPath,
+  resolvePidByBundleId,
+  validateAndResolveAppPath,
+  validateAttachPid,
+} from "./permission-allowlist.js";
+export { LogRing } from "./log-ring.js";
+export { normalizeLaunchOptions } from "./launch-options.js";
+export {
+  AttachLauncher,
+  BundleAppLauncher,
+  GradleAppLauncher,
+  NoOpLauncher,
+  type AppLaunchStrategy,
+} from "./launchers.js";
 import type {
   JsonRpcRequest,
   JsonRpcResponse,
@@ -40,351 +64,6 @@ import type {
 } from "./types.js";
 
 const MAX_RESTARTS = 3;
-const REQUEST_TIMEOUT = 45000; // 45 seconds (AppleScript can be slow on macOS with many processes)
-const BUNDLE_LAUNCH_POLL_INTERVAL_MS = 100;
-const BUNDLE_LAUNCH_TIMEOUT_MS = 5000;
-
-const execFileAsync = promisify(execFile);
-
-// Get the directory of this module
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Allowed prefixes for appPath (realpath-resolved)
-const APP_PATH_ALLOWLIST = [
-  "/Applications",
-  "/System/Applications",
-  path.join(os.homedir(), "Applications"),
-  "/Developer",
-  path.join(os.homedir(), "Library/Developer/Xcode/DerivedData"),
-];
-
-// System processes that must not be attached to
-const BLOCKED_COMMS = new Set(["launchd", "kernel_task", "securityd", "loginwindow"]);
-
-/**
- * Normalise a flat RawLaunchOptions into the strict discriminated-union LaunchOptions.
- * Throws on conflicting fields (e.g. mode:"gradle" + pid).
- */
-export function normalizeLaunchOptions(raw: RawLaunchOptions): LaunchOptions {
-  // Detect conflicting params: mode-specific fields must not bleed across modes
-  if (raw.mode === "gradle" && (raw.bundleId !== undefined || raw.appPath !== undefined || raw.pid !== undefined)) {
-    throw new MobileError(
-      `Conflicting launch parameters: mode "gradle" does not accept bundleId, appPath, or pid`,
-      "INVALID_LAUNCH_OPTIONS"
-    );
-  }
-  if (raw.mode === "bundle" && (raw.pid !== undefined || raw.projectPath !== undefined)) {
-    throw new MobileError(
-      `Conflicting launch parameters: mode "bundle" does not accept pid or projectPath`,
-      "INVALID_LAUNCH_OPTIONS"
-    );
-  }
-  if (raw.mode === "attach" && (raw.bundleId !== undefined || raw.appPath !== undefined || raw.projectPath !== undefined)) {
-    throw new MobileError(
-      `Conflicting launch parameters: mode "attach" does not accept bundleId, appPath, or projectPath`,
-      "INVALID_LAUNCH_OPTIONS"
-    );
-  }
-
-  if (raw.mode) {
-    // Explicit mode — build typed object (do not cast)
-    switch (raw.mode) {
-      case "gradle":
-        if (!raw.projectPath) throw new MobileError(`mode "gradle" requires projectPath`, "INVALID_LAUNCH_OPTIONS");
-        return { mode: "gradle", projectPath: raw.projectPath, task: raw.task, jvmArgs: raw.jvmArgs, env: raw.env };
-      case "bundle":
-        if (!raw.bundleId && !raw.appPath) throw new MobileError(`mode "bundle" requires bundleId or appPath`, "INVALID_LAUNCH_OPTIONS");
-        // After the check, at least one is defined — split to satisfy the XOR union type
-        if (raw.bundleId) {
-          return { mode: "bundle", bundleId: raw.bundleId, appPath: raw.appPath, env: raw.env };
-        }
-        return { mode: "bundle", appPath: raw.appPath!, env: raw.env };
-      case "attach":
-        if (raw.pid === undefined) throw new MobileError(`mode "attach" requires pid`, "INVALID_LAUNCH_OPTIONS");
-        return { mode: "attach", pid: raw.pid };
-      case "companion-only":
-        return { mode: "companion-only" };
-      default:
-        throw new MobileError(
-          `Unknown launch mode: "${raw.mode}". Valid values: gradle, bundle, attach, companion-only`,
-          "INVALID_LAUNCH_OPTIONS"
-        );
-    }
-  }
-
-  // Legacy: infer mode from fields present
-  if (raw.projectPath) {
-    return { mode: "gradle", projectPath: raw.projectPath, task: raw.task, jvmArgs: raw.jvmArgs, env: raw.env };
-  }
-  return { mode: "companion-only" };
-}
-
-/**
- * Resolve bundleId from an .app path by reading Info.plist via `defaults read`.
- * All calls use execFileSync (no shell).
- */
-function getBundleIdFromAppPath(appPath: string): string {
-  try {
-    const result = execFileSync(
-      "defaults",
-      ["read", `${appPath}/Contents/Info`, "CFBundleIdentifier"],
-      { encoding: "utf-8", timeout: 5000 }
-    ).trim();
-    if (!result) throw new Error("empty result");
-    return result;
-  } catch (e: any) {
-    throw new MobileError(
-      `Could not read bundle ID from ${appPath}/Contents/Info.plist: ${e.message}`,
-      "BUNDLE_ID_READ_FAILED"
-    );
-  }
-}
-
-/**
- * Validate an appPath: must be absolute, end with .app, no .., within allowlist (realpath-resolved).
- * Returns the canonicalized path to use when calling `open`.
- */
-function validateAndResolveAppPath(appPath: string): string {
-  validatePath(appPath, "appPath");
-  if (!path.isAbsolute(appPath)) {
-    throw new MobileError(`appPath must be an absolute path: ${appPath}`, "INVALID_APP_PATH");
-  }
-  if (!appPath.endsWith(".app")) {
-    throw new MobileError(`appPath must end with .app: ${appPath}`, "INVALID_APP_PATH");
-  }
-  const resolved = fs.realpathSync(appPath);
-  const allowed = APP_PATH_ALLOWLIST.some(prefix => resolved.startsWith(prefix + "/") || resolved === prefix);
-  if (!allowed) {
-    throw new MobileError(
-      `appPath "${resolved}" is outside allowed directories (${APP_PATH_ALLOWLIST.join(", ")})`,
-      "APP_PATH_NOT_ALLOWED"
-    );
-  }
-  return resolved;
-}
-
-/**
- * Poll AppleScript until the process with the given bundle ID appears, or timeout.
- * Uses execFileAsync (non-blocking) so the event loop is not held during the 3s osascript call.
- * bundleId is pre-validated by validateBundleId; regex permits only [a-zA-Z0-9.-].
- * AppleScript injection prevention relies on this regex — do not relax without re-auditing.
- */
-async function resolvePidByBundleId(bundleId: string): Promise<number> {
-  const deadline = Date.now() + BUNDLE_LAUNCH_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    try {
-      const { stdout } = await execFileAsync(
-        "osascript",
-        ["-e", `tell application "System Events" to unix id of first application process whose bundle identifier is "${bundleId}"`],
-        { timeout: 3000 }
-      );
-      const pid = parseInt(stdout.trim(), 10);
-      if (pid > 0) return pid;
-    } catch (e: any) {
-      const stderr: string = e.stderr ?? "";
-      // Non-transient: permission denial from System Events will never self-resolve
-      if (stderr.includes("Not authorized") || stderr.includes("-1743")) {
-        throw new MobileError(
-          `Accessibility permission denied. Grant access in System Settings → Privacy → Automation.`,
-          "AUTOMATION_PERMISSION_DENIED"
-        );
-      }
-      // App not yet running — continue polling
-    }
-    await new Promise(resolve => setTimeout(resolve, BUNDLE_LAUNCH_POLL_INTERVAL_MS));
-  }
-  throw new MobileError(
-    `App with bundle ID "${bundleId}" did not start within ${BUNDLE_LAUNCH_TIMEOUT_MS}ms`,
-    "BUNDLE_LAUNCH_TIMEOUT"
-  );
-}
-
-/**
- * Validate a PID for safe attach: must be positive, belong to current user, not a system process.
- * Uses separate ps calls to avoid space-split issues with multi-word comm names.
- */
-function validateAttachPid(pid: number): void {
-  if (!Number.isInteger(pid) || pid <= 0) {
-    throw new MobileError(`Invalid pid: ${pid}. Must be a positive integer`, "INVALID_PID");
-  }
-
-  let psOut: string;
-  try {
-    psOut = execFileSync("ps", ["-o", "uid=,comm=", "-p", String(pid)], { encoding: "utf-8" }).trim();
-  } catch (e: any) {
-    if (e.status === 1) {
-      throw new MobileError(`Process with pid ${pid} does not exist`, "PROCESS_NOT_FOUND");
-    }
-    throw new MobileError(`Failed to inspect pid ${pid}: ${e.message}`, "PS_EXEC_FAILED");
-  }
-
-  // uid= and comm= are separated by whitespace; comm= may contain spaces — split on first whitespace only
-  const spaceIdx = psOut.search(/\s/);
-  const uidStr = spaceIdx >= 0 ? psOut.slice(0, spaceIdx) : psOut;
-  const comm = spaceIdx >= 0 ? psOut.slice(spaceIdx + 1).trim() : "";
-
-  const uid = parseInt(uidStr, 10);
-  const currentUid = process.getuid ? process.getuid() : -1;
-  if (currentUid >= 0 && uid !== currentUid) {
-    throw new MobileError(`Cannot attach to pid ${pid}: process belongs to another user`, "PID_FOREIGN_USER");
-  }
-
-  const basename = path.basename(comm);
-  if (BLOCKED_COMMS.has(basename)) {
-    throw new MobileError(`Cannot attach to system process: ${basename} (pid ${pid})`, "PID_SYSTEM_PROCESS");
-  }
-}
-
-/** Strategy interface — returns the targetPid of the launched/attached app, or null. */
-interface AppLaunchStrategy {
-  launch(): Promise<number | null>;
-  stop(): void;
-}
-
-class GradleAppLauncher implements AppLaunchStrategy {
-  private userAppProcess: ChildProcess | null = null;
-
-  constructor(
-    private readonly opts: Extract<LaunchOptions, { mode: "gradle" }>,
-    private readonly gradleLauncher: GradleLauncher,
-    private readonly addLog: (type: LogType, msg: string) => void
-  ) {}
-
-  async launch(): Promise<number | null> {
-    this.addLog("stdout", `Launching user app from: ${this.opts.projectPath}`);
-    // Spread to satisfy RawLaunchOptions (no as any — structural types are compatible)
-    this.userAppProcess = this.gradleLauncher.launch({ ...this.opts });
-    this.userAppProcess.stdout?.on("data", (data: Buffer) => this.addLog("stdout", `[UserApp] ${data.toString()}`));
-    this.userAppProcess.stderr?.on("data", (data: Buffer) => this.addLog("stderr", `[UserApp] ${data.toString()}`));
-    return null;
-  }
-
-  stop(): void {
-    if (this.userAppProcess) {
-      this.gradleLauncher.stop(this.userAppProcess);
-      this.userAppProcess = null;
-    }
-  }
-}
-
-class BundleAppLauncher implements AppLaunchStrategy {
-  stop(): void {}
-
-  constructor(
-    private readonly opts: Extract<LaunchOptions, { mode: "bundle" }>,
-    private readonly addLog: (type: LogType, msg: string) => void
-  ) {}
-
-  async launch(): Promise<number | null> {
-    // Both bundleId and appPath are pre-validated by normalizeLaunchOptions — at least one is set.
-    const { bundleId, appPath, env } = this.opts;
-    const hasEnv = env && Object.keys(env).length > 0;
-    let resolvedBundleId: string;
-    let resolvedPath: string | undefined;
-
-    if (bundleId) {
-      validateBundleId(bundleId);
-      resolvedBundleId = bundleId;
-    } else {
-      resolvedPath = validateAndResolveAppPath(appPath!);
-      resolvedBundleId = getBundleIdFromAppPath(resolvedPath);
-      validateBundleId(resolvedBundleId);
-    }
-
-    this.addLog("stdout", `Launching app: ${bundleId ?? resolvedPath}${hasEnv ? ` (with env: ${Object.keys(env!).join(", ")})` : ""}`);
-
-    if (hasEnv) {
-      // `open` cannot pass env vars to the launched app — spawn the binary directly.
-      // resolvedPath is always set when env is used with appPath; derive it from bundleId otherwise.
-      const appPath_ = resolvedPath ?? this.getAppPathFromBundleId(resolvedBundleId);
-      const binaryName = execFileSync(
-        "defaults", ["read", `${appPath_}/Contents/Info`, "CFBundleExecutable"],
-        { encoding: "utf-8", timeout: 3000 }
-      ).trim();
-      const binaryPath = `${appPath_}/Contents/MacOS/${binaryName}`;
-      spawn(binaryPath, [], {
-        env: { ...process.env, ...env },
-        detached: true,
-        stdio: "ignore",
-      }).unref();
-    } else {
-      // No env vars needed — use `open` (proper app launch via LaunchServices)
-      try {
-        if (resolvedPath) {
-          // Pass the realpath-resolved path to `open` to prevent TOCTOU
-          execFileSync("open", [resolvedPath], { timeout: 5000 });
-        } else {
-          execFileSync("open", ["-b", resolvedBundleId], { timeout: 5000 });
-        }
-      } catch (e: any) {
-        throw new MobileError(`Failed to launch app "${bundleId ?? resolvedPath}": ${e.message}`, "BUNDLE_LAUNCH_FAILED");
-      }
-    }
-
-    this.addLog("stdout", `Waiting for app to start (polling every ${BUNDLE_LAUNCH_POLL_INTERVAL_MS}ms)...`);
-    const targetPid = await resolvePidByBundleId(resolvedBundleId);
-    this.addLog("stdout", `App started with PID ${targetPid}`);
-    return targetPid;
-  }
-
-  private getAppPathFromBundleId(bundleId: string): string {
-    try {
-      const result = execFileSync(
-        "osascript", ["-e", `POSIX path of (path to application id "${bundleId}")`],
-        { encoding: "utf-8", timeout: 5000 }
-      ).trim();
-      // Strip trailing slash that osascript adds
-      return result.replace(/\/$/, "");
-    } catch (e: any) {
-      throw new MobileError(`Cannot find app path for bundle ID "${bundleId}": ${e.message}`, "BUNDLE_PATH_NOT_FOUND");
-    }
-  }
-}
-
-class AttachLauncher implements AppLaunchStrategy {
-  constructor(
-    private readonly opts: Extract<LaunchOptions, { mode: "attach" }>,
-    private readonly addLog: (type: LogType, msg: string) => void
-  ) {}
-
-  async launch(): Promise<number | null> {
-    validateAttachPid(this.opts.pid);
-    this.addLog("stdout", `Attaching to existing process with PID ${this.opts.pid}`);
-    return this.opts.pid;
-  }
-
-  stop(): void {}
-}
-
-class NoOpLauncher implements AppLaunchStrategy {
-  async launch(): Promise<number | null> { return null; }
-  stop(): void {}
-}
-
-/**
- * Find the companion app path
- */
-function findCompanionAppPath(): string {
-  // Look for companion app relative to this module
-  // The installed distribution is at desktop-companion/build/install/desktop-companion/bin/desktop-companion
-  const possiblePaths = [
-    // From dist/desktop/client.js
-    path.join(__dirname, "..", "..", "desktop-companion", "build", "install", "desktop-companion", "bin", "desktop-companion"),
-    // From src/desktop/client.ts (when running directly)
-    path.join(__dirname, "..", "..", "..", "desktop-companion", "build", "install", "desktop-companion", "bin", "desktop-companion"),
-  ];
-
-  for (const p of possiblePaths) {
-    if (fs.existsSync(p)) {
-      return p;
-    }
-  }
-
-  throw new Error(
-    "Desktop companion app not found. Please build it first: cd desktop-companion && ./gradlew installDist"
-  );
-}
 
 interface PendingRequest {
   resolve: (value: unknown) => void;
@@ -398,8 +77,7 @@ export class DesktopClient extends EventEmitter {
   private gradleLauncher: GradleLauncher;
   private requestId = 0;
   private pendingRequests = new Map<number, PendingRequest>();
-  private logs: LogEntry[] = [];
-  private maxLogs = 10000;
+  private readonly logRing = new LogRing(10_000);
   private state: DesktopState = {
     status: "stopped",
     crashCount: 0,
@@ -536,7 +214,24 @@ export class DesktopClient extends EventEmitter {
    */
   private waitForReady(timeoutMs: number): Promise<void> {
     return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timeout);
+        this.removeListener("ready", onReady);
+        this.process?.removeListener("exit", onExit);
+      };
+
+      const onReady = () => {
+        cleanup();
+        resolve();
+      };
+
+      const onExit = () => {
+        cleanup();
+        reject(new Error("Desktop app exited before becoming ready"));
+      };
+
       const timeout = setTimeout(() => {
+        cleanup();
         // Consider ready even without explicit signal after timeout
         // The app might not send a ready signal
         if (this.process && !this.process.killed) {
@@ -547,15 +242,8 @@ export class DesktopClient extends EventEmitter {
         }
       }, timeoutMs);
 
-      this.once("ready", () => {
-        clearTimeout(timeout);
-        resolve();
-      });
-
-      this.process?.once("exit", () => {
-        clearTimeout(timeout);
-        reject(new Error("Desktop app exited before becoming ready"));
-      });
+      this.once("ready", onReady);
+      this.process?.once("exit", onExit);
     });
   }
 
@@ -653,6 +341,30 @@ export class DesktopClient extends EventEmitter {
   }
 
   /**
+   * Detach the old (dead/dying) companion process and its associated handles
+   * so they don't linger until GC when launch() respawns a replacement.
+   * Safe to call when there's nothing to detach.
+   */
+  private detachProcess(): void {
+    if (this.readline) {
+      this.readline.removeAllListeners();
+      this.readline.close();
+      this.readline = null;
+    }
+
+    const old = this.process;
+    if (old) {
+      old.stdout?.removeAllListeners();
+      old.stderr?.removeAllListeners();
+      old.removeAllListeners();
+      if (!old.killed) {
+        old.kill();
+      }
+      this.process = null;
+    }
+  }
+
+  /**
    * Handle crash with auto-restart
    */
   private async handleCrash(error: Error): Promise<void> {
@@ -666,6 +378,10 @@ export class DesktopClient extends EventEmitter {
       pending.reject(new Error("Desktop app crashed"));
     }
     this.pendingRequests.clear();
+
+    // Detach the crashed process + its listeners/readline before respawning,
+    // otherwise the old handles linger until GC (M3).
+    this.detachProcess();
 
     // Auto-restart if under limit
     if (this.state.crashCount <= MAX_RESTARTS && this.lastLaunchOptions) {
@@ -704,7 +420,7 @@ export class DesktopClient extends EventEmitter {
       const timeout = setTimeout(() => {
         this.pendingRequests.delete(id);
         reject(new Error(`Request timeout: ${method}`));
-      }, REQUEST_TIMEOUT);
+      }, DESKTOP.RPC_TIMEOUT_MS);
 
       this.pendingRequests.set(id, {
         resolve: resolve as (value: unknown) => void,
@@ -718,18 +434,10 @@ export class DesktopClient extends EventEmitter {
   }
 
   /**
-   * Add log entry
+   * Add log entry (delegates to LogRing)
    */
   private addLog(type: LogEntry["type"], message: string): void {
-    this.logs.push({
-      timestamp: Date.now(),
-      type,
-      message,
-    });
-
-    if (this.logs.length > this.maxLogs) {
-      this.logs.shift();
-    }
+    this.logRing.push(type, message);
   }
 
   // ============ Public API Methods ============
@@ -888,28 +596,14 @@ export class DesktopClient extends EventEmitter {
    * Get logs
    */
   getLogs(options?: LogOptions): LogEntry[] {
-    let result = [...this.logs];
-
-    if (options?.type) {
-      result = result.filter((log) => log.type === options.type);
-    }
-
-    if (options?.since) {
-      result = result.filter((log) => log.timestamp >= options.since!);
-    }
-
-    if (options?.limit) {
-      result = result.slice(-options.limit);
-    }
-
-    return result;
+    return this.logRing.query(options);
   }
 
   /**
    * Clear logs
    */
   clearLogs(): void {
-    this.logs = [];
+    this.logRing.clear();
   }
 
   /**

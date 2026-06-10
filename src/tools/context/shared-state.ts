@@ -1,38 +1,30 @@
 /**
  * Per-platform caches for UI elements, screenshots, UI tree output, and scale factors.
  *
- * These maps are shared singletons used across tool handlers to avoid
- * redundant device queries within the same interaction.
+ * Storage now lives in `SharedState` (see `./shared-state-class.ts`), owned
+ * by the default RuntimeContext. This module re-exports the singleton's
+ * Maps directly so existing consumers continue to receive the same
+ * Map references they always have.
  */
 
 import type { UiElement } from "../../adb/ui-parser.js";
+import { getDefaultRuntimeContext } from "../../runtime/runtime-context.js";
 
-// Per-platform cache for UI elements (to support tap by index)
-const cachedElementsMap: Map<string, UiElement[]> = new Map();
+const _state = getDefaultRuntimeContext().sharedState;
 
-// Per-platform cache for last screenshot buffer (for diff mode)
-export const lastScreenshotMap: Map<string, Buffer> = new Map();
-
-// Per-platform cache for last ui_tree output (for dedup)
-export const lastUiTreeMap: Map<string, { text: string; timestamp: number }> = new Map();
-
-// Per-platform screenshot scale factors (compressed image -> device coordinates)
-export const screenshotScaleMap: Map<string, { scaleX: number; scaleY: number }> = new Map();
+export const lastScreenshotMap: Map<string, Buffer> = _state.lastScreenshotMap;
+export const lastUiTreeMap: Map<string, { text: string; timestamp: number }> = _state.lastUiTreeMap;
+export const screenshotScaleMap: Map<string, { scaleX: number; scaleY: number }> =
+  _state.screenshotScaleMap;
 
 export function getCachedElements(platform: string): UiElement[] {
-  return cachedElementsMap.get(platform) ?? [];
+  return _state.getCachedElements(platform);
 }
 
 export function setCachedElements(platform: string, elements: UiElement[]): void {
-  cachedElementsMap.set(platform, elements);
+  _state.setCachedElements(platform, elements);
 }
 
 export function invalidateUiTreeCache(platform?: string): void {
-  if (platform) {
-    for (const key of lastUiTreeMap.keys()) {
-      if (key.startsWith(platform)) lastUiTreeMap.delete(key);
-    }
-  } else {
-    lastUiTreeMap.clear();
-  }
+  _state.invalidateUiTreeCache(platform);
 }

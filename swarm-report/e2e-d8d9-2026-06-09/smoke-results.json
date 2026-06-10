@@ -1,0 +1,77 @@
+[
+  {
+    "step": "initialize",
+    "ok": true,
+    "serverInfo": {
+      "name": "claude-mobile",
+      "version": "3.12.0"
+    }
+  },
+  {
+    "step": "tools/list",
+    "ok": true,
+    "count": 27,
+    "names": [
+      "device",
+      "screen",
+      "input",
+      "ui",
+      "app",
+      "system",
+      "flow",
+      "browser",
+      "desktop",
+      "store",
+      "visual",
+      "recorder",
+      "sync",
+      "accessibility",
+      "performance",
+      "autopilot",
+      "sandbox",
+      "intent",
+      "sensor",
+      "network",
+      "repl_spawn",
+      "repl_send",
+      "repl_key",
+      "repl_expect",
+      "repl_snapshot",
+      "repl_list",
+      "repl_kill"
+    ]
+  },
+  {
+    "step": "device.list",
+    "ok": true,
+    "preview": "Connected devices:\n\nAndroid:\n  • emulator-5554 - sdk_gphone64_arm64 (emulator, device)\n\niOS:\n  • B4275FEF-3C46-4FAC-8DEE-E45F10244D8F - Apple TV 4K (3rd generation) (simulator, shutdown)\n  • 283E2054-6797-44D2-B311-898E83C738A3 - Apple TV 4K (3rd generation) (at 1080p) (simulator, shutdown)\n  • AC45DC2C-2742-4692-9763-0D8F70CA81B0 - Apple TV (simulator, shutdown)\n  • 7883FA5B-67C9-4D5F-8653-58F849AEF904 - iPhone 17 Pro (simulator, booted)\n  • FF8B60FD-707F-4474-AA0B-C26A07E7A9FA - iPhone 17 Pro "
+  },
+  {
+    "platform": "browser",
+    "steps": [
+      {
+        "step": "browser.open(example.com)",
+        "ok": true,
+        "preview": "Opened https://example.com in session \"default\"\n\n[Example Domain] https://example.com/\n\n(no interactive elements found)\n\n--- 0 interactive elements, refs e1..e0 ---"
+      },
+      {
+        "step": "browser.snapshot",
+        "ok": true,
+        "preview": "[Example Domain] https://example.com/\n\n(no interactive elements found)\n\n--- 0 interactive elements, refs e1..e0 ---"
+      },
+      {
+        "step": "browser.screenshot",
+        "ok": true
+      },
+      {
+        "step": "browser.evaluate(document.title)",
+        "ok": true,
+        "preview": "Example Domain"
+      },
+      {
+        "step": "browser.close",
+        "ok": true
+      }
+    ]
+  }
+]

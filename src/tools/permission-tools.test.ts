@@ -96,7 +96,7 @@ describe("permission_grant", () => {
       package: "com.example.app",
       permission: "android.permission.CAMERA",
     }, ctx);
-    expect(result).toEqual({ text: "Permission granted" });
+    expect((result as { text: string }).text).toBe("Permission granted");
   });
 });
 
@@ -127,11 +127,11 @@ describe("permission_revoke", () => {
       package: "com.example.app",
       permission: "android.permission.READ_EXTERNAL_STORAGE",
     }, ctx);
-    expect(result).toEqual({ text: "Permission revoked" });
+    expect((result as { text: string }).text).toBe("Permission revoked");
     expect(ctx.deviceManager.revokePermission).toHaveBeenCalledWith(
       "com.example.app",
       "android.permission.READ_EXTERNAL_STORAGE",
-      undefined,
+      "android",
       undefined
     );
   });

@@ -75,7 +75,11 @@ export interface CDPClientInterface {
   Page: {
     enable(): Promise<void>;
     navigate(params: { url: string }): Promise<unknown>;
+    // chrome-remote-interface exposes two forms: callback (persistent listener)
+    // and zero-arg (one-shot promise that self-removes on resolve). We use the
+    // one-shot form for per-navigation waits to avoid leaking listeners.
     loadEventFired(callback: () => void): void;
+    loadEventFired(): Promise<unknown>;
     frameNavigated(callback: () => void): void;
     reload(): Promise<void>;
     captureScreenshot(params: { format: string; captureBeyondViewport?: boolean }): Promise<{ data: string }>;

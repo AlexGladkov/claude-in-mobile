@@ -22,12 +22,14 @@ function makeMockContext(overrides?: Partial<ToolContext>): ToolContext {
   const iosClient = {
     openUrl: vi.fn(),
   };
+  const shell = vi.fn((_cmd: string, _platform?: string, _deviceId?: string) => "");
 
   return {
     deviceManager: {
       getCurrentPlatform: vi.fn(() => "android"),
       getAndroidClient: vi.fn(() => androidClient),
       getIosClient: vi.fn(() => iosClient),
+      shell,
     } as any,
     getCachedElements: vi.fn(() => []),
     setCachedElements: vi.fn(),
@@ -49,9 +51,9 @@ function makeMockContext(overrides?: Partial<ToolContext>): ToolContext {
   };
 }
 
-/** Pull the last shell() call's first argument from the android client mock */
+/** Pull the last shell() call's first argument from the deviceManager mock */
 function captureShellCommand(ctx: ToolContext): string {
-  const shellMock = (ctx.deviceManager.getAndroidClient() as any).shell as ReturnType<typeof vi.fn>;
+  const shellMock = ctx.deviceManager.shell as unknown as ReturnType<typeof vi.fn>;
   const calls = shellMock.mock.calls;
   if (calls.length === 0) throw new Error("shell() was never called");
   return calls[calls.length - 1][0] as string;
@@ -206,8 +208,9 @@ describe("intent_start", () => {
 
   it("returns text containing shell output when shell returns non-empty string", async () => {
     const ctx = makeMockContext();
-    const shellMock = vi.fn(() => "Starting: Intent { act=android.intent.action.VIEW }");
-    (ctx.deviceManager.getAndroidClient as ReturnType<typeof vi.fn>).mockReturnValue({ shell: shellMock });
+    (ctx.deviceManager.shell as ReturnType<typeof vi.fn>).mockReturnValue(
+      "Starting: Intent { act=android.intent.action.VIEW }",
+    );
     const result = await handler({ intentAction: "android.intent.action.VIEW" }, ctx);
     expect((result as any).text).toContain("Starting");
   });
@@ -299,6 +302,7 @@ describe("intent_deeplink", () => {
         getCurrentPlatform: vi.fn(() => "ios"),
         getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
         getIosClient: vi.fn(() => ({ openUrl: openUrlMock })),
+        shell: vi.fn(() => ""),
       } as any,
     });
     await handler({ uri: "myapp://screen/details", platform: "ios" }, ctx);
@@ -344,6 +348,7 @@ describe("intent_deeplink", () => {
         getCurrentPlatform: vi.fn(() => "ios"),
         getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
         getIosClient: vi.fn(() => ({ openUrl: vi.fn() })),
+        shell: vi.fn(() => ""),
       } as any,
     });
     const result = await handler({ uri: "myapp://home", platform: "ios" }, ctx);
@@ -400,8 +405,9 @@ describe("intent_services", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell: shellMock })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
         getIosClient: vi.fn(() => ({ openUrl: vi.fn() })),
+        shell: shellMock,
       } as any,
     });
 
@@ -418,8 +424,9 @@ describe("intent_services", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell: shellMock })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
         getIosClient: vi.fn(() => ({ openUrl: vi.fn() })),
+        shell: shellMock,
       } as any,
     });
 
@@ -432,8 +439,9 @@ describe("intent_services", () => {
     const ctx = makeMockContext({
       deviceManager: {
         getCurrentPlatform: vi.fn(() => "android"),
-        getAndroidClient: vi.fn(() => ({ shell: shellMock })),
+        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
         getIosClient: vi.fn(() => ({ openUrl: vi.fn() })),
+        shell: shellMock,
       } as any,
     });
 

@@ -3,94 +3,26 @@
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
 
-import { registerTools, registerToolsHidden, registerAliases, registerAliasesWithDefaults, registerAllModuleMetadata, setToolListChangedNotifier, getTools, resolveToolCall, freezeRegistry } from "./tools/registry.js";
+import { registerTools, freezeRegistry } from "./tools/registry.js";
 import type { ToolDefinition } from "./tools/registry.js";
 import { createToolContext, MAX_RECURSION_DEPTH } from "./tools/context.js";
-import { detectClient, getConfigSnippet, type ClientType } from "./client-adapter.js";
-import { MobileError, isRetryable, getRecoveryHints } from "./errors.js";
+import { MobileError } from "./errors.js";
 import { getGlobalMetrics } from "./utils/metrics.js";
-import { ALWAYS_VISIBLE, PROFILE_VISIBLE, VALID_PROFILES, MODULE_METADATA, ALL_HIDEABLE_MODULES, type MobileProfile } from "./profiles.js";
-import { recordCall, detectAntiPattern } from "./utils/anti-patterns.js";
-import { bootstrapKernel, type KernelHandle } from "./runtime/bootstrap.js";
-import { createReplPlugin } from "./plugins/repl/index.js";
+import { VALID_PROFILES, type MobileProfile } from "./profiles.js";
+import { recordCall } from "./utils/anti-patterns.js";
+import { bootstrapKernel, bootstrapKernelAsync, type KernelHandle } from "./runtime/bootstrap.js";
 import type { ToolDefinition as PluginToolDefinition } from "@claude-in-mobile/plugin-api";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { captureStep } from "./tools/recorder-tools.js";
+import { resolveToolCall } from "./tools/registry.js";
+import { buildInstructions } from "./runtime/mcp-instructions.js";
+import { runCliIfRequested } from "./runtime/cli.js";
+import { createMcpServer } from "./runtime/mcp-server.js";
 
 // Read version from package.json — single source of truth
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8")) as { version: string };
-
-// Meta tools
-import { deviceMeta, deviceAliases } from "./tools/meta/device-meta.js";
-import { inputMeta, inputAliases } from "./tools/meta/input-meta.js";
-import { screenMeta, screenAliases } from "./tools/meta/screen-meta.js";
-import { uiMeta, uiAliases } from "./tools/meta/ui-meta.js";
-import { appMeta, appAliases } from "./tools/meta/app-meta.js";
-import { systemMeta, systemAliases } from "./tools/meta/system-meta.js";
-import { browserMeta, browserAliases } from "./tools/meta/browser-meta.js";
-import { desktopMeta, desktopAliases } from "./tools/meta/desktop-meta.js";
-import { storeMeta, storeAliases } from "./tools/meta/store-meta.js";
-import { flowMeta, flowAliases } from "./tools/meta/flow-meta.js";
-import { visualMeta, visualAliases } from "./tools/meta/visual-meta.js";
-import { recorderMeta, recorderAliases } from "./tools/meta/recorder-meta.js";
-import { syncMeta, syncAliases } from "./tools/meta/sync-meta.js";
-import { accessibilityMeta, accessibilityAliases } from "./tools/meta/accessibility-meta.js";
-import { performanceMeta, performanceAliases } from "./tools/meta/performance-meta.js";
-import { autopilotMeta, autopilotAliases } from "./tools/meta/autopilot-meta.js";
-import { sandboxMeta, sandboxAliases } from "./tools/meta/sandbox-meta.js";
-import { intentMeta, intentAliases } from "./tools/meta/intent-meta.js";
-import { sensorMeta, sensorAliases } from "./tools/meta/sensor-meta.js";
-import { networkMeta, networkAliases } from "./tools/meta/network-meta.js";
-import { captureStep } from "./tools/recorder-tools.js";
-
-/** Build dynamic MCP instructions based on active profile and turbo setting */
-function buildInstructions(profile: MobileProfile, turbo: boolean): string {
-  const lines: string[] = [
-    "Mobile, desktop, browser automation + store management.",
-    "",
-    "TOKEN COST (cheapest→expensive): ui(action:'tree',format:'semantic') ~60 tokens | ui(action:'tree',compact:true) ~100 tokens | ui(action:'tree') ~200 tokens | ui(action:'find') ~150 tokens | screen(action:'capture',preset:'low') ~1500 tokens | screen(action:'capture') ~3000 tokens | screen(action:'annotate') ~4000 tokens.",
-    "",
-    "EFFICIENT PATTERNS: 1) ui_tree first — text-based, ~10x cheaper than screenshots. 2) hints are ON by default — input actions return UI diff, no follow-up needed. Set hints:false only for rapid sequences. 3) screen(preset:'low') for quick visual checks. 4) flow(action:'batch')/flow(action:'run') for multi-step sequences (2-4x faster). 5) screen(diff:true) after actions — returns only changes. 6) ui(action:'tree',compact:true) — interactive elements only, shortest format.",
-    "",
-    "ANTI-PATTERNS: 1) screenshot after every tap (use hints instead). 2) ui_tree + screenshot together (pick one). 3) Full ui_tree when you only need one element (use ui(action:'find')). 4) screen(preset:'high') unless user requests visual detail.",
-    "",
-    "ERROR RECOVERY: On errors, [RECOVERY: ...] block contains suggested next tool calls as JSON.",
-  ];
-
-  // Hidden modules hint
-  const hiddenCount = ALL_HIDEABLE_MODULES.length - PROFILE_VISIBLE[profile].length;
-  if (hiddenCount > 0) {
-    lines.push(
-      "",
-      `Optional modules (${hiddenCount} hidden) — device(action:'enable_module',module:'browser') to load. device(action:'enable_module',category:'platform') for batch. device(action:'list_modules') to see all.`,
-    );
-  }
-
-  if (profile === "minimal") {
-    lines.push(
-      "",
-      "MINIMAL profile active — only device+screen loaded. Use device(action:'enable_module') to load modules as needed.",
-    );
-  }
-
-  if (turbo) {
-    lines.push(
-      "",
-      "TURBO MODE (experimental): flow(action:'run') returns rich UI context per step. For multi-step operations (E2E testing, navigation sequences, form filling), ALWAYS use flow(action:'run', steps:[...]) instead of calling tools individually. One flow call replaces 10-50 individual calls.",
-    );
-  }
-
-  return lines.join("\n");
-}
-
-// Dispatch function (needed by batch_commands / run_flow for recursion)
 
 /** Retry config for transient errors. Only at depth=0 (top-level MCP calls). */
 const RETRY_CONFIG: Record<string, { maxAttempts: number; delayMs: number[] }> = {
@@ -118,8 +50,6 @@ async function handleTool(name: string, args: Record<string, unknown>, depth: nu
   }
 
   let lastError: unknown;
-  const maxAttempts = depth === 0 ? undefined : 1; // Only retry at top level
-
   for (let attempt = 1; ; attempt++) {
     const start = Date.now();
     try {
@@ -130,13 +60,12 @@ async function handleTool(name: string, args: Record<string, unknown>, depth: nu
       getGlobalMetrics().record(name, Date.now() - start, true);
       lastError = error;
 
-      // Check if retryable and at top level
+      // Only retry at top level
       if (depth !== 0) throw error;
 
       const code = error instanceof MobileError ? error.code : "";
       const config = RETRY_CONFIG[code];
       if (!config || attempt >= config.maxAttempts) {
-        // Attach retry count info to error for the catch block in CallToolRequestSchema
         if (config && error instanceof MobileError) {
           error.retryInfo = `Retried: ${attempt}/${config.maxAttempts}`;
         }
@@ -157,179 +86,20 @@ if (turboEnabled) console.error("[turbo] MOBILE_TURBO=true — flow(run) turbo m
 // Shared context (wired after handleTool is defined)
 const ctx = createToolContext(handleTool, { turboDefault: turboEnabled });
 
-// Resolve profile from MOBILE_PROFILE env, default "core"
+// Resolve profile from MOBILE_PROFILE env for use in MCP instructions only —
+// the actual registration of meta tools / aliases / module metadata happens
+// inside BuiltinToolsPlugin.init() during kernel.initAll() below.
 const rawProfile = process.env.MOBILE_PROFILE ?? "core";
 const activeProfile: MobileProfile = VALID_PROFILES.includes(rawProfile as MobileProfile)
   ? (rawProfile as MobileProfile)
-  : (() => {
-      console.error(`[profiles] Invalid MOBILE_PROFILE="${rawProfile}". Valid: ${VALID_PROFILES.join(", ")}. Falling back to "core".`);
-      return "core" as MobileProfile;
-    })();
+  : "core";
 
-// All meta tools by name for lookup
-const allMetaTools: Record<string, ToolDefinition> = {
-  device: deviceMeta, screen: screenMeta,
-  input: inputMeta, ui: uiMeta, app: appMeta, system: systemMeta, flow: flowMeta,
-  browser: browserMeta, desktop: desktopMeta, store: storeMeta,
-  visual: visualMeta, recorder: recorderMeta, sync: syncMeta,
-  accessibility: accessibilityMeta, performance: performanceMeta, autopilot: autopilotMeta,
-  sandbox: sandboxMeta, intent: intentMeta, sensor: sensorMeta, network: networkMeta,
-};
-
-// Profile-aware registration
-const profileVisible = new Set([...ALWAYS_VISIBLE, ...PROFILE_VISIBLE[activeProfile]]);
-const visibleTools: ToolDefinition[] = [];
-const hiddenToolDefs: ToolDefinition[] = [];
-
-for (const [name, def] of Object.entries(allMetaTools)) {
-  if (profileVisible.has(name)) {
-    visibleTools.push(def);
-  } else {
-    hiddenToolDefs.push(def);
-  }
-}
-
-registerTools(visibleTools);
-if (hiddenToolDefs.length > 0) {
-  registerToolsHidden(hiddenToolDefs);
-}
-
-// Register module metadata catalog
-registerAllModuleMetadata(MODULE_METADATA);
-
-console.error(`[profiles] MOBILE_PROFILE="${activeProfile}" — ${visibleTools.length} visible, ${hiddenToolDefs.length} hidden`);
-
-// Register all backward-compat aliases (v3.1.x canonical names -> meta tools)
-registerAliasesWithDefaults({
-  // v3.1.x canonical -> meta tool aliases
-  ...deviceAliases,
-  ...inputAliases,
-  ...screenAliases,
-  ...uiAliases,
-  ...appAliases,
-  ...systemAliases,
-  ...browserAliases,
-  ...desktopAliases,
-  ...storeAliases,
-  ...flowAliases,
-  ...visualAliases,
-  ...recorderAliases,
-  ...syncAliases,
-  ...accessibilityAliases,
-  ...performanceAliases,
-  ...autopilotAliases,
-  ...sandboxAliases,
-  ...intentAliases,
-  ...sensorAliases,
-  ...networkAliases,
-
-  // Short aliases for autopilot
-  autopilot_explore: { tool: "autopilot", defaults: { action: "explore" } },
-  autopilot_generate: { tool: "autopilot", defaults: { action: "generate" } },
-  autopilot_heal: { tool: "autopilot", defaults: { action: "heal" } },
-  autopilot_status: { tool: "autopilot", defaults: { action: "status" } },
-  autopilot_tests: { tool: "autopilot", defaults: { action: "tests" } },
-
-  // Short aliases for performance
-  perf_snapshot: { tool: "performance", defaults: { action: "snapshot" } },
-  perf_baseline: { tool: "performance", defaults: { action: "baseline" } },
-  perf_compare: { tool: "performance", defaults: { action: "compare" } },
-  perf_monitor: { tool: "performance", defaults: { action: "monitor" } },
-  perf_crashes: { tool: "performance", defaults: { action: "crashes" } },
-  perf: { tool: "performance", defaults: {} },
-
-  // Short aliases for accessibility
-  a11y_audit: { tool: "accessibility", defaults: { action: "audit" } },
-  a11y_check: { tool: "accessibility", defaults: { action: "check" } },
-  a11y_summary: { tool: "accessibility", defaults: { action: "summary" } },
-  a11y_rules: { tool: "accessibility", defaults: { action: "rules" } },
-  a11y: { tool: "accessibility", defaults: {} },
-
-  // v3.0.x backward compat aliases -> meta tools
-  // device
-  list_devices: { tool: "device", defaults: { action: "list" } },
-  set_device: { tool: "device", defaults: { action: "set" } },
-  set_target: { tool: "device", defaults: { action: "set_target" } },
-  get_target: { tool: "device", defaults: { action: "get_target" } },
-  // interaction
-  tap: { tool: "input", defaults: { action: "tap" } },
-  double_tap: { tool: "input", defaults: { action: "double_tap" } },
-  long_press: { tool: "input", defaults: { action: "long_press" } },
-  swipe: { tool: "input", defaults: { action: "swipe" } },
-  press_key: { tool: "input", defaults: { action: "key" } },
-  // ui
-  get_ui: { tool: "ui", defaults: { action: "tree" } },
-  find_element: { tool: "ui", defaults: { action: "find" } },
-  find_and_tap: { tool: "ui", defaults: { action: "find_tap" } },
-  tap_by_text: { tool: "ui", defaults: { action: "tap_text" } },
-  analyze_screen: { tool: "ui", defaults: { action: "analyze" } },
-  wait_for_element: { tool: "ui", defaults: { action: "wait" } },
-  assert_visible: { tool: "ui", defaults: { action: "assert_visible" } },
-  assert_not_exists: { tool: "ui", defaults: { action: "assert_gone" } },
-  // system
-  get_current_activity: { tool: "system", defaults: { action: "activity" } },
-  shell: { tool: "system", defaults: { action: "shell" } },
-  wait: { tool: "system", defaults: { action: "wait" } },
-  open_url: { tool: "system", defaults: { action: "open_url" } },
-  get_logs: { tool: "system", defaults: { action: "logs" } },
-  clear_logs: { tool: "system", defaults: { action: "clear_logs" } },
-  get_system_info: { tool: "system", defaults: { action: "info" } },
-  get_webview: { tool: "system", defaults: { action: "webview" } },
-  // app
-  launch_app: { tool: "app", defaults: { action: "launch" } },
-  stop_app: { tool: "app", defaults: { action: "stop" } },
-  install_app: { tool: "app", defaults: { action: "install" } },
-  list_apps: { tool: "app", defaults: { action: "list" } },
-  // screenshot
-  screenshot: { tool: "screen", defaults: { action: "capture" } },
-  annotate_screenshot: { tool: "screen", defaults: { action: "annotate" } },
-  // desktop
-  launch_desktop_app: { tool: "desktop", defaults: { action: "launch" } },
-  stop_desktop_app: { tool: "desktop", defaults: { action: "stop" } },
-  get_window_info: { tool: "desktop", defaults: { action: "windows" } },
-  focus_window: { tool: "desktop", defaults: { action: "focus" } },
-  resize_window: { tool: "desktop", defaults: { action: "resize" } },
-  get_clipboard: { tool: "desktop", defaults: { action: "clipboard_get" } },
-  set_clipboard: { tool: "desktop", defaults: { action: "clipboard_set" } },
-  get_performance_metrics: { tool: "desktop", defaults: { action: "performance" } },
-  get_monitors: { tool: "desktop", defaults: { action: "monitors" } },
-  // clipboard (Android)
-  select_text: { tool: "system", defaults: { action: "clipboard_select" } },
-  copy_text: { tool: "system", defaults: { action: "clipboard_copy" } },
-  paste_text: { tool: "system", defaults: { action: "clipboard_paste" } },
-  get_clipboard_android: { tool: "system", defaults: { action: "clipboard_get" } },
-  // flow
-  batch_commands: { tool: "flow", defaults: { action: "batch" } },
-  run_flow: { tool: "flow", defaults: { action: "run" } },
-  parallel: { tool: "flow", defaults: { action: "parallel" } },
-  // permissions
-  grant_permission: { tool: "system", defaults: { action: "permission_grant" } },
-  revoke_permission: { tool: "system", defaults: { action: "permission_revoke" } },
-  reset_permissions: { tool: "system", defaults: { action: "permission_reset" } },
-  // file (aurora)
-  push_file: { tool: "system", defaults: { action: "file_push" } },
-  pull_file: { tool: "system", defaults: { action: "file_pull" } },
-
-  // LLM misnaming helpers
-  press_button: { tool: "input", defaults: { action: "key" } },
-  type_text: { tool: "input", defaults: { action: "text" } },
-  type: { tool: "input", defaults: { action: "text" } },
-  click: { tool: "input", defaults: { action: "tap" } },
-  long_tap: { tool: "input", defaults: { action: "long_press" } },
-  take_screenshot: { tool: "screen", defaults: { action: "capture" } },
-});
-
-// Kernel bootstrap — surface microkernel plugin tools (e.g. REPL) through MCP.
-// Prior to 3.11.5 the plugin system was wired but never instantiated from the
-// MCP entry point, so repl_* tools never showed up despite shipping in dist/.
-// See issue: REPL tools missing in 3.11.4.
-//
-// We only bootstrap REPL here — platform plugins (android/ios/desktop/web/
-// aurora) are still served by the legacy meta-tool layer; switching them over
-// is a 3.12.x scope item.
-const kernel: KernelHandle = bootstrapKernel({
-  builtins: [() => createReplPlugin()],
-});
+// Kernel bootstrap — see runtime/bootstrap.ts. `CLAUDE_IN_MOBILE_EXTERNAL_PLUGINS=1`
+// opts in to filesystem discovery from `~/.claude-in-mobile/plugins/`.
+const enableExternal = process.env.CLAUDE_IN_MOBILE_EXTERNAL_PLUGINS === "1";
+const kernel: KernelHandle = enableExternal
+  ? await bootstrapKernelAsync({ externalPlugins: true })
+  : bootstrapKernel({});
 await kernel.initAll();
 
 const kernelToolDefs: ToolDefinition[] = [];
@@ -354,215 +124,19 @@ if (kernelToolDefs.length > 0) {
 // Alias registration remains open for client-specific aliases in oninitialized.
 freezeRegistry();
 
-// --help / --version short-circuit. Without these flags, agents that probe
-// `npx -y claude-in-mobile --help` (notably Gemini) cause the MCP server to
-// start its stdio JSON-RPC loop and block forever waiting on stdin, which
+// --help / --version / --init short-circuit. Without these flags, agents that
+// probe `npx -y claude-in-mobile --help` (notably Gemini) cause the MCP server
+// to start its stdio JSON-RPC loop and block forever waiting on stdin, which
 // looks like a deadlock from the agent's side. See issue #44.
-if (process.argv.includes("--help") || process.argv.includes("-h")) {
-  console.log(`claude-in-mobile ${pkg.version}
+runCliIfRequested(process.argv, pkg.version);
 
-MCP server for mobile, desktop and browser automation. Designed to run as a
-stdio child of an MCP-capable client (Claude Code, Cursor, opencode, …) — it
-speaks JSON-RPC on stdin/stdout and is not intended for direct interactive
-use.
-
-Usage
-  claude-in-mobile               start the MCP stdio server (default)
-  claude-in-mobile --init <client>
-                                 print the configuration snippet for a
-                                 supported client (opencode | cursor |
-                                 claude-code) and exit
-  claude-in-mobile --version     print version and exit
-  claude-in-mobile --help        print this message and exit
-
-Environment
-  MOBILE_PROFILE                 minimal | core | android | web | full
-                                 (default: full)
-  DEVICE_ID, ANDROID_SERIAL      preselect Android device
-  IOS_DEVICE_ID                  preselect iOS Simulator
-  CLAUDE_IN_MOBILE_BIN           absolute path to the Rust companion binary
-                                 used by the REPL plugin
-
-Docs
-  https://github.com/AlexGladkov/claude-in-mobile
-`);
-  process.exit(0);
-}
-
-if (process.argv.includes("--version") || process.argv.includes("-V")) {
-  console.log(pkg.version);
-  process.exit(0);
-}
-
-// Handle --init CLI flag (generate config snippet and exit)
-const initIndex = process.argv.indexOf("--init");
-if (initIndex !== -1) {
-  const client = process.argv[initIndex + 1];
-  if (!client) {
-    console.error("Usage: claude-in-mobile --init <client>");
-    console.error("Supported clients: opencode, cursor, claude-code");
-    process.exit(1);
-  }
-  try {
-    const snippet = getConfigSnippet(client as ClientType);
-    console.log(snippet);
-    process.exit(0);
-  } catch (e: unknown) {
-    console.error(e instanceof Error ? e.message : String(e));
-    process.exit(1);
-  }
-}
-
-// Create MCP server
-const server = new Server(
-  {
-    name: "claude-mobile",
-    version: pkg.version,
-  },
-  {
-    capabilities: {
-      tools: { listChanged: true },
-    },
-    instructions: buildInstructions(activeProfile, turboEnabled),
-  }
-);
-
-// Wire up tool list change notifications
-setToolListChangedNotifier(() => {
-  server.notification({ method: "notifications/tools/list_changed" }).catch(() => {});
-});
-
-// Detect client after MCP handshake and apply per-client adaptations
-server.oninitialized = () => {
-  const clientInfo = server.getClientVersion();
-  const adapter = detectClient(clientInfo);
-  console.error(`Client detected: ${adapter.clientType} (${adapter.clientName} v${adapter.clientVersion})`);
-
-  // Register client-specific aliases with defaults pointing to meta tools
-  const aliasesWithDefaults = adapter.getAliasesWithDefaults();
-  if (Object.keys(aliasesWithDefaults).length > 0) {
-    registerAliasesWithDefaults(aliasesWithDefaults);
-    console.error(`Registered ${Object.keys(aliasesWithDefaults).length} aliases with defaults for ${adapter.clientType}`);
-  }
-
-  // Register client-specific simple aliases (chain resolution handles alias -> aliasWithDefaults -> meta tool)
-  const additionalAliases = adapter.getAdditionalAliases();
-  if (Object.keys(additionalAliases).length > 0) {
-    registerAliases(additionalAliases);
-    console.error(`Registered ${Object.keys(additionalAliases).length} additional aliases for ${adapter.clientType}`);
-  }
-};
-
-// Handle tool list request
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return { tools: getTools() };
-});
-
-// Handle tool call request
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
-
-  try {
-    // Pre-resolve to detect auto-enabled modules (resolveToolCall is idempotent for auto-enable:
-    // once unhidden, a second call returns autoEnabled: null)
-    const preResolve = resolveToolCall(name, args ?? {});
-    const autoEnabledModule = preResolve?.autoEnabled ?? null;
-
-    const result = await handleTool(name, args ?? {});
-
-    // Build auto-enable notice prefix
-    const moduleNotice = autoEnabledModule
-      ? `[Module "${autoEnabledModule}" auto-enabled]\n`
-      : "";
-
-    // Handle multi-content response (turbo mode: array of text/image blocks)
-    if (typeof result === "object" && result !== null && "content" in result && Array.isArray((result as { content: unknown }).content)) {
-      const blocks = (result as { content: Array<{ type: string; text?: string; data?: string; mimeType?: string }> }).content;
-      const content: Array<{ type: string; text?: string; data?: string; mimeType?: string }> = [];
-      let noticePrepended = false;
-      for (const block of blocks) {
-        if (block.type === "text") {
-          const prefix = (!noticePrepended && moduleNotice) ? moduleNotice : "";
-          noticePrepended = true;
-          content.push({ type: "text", text: prefix + (block.text ?? "") });
-        } else if (block.type === "image" && block.data && block.mimeType) {
-          content.push({ type: "image", data: block.data, mimeType: block.mimeType });
-        }
-      }
-      // If moduleNotice was not prepended (no text blocks), add it
-      if (moduleNotice && !content.some(b => b.type === "text")) {
-        content.unshift({ type: "text", text: moduleNotice });
-      }
-      return { content };
-    }
-
-    // Handle image response (optionally with text)
-    if (typeof result === "object" && result !== null && "image" in result) {
-      const img = (result as { image: { data: string; mimeType: string }; text?: string }).image;
-      const rawText = (result as { text?: string }).text;
-      const content: Array<{ type: string; data?: string; mimeType?: string; text?: string }> = [
-        {
-          type: "image",
-          data: img.data,
-          mimeType: img.mimeType,
-        },
-      ];
-      const combinedText = moduleNotice + (rawText ?? "");
-      if (combinedText) {
-        content.push({ type: "text", text: combinedText });
-      }
-      return { content };
-    }
-
-    // Handle text response
-    let text = typeof result === "object" && result !== null && "text" in result
-      ? (result as { text: string }).text
-      : JSON.stringify(result);
-
-    // Check if handler signaled an error (e.g. assert_visible / assert_gone)
-    const handlerIsError = typeof result === "object" && result !== null && "isError" in result
-      ? (result as { isError?: boolean }).isError === true
-      : false;
-
-    // Global safety net: truncate oversized text responses
-    const MAX_RESPONSE_CHARS = 20_000;
-    if (text.length > MAX_RESPONSE_CHARS) {
-      const remaining = text.length - MAX_RESPONSE_CHARS;
-      text = text.slice(0, MAX_RESPONSE_CHARS) + `\n\n[truncated, ${remaining} chars remaining]`;
-    }
-
-    // Anti-pattern detection (only at top level, not on errors; skipped in turbo — flow manages feedback)
-    const hint = turboEnabled ? null : detectAntiPattern();
-    const hintBlock = hint ? `\n[HINT: ${hint}]` : "";
-
-    return {
-      content: [
-        {
-          type: "text",
-          text: moduleNotice + text + hintBlock,
-        },
-      ],
-      ...(handlerIsError ? { isError: true } : {}),
-    };
-  } catch (error: unknown) {
-    const code = error instanceof MobileError ? error.code : "UNKNOWN";
-    const message = error instanceof Error ? error.message : String(error);
-    const retryHint = isRetryable(error) ? "\nRetry: yes" : "";
-    const recoveryHints = getRecoveryHints(error);
-    const recoveryBlock = recoveryHints.length > 0
-      ? `\n[RECOVERY: ${JSON.stringify(recoveryHints)}]`
-      : "";
-    const retryInfo = error instanceof MobileError && error.retryInfo ? `\n${error.retryInfo}` : "";
-    return {
-      content: [
-        {
-          type: "text",
-          text: `[${code}] ${message}${retryHint}${retryInfo}${recoveryBlock}`,
-        },
-      ],
-      isError: true,
-    };
-  }
+// Create + wire MCP server
+const { server, start } = createMcpServer({
+  name: "claude-mobile",
+  version: pkg.version,
+  instructions: buildInstructions(activeProfile, turboEnabled),
+  turboEnabled,
+  handleTool,
 });
 
 // Graceful shutdown
@@ -586,14 +160,10 @@ process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGHUP", () => shutdown("SIGHUP"));
 process.stdin.on("close", () => shutdown("stdin-close"));
 
-// Start server
-async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error("Claude Mobile MCP server running (Android + iOS + Desktop + Aurora + Browser)");
-}
+// Keep `server` referenced for debuggers / tools that introspect global state.
+void server;
 
-main().catch((error) => {
+start().catch((error) => {
   console.error("Fatal error:", error);
   process.exit(1);
 });
