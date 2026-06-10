@@ -10,4 +10,4 @@ export type {
   BrowserFillFormOptions,
   BrowserFillFormField,
 } from "./types.js";
-export { BLOCKED_URL_PROTOCOLS, DEFAULT_SESSION } from "./types.js";
+export { ALLOWED_URL_PROTOCOLS, DEFAULT_SESSION } from "./types.js";

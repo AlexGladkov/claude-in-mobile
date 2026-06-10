@@ -22,7 +22,7 @@
 
 import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import type { Logger, SourcePlugin } from "@claude-in-mobile/plugin-api";
@@ -72,9 +72,23 @@ async function readPkg(dir: string): Promise<PackageJson | null> {
   }
 }
 
-function resolveEntry(dir: string, pkg: PackageJson): string {
+/**
+ * Resolve the plugin entry file and assert it stays inside the plugin dir.
+ *
+ * A malicious `package.json` could set `main` / `module` to something like
+ * `"../../../etc/something.js"` to coerce the loader into importing JS outside
+ * the plugin sandbox. We resolve both sides and require the entry to be the
+ * dir itself or a descendant of it. Returns `null` when containment is
+ * violated — callers MUST treat that as "skip this plugin" (fail closed).
+ */
+function resolveEntry(dir: string, pkg: PackageJson): string | null {
   const entry = pkg.module ?? pkg.main ?? "index.js";
-  return resolve(dir, entry);
+  const resolvedDir = resolve(dir);
+  const resolvedEntry = resolve(dir, entry);
+  if (resolvedEntry !== resolvedDir && !resolvedEntry.startsWith(resolvedDir + sep)) {
+    return null;
+  }
+  return resolvedEntry;
 }
 
 async function loadFactory(entry: string): Promise<(() => SourcePlugin) | null> {
@@ -120,6 +134,13 @@ export class ExternalPluginLoader {
           continue;
         }
         const entry = resolveEntry(dir, pkg);
+        if (!entry) {
+          this.logger.warn?.("entry escapes plugin directory — plugin skipped", {
+            dir,
+            entry: pkg.module ?? pkg.main,
+          });
+          continue;
+        }
         if (!(await exists(entry))) {
           this.logger.warn?.("entry file not found", { entry });
           continue;

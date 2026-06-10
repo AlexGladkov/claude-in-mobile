@@ -5,6 +5,23 @@ import { parseCommonArgs } from "../../utils/parse-common-args.js";
 import { textResult, errorResult } from "../../utils/tool-result.js";
 import { androidPlatformEnum, isRunAsFailure, runAsUnavailableHint } from "./helpers.js";
 
+/**
+ * Escape a value for safe interpolation into a device-side single-quoted
+ * `sed 's|...|...|'` program run via `adb shell run-as`.
+ *
+ * `sanitizeForShell` strips host-side shell metacharacters but intentionally
+ * leaves the single-quote `'` and double-quote `"` untouched (it is shared by
+ * read/list/intent tools where stripping quotes would change behaviour). Here
+ * the sanitized value lands inside a POSIX single-quoted sed program on the
+ * device, so a literal `'` would terminate that quote and break the command
+ * (correctness + run-as-scoped injection). We close/escape/reopen the single
+ * quote (`'\''`) and escape `"`, which is part of the XML attribute pattern,
+ * so it cannot disturb sed's `s|...|...|` delimiters or the surrounding XML.
+ */
+function escapeForSedSingleQuote(value: string): string {
+  return value.replace(/'/g, "'\\''").replace(/"/g, '\\"');
+}
+
 export const sandboxPrefsWriteTool = defineTool({
   name: "sandbox_prefs_write",
   description:
@@ -51,6 +68,13 @@ export const sandboxPrefsWriteTool = defineTool({
     const rawValue = args.value;
     const safeValue = sanitizeForShell(rawValue);
 
+    // safeKey/safeValue are interpolated into a device-side single-quoted
+    // sed program (`sed 's|...|...|'`). sanitizeForShell leaves `'` and `"`
+    // in place, so escape them for that single-quoted context to prevent the
+    // value from breaking out of the quotes or disturbing sed delimiters.
+    const sedKey = escapeForSedSingleQuote(safeKey);
+    const sedValue = escapeForSedSingleQuote(safeValue);
+
     const type = args.type ?? "string";
 
     const xmlPath = `shared_prefs/${safeFile}.xml`;
@@ -62,14 +86,14 @@ export const sandboxPrefsWriteTool = defineTool({
     if (type === "string") {
       sedCmd =
         `run-as ${pkg} sed -i ` +
-        `'s|<string name="${safeKey}">[^<]*</string>|<string name="${safeKey}">${safeValue}</string>|' ` +
+        `'s|<string name="${sedKey}">[^<]*</string>|<string name="${sedKey}">${sedValue}</string>|' ` +
         xmlPath;
     } else {
       // int / long / float / bool all use value="..." attribute form
       const xmlTag = type === "bool" ? "boolean" : type;
       sedCmd =
         `run-as ${pkg} sed -i ` +
-        `'s|<${xmlTag} name="${safeKey}" value="[^"]*" />|<${xmlTag} name="${safeKey}" value="${safeValue}" />|' ` +
+        `'s|<${xmlTag} name="${sedKey}" value="[^"]*" />|<${xmlTag} name="${sedKey}" value="${sedValue}" />|' ` +
         xmlPath;
     }
 

@@ -1,8 +1,8 @@
 import type { BrowserSession, BrowserOpenOptions, BrowserClickOptions, BrowserFillOptions, BrowserNavigateOptions, LaunchedChrome } from "./types.js";
 import type { CDPClientInterface } from "./cdp-types.js";
-import { BLOCKED_URL_PROTOCOLS, DEFAULT_SESSION } from "./types.js";
+import { ALLOWED_URL_PROTOCOLS, DEFAULT_SESSION } from "./types.js";
 import { SessionManager } from "./session-manager.js";
-import { BrowserRefNotFoundError } from "../errors.js";
+import { BrowserRefNotFoundError, BrowserSecurityError } from "../errors.js";
 import { findNodeBySelector, findNodeByText, getCoordinates } from "./cdp-helpers.js";
 import { buildSnapshot } from "./snapshot-builder.js";
 import { pressKeyOnCdp, formatEvaluateResult } from "./key-map.js";
@@ -26,10 +26,9 @@ export class BrowserClient {
     } catch {
       throw new Error(`Invalid URL: ${url}`);
     }
-    if (BLOCKED_URL_PROTOCOLS.has(parsed.protocol)) {
-      throw new Error(
-        `Blocked URL protocol "${parsed.protocol}". Only http:// and https:// are allowed.`
-      );
+    // S2: fail-closed allowlist — only http/https may reach CDP Page.navigate.
+    if (!ALLOWED_URL_PROTOCOLS.has(parsed.protocol)) {
+      throw new BrowserSecurityError(url, parsed.protocol);
     }
   }
 
@@ -148,14 +147,21 @@ export class BrowserClient {
 
   private async navigateToUrl(cdp: CDPClientInterface, url: string): Promise<void> {
     const { Page } = cdp;
-    await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error(`Navigation timeout for ${url}`)), 30000);
-      Page.loadEventFired(() => {
-        clearTimeout(timeout);
-        resolve();
-      });
-      Page.navigate({ url }).catch(reject);
+    // One-shot promise form self-removes the underlying CDP listener once it
+    // resolves, so repeated navigations on a long-lived session don't leak
+    // handlers (issue M1). Start the wait before navigate() to avoid a race
+    // where the load event fires before we subscribe.
+    const loaded = Page.loadEventFired();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const timed = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => reject(new Error(`Navigation timeout for ${url}`)), 30000);
     });
+    try {
+      await Page.navigate({ url });
+      await Promise.race([loaded, timed]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
   }
 
   async navigate(session: BrowserSession, options: BrowserNavigateOptions): Promise<void> {
@@ -169,11 +175,19 @@ export class BrowserClient {
       await cdp.Runtime.evaluate({ expression: "history.forward()" });
       await new Promise(r => setTimeout(r, 500));
     } else if (action === "reload") {
-      await cdp.Page.reload();
-      await new Promise<void>((resolve) => {
-        const timeout = setTimeout(resolve, 10000);
-        cdp.Page.loadEventFired(() => { clearTimeout(timeout); resolve(); });
+      // One-shot promise form self-removes the CDP listener (issue M1). Subscribe
+      // before reload() so a fast load event isn't missed.
+      const loaded = cdp.Page.loadEventFired();
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      const timed = new Promise<void>((resolve) => {
+        timeout = setTimeout(resolve, 10000);
       });
+      try {
+        await cdp.Page.reload();
+        await Promise.race([loaded, timed]);
+      } finally {
+        if (timeout) clearTimeout(timeout);
+      }
     } else if (url) {
       this.validateUrl(url);
       await this.navigateToUrl(cdp, url);

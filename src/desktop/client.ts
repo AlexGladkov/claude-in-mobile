@@ -214,7 +214,24 @@ export class DesktopClient extends EventEmitter {
    */
   private waitForReady(timeoutMs: number): Promise<void> {
     return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timeout);
+        this.removeListener("ready", onReady);
+        this.process?.removeListener("exit", onExit);
+      };
+
+      const onReady = () => {
+        cleanup();
+        resolve();
+      };
+
+      const onExit = () => {
+        cleanup();
+        reject(new Error("Desktop app exited before becoming ready"));
+      };
+
       const timeout = setTimeout(() => {
+        cleanup();
         // Consider ready even without explicit signal after timeout
         // The app might not send a ready signal
         if (this.process && !this.process.killed) {
@@ -225,15 +242,8 @@ export class DesktopClient extends EventEmitter {
         }
       }, timeoutMs);
 
-      this.once("ready", () => {
-        clearTimeout(timeout);
-        resolve();
-      });
-
-      this.process?.once("exit", () => {
-        clearTimeout(timeout);
-        reject(new Error("Desktop app exited before becoming ready"));
-      });
+      this.once("ready", onReady);
+      this.process?.once("exit", onExit);
     });
   }
 
@@ -331,6 +341,30 @@ export class DesktopClient extends EventEmitter {
   }
 
   /**
+   * Detach the old (dead/dying) companion process and its associated handles
+   * so they don't linger until GC when launch() respawns a replacement.
+   * Safe to call when there's nothing to detach.
+   */
+  private detachProcess(): void {
+    if (this.readline) {
+      this.readline.removeAllListeners();
+      this.readline.close();
+      this.readline = null;
+    }
+
+    const old = this.process;
+    if (old) {
+      old.stdout?.removeAllListeners();
+      old.stderr?.removeAllListeners();
+      old.removeAllListeners();
+      if (!old.killed) {
+        old.kill();
+      }
+      this.process = null;
+    }
+  }
+
+  /**
    * Handle crash with auto-restart
    */
   private async handleCrash(error: Error): Promise<void> {
@@ -344,6 +378,10 @@ export class DesktopClient extends EventEmitter {
       pending.reject(new Error("Desktop app crashed"));
     }
     this.pendingRequests.clear();
+
+    // Detach the crashed process + its listeners/readline before respawning,
+    // otherwise the old handles linger until GC (M3).
+    this.detachProcess();
 
     // Auto-restart if under limit
     if (this.state.crashCount <= MAX_RESTARTS && this.lastLaunchOptions) {
