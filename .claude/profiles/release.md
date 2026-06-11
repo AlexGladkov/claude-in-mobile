@@ -103,6 +103,13 @@ issue #43 ERR_REQUIRE_ESM пролежал между 3.10.3 и 3.11.2 и сло
   optional-dep ветки других платформ), восстановить postinstall-симлинк
   `node_modules/claude-in-mobile`, и прогнать `npm ci` на чистом клоне
   (`git clone --depth 1 file://… /tmp/ci-sim && cd /tmp/ci-sim && npm ci`).
+- [ ] **После ЛЮБОГО `npm install` (включая version-бамп):** проверить
+  что lock сохранил linux-ветку optional deps sharp:
+  `grep -c '@emnapi/runtime' package-lock.json` ≥ 4. macOS-локальный
+  `npm ci` это НЕ ловит (linux-ветка не нужна на macOS) — ломается
+  только ubuntu CI (publish-npm/lint). Хронический класс: ударил
+  3.12.0 И 3.13.0. Инкрементальный `npm install` на macOS прунит
+  linux-only entries; только полный rebuild их возвращает.
 
 - [ ] `npm run build` — zero TypeScript errors. Если падает на
   `@claude-in-mobile/plugin-api` — это регрессия workspace build script
