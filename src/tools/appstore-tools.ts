@@ -26,6 +26,7 @@ import {
   exportArchive,
   buildFlutterIpa,
   uploadIpa,
+  validateIpa,
   type AscApiAuth,
 } from "../ios/build/index.js";
 import {
@@ -187,10 +188,18 @@ export const appStoreTools: ToolDefinition[] = [
   defineTool({
     name: "appstore_upload",
     description:
-      "Upload an .ipa to App Store Connect (TestFlight) via altool. " +
+      "Validate then upload an .ipa to App Store Connect (TestFlight) via altool. " +
+      "Validation catches bundle rejects Apple would otherwise silently drop server-side. " +
       "Requires ASC_KEY_ID + ASC_ISSUER_ID env (key file in ~/.appstoreconnect/private/keys/).",
     schema: z.object({
       ipaPath: z.string().describe("Absolute path to the .ipa file"),
+      skipValidation: z
+        .boolean()
+        .optional()
+        .describe(
+          "Skip the altool --validate-app pre-flight (default: false). " +
+            "Only set when the package was already validated.",
+        ),
     }),
     handler: async (args) => {
       validatePath(args.ipaPath, "ipaPath");
@@ -198,7 +207,11 @@ export const appStoreTools: ToolDefinition[] = [
         throw new ValidationError(`ipaPath must point to an .ipa file, got: ${args.ipaPath}`);
       }
       const auth = getAscAuthFromEnv();
-      await uploadIpa({ ipaPath: args.ipaPath, keyId: auth.keyId, issuerId: auth.issuerId });
+      const credentials = { ipaPath: args.ipaPath, keyId: auth.keyId, issuerId: auth.issuerId };
+      if (!args.skipValidation) {
+        await validateIpa(credentials);
+      }
+      await uploadIpa(credentials);
       return textResult(
         "Upload accepted by App Store Connect. Processing typically takes 5-15 minutes.\n" +
           "Poll with appstore_get_releases until the build state is VALID, then appstore_promote.",

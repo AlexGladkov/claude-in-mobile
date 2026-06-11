@@ -26,5 +26,9 @@ export {
   buildFlutterIpa,
   type AscApiAuth,
 } from "./xcode-build.js";
-export { uploadIpa } from "./upload.js";
-export { classifyXcodeError, redactSigningInfo } from "./classify-build-error.js";
+export { uploadIpa, validateIpa } from "./upload.js";
+export {
+  bundleRejectHint,
+  classifyXcodeError,
+  redactSigningInfo,
+} from "./classify-build-error.js";

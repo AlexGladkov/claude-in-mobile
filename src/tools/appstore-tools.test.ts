@@ -38,6 +38,7 @@ const buildMocks = vi.hoisted(() => ({
   exportArchive: vi.fn(),
   buildFlutterIpa: vi.fn(),
   uploadIpa: vi.fn(),
+  validateIpa: vi.fn(),
 }));
 
 vi.mock("../ios/build/index.js", () => buildMocks);
@@ -178,6 +179,42 @@ describe("appstore_upload", () => {
       code: "PATH_TRAVERSAL_BLOCKED",
     });
     expect(buildMocks.uploadIpa).not.toHaveBeenCalled();
+    expect(buildMocks.validateIpa).not.toHaveBeenCalled();
+  });
+
+  it("validates the IPA BEFORE uploading (validate gate)", async () => {
+    const order: string[] = [];
+    buildMocks.validateIpa.mockImplementation(async () => { order.push("validate"); });
+    buildMocks.uploadIpa.mockImplementation(async () => { order.push("upload"); });
+
+    await handler({ ipaPath: "/builds/app.ipa" }, dummyCtx);
+
+    expect(order).toEqual(["validate", "upload"]);
+    expect(buildMocks.validateIpa).toHaveBeenCalledWith({
+      ipaPath: "/builds/app.ipa",
+      keyId: ENV_AUTH.keyId,
+      issuerId: ENV_AUTH.issuerId,
+    });
+  });
+
+  it("does NOT upload when validation fails", async () => {
+    buildMocks.validateIpa.mockRejectedValue(
+      new MobileError("Invalid bundle. Missing CFBundleIconName.", "IPA_VALIDATION_FAILED"),
+    );
+
+    await expect(handler({ ipaPath: "/builds/app.ipa" }, dummyCtx)).rejects.toMatchObject({
+      code: "IPA_VALIDATION_FAILED",
+    });
+    expect(buildMocks.uploadIpa).not.toHaveBeenCalled();
+  });
+
+  it("skips validation when skipValidation=true", async () => {
+    buildMocks.uploadIpa.mockResolvedValue(undefined);
+
+    await handler({ ipaPath: "/builds/app.ipa", skipValidation: true }, dummyCtx);
+
+    expect(buildMocks.validateIpa).not.toHaveBeenCalled();
+    expect(buildMocks.uploadIpa).toHaveBeenCalledTimes(1);
   });
 
   it("rejects non-.ipa paths with ValidationError", async () => {

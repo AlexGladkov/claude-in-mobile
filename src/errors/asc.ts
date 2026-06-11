@@ -45,6 +45,17 @@ export class AscRateLimitError extends MobileError {
   }
 }
 
+export class IpaValidationError extends MobileError {
+  constructor(detail: string) {
+    super(
+      `IPA failed App Store validation — Apple would silently drop this package ` +
+        `after upload (it never appears in TestFlight builds):\n${detail}\n\n` +
+        "Fix the issues above, rebuild, and upload again.",
+      "IPA_VALIDATION_FAILED"
+    );
+  }
+}
+
 export class TestflightVersionCollisionError extends MobileError {
   constructor(version: string) {
     super(

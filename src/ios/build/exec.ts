@@ -19,7 +19,9 @@ const MAX_BUFFER = 50 * 1024 * 1024;
 
 export type ToolResult =
   | { ok: true; stdout: string }
-  | { ok: false; timedOut: boolean; stderr: string };
+  // stdout is kept on failure too: altool prints validation `detail :` lines
+  // to STDOUT while exiting non-zero — see upload.ts validateIpa.
+  | { ok: false; timedOut: boolean; stderr: string; stdout: string };
 
 interface ExecError {
   killed?: boolean;
@@ -46,6 +48,6 @@ export async function runTool(
     const e = error as ExecError;
     const timedOut = e.killed === true || e.signal === "SIGTERM";
     const stderr = e.stderr?.toString() || e.message || String(error);
-    return { ok: false, timedOut, stderr };
+    return { ok: false, timedOut, stderr, stdout: e.stdout?.toString() ?? "" };
   }
 }

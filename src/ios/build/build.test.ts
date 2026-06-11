@@ -11,14 +11,14 @@ vi.mock("child_process", () => ({ execFile: execFileMock }));
 
 import { detectIosProject, listSchemes, pickReleaseScheme } from "./project-detector.js";
 import { writeExportOptionsPlist, renderExportOptionsPlist } from "./export-options.js";
-import { classifyXcodeError, redactSigningInfo } from "./classify-build-error.js";
-import { uploadIpa } from "./upload.js";
-import { MobileError } from "../../errors.js";
+import { bundleRejectHint, classifyXcodeError, redactSigningInfo } from "./classify-build-error.js";
+import { uploadIpa, validateIpa } from "./upload.js";
+import { IpaValidationError, MobileError } from "../../errors.js";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 type ExecCb = (
-  err: (Error & { stderr?: string; killed?: boolean }) | null,
+  err: (Error & { stderr?: string; stdout?: string; killed?: boolean }) | null,
   result?: { stdout: string; stderr: string },
 ) => void;
 
@@ -28,9 +28,11 @@ function execOk(stdout = "", stderr = ""): void {
   });
 }
 
-function execFail(stderr: string): void {
+function execFail(stderr: string, stdout = ""): void {
   execFileMock.mockImplementationOnce((...args: unknown[]) => {
-    (args[args.length - 1] as ExecCb)(Object.assign(new Error("command failed"), { stderr }));
+    (args[args.length - 1] as ExecCb)(
+      Object.assign(new Error("command failed"), { stderr, stdout }),
+    );
   });
 }
 
@@ -301,6 +303,61 @@ describe("classifyXcodeError", () => {
     expect(err.message).not.toContain("TEAM123456");
     expect(err.message).toContain("something else failed");
   });
+
+  it("prefers mid-log error: / e: lines over the noisy build-system tail", () => {
+    // Real-run shape: the Kotlin compile error sits mid-log, the tail is
+    // useless "Script-*.sh ... (N failures)" build-system noise.
+    const stderr =
+      "Build settings from command line\n" +
+      "e: file:///proj/shared/src/App.kt:12:5 Unresolved reference: viewModelScope\n" +
+      "ld: warning: directory not found\n" +
+      "/proj/Pods/script.sh: line 3: gradlew failure\n" +
+      "Command PhaseScriptExecution failed with a nonzero exit code\n" +
+      "** ARCHIVE FAILED **\n" +
+      "The following build commands failed:\n" +
+      "\tPhaseScriptExecution Compile\\ Kotlin Script-A100050F0.sh (in target 'iosApp')\n" +
+      "(2 failures)".padEnd(400, " "); // pad so the tail window misses the e: line
+    const err = classifyXcodeError(stderr, "xcodebuild archive") as MobileError;
+    expect(err.code).toBe("ASC_UPLOAD_ERROR");
+    expect(err.message).toContain("Unresolved reference: viewModelScope");
+    expect(err.message).not.toContain("Script-A100050F0.sh");
+  });
+
+  it("caps extracted error lines at 5 (each <= 200 chars)", () => {
+    const lines = Array.from({ length: 8 }, (_, i) => `error: failure number ${i + 1} ${"y".repeat(300)}`);
+    const err = classifyXcodeError(lines.join("\n"), "xcodebuild archive") as MobileError;
+    expect(err.message).toContain("failure number 1");
+    expect(err.message).toContain("failure number 5");
+    expect(err.message).not.toContain("failure number 6");
+    expect(err.message).not.toContain("y".repeat(201));
+  });
+
+  it("redacts key material from extracted error lines", () => {
+    const stderr =
+      "error: could not read AuthKey_SECRET99.p8\n" +
+      "error: ordinary compile failure";
+    const err = classifyXcodeError(stderr, "xcodebuild archive") as MobileError;
+    expect(err.message).not.toContain("AuthKey_SECRET99");
+    expect(err.message).not.toContain(".p8");
+    expect(err.message).toContain("ordinary compile failure");
+  });
+
+  it.each([
+    ["UILaunchScreen reject", "ERROR: Invalid bundle. Apps must include a UILaunchScreen dictionary", "LaunchScreen.storyboard"],
+    ["CFBundleIconName reject", "ERROR: asset catalog missing — CFBundleIconName not present", "1024x1024 AppIcon"],
+    ["orientations reject", "ERROR: bundle supports Multitasking but UISupportedInterfaceOrientations is incomplete", "UIRequiresFullScreen=true"],
+  ])("adds the recovery hint for bundle rejects: %s", (_name, stderr, hintFragment) => {
+    const err = classifyXcodeError(stderr, "altool validate") as MobileError;
+    expect(err.code).toBe("ASC_UPLOAD_ERROR");
+    expect(err.message).toContain("Fix:");
+    expect(err.message).toContain(hintFragment);
+  });
+});
+
+describe("bundleRejectHint", () => {
+  it("returns undefined for unrelated text", () => {
+    expect(bundleRejectHint("error: linker command failed")).toBeUndefined();
+  });
 });
 
 describe("redactSigningInfo", () => {
@@ -382,5 +439,101 @@ describe("uploadIpa", () => {
     await expect(
       uploadIpa({ ipaPath: join(tmpdir(), "definitely-missing.ipa"), keyId: "K", issuerId: "I" }),
     ).rejects.toMatchObject({ code: "IPA_NOT_FOUND" });
+  });
+});
+
+// ── validateIpa ──────────────────────────────────────────────────────────────
+
+describe("validateIpa", () => {
+  let ipaPath: string;
+
+  beforeEach(async () => {
+    const dir = await fixtureDir();
+    ipaPath = join(dir, "app.ipa");
+    await writeFile(ipaPath, Buffer.alloc(64, 0x42));
+  });
+
+  // Real-world altool --validate-app failure output (multi-error, indented).
+  const REAL_ALTOOL_OUTPUT = [
+    "*** Error: Validation failed for 'app.ipa'.",
+    '      detail : Invalid bundle. Because your app supports Multitasking on iPad, you need to include all four required values in UISupportedInterfaceOrientations.',
+    "*** Error: Validation failed for 'app.ipa'.",
+    '      detail : Invalid bundle. The bundle com.example.app does not support the minimum OS Version specified... apps must include a LaunchScreen.storyboard or UILaunchScreen key.',
+    "*** Error: Validation failed for 'app.ipa'.",
+    "      detail : Missing Info.plist value. A value for the key CFBundleIconName is required.",
+  ].join("\n");
+
+  it("builds the --validate-app argv (same credential shape as upload)", async () => {
+    execOk();
+    await validateIpa({ ipaPath, keyId: "AB12CD34EF", issuerId: "11aa22bb-1234-5678-9abc-def012345678" });
+
+    const { file, args } = callArgs(0);
+    expect(file).toBe("xcrun");
+    expect(args).toEqual([
+      "altool", "--validate-app", "-f", ipaPath,
+      "-t", "ios",
+      "--apiKey", "AB12CD34EF",
+      "--apiIssuer", "11aa22bb-1234-5678-9abc-def012345678",
+    ]);
+  });
+
+  it("extracts EVERY detail line from multi-error altool output (stdout)", async () => {
+    execFail("", REAL_ALTOOL_OUTPUT); // altool prints details to stdout
+
+    const err = await validateIpa({ ipaPath, keyId: "K1", issuerId: "I1" }).catch((e) => e);
+    expect(err).toBeInstanceOf(IpaValidationError);
+    expect((err as MobileError).code).toBe("IPA_VALIDATION_FAILED");
+    expect(err.message).toContain("1. Invalid bundle. Because your app supports Multitasking");
+    expect(err.message).toContain("2. Invalid bundle. The bundle com.example.app");
+    expect(err.message).toContain("3. Missing Info.plist value");
+  });
+
+  it("extracts detail lines from stderr too", async () => {
+    execFail("      detail : Missing Info.plist value. CFBundleIconName is required.");
+
+    await expect(validateIpa({ ipaPath, keyId: "K1", issuerId: "I1" })).rejects.toMatchObject({
+      code: "IPA_VALIDATION_FAILED",
+      message: expect.stringContaining("CFBundleIconName is required"),
+    });
+  });
+
+  it("appends recovery hints for all three known bundle rejects", async () => {
+    execFail("", REAL_ALTOOL_OUTPUT);
+
+    const err = await validateIpa({ ipaPath, keyId: "K1", issuerId: "I1" }).catch((e) => e);
+    expect(err.message).toContain("UIRequiresFullScreen=true"); // orientations hint
+    expect(err.message).toContain('"UILaunchScreen": {}'); // launch screen hint
+    expect(err.message).toContain("1024x1024 AppIcon"); // icon hint
+  });
+
+  it("caps details at 5 entries of <= 250 chars each", async () => {
+    const details = Array.from(
+      { length: 7 },
+      (_, i) => `      detail : Problem number ${i + 1}. ${"z".repeat(400)}`,
+    ).join("\n");
+    execFail(details);
+
+    const err = await validateIpa({ ipaPath, keyId: "K1", issuerId: "I1" }).catch((e) => e);
+    expect(err.message).toContain("Problem number 5");
+    expect(err.message).not.toContain("Problem number 6");
+    expect(err.message).not.toContain("z".repeat(251));
+  });
+
+  it("falls back to the redacted stderr tail when no detail lines exist", async () => {
+    execFail("Generic failure without structured output, key at AuthKey_TOP1.p8");
+
+    const err = await validateIpa({ ipaPath, keyId: "K1", issuerId: "I1" }).catch((e) => e);
+    expect(err).toBeInstanceOf(IpaValidationError);
+    expect(err.message).not.toContain("AuthKey_TOP1");
+  });
+
+  it("runs the same preconditions as upload (no exec on traversal)", async () => {
+    await expect(
+      validateIpa({ ipaPath: "/tmp/../etc/app.ipa", keyId: "K", issuerId: "I" }),
+    ).rejects.toMatchObject({ code: "PATH_TRAVERSAL_BLOCKED" });
+    await expect(
+      validateIpa({ ipaPath, keyId: "bad key$", issuerId: "I" }),
+    ).rejects.toMatchObject({ code: "INVALID_ASC_CREDENTIALS" });
+    expect(execFileMock).not.toHaveBeenCalled();
   });
 });

@@ -21,6 +21,16 @@ import {
 /** Max tail of (redacted) stderr that may appear in an error message. */
 const MAX_DETAIL_CHARS = 200;
 
+/** Max number of extracted `error:` / `e: ` lines in the default message. */
+const MAX_ERROR_LINES = 5;
+
+/**
+ * Compiler/linker error lines buried mid-log: xcodebuild `error:`, clang
+ * `<file>: error:`, gradle/Kotlin `e: `. The build-system tail ("Script-*.sh
+ * ... (2 failures)") is noise — these lines carry the actual cause.
+ */
+const ERROR_LINE_RE = /^(.*error:|e: |error: )/;
+
 /**
  * Lines carrying signing identities or API-key material. Dropped wholesale —
  * partial redaction of "Apple Distribution: Real Name (TEAMID)" still leaks PII.
@@ -29,6 +39,35 @@ const SIGNING_IDENTITY_LINE = /Apple Distribution:|Developer ID|AuthKey_|\.p8/;
 
 /** Belt-and-suspenders token redaction for anything the line filter missed. */
 const KEY_TOKEN = /(?:AuthKey_[A-Za-z0-9._-]+|\S*\.p8\b)/g;
+
+/**
+ * App Store bundle-reject patterns observed in real altool validate/upload
+ * runs, with actionable recovery hints. Matched against individual validation
+ * `detail :` lines (upload.ts) and against whole stderr (classifyXcodeError).
+ */
+export const BUNDLE_REJECT_HINTS: ReadonlyArray<{ pattern: RegExp; hint: string }> = [
+  {
+    pattern: /LaunchScreen|UILaunchScreen/,
+    hint: 'Add "UILaunchScreen": {} to Info.plist (iOS 14+) or include a LaunchScreen.storyboard',
+  },
+  {
+    pattern: /CFBundleIconName/,
+    hint:
+      "Add a 1024x1024 AppIcon to Assets.xcassets and ensure CFBundleIconName is set " +
+      "(Xcode does this when the asset catalog has an AppIcon)",
+  },
+  {
+    pattern: /UISupportedInterfaceOrientations/,
+    hint:
+      "iPad multitasking requires all four orientations in UISupportedInterfaceOrientations, " +
+      "or set UIRequiresFullScreen=true",
+  },
+];
+
+/** First matching recovery hint for a bundle-reject message, if any. */
+export function bundleRejectHint(text: string): string | undefined {
+  return BUNDLE_REJECT_HINTS.find(({ pattern }) => pattern.test(text))?.hint;
+}
 
 export function redactSigningInfo(text: string): string {
   return text
@@ -44,12 +83,26 @@ function tail(text: string): string {
 }
 
 /**
+ * Pull actual `error:` / `e: ` lines out of REDACTED stderr. Returns undefined
+ * when none are present (then the caller falls back to the stderr tail).
+ */
+function extractErrorLines(redacted: string): string | undefined {
+  const lines = redacted.split("\n").filter((line) => ERROR_LINE_RE.test(line));
+  if (lines.length === 0) return undefined;
+  return lines
+    .slice(0, MAX_ERROR_LINES)
+    .map((line) => line.trim().slice(0, MAX_DETAIL_CHARS))
+    .join("\n");
+}
+
+/**
  * Map raw stderr to a typed error. Patterns match against the RAW stderr
  * (redaction may drop the very line that identifies the failure class), but
- * the resulting message only ever contains the redacted tail.
+ * the resulting message only ever contains redacted content.
  */
 export function classifyXcodeError(stderr: string, context: string): MobileError {
-  const detail = tail(redactSigningInfo(stderr));
+  const redacted = redactSigningInfo(stderr);
+  const detail = tail(redacted);
 
   if (/No signing certificate|CODE_SIGN/i.test(stderr)) {
     return new TestflightSigningError(
@@ -74,5 +127,14 @@ export function classifyXcodeError(stderr: string, context: string): MobileError
         `Details: ${detail}`,
     );
   }
-  return new AscUploadError(`${context} failed: ${detail}`);
+  const hint = bundleRejectHint(stderr);
+  if (hint) {
+    return new AscUploadError(
+      `${context}: bundle rejected by App Store validation. Fix: ${hint}. Details: ${detail}`,
+    );
+  }
+  const errorLines = extractErrorLines(redacted);
+  return errorLines
+    ? new AscUploadError(`${context} failed:\n${errorLines}`)
+    : new AscUploadError(`${context} failed: ${detail}`);
 }
