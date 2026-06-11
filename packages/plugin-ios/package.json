@@ -1,6 +1,6 @@
 {
   "name": "@claude-in-mobile/plugin-ios",
-  "version": "3.12.0",
+  "version": "3.13.0",
   "description": "iOS plugin shim for claude-in-mobile microkernel (third-party consumption).",
   "type": "module",
   "main": "dist/index.js",

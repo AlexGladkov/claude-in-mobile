@@ -1,0 +1,21 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`writeExportOptionsPlist > writes the default app-store-connect upload plist 1`] = `
+"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>method</key>
+	<string>app-store-connect</string>
+	<key>destination</key>
+	<string>upload</string>
+	<key>signingStyle</key>
+	<string>automatic</string>
+	<key>generateAppStoreInformation</key>
+	<true/>
+	<key>manageAppVersionAndBuildNumber</key>
+	<true/>
+</dict>
+</plist>
+"
+`;

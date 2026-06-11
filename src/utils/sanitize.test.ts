@@ -14,6 +14,10 @@ import {
   validateBaselineName,
   validatePathContainment,
   validateBundleId,
+  validateAscKeyId,
+  validateAscIssuerId,
+  validateXcodeScheme,
+  validateVersionString,
 } from "./sanitize.js";
 import { MobileError } from "../errors.js";
 
@@ -928,5 +932,158 @@ describe("validateBundleId", () => {
       expect(e).toBeInstanceOf(MobileError);
       expect((e as MobileError).code).toBe("INVALID_BUNDLE_ID");
     }
+  });
+});
+
+// ──────────────────────────────────────────────
+// validateAscKeyId
+// ──────────────────────────────────────────────
+
+describe("validateAscKeyId", () => {
+  it("accepts a 10-char uppercase alphanumeric key ID", () => {
+    expect(() => validateAscKeyId("2X9R4HXF34")).not.toThrow();
+    expect(() => validateAscKeyId("ABC123DEFG")).not.toThrow();
+    expect(() => validateAscKeyId("0000000000")).not.toThrow();
+  });
+
+  it("rejects wrong lengths", () => {
+    expect(() => validateAscKeyId("")).toThrow(MobileError);
+    expect(() => validateAscKeyId("ABC123DEF")).toThrow(MobileError); // 9 chars
+    expect(() => validateAscKeyId("ABC123DEFGH")).toThrow(MobileError); // 11 chars
+  });
+
+  it("rejects lowercase and special characters", () => {
+    expect(() => validateAscKeyId("abc123defg")).toThrow(MobileError);
+    expect(() => validateAscKeyId("ABC123DEF;")).toThrow(MobileError);
+    expect(() => validateAscKeyId("ABC 123DEF")).toThrow(MobileError);
+  });
+
+  it("throws with INVALID_ASC_KEY_ID code", () => {
+    try {
+      validateAscKeyId("bad");
+      expect.unreachable("Should have thrown");
+    } catch (e) {
+      expect((e as MobileError).code).toBe("INVALID_ASC_KEY_ID");
+    }
+  });
+});
+
+// ──────────────────────────────────────────────
+// validateAscIssuerId
+// ──────────────────────────────────────────────
+
+describe("validateAscIssuerId", () => {
+  it("accepts UUID format (any case)", () => {
+    expect(() => validateAscIssuerId("69a6de70-03db-47e3-e053-5b8c7c11a4d1")).not.toThrow();
+    expect(() => validateAscIssuerId("69A6DE70-03DB-47E3-E053-5B8C7C11A4D1")).not.toThrow();
+  });
+
+  it("rejects non-UUID strings", () => {
+    expect(() => validateAscIssuerId("")).toThrow(MobileError);
+    expect(() => validateAscIssuerId("not-a-uuid")).toThrow(MobileError);
+    expect(() => validateAscIssuerId("69a6de70-03db-47e3-e053")).toThrow(MobileError);
+    expect(() => validateAscIssuerId("69a6de70-03db-47e3-e053-5b8c7c11a4d1; rm -rf /")).toThrow(MobileError);
+    expect(() => validateAscIssuerId("zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz")).toThrow(MobileError);
+  });
+
+  it("throws with INVALID_ASC_ISSUER_ID code", () => {
+    try {
+      validateAscIssuerId("bad");
+      expect.unreachable("Should have thrown");
+    } catch (e) {
+      expect((e as MobileError).code).toBe("INVALID_ASC_ISSUER_ID");
+    }
+  });
+});
+
+// ──────────────────────────────────────────────
+// validateXcodeScheme
+// ──────────────────────────────────────────────
+
+describe("validateXcodeScheme", () => {
+  it("accepts typical scheme names", () => {
+    expect(() => validateXcodeScheme("MyApp")).not.toThrow();
+    expect(() => validateXcodeScheme("My App iOS")).not.toThrow();
+    expect(() => validateXcodeScheme("App-Staging_v2.1")).not.toThrow();
+  });
+
+  it("rejects empty and over-long names", () => {
+    expect(() => validateXcodeScheme("")).toThrow(MobileError);
+    expect(() => validateXcodeScheme("a".repeat(129))).toThrow(MobileError);
+  });
+
+  it("rejects shell metacharacters", () => {
+    expect(() => validateXcodeScheme("App; rm -rf /")).toThrow(MobileError);
+    expect(() => validateXcodeScheme("App$(whoami)")).toThrow(MobileError);
+    expect(() => validateXcodeScheme("App\nMalicious")).toThrow(MobileError);
+  });
+
+  it("throws with INVALID_XCODE_SCHEME code", () => {
+    try {
+      validateXcodeScheme("");
+      expect.unreachable("Should have thrown");
+    } catch (e) {
+      expect((e as MobileError).code).toBe("INVALID_XCODE_SCHEME");
+    }
+  });
+});
+
+// ──────────────────────────────────────────────
+// validateVersionString
+// ──────────────────────────────────────────────
+
+describe("validateVersionString", () => {
+  it("accepts 1-3 numeric components", () => {
+    expect(() => validateVersionString("1")).not.toThrow();
+    expect(() => validateVersionString("1.2")).not.toThrow();
+    expect(() => validateVersionString("1.2.3")).not.toThrow();
+    expect(() => validateVersionString("10.20.30")).not.toThrow();
+  });
+
+  it("rejects malformed versions", () => {
+    expect(() => validateVersionString("")).toThrow(MobileError);
+    expect(() => validateVersionString("1.2.3.4")).toThrow(MobileError);
+    expect(() => validateVersionString("v1.2")).toThrow(MobileError);
+    expect(() => validateVersionString("1..2")).toThrow(MobileError);
+    expect(() => validateVersionString("1.2-beta")).toThrow(MobileError);
+    expect(() => validateVersionString("1.2;")).toThrow(MobileError);
+  });
+
+  it("throws with INVALID_VERSION_STRING code", () => {
+    try {
+      validateVersionString("bad");
+      expect.unreachable("Should have thrown");
+    } catch (e) {
+      expect((e as MobileError).code).toBe("INVALID_VERSION_STRING");
+    }
+  });
+});
+
+// ──────────────────────────────────────────────
+// sanitizeErrorMessage — JWT redaction
+// ──────────────────────────────────────────────
+
+describe("sanitizeErrorMessage JWT redaction", () => {
+  const JWT = "eyJhbGciOiJFUzI1NiJ9.eyJpc3MiOiJzZWNyZXQifQ.c2lnbmF0dXJl";
+
+  it("redacts standalone JWTs (no Bearer prefix)", () => {
+    const out = sanitizeErrorMessage(`request failed with ${JWT} attached`);
+    expect(out).not.toContain("eyJ");
+    expect(out).toContain("[REDACTED_JWT]");
+  });
+
+  it("redacts JWTs embedded in JSON error bodies", () => {
+    const out = sanitizeErrorMessage(`{"errors":[{"detail":"jwt ${JWT} expired"}]}`);
+    expect(out).not.toContain(JWT);
+  });
+
+  it("still redacts Bearer-prefixed JWTs via the Bearer rule", () => {
+    const out = sanitizeErrorMessage(`Authorization: Bearer ${JWT}`);
+    expect(out).not.toContain(JWT);
+    expect(out).not.toContain("eyJ");
+  });
+
+  it("leaves ordinary text untouched", () => {
+    expect(sanitizeErrorMessage("plain error, nothing secret")).toBe("plain error, nothing secret");
   });
 });
