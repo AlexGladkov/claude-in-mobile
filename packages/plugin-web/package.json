@@ -1,6 +1,6 @@
 {
   "name": "@claude-in-mobile/plugin-web",
-  "version": "3.12.0",
+  "version": "3.13.0",
   "description": "Web (CDP browser) plugin shim for claude-in-mobile microkernel.",
   "type": "module",
   "main": "dist/index.js",

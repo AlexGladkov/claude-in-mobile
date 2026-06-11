@@ -5,6 +5,66 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.13.0] — 2026-06-11
+
+App Store Connect / TestFlight support. "Выложи релиз в TestFlight" now
+works end-to-end: the pipeline detects the project kind, builds the .ipa,
+validates the bundle, uploads to ASC and distributes to beta groups.
+Battle-tested by shipping a real KMP app (SwarmHost) to TestFlight as the
+release gate.
+
+### Added
+
+- **`store` provider `"apple"`** alongside google/huawei/rustore, with
+  unified actions: `build`, `upload`, `set_notes`, `submit`,
+  `get_releases`, `promote`. Aliases: `testflight_build`,
+  `testflight_upload`, `testflight_status`, `testflight_set_notes`,
+  `testflight_distribute`, `testflight_submit`.
+- **ASC REST client** (`src/store/app-store-connect.ts`) extending
+  `AbstractStoreClient`: findApp, getBuilds (processingState polling),
+  setWhatToTest (POST→409→PATCH), getBetaGroups, addBuildToGroup,
+  submitForBetaReview, setEncryptionExempt.
+- **Zero-dep ES256 JWT** (`src/store/asc-jwt.ts`) via `node:crypto`
+  (`dsaEncoding: ieee-p1363`), 10-min TTL, in-memory cache. No `jose` —
+  avoids the #43 ERR_REQUIRE_ESM class entirely.
+- **iOS build pipeline** (`src/ios/build/`): project detection
+  (Flutter / React Native / KMP / vanilla Xcode), scheme listing +
+  release-scheme heuristic, `xcodebuild archive` + `-exportArchive`
+  with ASC API key auth (cloud signing), on-the-fly ExportOptions.plist,
+  `flutter build ipa` shortcut, `xcrun altool` upload with
+  `--upload-package`→`--upload-app` fallback.
+- **IPA validate gate**: `altool --validate-app` runs before every
+  upload — Apple silently drops invalid packages server-side (the build
+  never appears in `/v1/builds`); the gate surfaces every `detail :`
+  failure synchronously as a typed `IpaValidationError`. Optional
+  `skipValidation` bypass.
+- **Bundle-reject recovery hints** for the three rejects every KMP/CMP
+  project hits: missing `UILaunchScreen`, missing `CFBundleIconName`,
+  incomplete `UISupportedInterfaceOrientations` (iPad multitasking).
+- **Typed ASC errors** (`src/errors/asc.ts`): AscKeyMissing, AscAuth,
+  AscUpload, AscRateLimit (retryable), TestflightVersionCollision,
+  TestflightSigning, TestflightProcessingFailed, IpaValidation.
+- Validators: `validateAscKeyId`, `validateAscIssuerId`,
+  `validateXcodeScheme`, `validateVersionString`; standalone JWT
+  redaction (`eyJ…` → `[REDACTED_JWT]`) in `sanitizeErrorMessage`.
+
+### Changed
+
+- Build-error classifier now surfaces actual `error:` / `e: ` lines
+  from redacted xcodebuild/gradle stderr instead of the last-200-chars
+  tail.
+- Store meta description documents the Apple pipeline:
+  `build → upload → get_releases (poll) → set_notes → promote`.
+
+### Security
+
+- ASC key material is **env-only** (`ASC_KEY_ID` / `ASC_ISSUER_ID` /
+  `ASC_KEY_FILE` or `ASC_PRIVATE_KEY`, fastlane-convention fallback) —
+  tool args cannot point at key files, closing an arbitrary-file-read /
+  signed-exfil oracle. xcodebuild/altool run argv-form only; signing
+  identities and `AuthKey_*.p8` names are stripped from all output
+  returned to the LLM.
+
 ## [3.12.0] — 2026-06-08
 
 Abstraction, pluginability & scalability refactor. Foundation release for
