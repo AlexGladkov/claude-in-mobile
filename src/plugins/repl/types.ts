@@ -38,6 +38,12 @@ export interface SpawnArgs {
   cols?: number;
   rows?: number;
   promptRegex?: string;
+  /**
+   * Run `cmd` through `/bin/sh -c` so shell syntax (env-var prefixes,
+   * redirections, pipes, globs, `&&`) is honoured. Default false: `cmd` is
+   * argv-split and exec'd directly with no shell.
+   */
+  shell?: boolean;
 }
 
 export interface SendArgs {

@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 
@@ -70,6 +70,10 @@ pub struct SpawnOptions<'a> {
     pub env: &'a [(String, String)],
     pub cols: u16,
     pub rows: u16,
+    /// When true, run `cmd` through `/bin/sh -c` so shell syntax (env-var
+    /// prefixes, redirections, pipes, globs) is honoured. When false (default),
+    /// `cmd` is argv-split and exec'd directly — no shell, no injection surface.
+    pub shell: bool,
 }
 
 impl PtySession {
@@ -84,7 +88,23 @@ impl PtySession {
             })
             .context("openpty failed")?;
 
-        let (program, args) = parse_cmd(opts.cmd)?;
+        let (program, args) = if opts.shell {
+            // Delegate to a real shell — the only correct way to honour shell
+            // syntax. We never reimplement shell parsing.
+            ("/bin/sh".to_string(), vec!["-c".to_string(), opts.cmd.to_string()])
+        } else {
+            // Direct exec. If the caller pasted shell syntax (the common
+            // mistake — see issue #46) we'd otherwise spawn a doomed session
+            // with a nonsense program name. Fail loud with guidance instead.
+            if let Some(meta) = detect_shell_syntax(opts.cmd) {
+                bail!(
+                    "cmd contains shell syntax ({meta}) but repl_spawn execs \
+                     directly without a shell. Pass shell:true to run it via \
+                     /bin/sh -c, or pass environment via the env param."
+                );
+            }
+            parse_cmd(opts.cmd)?
+        };
         let mut builder = CommandBuilder::new(program);
         for a in args {
             builder.arg(a);
@@ -160,6 +180,13 @@ impl PtySession {
     }
     pub fn rows(&self) -> u16 {
         self.rows
+    }
+
+    /// Clone of the shared session state. Lets the supervisor read
+    /// status/screen/exit without taking the (exclusive) PtySession lock — so
+    /// `list`/`snapshot` never block on a session that is mid-`expect`.
+    pub fn state(&self) -> Arc<Mutex<SessionState>> {
+        Arc::clone(&self.state)
     }
 
     pub fn status(&self) -> SessionStatus {
@@ -269,6 +296,60 @@ impl Drop for PtySession {
     }
 }
 
+/// Detect shell syntax that direct exec (no shell) cannot honour, so spawn can
+/// fail with guidance instead of producing a silently-dead session. Quote-aware
+/// — metacharacters inside single/double quotes are treated as literal, so a
+/// quoted URL like `"http://h/db?a=1&b=2"` is not flagged. High-confidence
+/// operators only (`| ; < > $( ` backtick `) plus a leading `VAR=value`
+/// prefix); a lone `&` is intentionally not flagged because `2>&1` is already
+/// caught by `>` and bare `&` collides with literal `&` in unquoted args.
+fn detect_shell_syntax(cmd: &str) -> Option<String> {
+    // 1. Leading `VAR=value` env-assignment prefix (e.g. `JAVA_HOME=/x cmd`).
+    let trimmed = cmd.trim_start();
+    if let Some(eq) = trimmed.find('=') {
+        let name = &trimmed[..eq];
+        let is_ident = !name.is_empty()
+            && name
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if is_ident {
+            return Some(format!("env-assignment prefix `{name}=`"));
+        }
+    }
+    // 2. Unquoted shell metacharacters.
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escape = false;
+    let mut chars = cmd.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if escape {
+            escape = false;
+            continue;
+        }
+        match ch {
+            '\\' if !in_single => escape = true,
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            '|' | ';' | '<' | '>' | '`' if !in_single && !in_double => {
+                return Some(format!("`{ch}`"));
+            }
+            // `&&` is unambiguous shell; a lone `&` is left unflagged because it
+            // collides with literal `&` in unquoted args (and `2>&1` is already
+            // caught by `>`).
+            '&' if !in_single && !in_double && chars.peek() == Some(&'&') => {
+                return Some("`&&`".to_string());
+            }
+            '$' if !in_single && !in_double && chars.peek() == Some(&'(') => {
+                return Some("`$(`".to_string());
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn parse_cmd(cmd: &str) -> Result<(String, Vec<String>)> {
     // Minimal shlex-style splitter: whitespace + single/double quotes.
     let mut parts: Vec<String> = Vec::new();
@@ -332,4 +413,73 @@ mod tests {
     fn rejects_empty_cmd() {
         assert!(parse_cmd("   ").is_err());
     }
+
+    #[test]
+    fn detects_env_assignment_prefix() {
+        assert!(detect_shell_syntax("JAVA_HOME=/x ANDROID_HOME=/y gradlew").is_some());
+        assert!(detect_shell_syntax("FOO=bar").is_some());
+    }
+
+    #[test]
+    fn detects_redirection_and_pipe() {
+        assert!(detect_shell_syntax("gradlew installDebug 2>&1").is_some());
+        assert!(detect_shell_syntax("cat foo | grep bar").is_some());
+        assert!(detect_shell_syntax("echo hi > out.txt").is_some());
+        assert!(detect_shell_syntax("a && b").is_some()); // `&&` flagged; lone `&` is not
+        assert!(detect_shell_syntax("a; b").is_some());
+        assert!(detect_shell_syntax("echo $(date)").is_some());
+        assert!(detect_shell_syntax("echo `date`").is_some());
+    }
+
+    #[test]
+    fn ignores_quoted_metacharacters() {
+        // A quoted URL with `&`/`?` must not be flagged.
+        assert!(detect_shell_syntax(r#"psql "postgres://h/db?a=1&b=2""#).is_none());
+        assert!(detect_shell_syntax(r#"python -c "print(1)""#).is_none());
+        // `--flag=value` is not an env-assignment prefix.
+        assert!(detect_shell_syntax("gradlew --foo=bar").is_none());
+        // Plain argv is clean.
+        assert!(detect_shell_syntax("python3 -i").is_none());
+        assert!(detect_shell_syntax("bash --norc --noprofile").is_none());
+    }
+
+    #[test]
+    fn shell_mode_runs_via_sh_and_honours_redirection() {
+        let opts = SpawnOptions {
+            id: "sh1".into(),
+            cmd: "echo hello 2>&1",
+            cwd: None,
+            env: &[("PATH".into(), std::env::var("PATH").unwrap_or_default())],
+            cols: 80,
+            rows: 24,
+            shell: true,
+        };
+        let mut s = PtySession::spawn(opts).expect("shell spawn failed");
+        let rules = ExpectRules::new(None, 100, 2_000);
+        let _ = s.wait_ready(&rules);
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(s.snapshot_text().contains("hello"), "screen: {}", s.snapshot_text());
+        let _ = s.kill();
+    }
+
+    #[test]
+    fn direct_mode_rejects_shell_syntax() {
+        let opts = SpawnOptions {
+            id: "bad1".into(),
+            cmd: "JAVA_HOME=/x gradlew installDebug 2>&1",
+            cwd: None,
+            env: &[],
+            cols: 80,
+            rows: 24,
+            shell: false,
+        };
+        let err = match PtySession::spawn(opts) {
+            Ok(_) => panic!("expected shell-syntax rejection"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("shell"), "unexpected error: {err}");
+    }
+
+    use super::ExpectRules;
+    use std::time::Duration;
 }
