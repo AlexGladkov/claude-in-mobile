@@ -15,6 +15,7 @@ import {
   splitArgs,
 } from "./simctl-commands.js";
 import { parseDevicesJson } from "./simctl-parsers.js";
+import { listPhysicalDevices } from "./go-ios/index.js";
 import { wdaRequiredError } from "./wda-errors.js";
 import {
   ACTIVATE_SIMULATOR_OSASCRIPT_ARGS,
@@ -98,10 +99,13 @@ export class IosClient {
   }
 
   /**
-   * Get list of iOS simulators
+   * Get list of iOS devices: simulators (simctl) plus connected physical
+   * devices (go-ios). Physical discovery is best-effort — if go-ios is not
+   * installed it contributes nothing and simulator behaviour is unchanged.
    */
   getDevices(): IosDevice[] {
-    return parseDevicesJson(this.exec("list devices -j"));
+    const simulators = parseDevicesJson(this.exec("list devices -j"));
+    return [...simulators, ...listPhysicalDevices()];
   }
 
   /**
