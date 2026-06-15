@@ -47,6 +47,15 @@ export class IosClient {
     this.wdaClient = undefined;
   }
 
+  /** True unless the device id belongs to a connected physical device. */
+  private isSimulatorDevice(deviceId: string): boolean {
+    try {
+      return !listPhysicalDevices().some((d) => d.id === deviceId);
+    } catch {
+      return true;
+    }
+  }
+
   private async ensureWDA(deviceIdOverride?: string): Promise<WDAClient> {
     const effectiveId = deviceIdOverride ?? this.deviceId;
 
@@ -56,17 +65,23 @@ export class IosClient {
         throw new Error("No booted iOS simulator found. Boot a simulator first.");
       }
       this.deviceId = booted[0].id;
-      this.wdaClient = await this.wdaManager.ensureWDAReady(this.deviceId);
+      this.wdaClient = await this.wdaManager.ensureWDAReady(this.deviceId, true);
       return this.wdaClient;
     }
 
     // Per-call override: don't cache on instance if different from default
     if (deviceIdOverride && deviceIdOverride !== this.deviceId) {
-      return this.wdaManager.ensureWDAReady(deviceIdOverride);
+      return this.wdaManager.ensureWDAReady(
+        deviceIdOverride,
+        this.isSimulatorDevice(deviceIdOverride)
+      );
     }
 
     if (!this.wdaClient) {
-      this.wdaClient = await this.wdaManager.ensureWDAReady(effectiveId);
+      this.wdaClient = await this.wdaManager.ensureWDAReady(
+        effectiveId,
+        this.isSimulatorDevice(effectiveId)
+      );
     }
     return this.wdaClient;
   }
@@ -172,6 +187,20 @@ export class IosClient {
    */
   screenshot(deviceIdOverride?: string): string {
     return this.screenshotRaw(deviceIdOverride).toString("base64");
+  }
+
+  /**
+   * Async screenshot that works for physical devices too: routes physical
+   * devices through WDA `/screenshot` (simctl io only addresses simulators),
+   * and simulators through the fast sync simctl path.
+   */
+  async screenshotRawAsync(deviceIdOverride?: string): Promise<Buffer> {
+    const target = deviceIdOverride ?? this.deviceId;
+    if (target && !this.isSimulatorDevice(target)) {
+      const wdaClient = await this.ensureWDA(deviceIdOverride);
+      return wdaClient.screenshot();
+    }
+    return this.screenshotRaw(deviceIdOverride);
   }
 
   /**

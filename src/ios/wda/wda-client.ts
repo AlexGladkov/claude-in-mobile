@@ -285,6 +285,20 @@ export class WDAClient {
     return response.value || response || false;
   }
 
+  /**
+   * Capture a screenshot via WDA (`GET /screenshot`). Works for both
+   * simulators and physical devices — the only screenshot path that does NOT
+   * depend on simctl. Returns a PNG buffer.
+   */
+  async screenshot(): Promise<Buffer> {
+    const data = await this.request("GET", "/screenshot");
+    const b64 = typeof data?.value === "string" ? data.value : "";
+    if (!b64) {
+      throw new Error("WebDriverAgent returned an empty screenshot");
+    }
+    return Buffer.from(b64, "base64");
+  }
+
   private async request(
     method: string,
     path: string,
