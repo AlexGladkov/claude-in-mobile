@@ -2,7 +2,8 @@
 
 **Date:** 2026-06-15
 **Profile:** Бизнес-фича
-**Status:** Phase 1 complete & verified on-device. Phase 2 pending.
+**Status:** Phase 1 complete & verified on-device. Phase 2 code complete;
+live verification blocked on an Xcode Apple-ID sign-in (see below).
 
 ## Goal
 
@@ -76,7 +77,61 @@ Discovery alone doesn't move the phone. Remaining work:
 Phase 2 needs the tunnel + a device-targeted xcodebuild (slow, first-run
 provisioning) and iterative on-device testing — best as its own focused session.
 
-## Files changed (Phase 1)
+## Phase 2 (code complete) — WDA on the device
 
+`WDAManager.ensureWDAReady(deviceId, isSimulator)`: physical devices take a new
+`launchWDADevice()` that runs `xcodebuild test` against `platform=iOS,id=<udid>`
+with `-allowProvisioningUpdates`, `DEVELOPMENT_TEAM` (IOS_TEAM_ID/WDA_TEAM_ID env,
+else first codesigning identity), and a team-unique `PRODUCT_BUNDLE_IDENTIFIER`
+(WDA_BUNDLE_ID, default `com.<team>.WebDriverAgentRunner`). WDA listens on the
+device; `ios forward` maps it to a local port so the localhost WDAClient is
+unchanged. `IosClient` routes launches physical-vs-sim via go-ios membership.
+Screenshots: `WDAClient.screenshot()` (GET /screenshot) + `screenshotRawAsync()`
+route physical→WDA, simulator→simctl.
+
+### Live bring-up result (blocked, environment)
+
+The on-device e2e (`screenshotRawAsync` → xcodebuild → forward → WDA) ran and
+failed at signing — exactly the expected first-run hurdle, not a code defect:
+
+```
+No Account for Team "UL6KLBDCNB". Add a new account in Accounts settings...
+No profiles for 'com.facebook.WebDriverAgentRunner.xctrunner' were found
+```
+
+Two causes, both now addressed except the one requiring the user:
+1. **No Apple ID signed in to Xcode** for the team — `-allowProvisioningUpdates`
+   needs an account in Xcode > Settings > Accounts, not just a keychain cert.
+   **User action required.**
+2. Stock `com.facebook.WebDriverAgentRunner` is unsignable under another team —
+   fixed by the team-unique bundle-id override.
+
+Developer Mode is ON and the Mac is trusted. The go-ios tunnel question for iOS
+26.5 forwarding is still UNKNOWN — the run failed before the forward/WDA stage.
+
+### Runbook to finish live verification
+
+1. Xcode > Settings > Accounts → add the Apple ID for team `UL6KLBDCNB`.
+2. (optional) `export WDA_BUNDLE_ID=com.<you>.WebDriverAgentRunner`.
+3. Re-run the device bring-up; if WDA starts but the screenshot/health check
+   times out, start the go-ios tunnel (`sudo ios tunnel start` or
+   `ENABLE_GO_IOS_AGENT=user`) and re-run.
+
+### Remaining (after live verification)
+
+- `cli/src/ios.rs` mirror (Rust CLI physical discovery + screenshot path).
+- Confirm/handle the iOS 17+ tunnel requirement for `ios forward`.
+- On-device e2e: tap / input / ui-tree.
+
+## Files changed
+
+Phase 1:
 - `src/ios/go-ios/{parsers,client,index}.ts` (new), `parsers.test.ts` (new)
 - `src/ios/client.ts` — merge physical devices into `getDevices()`
+
+Phase 2:
+- `src/ios/wda/wda-manager.ts` — `launchWDADevice` (device destination, signing,
+  bundle-id override), `ios forward` lifecycle, team-id resolve.
+- `src/ios/wda/wda-client.ts` — `screenshot()` (GET /screenshot).
+- `src/ios/client.ts` — `isSimulatorDevice` routing, `screenshotRawAsync`.
+- `src/adapters/ios-adapter.ts` — async screenshot via `screenshotRawAsync`.
