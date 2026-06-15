@@ -275,6 +275,12 @@ export class WDAManager {
       );
     }
 
+    // The stock runner bundle id `com.facebook.WebDriverAgentRunner` belongs to
+    // Facebook and cannot be provisioned under another team. Override it with a
+    // team-unique id for physical signing (WDA_BUNDLE_ID), defaulting to one
+    // derived from the team so automatic provisioning can register it.
+    const bundleId = process.env.WDA_BUNDLE_ID ?? `com.${teamId}.WebDriverAgentRunner`;
+
     const wdaProcess = spawn(
       "xcodebuild",
       [
@@ -288,6 +294,7 @@ export class WDAManager {
         "-allowProvisioningUpdates",
         `DEVELOPMENT_TEAM=${teamId}`,
         "CODE_SIGN_STYLE=Automatic",
+        `PRODUCT_BUNDLE_IDENTIFIER=${bundleId}`,
       ],
       {
         cwd: wdaPath,
@@ -336,11 +343,14 @@ export class WDAManager {
       "WebDriverAgent failed to start on the physical device within " +
         `${this.deviceStartupTimeout / 1000}s.\n\n` +
         "Troubleshooting:\n" +
-        "1. Enable Developer Mode on the device (Settings > Privacy & " +
+        "1. Sign in to Xcode with the Apple ID for your team in Xcode > " +
+        "Settings > Accounts (automatic provisioning needs an account, not " +
+        "just a keychain certificate).\n" +
+        "2. Set a team-unique WDA bundle id if signing the stock one fails: " +
+        "export WDA_BUNDLE_ID=com.<you>.WebDriverAgentRunner\n" +
+        "3. Enable Developer Mode on the device (Settings > Privacy & " +
         "Security > Developer Mode) and trust this Mac.\n" +
-        "2. First run signs/installs WDA — accept any provisioning prompts " +
-        "in Xcode and re-run.\n" +
-        "3. On iOS 17+, port-forward may need the go-ios tunnel: " +
+        "4. On iOS 17+, port-forward may need the go-ios tunnel: " +
         "`sudo ios tunnel start` (or ENABLE_GO_IOS_AGENT=user).\n\n" +
         `Last output:\n${output.slice(-800)}`
     );
