@@ -313,9 +313,11 @@ export class WDAManager {
         output = output.slice(output.length - MAX_OUTPUT_CHARS);
       }
     };
+    let buildExited = false;
     wdaProcess.stdout?.on("data", appendOutput);
     wdaProcess.stderr?.on("data", appendOutput);
     wdaProcess.on("exit", () => {
+      buildExited = true;
       this.instances.delete(udid);
       this.clients.delete(udid);
       this.stopForward(udid);
@@ -331,6 +333,9 @@ export class WDAManager {
       } catch {
         // keep waiting through the build
       }
+      // Fail fast: if xcodebuild died (e.g. a signing error) there is nothing
+      // left to wait for — don't burn the full device timeout.
+      if (buildExited) break;
       await new Promise((resolve) => setTimeout(resolve, 1500));
     }
 
@@ -339,9 +344,11 @@ export class WDAManager {
     } catch {}
     this.stopForward(udid);
 
+    const reason = buildExited
+      ? "the xcodebuild test process exited before WebDriverAgent came up"
+      : `WebDriverAgent did not come up within ${this.deviceStartupTimeout / 1000}s`;
     throw new Error(
-      "WebDriverAgent failed to start on the physical device within " +
-        `${this.deviceStartupTimeout / 1000}s.\n\n` +
+      `Failed to start WebDriverAgent on the physical device: ${reason}.\n\n` +
         "Troubleshooting:\n" +
         "1. Sign in to Xcode with the Apple ID for your team in Xcode > " +
         "Settings > Accounts (automatic provisioning needs an account, not " +
