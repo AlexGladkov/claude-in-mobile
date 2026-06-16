@@ -3,9 +3,23 @@ import { describe, expect, it } from "vitest";
 import { bootstrapKernel } from "./bootstrap.js";
 import { DeviceManager } from "../device-manager.js";
 
+const ALL = ["android", "ios", "web", "desktop", "aurora"] as const;
+
 describe("bootstrapKernel", () => {
-  it("registers all 7 built-in plugins", () => {
+  it("is slim by default — only base plugins, no platforms", () => {
     const k = bootstrapKernel();
+    const ids = k.registry.list().map((e) => e.plugin.manifest.id).sort();
+    expect(ids).toEqual(["builtin-tools", "repl"]);
+  });
+
+  it("loads only the requested platforms", () => {
+    const k = bootstrapKernel({ platforms: ["ios"] });
+    const ids = k.registry.list().map((e) => e.plugin.manifest.id).sort();
+    expect(ids).toEqual(["builtin-tools", "ios", "repl"]);
+  });
+
+  it("registers all 7 built-in plugins when all platforms enabled", () => {
+    const k = bootstrapKernel({ platforms: ALL });
     const ids = k.registry.list().map((e) => e.plugin.manifest.id).sort();
     expect(ids).toEqual([
       "android",
@@ -37,7 +51,7 @@ describe("bootstrapKernel", () => {
   });
 
   it("resolves plugins by capability without naming platforms", () => {
-    const k = bootstrapKernel();
+    const k = bootstrapKernel({ platforms: ALL });
     const screenProviders = k.resolver
       .resolve({ capabilities: ["screen"] })
       .map((p) => p.manifest.id)
@@ -52,7 +66,7 @@ describe("bootstrapKernel", () => {
   });
 
   it("only browser/desktop have NO permissions capability", () => {
-    const k = bootstrapKernel();
+    const k = bootstrapKernel({ platforms: ALL });
     const permProviders = k.resolver
       .resolve({ capabilities: ["permissions"] })
       .map((p) => p.manifest.id)
@@ -61,7 +75,7 @@ describe("bootstrapKernel", () => {
   });
 
   it("getPlugin returns typed plugin instance", () => {
-    const k = bootstrapKernel();
+    const k = bootstrapKernel({ platforms: ["android"] });
     const android = k.getPlugin("android");
     expect(android?.manifest.id).toBe("android");
     expect(k.getPlugin("nope")).toBeUndefined();

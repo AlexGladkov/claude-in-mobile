@@ -126,7 +126,13 @@ export class DeviceManager {
     const target = platform ?? this.deviceFacade.getCurrentPlatform();
     const adapter = this.adapters.get(target);
     if (!adapter) {
-      throw new Error(`Unknown platform: ${target}`);
+      const available = [...this.adapters.keys()].join(", ") || "none";
+      throw new Error(
+        `Platform '${target}' is not installed. ` +
+          `Enable it with \`claude-in-mobile install ${target}\` ` +
+          `(or set CLAUDE_IN_MOBILE_PLATFORMS=${target}). ` +
+          `Currently available: ${available}.`
+      );
     }
     if (target === "desktop" || target === "browser") return adapter;
     if (deviceId) return adapter;

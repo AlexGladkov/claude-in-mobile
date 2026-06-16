@@ -24,6 +24,7 @@ import { createDesktopPlugin } from "../plugins/desktop/index.js";
 import { createWebPlugin } from "../plugins/web/index.js";
 import { createAuroraPlugin } from "../plugins/aurora/index.js";
 import { createReplPlugin } from "../plugins/repl/index.js";
+import { resolveEnabledPlatforms, type PlatformId } from "./platform-config.js";
 
 export interface KernelHandle {
   readonly registry: PluginRegistry;
@@ -49,20 +50,40 @@ export interface BootstrapOptions {
     additionalRoots?: ReadonlyArray<string>;
     supportedApiVersions?: ReadonlyArray<string>;
   };
+  /**
+   * Which platform plugins to load. When omitted, resolved from
+   * `CLAUDE_IN_MOBILE_PLATFORMS` / `~/.claude-in-mobile/config.json` /
+   * default (none). Ignored if `builtins` is supplied explicitly.
+   */
+  platforms?: ReadonlyArray<PlatformId>;
 }
 
-const DEFAULT_BUILTINS: ReadonlyArray<() => SourcePlugin> = [
-  // BuiltinToolsPlugin must run before platform plugins so meta tools and
-  // aliases are registered ahead of any plugin that may consult the registry
-  // during its own init.
+/**
+ * Always-on base plugins. BuiltinToolsPlugin must run first so meta tools and
+ * aliases are registered before any plugin consults the registry during init.
+ * REPL is non-platform and always available. Platform plugins are added
+ * on top, gated by the enabled set — base is slim by default.
+ */
+const BASE_BUILTINS: ReadonlyArray<() => SourcePlugin> = [
   createBuiltinToolsPlugin,
-  createAndroidPlugin,
-  createIosPlugin,
-  createDesktopPlugin,
-  createWebPlugin,
-  createAuroraPlugin,
   () => createReplPlugin(),
 ];
+
+const PLATFORM_FACTORIES: Record<PlatformId, () => SourcePlugin> = {
+  android: createAndroidPlugin,
+  ios: createIosPlugin,
+  web: createWebPlugin,
+  desktop: createDesktopPlugin,
+  aurora: createAuroraPlugin,
+};
+
+/** Base plugins + the enabled platform plugins, in deterministic order. */
+function defaultBuiltins(
+  platforms?: ReadonlyArray<PlatformId>
+): Array<() => SourcePlugin> {
+  const enabled = platforms ?? resolveEnabledPlatforms();
+  return [...BASE_BUILTINS, ...enabled.map((p) => PLATFORM_FACTORIES[p])];
+}
 
 function consoleLogger(): Logger {
   // stderr-only: stdout is reserved for MCP JSON-RPC framing.
@@ -107,7 +128,7 @@ export function bootstrapKernel(options: BootstrapOptions = {}): KernelHandle {
     },
   });
 
-  for (const factory of options.builtins ?? DEFAULT_BUILTINS) {
+  for (const factory of options.builtins ?? defaultBuiltins(options.platforms)) {
     registry.register(factory());
   }
 
