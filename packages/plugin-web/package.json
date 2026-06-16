@@ -1,7 +1,7 @@
 {
   "name": "@claude-in-mobile/plugin-web",
   "version": "3.14.0",
-  "description": "Web (CDP browser) plugin shim for claude-in-mobile microkernel.",
+  "description": "Web/browser platform plugin for claude-in-mobile (Chrome DevTools Protocol).",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -11,15 +11,30 @@
       "default": "./dist/index.js"
     }
   },
-  "scripts": { "build": "tsc" },
-  "keywords": ["mcp", "claude-in-mobile", "plugin", "browser", "cdp", "web"],
+  "scripts": {
+    "build": "tsc"
+  },
+  "keywords": [
+    "mcp",
+    "claude-in-mobile",
+    "plugin",
+    "browser",
+    "cdp",
+    "web"
+  ],
   "author": "Alex Gladkov",
   "license": "MIT",
-  "engines": { "node": ">=18.0.0" },
-  "files": ["dist"],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist"
+  ],
   "dependencies": {
     "@claude-in-mobile/plugin-api": "1.0.0",
-    "claude-in-mobile": "*"
+    "claude-in-mobile": "*",
+    "chrome-launcher": "^1.1.0",
+    "chrome-remote-interface": "^0.33.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

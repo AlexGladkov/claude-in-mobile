@@ -13,7 +13,6 @@ import type { CorePlatformAdapter } from "../adapters/platform-adapter.js";
 import { AndroidAdapter } from "../adapters/android-adapter.js";
 import { IosAdapter } from "../adapters/ios-adapter.js";
 import { DesktopAdapter } from "../adapters/desktop-adapter.js";
-import { BrowserAdapter } from "../adapters/browser-adapter.js";
 import { AdbClient } from "../adb/client.js";
 import { IosClient } from "../ios/client.js";
 import type { Platform } from "../platform-types.js";
@@ -40,7 +39,6 @@ export function buildDefaultAdapters(): DefaultAdapters {
     : new IosAdapter();
 
   const desktopAdapter = new DesktopAdapter();
-  const browserAdapter = new BrowserAdapter();
 
   // Aurora is delivered as a separate package (@claude-in-mobile/plugin-aurora)
   // and wired through the kernel, not this legacy eager map.
@@ -48,7 +46,6 @@ export function buildDefaultAdapters(): DefaultAdapters {
     ["android", androidAdapter],
     ["ios", iosAdapter],
     ["desktop", desktopAdapter],
-    ["browser", browserAdapter],
   ]);
 
   let envSeededTarget: Platform | undefined;

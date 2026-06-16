@@ -28,23 +28,12 @@
 import type { CorePlatformAdapter } from "./adapters/platform-adapter.js";
 import { AndroidAdapter } from "./adapters/android-adapter.js";
 import { IosAdapter } from "./adapters/ios-adapter.js";
-import { BrowserAdapter } from "./adapters/browser-adapter.js";
+import type { AuroraClientLike, BrowserAdapterLike } from "./adapters/contracts.js";
 
 import { AdbClient } from "./adb/client.js";
 import { IosClient } from "./ios/client.js";
 import { DesktopClient } from "./desktop/client.js";
 import type { CompressOptions } from "./utils/image.js";
-
-/**
- * Structural view of the Aurora client used by the few legacy aurora tools,
- * so device-manager need not import the implementation (now in
- * @claude-in-mobile/plugin-aurora).
- */
-export interface AuroraClientLike {
-  listPackages(): string[];
-  pushFile(localPath: string, remotePath: string): string;
-  pullFile(remotePath: string, localPath?: string): Buffer;
-}
 import type { RawLaunchOptions } from "./desktop/types.js";
 import { WebViewInspector } from "./adb/webview.js";
 
@@ -176,7 +165,7 @@ export class DeviceManager {
 
   async stopDesktopApp(): Promise<void> { return this.desktopFacade.stop(); }
   async cleanup(): Promise<void> { return this.desktopFacade.cleanup(this.webViewInspector); }
-  getBrowserAdapter(): BrowserAdapter { return this.desktopFacade.getBrowser(); }
+  getBrowserAdapter(): BrowserAdapterLike { return this.desktopFacade.getBrowser(); }
   getDesktopClient(): DesktopClient { return this.desktopFacade.getClient(); }
   isDesktopRunning(): boolean { return this.desktopFacade.isRunning(); }
 

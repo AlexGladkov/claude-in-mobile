@@ -21,15 +21,14 @@ describe("bootstrapKernel", () => {
   it("sync bootstrap loads base + in-base platforms (aurora is a separate package)", () => {
     const k = bootstrapKernel({ platforms: ALL });
     const ids = k.registry.list().map((e) => e.plugin.manifest.id).sort();
-    // aurora ships as @claude-in-mobile/plugin-aurora and is loaded only via
-    // the async bootstrap (dynamic import) — see the async test below.
+    // aurora + web ship as separate packages and load only via the async
+    // bootstrap (dynamic import) — see the async test below.
     expect(ids).toEqual([
       "android",
       "builtin-tools",
       "desktop",
       "ios",
       "repl",
-      "web",
     ]);
   });
 

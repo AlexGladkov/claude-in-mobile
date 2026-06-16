@@ -11,8 +11,8 @@
 
 import type { CorePlatformAdapter } from "../../adapters/platform-adapter.js";
 import { DesktopAdapter } from "../../adapters/desktop-adapter.js";
-import { BrowserAdapter } from "../../adapters/browser-adapter.js";
 import { IosAdapter } from "../../adapters/ios-adapter.js";
+import type { BrowserAdapterLike } from "../../adapters/contracts.js";
 import { DesktopClient } from "../../desktop/client.js";
 import type { RawLaunchOptions } from "../../desktop/types.js";
 import type { Platform } from "../../platform-types.js";
@@ -70,12 +70,14 @@ export class DesktopFacade {
     return undefined;
   }
 
-  getBrowser(): BrowserAdapter {
+  getBrowser(): BrowserAdapterLike {
     const adapter = this.adapters.get("browser");
-    if (!adapter || !(adapter instanceof BrowserAdapter)) {
-      throw new Error("Browser adapter is not available in this configuration.");
+    if (!adapter) {
+      throw new Error(
+        "Web is not installed. Run `claude-in-mobile install web`."
+      );
     }
-    return adapter;
+    return adapter as unknown as BrowserAdapterLike;
   }
 
   /**
@@ -94,8 +96,10 @@ export class DesktopFacade {
       try { ios.getClient().cleanup(); } catch {}
     }
     try { webViewInspector?.cleanup(); } catch {}
-    const browser = this.adapters.get("browser");
-    if (browser instanceof BrowserAdapter) {
+    const browser = this.adapters.get("browser") as
+      | { cleanup?: () => Promise<void> }
+      | undefined;
+    if (browser && typeof browser.cleanup === "function") {
       try { await browser.cleanup(); } catch {}
     }
   }

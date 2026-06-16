@@ -57,7 +57,7 @@ export const browserTools: ToolDefinition[] = [
       if (sessions.length === 0) {
         return textResult("No active browser sessions. Use browser_open to start one.");
       }
-      return textResult(`Active sessions:\n${sessions.map((s) => `  - ${s}`).join("\n")}`);
+      return textResult(`Active sessions:\n${sessions.map((s: string) => `  - ${s}`).join("\n")}`);
     },
   }),
 
