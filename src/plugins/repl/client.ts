@@ -16,6 +16,12 @@ export interface ReplBridgeOptions {
   env?: NodeJS.ProcessEnv;
   /** Per-request timeout (ms). Default 30s — well above any expect timeout. */
   requestTimeoutMs?: number;
+  /**
+   * Startup timeout (ms): how long to wait for the supervisor's `ready`
+   * event before giving up. Default 10s. Guards against a supervisor binary
+   * that spawns but never emits `ready` (wrong/old binary, hung process).
+   */
+  startTimeoutMs?: number;
 }
 
 interface PendingRequest {
@@ -41,6 +47,7 @@ export class ReplBridgeClient {
   private readonly binaryPath: string;
   private readonly env: NodeJS.ProcessEnv;
   private readonly requestTimeoutMs: number;
+  private readonly startTimeoutMs: number;
 
   constructor(opts: ReplBridgeOptions = {}) {
     this.binaryPath =
@@ -49,11 +56,33 @@ export class ReplBridgeClient {
       "claude-in-mobile";
     this.env = opts.env ?? minimalEnv();
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 30_000;
+    this.startTimeoutMs = opts.startTimeoutMs ?? 10_000;
   }
 
   async start(): Promise<void> {
     if (this.readyPromise) return this.readyPromise;
-    this.readyPromise = new Promise<void>((resolve, reject) => {
+    const promise = new Promise<void>((resolve, reject) => {
+      // start() settles exactly once. The hazard this guards against: the
+      // supervisor child exits (or never speaks) before emitting `ready`, in
+      // which case neither `resolve` nor `reject` lives in the `pending` map,
+      // so `failAllPending` cannot unblock us — start() would hang forever and
+      // the per-request timeout (armed only inside call(), after start()
+      // resolves) never gets a chance to fire. See issue #46.
+      let settled = false;
+      let startTimer: NodeJS.Timeout | undefined;
+      const settleResolve = () => {
+        if (settled) return;
+        settled = true;
+        if (startTimer) clearTimeout(startTimer);
+        resolve();
+      };
+      const settleReject = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        if (startTimer) clearTimeout(startTimer);
+        reject(err);
+      };
+
       let child: ChildProcessWithoutNullStreams;
       try {
         child = spawn(this.binaryPath, ["repl-supervisor"], {
@@ -61,7 +90,7 @@ export class ReplBridgeClient {
           stdio: ["pipe", "pipe", "pipe"],
         });
       } catch (e) {
-        reject(
+        settleReject(
           new ReplBridgeError(
             `failed to spawn ${this.binaryPath}: ${(e as Error).message}`
           )
@@ -69,6 +98,25 @@ export class ReplBridgeClient {
         return;
       }
       this.child = child;
+
+      startTimer = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          /* ignore */
+        }
+        this.child = undefined;
+        settleReject(
+          new ReplBridgeError(
+            `supervisor did not emit ready within ${this.startTimeoutMs}ms — ` +
+              `check that ${this.binaryPath} is a current build with the ` +
+              `repl-supervisor subcommand`
+          )
+        );
+      }, this.startTimeoutMs);
+      // Don't keep the event loop alive solely for the startup timer.
+      startTimer.unref?.();
+
       child.stderr.on("data", (chunk: Buffer) => {
         // Surface supervisor stderr at warn level via dedicated callback later;
         // for now silently drop to avoid mixing into MCP stdout framing.
@@ -76,15 +124,19 @@ export class ReplBridgeClient {
       });
       child.on("error", (err) => {
         this.failAllPending(err);
-        reject(new ReplBridgeError(`supervisor process error: ${err.message}`));
+        settleReject(
+          new ReplBridgeError(`supervisor process error: ${err.message}`)
+        );
       });
       child.on("exit", (code, signal) => {
         const reason = `supervisor exited (code=${code}, signal=${signal})`;
         this.failAllPending(new ReplBridgeError(reason));
         this.child = undefined;
+        // Unblock a start() that was still waiting for `ready`.
+        settleReject(new ReplBridgeError(reason));
       });
       this.rl = createInterface({ input: child.stdout });
-      this.rl.on("line", (line) => this.onLine(line, resolve));
+      this.rl.on("line", (line) => this.onLine(line, settleResolve));
       this.exitHandler = () => {
         try {
           child.kill("SIGTERM");
@@ -94,15 +146,33 @@ export class ReplBridgeClient {
       };
       process.once("exit", this.exitHandler);
     });
-    return this.readyPromise;
+    // On failed startup, drop the cached promise so a later call() retries a
+    // fresh supervisor instead of re-throwing the same dead-on-arrival error.
+    promise.catch(() => {
+      if (this.readyPromise === promise) this.readyPromise = undefined;
+    });
+    this.readyPromise = promise;
+    return promise;
   }
 
-  async call<T = unknown>(method: string, params: unknown = {}): Promise<T> {
+  /**
+   * @param timeoutMs Per-call timeout override. Callers whose request can
+   *   legitimately block longer than the default (e.g. `expect` with a large
+   *   `timeoutMs`) must pass a value here, otherwise the request would be
+   *   rejected client-side while the supervisor is still working — leaving the
+   *   session wedged and the late response dropped.
+   */
+  async call<T = unknown>(
+    method: string,
+    params: unknown = {},
+    timeoutMs?: number
+  ): Promise<T> {
     await this.start();
     const child = this.child;
     if (!child || child.stdin.destroyed) {
       throw new ReplBridgeError("supervisor not running");
     }
+    const effectiveTimeout = timeoutMs ?? this.requestTimeoutMs;
     const id = `r${this.nextId++}`;
     const payload = JSON.stringify({ id, method, params }) + "\n";
     return new Promise<T>((resolve, reject) => {
@@ -110,10 +180,10 @@ export class ReplBridgeClient {
         this.pending.delete(id);
         reject(
           new ReplBridgeError(
-            `request ${method} timed out after ${this.requestTimeoutMs}ms`
+            `request ${method} timed out after ${effectiveTimeout}ms`
           )
         );
-      }, this.requestTimeoutMs);
+      }, effectiveTimeout);
       this.pending.set(id, {
         resolve: (v) => resolve(v as T),
         reject,

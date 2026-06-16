@@ -32,9 +32,15 @@ impl ExpectRules {
         let Some(re) = &self.prompt else {
             return false;
         };
-        // Check the last 4KB to avoid false matches deep in scrollback.
+        // Check the last 4KB to avoid false matches deep in scrollback. Walk
+        // forward to the next char boundary so multibyte output (cyrillic,
+        // emoji, box-drawing) can't trip a slice panic.
         let tail = if buf.len() > 4096 {
-            &buf[buf.len() - 4096..]
+            let mut start = buf.len() - 4096;
+            while start < buf.len() && !buf.is_char_boundary(start) {
+                start += 1;
+            }
+            &buf[start..]
         } else {
             buf
         };
@@ -85,5 +91,15 @@ mod tests {
     fn no_prompt_regex_never_matches() {
         let rules = ExpectRules::defaults();
         assert!(!rules.prompt_matches(">>> "));
+    }
+
+    #[test]
+    fn multibyte_tail_does_not_panic() {
+        // >4KB of multibyte chars so the 4KB cut lands mid-codepoint. Must not
+        // panic, and the trailing prompt must still match.
+        let mut buf = "ё".repeat(3000); // 2 bytes each => 6000 bytes
+        buf.push_str(">>> ");
+        let rules = ExpectRules::new(Some(Regex::new(r"(?m)>>> $").unwrap()), 300, 5000);
+        assert!(rules.prompt_matches(&buf));
     }
 }

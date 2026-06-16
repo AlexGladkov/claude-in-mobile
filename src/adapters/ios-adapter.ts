@@ -125,7 +125,7 @@ export class IosAdapter
     options?: CompressOptions & { monitorIndex?: number },
     deviceId?: string,
   ): Promise<{ data: string; mimeType: string }> {
-    const buffer = this.clientFor(deviceId).screenshotRaw(deviceId);
+    const buffer = await this.clientFor(deviceId).screenshotRawAsync(deviceId);
     if (compress) {
       return compressScreenshot(buffer, options);
     }
@@ -133,7 +133,7 @@ export class IosAdapter
   }
 
   async getScreenshotBufferAsync(deviceId?: string): Promise<Buffer> {
-    return this.clientFor(deviceId).screenshotRaw(deviceId);
+    return this.clientFor(deviceId).screenshotRawAsync(deviceId);
   }
 
   screenshotRaw(): string {

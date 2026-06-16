@@ -1,6 +1,6 @@
 {
   "name": "@claude-in-mobile/plugin-desktop",
-  "version": "3.13.0",
+  "version": "3.14.0",
   "description": "Desktop (Compose) plugin shim for claude-in-mobile microkernel.",
   "type": "module",
   "main": "dist/index.js",

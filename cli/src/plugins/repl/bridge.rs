@@ -10,6 +10,9 @@
 //! `shutdown` request arrives. PTY sessions are killed on shutdown.
 
 use std::io::{self, BufRead, Write};
+use std::sync::mpsc;
+use std::sync::Arc;
+use std::thread;
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -27,14 +30,24 @@ struct Request {
 }
 
 pub fn run_supervisor_loop() -> Result<()> {
-    let supervisor = Supervisor::new();
+    let supervisor = Arc::new(Supervisor::new());
+    // Single writer owns stdout — concurrent request handlers send their
+    // response lines here, so frames never interleave.
+    let (tx, rx) = mpsc::channel::<String>();
+    let writer = thread::Builder::new()
+        .name("repl-bridge-writer".into())
+        .spawn(move || {
+            let stdout = io::stdout();
+            let mut out = stdout.lock();
+            let _ = writeln!(out, "{}", json!({"event":"ready","apiVersion":"1"}));
+            let _ = out.flush();
+            for line in rx {
+                let _ = writeln!(out, "{line}");
+                let _ = out.flush();
+            }
+        })?;
+
     let stdin = io::stdin();
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
-
-    writeln!(out, "{}", json!({"event":"ready","apiVersion":"1"}))?;
-    out.flush().ok();
-
     let reader = stdin.lock();
     for line in reader.lines() {
         let line = match line {
@@ -47,12 +60,7 @@ pub fn run_supervisor_loop() -> Result<()> {
         let req: Request = match serde_json::from_str(&line) {
             Ok(r) => r,
             Err(e) => {
-                writeln!(
-                    out,
-                    "{}",
-                    json!({"id":"","error":format!("invalid request: {e}")})
-                )?;
-                out.flush().ok();
+                let _ = tx.send(json!({"id":"","error":format!("invalid request: {e}")}).to_string());
                 continue;
             }
         };
@@ -60,18 +68,25 @@ pub fn run_supervisor_loop() -> Result<()> {
             for info in supervisor.list() {
                 let _ = supervisor.kill(&info.id);
             }
-            writeln!(out, "{}", json!({"id":req.id,"result":"ok"}))?;
-            out.flush().ok();
+            let _ = tx.send(json!({"id":req.id,"result":"ok"}).to_string());
             break;
         }
-        let response = dispatch(&supervisor, &req.method, &req.params);
-        let envelope = match response {
-            Ok(value) => json!({"id":req.id,"result":value}),
-            Err(e) => json!({"id":req.id,"error":format!("{e}")}),
-        };
-        writeln!(out, "{envelope}")?;
-        out.flush().ok();
+        // Handle each request on its own thread so a blocking `expect` on one
+        // session does not stall the read loop or other sessions.
+        let sup = Arc::clone(&supervisor);
+        let tx = tx.clone();
+        thread::spawn(move || {
+            let envelope = match dispatch(&sup, &req.method, &req.params) {
+                Ok(value) => json!({"id":req.id,"result":value}),
+                Err(e) => json!({"id":req.id,"error":format!("{e}")}),
+            };
+            let _ = tx.send(envelope.to_string());
+        });
     }
+    // Drop our sender; the writer drains and exits once every in-flight handler
+    // has dropped its clone (graceful flush of pending responses).
+    drop(tx);
+    let _ = writer.join();
     Ok(())
 }
 
@@ -87,6 +102,10 @@ fn dispatch(sup: &Supervisor, method: &str, params: &Value) -> Result<Value> {
                 .get("promptRegex")
                 .and_then(|v| v.as_str())
                 .map(String::from);
+            let shell = params
+                .get("shell")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let env = parse_env(params);
             sup.spawn(SpawnRequest {
                 id: id.clone(),
@@ -96,6 +115,7 @@ fn dispatch(sup: &Supervisor, method: &str, params: &Value) -> Result<Value> {
                 cols,
                 rows,
                 prompt_regex,
+                shell,
             })?;
             Ok(json!({"id": id}))
         }

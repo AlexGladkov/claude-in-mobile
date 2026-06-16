@@ -87,8 +87,19 @@ export class ReplPlugin implements SourcePlugin {
     return this.bridge.call("key", args);
   }
 
+  /** Buffer added to a session's expect timeout for the bridge round-trip. */
+  private static readonly EXPECT_TIMEOUT_BUFFER_MS = 5_000;
+
   async expect(args: ExpectArgs): Promise<ExpectOutcome> {
-    return this.bridge.call("expect", args);
+    // The bridge request must outlive the server-side expect wait, otherwise
+    // the client rejects while the supervisor is still polling. Default expect
+    // timeout server-side is 5000ms (see bridge.rs / ExpectRules::defaults).
+    const serverTimeout = args.timeoutMs ?? 5_000;
+    return this.bridge.call(
+      "expect",
+      args,
+      serverTimeout + ReplPlugin.EXPECT_TIMEOUT_BUFFER_MS
+    );
   }
 
   async snapshot(args: SnapshotArgs): Promise<SessionSnapshot> {
@@ -97,7 +108,12 @@ export class ReplPlugin implements SourcePlugin {
   }
 
   async list(): Promise<SessionInfo[]> {
-    return this.bridge.call("list");
+    const sessions = await this.bridge.call<SessionInfo[]>("list");
+    // `cmd` can carry inline secrets (e.g. `TOKEN=x cmd`, `mysql -psecret`),
+    // so it must be redacted on this egress too — not just in snapshot().
+    return this.redact
+      ? sessions.map((s) => ({ ...s, cmd: redactScreen(s.cmd) }))
+      : sessions;
   }
 
   async kill(args: KillArgs): Promise<{ ok: true }> {
@@ -111,7 +127,10 @@ export class ReplPlugin implements SourcePlugin {
       {
         name: "repl_spawn",
         description:
-          "Start an interactive REPL or CLI process under a PTY. Returns the session id.",
+          "Start an interactive REPL or CLI process under a PTY. Returns the session id. " +
+          "cmd is exec'd directly (argv split, no shell): env-var prefixes, " +
+          "redirections (2>&1), pipes and globs are NOT interpreted — pass env via " +
+          "the env param, or set shell:true to run cmd through /bin/sh -c.",
         inputSchema: {
           type: "object",
           required: ["id", "cmd"],
@@ -123,6 +142,12 @@ export class ReplPlugin implements SourcePlugin {
             cols: { type: "integer", default: 120 },
             rows: { type: "integer", default: 40 },
             promptRegex: { type: "string" },
+            shell: {
+              type: "boolean",
+              default: false,
+              description:
+                "Run cmd via /bin/sh -c so shell syntax (env prefixes, 2>&1, pipes, globs, &&) works.",
+            },
           },
         },
         handler: (args) => this.spawn(args as SpawnArgs),

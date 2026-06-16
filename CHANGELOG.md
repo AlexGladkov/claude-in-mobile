@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.14.0] — 2026-06-16
+
+REPL plugin hardening (closes the #46 hang) plus a systemic audit of the
+REPL bridge, and physical-iPhone support via go-ios + WebDriverAgent.
+
+### Added
+
+- **`shell` option on `repl_spawn`.** `cmd` is exec'd as bare argv by
+  default (no shell); `shell: true` runs it via `/bin/sh -c` so env-var
+  prefixes, redirections (`2>&1`), pipes and globs work. In the default
+  path, unquoted shell metacharacters or a leading `VAR=value` prefix now
+  return a clear error instead of a silently-dead session. Mirrors
+  `child_process.spawn({shell})`.
+- **Physical iOS device support.** `repl`/iOS device discovery now lists
+  connected iPhones via go-ios (`@claude-in-mobile/plugin-ios` path), and
+  WebDriverAgent is brought up on the device (`xcodebuild test` with
+  automatic signing + a team-unique bundle id, port-forwarded via
+  `ios forward`). Screenshots route through WDA on physical devices.
+  Requires `go-ios` (`npm i -g go-ios`) and an Xcode signing account.
+  Simulator-only setups are unaffected (best-effort discovery).
+
+### Fixed
+
+- **#46 — `repl_spawn` hangs (>1h).** `ReplBridgeClient.start()` only
+  settled on the supervisor's `ready` event; if the child exited or stayed
+  silent before `ready` (stale/wrong binary, crash on startup) the
+  promise never settled and the per-request timeout never armed. start()
+  now settles once, rejects on early child exit, enforces a startup
+  timeout (10s, SIGKILL), and resets so a later call retries.
+- **REPL concurrency (P1).** The supervisor was strictly serial and
+  `expect` held the global sessions lock across its blocking wait — one
+  long `repl_expect` froze every session. Per-session locking +
+  thread-per-request dispatch with a single stdout writer; `list`/
+  `snapshot` read shared state and never block on a busy session.
+- **REPL request/expect timeout desync (P2).** The fixed 30s client
+  timeout was below the user-settable expect timeout, wedging sessions on
+  long waits. Per-call timeout; `expect` uses `timeoutMs + 5s`.
+- **REPL crash on multibyte output (P3).** `prompt_matches` sliced a fixed
+  4 KB tail that could land mid-codepoint and panic, taking the supervisor
+  down. Char-boundary-safe tail.
+- **REPL secret leak via `repl_list` (P4).** Redaction ran only in
+  `snapshot()`; `list` returned `cmd` verbatim. `cmd` is now redacted on
+  the list egress too.
+- **REPL prompt-profile mismatch.** `pick_profile` matched `cmd.contains`
+  over the whole string (a path like `/home/pythonista/…` falsely matched
+  `python`; ordering let `ipython` claim the `python` profile). Now
+  matches `starts_with` on the basename of argv[0].
+
 ## [3.13.0] — 2026-06-11
 
 App Store Connect / TestFlight support. "Выложи релиз в TestFlight" now

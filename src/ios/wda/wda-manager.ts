@@ -5,15 +5,27 @@ import * as os from "os";
 import { WDAClient } from "./wda-client.js";
 import { WDAInstanceInfo } from "./wda-types.js";
 
+/** Port WDA listens on inside a physical device; the local end is forwarded. */
+const DEVICE_WDA_PORT = 8100;
+/** go-ios binary (overridable, mirrors src/ios/go-ios/client.ts). */
+const GO_IOS_BIN = process.env.GO_IOS_BIN ?? "ios";
+
 export class WDAManager {
   private instances: Map<string, WDAInstanceInfo> = new Map();
   private clients: Map<string, WDAClient> = new Map();
   /** Deduplicates parallel launches for the same device */
   private launchPromises: Map<string, Promise<WDAClient>> = new Map();
+  /** Long-lived `ios forward` processes for physical devices, by udid. */
+  private forwards: Map<string, ChildProcess> = new Map();
   private readonly startupTimeout = 30000;
+  /** Physical first-run does a full device build+sign+install — much slower. */
+  private readonly deviceStartupTimeout = 300000;
   private readonly buildTimeout = 120000;
 
-  async ensureWDAReady(deviceId: string): Promise<WDAClient> {
+  async ensureWDAReady(
+    deviceId: string,
+    isSimulator: boolean = true
+  ): Promise<WDAClient> {
     // Check existing client
     if (this.clients.has(deviceId)) {
       const client = this.clients.get(deviceId)!;
@@ -42,7 +54,7 @@ export class WDAManager {
       return this.launchPromises.get(deviceId)!;
     }
 
-    const launchPromise = this.doLaunch(deviceId);
+    const launchPromise = this.doLaunch(deviceId, isSimulator);
     this.launchPromises.set(deviceId, launchPromise);
 
     try {
@@ -52,11 +64,19 @@ export class WDAManager {
     }
   }
 
-  private async doLaunch(deviceId: string): Promise<WDAClient> {
+  private async doLaunch(
+    deviceId: string,
+    isSimulator: boolean
+  ): Promise<WDAClient> {
     const wdaPath = await this.discoverWDA();
-    await this.buildWDAIfNeeded(wdaPath);
     const port = await this.findFreePort();
-    await this.launchWDA(wdaPath, deviceId, port);
+
+    if (isSimulator) {
+      await this.buildWDAIfNeeded(wdaPath);
+      await this.launchWDA(wdaPath, deviceId, port);
+    } else {
+      await this.launchWDADevice(wdaPath, deviceId, port);
+    }
 
     const client = new WDAClient(port);
     await client.ensureSession(deviceId);
@@ -224,6 +244,163 @@ export class WDAManager {
     );
   }
 
+  /**
+   * Launch WDA on a PHYSICAL device. Unlike the simulator path we use
+   * `xcodebuild test` (build+sign+install+run in one shot, automatic
+   * provisioning) targeting the device destination, then forward the device's
+   * WDA port to a local port via go-ios so the localhost WDAClient is unchanged.
+   */
+  private async launchWDADevice(
+    wdaPath: string,
+    udid: string,
+    localPort: number
+  ): Promise<void> {
+    const existingInstance = this.instances.get(udid);
+    if (existingInstance) {
+      try {
+        process.kill(existingInstance.pid, 0);
+        this.ensureForward(udid, localPort);
+        return;
+      } catch {
+        this.instances.delete(udid);
+      }
+    }
+
+    const teamId = this.resolveTeamId();
+    if (!teamId) {
+      throw new Error(
+        "No Apple Development team found for signing WebDriverAgent on a " +
+          "physical device. Set IOS_TEAM_ID, or sign in to Xcode with an " +
+          "Apple ID that has a development certificate."
+      );
+    }
+
+    // The stock runner bundle id `com.facebook.WebDriverAgentRunner` belongs to
+    // Facebook and cannot be provisioned under another team. Override it with a
+    // team-unique id for physical signing (WDA_BUNDLE_ID), defaulting to one
+    // derived from the team so automatic provisioning can register it.
+    const bundleId = process.env.WDA_BUNDLE_ID ?? `com.${teamId}.WebDriverAgentRunner`;
+
+    const wdaProcess = spawn(
+      "xcodebuild",
+      [
+        "test",
+        "-project",
+        "WebDriverAgent.xcodeproj",
+        "-scheme",
+        "WebDriverAgentRunner",
+        "-destination",
+        `platform=iOS,id=${udid}`,
+        "-allowProvisioningUpdates",
+        `DEVELOPMENT_TEAM=${teamId}`,
+        "CODE_SIGN_STYLE=Automatic",
+        `PRODUCT_BUNDLE_IDENTIFIER=${bundleId}`,
+      ],
+      {
+        cwd: wdaPath,
+        env: { ...process.env, USE_PORT: DEVICE_WDA_PORT.toString() },
+        stdio: "pipe",
+      }
+    );
+
+    this.instances.set(udid, { pid: wdaProcess.pid!, port: localPort, deviceId: udid });
+
+    const MAX_OUTPUT_CHARS = 50_000;
+    let output = "";
+    const appendOutput = (data: Buffer) => {
+      output += data.toString();
+      if (output.length > MAX_OUTPUT_CHARS) {
+        output = output.slice(output.length - MAX_OUTPUT_CHARS);
+      }
+    };
+    let buildExited = false;
+    wdaProcess.stdout?.on("data", appendOutput);
+    wdaProcess.stderr?.on("data", appendOutput);
+    wdaProcess.on("exit", () => {
+      buildExited = true;
+      this.instances.delete(udid);
+      this.clients.delete(udid);
+      this.stopForward(udid);
+    });
+
+    // Forward device WDA port -> local port so localhost WDAClient works.
+    this.ensureForward(udid, localPort);
+
+    const startTime = Date.now();
+    while (Date.now() - startTime < this.deviceStartupTimeout) {
+      try {
+        if (await this.checkHealth(localPort)) return;
+      } catch {
+        // keep waiting through the build
+      }
+      // Fail fast: if xcodebuild died (e.g. a signing error) there is nothing
+      // left to wait for — don't burn the full device timeout.
+      if (buildExited) break;
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+
+    try {
+      process.kill(wdaProcess.pid!);
+    } catch {}
+    this.stopForward(udid);
+
+    const reason = buildExited
+      ? "the xcodebuild test process exited before WebDriverAgent came up"
+      : `WebDriverAgent did not come up within ${this.deviceStartupTimeout / 1000}s`;
+    throw new Error(
+      `Failed to start WebDriverAgent on the physical device: ${reason}.\n\n` +
+        "Troubleshooting:\n" +
+        "1. Sign in to Xcode with the Apple ID for your team in Xcode > " +
+        "Settings > Accounts (automatic provisioning needs an account, not " +
+        "just a keychain certificate).\n" +
+        "2. Set a team-unique WDA bundle id if signing the stock one fails: " +
+        "export WDA_BUNDLE_ID=com.<you>.WebDriverAgentRunner\n" +
+        "3. Enable Developer Mode on the device (Settings > Privacy & " +
+        "Security > Developer Mode) and trust this Mac.\n" +
+        "4. On iOS 17+, port-forward may need the go-ios tunnel: " +
+        "`sudo ios tunnel start` (or ENABLE_GO_IOS_AGENT=user).\n\n" +
+        `Last output:\n${output.slice(-800)}`
+    );
+  }
+
+  /** Start (idempotently) an `ios forward localPort -> DEVICE_WDA_PORT`. */
+  private ensureForward(udid: string, localPort: number): void {
+    if (this.forwards.has(udid)) return;
+    const fwd = spawn(
+      GO_IOS_BIN,
+      ["forward", "--udid", udid, localPort.toString(), DEVICE_WDA_PORT.toString()],
+      { stdio: ["ignore", "ignore", "ignore"] }
+    );
+    fwd.on("exit", () => this.forwards.delete(udid));
+    this.forwards.set(udid, fwd);
+  }
+
+  private stopForward(udid: string): void {
+    const fwd = this.forwards.get(udid);
+    if (fwd) {
+      try {
+        fwd.kill();
+      } catch {}
+      this.forwards.delete(udid);
+    }
+  }
+
+  /** Team ID for signing: explicit env wins, else first codesigning identity. */
+  private resolveTeamId(): string | undefined {
+    if (process.env.IOS_TEAM_ID) return process.env.IOS_TEAM_ID;
+    if (process.env.WDA_TEAM_ID) return process.env.WDA_TEAM_ID;
+    try {
+      const out = execSync("security find-identity -v -p codesigning", {
+        encoding: "utf-8",
+        timeout: 5000,
+      });
+      const match = out.match(/\(([A-Z0-9]{10})\)/);
+      return match?.[1];
+    } catch {
+      return undefined;
+    }
+  }
+
   private async checkHealth(port: number): Promise<boolean> {
     try {
       const controller = new AbortController();
@@ -272,6 +449,9 @@ export class WDAManager {
       if (client) {
         client.deleteSession().catch(() => {});
       }
+    }
+    for (const udid of [...this.forwards.keys()]) {
+      this.stopForward(udid);
     }
     this.instances.clear();
     this.clients.clear();

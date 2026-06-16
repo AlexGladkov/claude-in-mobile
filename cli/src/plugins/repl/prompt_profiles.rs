@@ -56,9 +56,18 @@ pub const DEFAULT_PROFILES: &[PromptProfile] = &[
     },
 ];
 
-/// Pick the first profile whose `cmd_hint` is a substring of `cmd`.
+/// Pick a profile by matching the basename of the spawned program (argv[0])
+/// against each `cmd_hint` with `starts_with`. Matching the basename — not the
+/// whole command string — avoids false hits on paths/args (e.g.
+/// `/home/pythonista/repl` must NOT match `python`). `starts_with` keeps the
+/// match order-independent: `ipython` starts with `ipython`, not `python`, so
+/// it can't be mis-claimed by the `python` profile listed before it.
 pub fn pick_profile(cmd: &str) -> Option<&'static PromptProfile> {
-    DEFAULT_PROFILES.iter().find(|p| cmd.contains(p.cmd_hint))
+    let first = cmd.split_whitespace().next().unwrap_or("");
+    let base = first.rsplit(['/', '\\']).next().unwrap_or(first);
+    DEFAULT_PROFILES
+        .iter()
+        .find(|p| base.starts_with(p.cmd_hint))
 }
 
 /// Compile prompt regex with multi-line mode so `$` matches end-of-line, not
@@ -87,6 +96,26 @@ mod tests {
     #[test]
     fn unknown_cmd_has_no_profile() {
         assert!(pick_profile("/usr/local/bin/my-custom-repl").is_none());
+    }
+
+    #[test]
+    fn path_segment_does_not_false_match() {
+        // basename is `repl`, not `python` — must not pick the python profile.
+        assert!(pick_profile("/home/pythonista/repl").is_none());
+        // `--prompt=python` is an arg, not the program.
+        assert!(pick_profile("/opt/tool --mode=python").is_none());
+    }
+
+    #[test]
+    fn ipython_not_claimed_by_python() {
+        let p = pick_profile("/usr/bin/ipython").unwrap();
+        assert_eq!(p.name, "ipython");
+    }
+
+    #[test]
+    fn zsh_not_claimed_by_sh() {
+        let p = pick_profile("/bin/zsh -f").unwrap();
+        assert_eq!(p.name, "zsh");
     }
 
     #[test]

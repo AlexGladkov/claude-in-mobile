@@ -4,16 +4,28 @@
 //! exposes it to the TS MCP server is wired in Phase 9 (REPL TS plugin).
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Result};
 
 use super::expect::{ExpectOutcome, ExpectRules};
 use super::prompt_profiles::{compile, pick_profile};
-use super::session::{PtySession, SessionStatus, SpawnOptions};
+use super::session::{PtySession, SessionState, SessionStatus, SpawnOptions};
+
+/// One live session. `session` is the exclusive lock for mutating ops
+/// (send/key/expect/kill); `state` is a shared clone of the session's read
+/// state so `list`/`snapshot` can report status/screen WITHOUT blocking on a
+/// concurrent long-running `expect` that holds `session`.
+struct SessionHandle {
+    cmd: String,
+    cols: u16,
+    rows: u16,
+    state: Arc<Mutex<SessionState>>,
+    session: Mutex<PtySession>,
+}
 
 pub struct Supervisor {
-    sessions: Mutex<HashMap<String, PtySession>>,
+    sessions: Mutex<HashMap<String, Arc<SessionHandle>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -25,6 +37,9 @@ pub struct SpawnRequest {
     pub cols: u16,
     pub rows: u16,
     pub prompt_regex: Option<String>,
+    /// Run `cmd` via `/bin/sh -c` instead of direct argv exec. See
+    /// [`SpawnOptions::shell`].
+    pub shell: bool,
 }
 
 impl Default for Supervisor {
@@ -40,14 +55,29 @@ impl Supervisor {
         }
     }
 
+    /// Brief map lookup returning a cloned handle. The map lock is released
+    /// immediately — callers then lock the per-session mutex (or its shared
+    /// state), so one session's blocking op never freezes the whole map.
+    fn handle(&self, id: &str) -> Result<Arc<SessionHandle>> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| anyhow!("no session: {id}"))
+    }
+
     pub fn spawn(&self, req: SpawnRequest) -> Result<()> {
-        let mut map = self.sessions.lock().unwrap();
-        if let Some(existing) = map.get(&req.id) {
-            if existing.status() != SessionStatus::Dead {
-                bail!("session already exists: {}", req.id);
+        {
+            let map = self.sessions.lock().unwrap();
+            if let Some(existing) = map.get(&req.id) {
+                if existing.session.lock().unwrap().status() != SessionStatus::Dead {
+                    bail!("session already exists: {}", req.id);
+                }
             }
         }
         let env: Vec<(String, String)> = req.env.clone();
+        // Spawn outside the map lock — openpty/fork must not block other ops.
         let session = PtySession::spawn(SpawnOptions {
             id: req.id.clone(),
             cmd: &req.cmd,
@@ -55,14 +85,22 @@ impl Supervisor {
             env: &env,
             cols: req.cols,
             rows: req.rows,
+            shell: req.shell,
         })?;
-        map.insert(req.id, session);
+        let handle = Arc::new(SessionHandle {
+            cmd: session.cmd.clone(),
+            cols: session.cols(),
+            rows: session.rows(),
+            state: session.state(),
+            session: Mutex::new(session),
+        });
+        self.sessions.lock().unwrap().insert(req.id, handle);
         Ok(())
     }
 
     pub fn send(&self, id: &str, text: &str, with_newline: bool) -> Result<()> {
-        let mut map = self.sessions.lock().unwrap();
-        let s = map.get_mut(id).ok_or_else(|| anyhow!("no session: {id}"))?;
+        let h = self.handle(id)?;
+        let mut s = h.session.lock().unwrap();
         if with_newline {
             s.write_line(text)
         } else {
@@ -86,8 +124,8 @@ impl Supervisor {
             "right" => b"\x1b[C",
             _ => bail!("unknown key: {key}"),
         };
-        let mut map = self.sessions.lock().unwrap();
-        let s = map.get_mut(id).ok_or_else(|| anyhow!("no session: {id}"))?;
+        let h = self.handle(id)?;
+        let mut s = h.session.lock().unwrap();
         s.write_bytes(bytes)
     }
 
@@ -98,56 +136,81 @@ impl Supervisor {
         idle_ms: u64,
         timeout_ms: u64,
     ) -> Result<ExpectOutcome> {
-        let mut map = self.sessions.lock().unwrap();
-        let s = map.get_mut(id).ok_or_else(|| anyhow!("no session: {id}"))?;
-        let regex_owned = regex.map(|r| r.to_string()).or_else(|| {
-            pick_profile(&s.cmd).map(|p| p.prompt_regex.to_string())
-        });
+        let h = self.handle(id)?;
+        // Hold ONLY this session's lock across the blocking wait. Other
+        // sessions — and lock-free `list`/`snapshot` — stay responsive.
+        let mut s = h.session.lock().unwrap();
+        let regex_owned = regex
+            .map(|r| r.to_string())
+            .or_else(|| pick_profile(&s.cmd).map(|p| p.prompt_regex.to_string()));
         let prompt = regex_owned.as_deref().and_then(compile);
         let rules = ExpectRules::new(prompt, idle_ms, timeout_ms);
         s.wait_ready(&rules)
     }
 
     pub fn snapshot(&self, id: &str, tail_lines: Option<usize>) -> Result<SessionSnapshot> {
-        let map = self.sessions.lock().unwrap();
-        let s = map.get(id).ok_or_else(|| anyhow!("no session: {id}"))?;
+        let h = self.handle(id)?;
+        // Read the shared state, not the session lock — works even while the
+        // session is mid-`expect`.
+        let st = h.state.lock().unwrap();
+        let full = st.screen_text();
         let screen = match tail_lines {
-            Some(n) => s.snapshot_tail(n),
-            None => s.snapshot_text(),
+            Some(n) => tail_lines_of(&full, n),
+            None => full,
         };
         Ok(SessionSnapshot {
             id: id.into(),
-            status: s.status(),
+            status: st.status,
             screen,
-            exit_code: s.exit_code(),
-            cols: s.cols(),
-            rows: s.rows(),
+            exit_code: st.exit_code,
+            cols: h.cols,
+            rows: h.rows,
         })
     }
 
     pub fn list(&self) -> Vec<SessionInfo> {
-        let map = self.sessions.lock().unwrap();
-        map.values()
-            .map(|s| SessionInfo {
-                id: s.id.clone(),
-                cmd: s.cmd.clone(),
-                status: s.status(),
-                exit_code: s.exit_code(),
+        // Snapshot the map under a brief lock, then read each session's shared
+        // state — never the (possibly busy) per-session lock.
+        let handles: Vec<(String, Arc<SessionHandle>)> = {
+            let map = self.sessions.lock().unwrap();
+            map.iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect()
+        };
+        handles
+            .iter()
+            .map(|(id, h)| {
+                let st = h.state.lock().unwrap();
+                SessionInfo {
+                    id: id.clone(),
+                    cmd: h.cmd.clone(),
+                    status: st.status,
+                    exit_code: st.exit_code,
+                }
             })
             .collect()
     }
 
     pub fn kill(&self, id: &str) -> Result<()> {
-        let mut map = self.sessions.lock().unwrap();
-        let s = map.get_mut(id).ok_or_else(|| anyhow!("no session: {id}"))?;
+        let h = self.handle(id)?;
+        let mut s = h.session.lock().unwrap();
         s.kill()
     }
 
     pub fn drop_session(&self, id: &str) -> Result<()> {
-        let mut map = self.sessions.lock().unwrap();
-        map.remove(id).ok_or_else(|| anyhow!("no session: {id}"))?;
+        self.sessions
+            .lock()
+            .unwrap()
+            .remove(id)
+            .ok_or_else(|| anyhow!("no session: {id}"))?;
         Ok(())
     }
+}
+
+/// Trailing `max_lines` of `full` joined by `\n` — pure string op, no session
+/// state involved.
+fn tail_lines_of(full: &str, max_lines: usize) -> String {
+    let lines: Vec<&str> = full.lines().collect();
+    let start = lines.len().saturating_sub(max_lines);
+    lines[start..].join("\n")
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -173,8 +236,10 @@ pub struct SessionSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::thread;
     use std::thread::sleep;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     fn spawn_bash(sup: &Supervisor, id: &str) {
         sup.spawn(SpawnRequest {
@@ -189,6 +254,7 @@ mod tests {
             cols: 80,
             rows: 24,
             prompt_regex: None,
+            shell: false,
         })
         .expect("spawn bash failed");
     }
@@ -227,6 +293,7 @@ mod tests {
             cols: 80,
             rows: 24,
             prompt_regex: None,
+            shell: false,
         });
         assert!(err.is_err());
         sup.kill("b2").unwrap();
@@ -259,6 +326,40 @@ mod tests {
         assert!(sup.snapshot("nope", None).is_err());
         assert!(sup.send("nope", "x", true).is_err());
         assert!(sup.kill("nope").is_err());
+    }
+
+    #[test]
+    fn long_expect_does_not_block_other_sessions() {
+        // The core P1 guarantee: a blocking `expect` on session A must not
+        // freeze `list`/`snapshot` or any op on session B.
+        let sup = Arc::new(Supervisor::new());
+        spawn_bash(&sup, "la");
+        spawn_bash(&sup, "lb");
+        sleep(Duration::from_millis(100)); // let both reach a prompt
+
+        let sup2 = Arc::clone(&sup);
+        let blocker = thread::spawn(move || {
+            // Unmatchable prompt + long idle => blocks for the full timeout,
+            // holding ONLY la's session lock.
+            let _ = sup2.expect("la", Some("NEVER_MATCH_XYZ_QWE$"), 5_000, 1_500);
+        });
+        sleep(Duration::from_millis(150)); // ensure expect is in-flight
+
+        let t = Instant::now();
+        let infos = sup.list();
+        let snap = sup.snapshot("lb", None).unwrap();
+        let elapsed = t.elapsed();
+
+        assert_eq!(infos.len(), 2);
+        assert_eq!(snap.id, "lb");
+        assert!(
+            elapsed < Duration::from_millis(800),
+            "list/snapshot blocked behind expect: {elapsed:?}"
+        );
+
+        blocker.join().unwrap();
+        sup.kill("la").ok();
+        sup.kill("lb").ok();
     }
 
     #[test]
