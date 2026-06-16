@@ -18,6 +18,7 @@ import { captureStep } from "./tools/recorder-tools.js";
 import { resolveToolCall } from "./tools/registry.js";
 import { buildInstructions } from "./runtime/mcp-instructions.js";
 import { runCliIfRequested } from "./runtime/cli.js";
+import { runPlatformCommand } from "./runtime/platform-cli.js";
 import { createMcpServer } from "./runtime/mcp-server.js";
 
 // Read version from package.json — single source of truth
@@ -93,6 +94,10 @@ const rawProfile = process.env.MOBILE_PROFILE ?? "core";
 const activeProfile: MobileProfile = VALID_PROFILES.includes(rawProfile as MobileProfile)
   ? (rawProfile as MobileProfile)
   : "core";
+
+// Platform management subcommands (install / uninstall / doctor / platforms)
+// short-circuit before any kernel/server boot — they just mutate config.
+runPlatformCommand(process.argv);
 
 // Kernel bootstrap — see runtime/bootstrap.ts. `CLAUDE_IN_MOBILE_EXTERNAL_PLUGINS=1`
 // opts in to filesystem discovery from `~/.claude-in-mobile/plugins/`.

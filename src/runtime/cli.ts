@@ -21,6 +21,13 @@ use.
 
 Usage
   claude-in-mobile               start the MCP stdio server (default)
+  claude-in-mobile platforms     list enabled + available platforms
+  claude-in-mobile install <p>...
+                                 enable platform(s): android | ios | web |
+                                 desktop | aurora | all
+  claude-in-mobile uninstall <p>...
+                                 disable platform(s)
+  claude-in-mobile doctor [p...] check external toolchains for platforms
   claude-in-mobile --init <client>
                                  print the configuration snippet for a
                                  supported client (opencode | cursor |
@@ -28,7 +35,14 @@ Usage
   claude-in-mobile --version     print version and exit
   claude-in-mobile --help        print this message and exit
 
+Platforms
+  The base install is slim — no platforms are loaded by default. Enable
+  what you need with 'install', or 'install all'. Selection persists in
+  ~/.claude-in-mobile/config.json and can be overridden per-run with the
+  CLAUDE_IN_MOBILE_PLATFORMS env (csv / all / none).
+
 Environment
+  CLAUDE_IN_MOBILE_PLATFORMS     csv / all / none — overrides enabled set
   MOBILE_PROFILE                 minimal | core | android | web | full
                                  (default: full)
   DEVICE_ID, ANDROID_SERIAL      preselect Android device
