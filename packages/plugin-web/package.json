@@ -1,6 +1,6 @@
 {
   "name": "@claude-in-mobile/plugin-web",
-  "version": "3.14.0",
+  "version": "4.0.0-dev",
   "description": "Web/browser platform plugin for claude-in-mobile (Chrome DevTools Protocol).",
   "type": "module",
   "main": "dist/index.js",

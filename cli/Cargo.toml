@@ -1,6 +1,6 @@
 [package]
 name = "claude-in-mobile"
-version = "3.14.0"
+version = "4.0.0-dev"
 edition = "2021"
 description = "Fast native CLI for mobile device automation (Android/iOS/Aurora/Desktop)"
 authors = ["defendend", "Alex Gladkov"]
