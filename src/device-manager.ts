@@ -32,9 +32,8 @@ import type { AuroraClientLike, BrowserAdapterLike } from "./adapters/contracts.
 
 import { AdbClient } from "./adb/client.js";
 import { IosClient } from "./ios/client.js";
-import { DesktopClient } from "./desktop/client.js";
 import type { CompressOptions } from "./utils/image.js";
-import type { RawLaunchOptions } from "./desktop/types.js";
+import type { DesktopClientLike, RawLaunchOptionsLike } from "./adapters/contracts.js";
 import { WebViewInspector } from "./adb/webview.js";
 
 import type { Device, Platform } from "./platform-types.js";
@@ -157,7 +156,7 @@ export class DeviceManager {
 
   // ============ Desktop / Browser (delegates to DesktopFacade) ============
 
-  async launchDesktopApp(options: RawLaunchOptions): Promise<string> {
+  async launchDesktopApp(options: RawLaunchOptionsLike): Promise<string> {
     const msg = await this.desktopFacade.launch(options);
     this.deviceFacade.setTarget("desktop");
     return msg;
@@ -166,7 +165,7 @@ export class DeviceManager {
   async stopDesktopApp(): Promise<void> { return this.desktopFacade.stop(); }
   async cleanup(): Promise<void> { return this.desktopFacade.cleanup(this.webViewInspector); }
   getBrowserAdapter(): BrowserAdapterLike { return this.desktopFacade.getBrowser(); }
-  getDesktopClient(): DesktopClient { return this.desktopFacade.getClient(); }
+  getDesktopClient(): DesktopClientLike { return this.desktopFacade.getClient(); }
   isDesktopRunning(): boolean { return this.desktopFacade.isRunning(); }
 
   // ============ Screen ops (proxy) ============

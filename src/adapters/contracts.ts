@@ -18,6 +18,17 @@ export interface BrowserAdapterLike {
   [key: string]: any;
 }
 
+export interface DesktopAdapterLike {
+  [key: string]: any;
+}
+
+export interface DesktopClientLike {
+  [key: string]: any;
+}
+
+/** Shape of desktop launch options — loose; concrete type lives in plugin-desktop. */
+export type RawLaunchOptionsLike = Record<string, unknown>;
+
 export interface AuroraClientLike {
   listPackages(): string[];
   pushFile(localPath: string, remotePath: string): string;

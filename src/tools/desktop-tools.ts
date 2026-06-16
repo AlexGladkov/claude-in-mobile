@@ -1,6 +1,5 @@
 import type { ToolDefinition } from "./registry.js";
 import { defineTool, z } from "./define-tool.js";
-import type { LaunchMode } from "../desktop/types.js";
 import { validatePath, validateJvmArg, validateBundleId } from "../utils/sanitize.js";
 import { textResult } from "../utils/tool-result.js";
 
@@ -56,7 +55,7 @@ export const desktopTools: ToolDefinition[] = [
       }
 
       const result = await ctx.deviceManager.launchDesktopApp({
-        mode: args.mode as LaunchMode | undefined,
+        mode: args.mode as string | undefined,
         projectPath: args.projectPath,
         task: args.task,
         jvmArgs: args.jvmArgs,

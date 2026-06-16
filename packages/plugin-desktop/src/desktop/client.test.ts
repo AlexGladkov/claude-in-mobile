@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { normalizeLaunchOptions } from "./client.js";
-import { MobileError } from "../errors.js";
+import { MobileError } from "claude-in-mobile/errors";
 
 // ─────────────────────────────────────────────────────────────
 // normalizeLaunchOptions

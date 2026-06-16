@@ -14,10 +14,10 @@ import type {
   CorePlatformAdapter,
   AppManagementAdapter,
   ShellAdapter,
-} from "./platform-adapter.js";
-import type { Device } from "../device-manager.js";
-import { DesktopClient } from "../desktop/client.js";
-import type { RawLaunchOptions, UiHierarchy } from "../desktop/types.js";
+} from "claude-in-mobile/adapters/platform-adapter";
+import type { Device } from "claude-in-mobile/device-manager";
+import { DesktopClient } from "./desktop/client.js";
+import type { RawLaunchOptions, UiHierarchy } from "./desktop/types.js";
 
 export class DesktopAdapter implements CorePlatformAdapter, AppManagementAdapter, ShellAdapter {
   readonly platform = "desktop" as const;

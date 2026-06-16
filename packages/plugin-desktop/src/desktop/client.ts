@@ -9,7 +9,7 @@ import { GradleLauncher } from "./gradle.js";
 import { findCompanionAppPath } from "./permission-allowlist.js";
 import { LogRing } from "./log-ring.js";
 import { normalizeLaunchOptions } from "./launch-options.js";
-import { DESKTOP } from "../constants/timeouts.js";
+import { DESKTOP } from "claude-in-mobile/constants/timeouts";
 import {
   AttachLauncher,
   BundleAppLauncher,

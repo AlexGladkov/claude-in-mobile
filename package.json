@@ -58,6 +58,10 @@
     "./plugins/*": {
       "types": "./dist/plugins/*/index.d.ts",
       "default": "./dist/plugins/*/index.js"
+    },
+    "./constants/*": {
+      "types": "./dist/constants/*.d.ts",
+      "default": "./dist/constants/*.js"
     }
   },
   "scripts": {

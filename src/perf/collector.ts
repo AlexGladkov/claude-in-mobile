@@ -6,7 +6,7 @@
  */
 
 import type { AdbClient } from "../adb/client.js";
-import type { DesktopClient } from "../desktop/client.js";
+import type { DesktopClientLike } from "../adapters/contracts.js";
 import type { PerfSnapshot, CrashEntry } from "./types.js";
 import { validatePackageName } from "../utils/sanitize.js";
 import { sanitizeErrorMessage } from "../utils/sanitize.js";
@@ -260,7 +260,7 @@ export function collectAndroidSnapshot(adb: AdbClient, packageName: string): Per
 /**
  * Collect performance snapshot from Desktop client.
  */
-export async function collectDesktopSnapshot(desktop: DesktopClient): Promise<PerfSnapshot> {
+export async function collectDesktopSnapshot(desktop: DesktopClientLike): Promise<PerfSnapshot> {
   let memory: PerfSnapshot["memory"] = null;
   let cpu: PerfSnapshot["cpu"] = null;
   let fps: PerfSnapshot["fps"] = null;

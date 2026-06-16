@@ -10,21 +10,25 @@
  */
 
 import type { CorePlatformAdapter } from "../../adapters/platform-adapter.js";
-import { DesktopAdapter } from "../../adapters/desktop-adapter.js";
 import { IosAdapter } from "../../adapters/ios-adapter.js";
-import type { BrowserAdapterLike } from "../../adapters/contracts.js";
-import { DesktopClient } from "../../desktop/client.js";
-import type { RawLaunchOptions } from "../../desktop/types.js";
+import type {
+  BrowserAdapterLike,
+  DesktopAdapterLike,
+  DesktopClientLike,
+  RawLaunchOptionsLike,
+} from "../../adapters/contracts.js";
 import type { Platform } from "../../platform-types.js";
 import type { WebViewInspector } from "../../adb/webview.js";
 
 export class DesktopFacade {
   constructor(private readonly adapters: Map<Platform, CorePlatformAdapter>) {}
 
-  private requireDesktop(): DesktopAdapter {
-    const desktop = this.adapters.get("desktop");
-    if (!desktop || !(desktop instanceof DesktopAdapter)) {
-      throw new Error("Desktop adapter is not available in this configuration.");
+  private requireDesktop(): DesktopAdapterLike {
+    const desktop = this.adapters.get("desktop") as DesktopAdapterLike | undefined;
+    if (!desktop || typeof desktop.launch !== "function") {
+      throw new Error(
+        "Desktop is not installed. Run `claude-in-mobile install desktop`."
+      );
     }
     return desktop;
   }
@@ -34,7 +38,7 @@ export class DesktopFacade {
    * success message previously produced inline in DeviceManager.
    * Caller is responsible for flipping `activeTarget` to "desktop".
    */
-  async launch(options: RawLaunchOptions): Promise<string> {
+  async launch(options: RawLaunchOptionsLike): Promise<string> {
     const desktop = this.requireDesktop();
     await desktop.launch(options);
     if (options.mode === "bundle") {
@@ -54,19 +58,21 @@ export class DesktopFacade {
     await this.requireDesktop().stop();
   }
 
-  getClient(): DesktopClient {
+  getClient(): DesktopClientLike {
     return this.requireDesktop().getClient();
   }
 
   isRunning(): boolean {
-    const adapter = this.adapters.get("desktop");
-    if (!adapter || !(adapter instanceof DesktopAdapter)) return false;
-    return adapter.isRunning();
+    const adapter = this.adapters.get("desktop") as DesktopAdapterLike | undefined;
+    if (!adapter || typeof adapter.isRunning !== "function") return false;
+    return Boolean(adapter.isRunning());
   }
 
   getState(): { status: string } | undefined {
-    const adapter = this.adapters.get("desktop");
-    if (adapter instanceof DesktopAdapter) return adapter.getState();
+    const adapter = this.adapters.get("desktop") as DesktopAdapterLike | undefined;
+    if (adapter && typeof adapter.getState === "function") {
+      return adapter.getState() as { status: string } | undefined;
+    }
     return undefined;
   }
 
@@ -87,8 +93,10 @@ export class DesktopFacade {
    * prevent the others from being torn down.
    */
   async cleanup(webViewInspector?: WebViewInspector): Promise<void> {
-    const desktop = this.adapters.get("desktop");
-    if (desktop instanceof DesktopAdapter) {
+    const desktop = this.adapters.get("desktop") as
+      | { stop?: () => Promise<void> }
+      | undefined;
+    if (desktop && typeof desktop.stop === "function") {
       try { await desktop.stop(); } catch {}
     }
     const ios = this.adapters.get("ios");

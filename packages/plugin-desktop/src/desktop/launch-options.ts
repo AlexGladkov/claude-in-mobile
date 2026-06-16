@@ -5,7 +5,7 @@
  * imported without dragging in the RPC state machine.
  */
 
-import { MobileError } from "../errors.js";
+import { MobileError } from "claude-in-mobile/errors";
 import type { LaunchOptions, RawLaunchOptions } from "./types.js";
 
 /**

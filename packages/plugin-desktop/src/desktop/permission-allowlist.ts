@@ -14,8 +14,8 @@ import * as path from "path";
 import * as os from "os";
 import * as fs from "fs";
 import { fileURLToPath } from "url";
-import { validatePath } from "../utils/sanitize.js";
-import { MobileError } from "../errors.js";
+import { validatePath } from "claude-in-mobile/utils/sanitize";
+import { MobileError } from "claude-in-mobile/errors";
 
 const execFileAsync = promisify(execFile);
 
