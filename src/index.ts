@@ -11,7 +11,7 @@ import { MobileError } from "./errors.js";
 import { getGlobalMetrics } from "./utils/metrics.js";
 import { VALID_PROFILES, type MobileProfile } from "./profiles.js";
 import { recordCall } from "./utils/anti-patterns.js";
-import { bootstrapKernel, bootstrapKernelAsync, type KernelHandle } from "./runtime/bootstrap.js";
+import { bootstrapKernelAsync, type KernelHandle } from "./runtime/bootstrap.js";
 import type { ToolDefinition as PluginToolDefinition } from "@claude-in-mobile/plugin-api";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { captureStep } from "./tools/recorder-tools.js";
@@ -102,9 +102,11 @@ runPlatformCommand(process.argv);
 // Kernel bootstrap — see runtime/bootstrap.ts. `CLAUDE_IN_MOBILE_EXTERNAL_PLUGINS=1`
 // opts in to filesystem discovery from `~/.claude-in-mobile/plugins/`.
 const enableExternal = process.env.CLAUDE_IN_MOBILE_EXTERNAL_PLUGINS === "1";
-const kernel: KernelHandle = enableExternal
-  ? await bootstrapKernelAsync({ externalPlugins: true })
-  : bootstrapKernel({});
+// Always async: enabled platforms shipped as separate packages
+// (e.g. @claude-in-mobile/plugin-aurora) are loaded via dynamic import.
+const kernel: KernelHandle = await bootstrapKernelAsync(
+  enableExternal ? { externalPlugins: true } : {}
+);
 await kernel.initAll();
 
 const kernelToolDefs: ToolDefinition[] = [];

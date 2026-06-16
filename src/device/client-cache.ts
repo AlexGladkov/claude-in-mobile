@@ -13,7 +13,6 @@ import type { CorePlatformAdapter } from "../adapters/platform-adapter.js";
 import { AndroidAdapter } from "../adapters/android-adapter.js";
 import { IosAdapter } from "../adapters/ios-adapter.js";
 import { DesktopAdapter } from "../adapters/desktop-adapter.js";
-import { AuroraAdapter } from "../adapters/aurora-adapter.js";
 import { BrowserAdapter } from "../adapters/browser-adapter.js";
 import { AdbClient } from "../adb/client.js";
 import { IosClient } from "../ios/client.js";
@@ -25,7 +24,7 @@ export interface DefaultAdapters {
 }
 
 /**
- * Build the default 5-platform adapter map (android, ios, desktop, aurora,
+ * Build the default 4-platform adapter map (android, ios, desktop, aurora,
  * browser). Honours DEVICE_ID/ANDROID_SERIAL/IOS_DEVICE_ID env vars.
  */
 export function buildDefaultAdapters(): DefaultAdapters {
@@ -41,14 +40,14 @@ export function buildDefaultAdapters(): DefaultAdapters {
     : new IosAdapter();
 
   const desktopAdapter = new DesktopAdapter();
-  const auroraAdapter = new AuroraAdapter();
   const browserAdapter = new BrowserAdapter();
 
+  // Aurora is delivered as a separate package (@claude-in-mobile/plugin-aurora)
+  // and wired through the kernel, not this legacy eager map.
   const adapters = new Map<Platform, CorePlatformAdapter>([
     ["android", androidAdapter],
     ["ios", iosAdapter],
     ["desktop", desktopAdapter],
-    ["aurora", auroraAdapter],
     ["browser", browserAdapter],
   ]);
 

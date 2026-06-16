@@ -28,14 +28,23 @@
 import type { CorePlatformAdapter } from "./adapters/platform-adapter.js";
 import { AndroidAdapter } from "./adapters/android-adapter.js";
 import { IosAdapter } from "./adapters/ios-adapter.js";
-import { AuroraAdapter } from "./adapters/aurora-adapter.js";
 import { BrowserAdapter } from "./adapters/browser-adapter.js";
 
 import { AdbClient } from "./adb/client.js";
 import { IosClient } from "./ios/client.js";
 import { DesktopClient } from "./desktop/client.js";
-import type { AuroraClient } from "./aurora/index.js";
 import type { CompressOptions } from "./utils/image.js";
+
+/**
+ * Structural view of the Aurora client used by the few legacy aurora tools,
+ * so device-manager need not import the implementation (now in
+ * @claude-in-mobile/plugin-aurora).
+ */
+export interface AuroraClientLike {
+  listPackages(): string[];
+  pushFile(localPath: string, remotePath: string): string;
+  pullFile(remotePath: string, localPath?: string): Buffer;
+}
 import type { RawLaunchOptions } from "./desktop/types.js";
 import { WebViewInspector } from "./adb/webview.js";
 
@@ -318,11 +327,21 @@ export class DeviceManager {
     return adapter.getClient(deviceId);
   }
 
-  /** @deprecated Use `getAdapter("aurora")` + capability type guards. */
-  getAuroraClient(): AuroraClient {
-    const adapter = this.adapters.get("aurora");
-    if (!adapter || !(adapter instanceof AuroraAdapter)) {
-      throw new Error("Aurora adapter is not available in this configuration.");
+  /**
+   * @deprecated Use `getAdapter("aurora")` + capability type guards.
+   *
+   * Aurora ships as the separate `@claude-in-mobile/plugin-aurora` package
+   * (4.0.0 physical split), so this resolves the client structurally via the
+   * adapter's `getClient()` rather than an `instanceof` on a bundled class.
+   */
+  getAuroraClient(): AuroraClientLike {
+    const adapter = this.adapters.get("aurora") as
+      | { getClient?: () => AuroraClientLike }
+      | undefined;
+    if (!adapter || typeof adapter.getClient !== "function") {
+      throw new Error(
+        "Aurora is not installed. Run `claude-in-mobile install aurora`."
+      );
     }
     return adapter.getClient();
   }

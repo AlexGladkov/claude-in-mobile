@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { bootstrapKernel } from "./bootstrap.js";
+import { bootstrapKernel, bootstrapKernelAsync } from "./bootstrap.js";
 import { DeviceManager } from "../device-manager.js";
 
 const ALL = ["android", "ios", "web", "desktop", "aurora"] as const;
@@ -18,18 +18,29 @@ describe("bootstrapKernel", () => {
     expect(ids).toEqual(["builtin-tools", "ios", "repl"]);
   });
 
-  it("registers all 7 built-in plugins when all platforms enabled", () => {
+  it("sync bootstrap loads base + in-base platforms (aurora is a separate package)", () => {
     const k = bootstrapKernel({ platforms: ALL });
     const ids = k.registry.list().map((e) => e.plugin.manifest.id).sort();
+    // aurora ships as @claude-in-mobile/plugin-aurora and is loaded only via
+    // the async bootstrap (dynamic import) — see the async test below.
     expect(ids).toEqual([
       "android",
-      "aurora",
       "builtin-tools",
       "desktop",
       "ios",
       "repl",
       "web",
     ]);
+  });
+
+  it("async bootstrap loads the packaged aurora plugin when installed", async () => {
+    const k = await bootstrapKernelAsync({ platforms: ["aurora"] });
+    const ids = k.registry.list().map((e) => e.plugin.manifest.id).sort();
+    // base is always present; aurora registers iff the workspace package is
+    // built + resolvable (it is, in this repo). Degrades gracefully otherwise.
+    expect(ids).toContain("builtin-tools");
+    expect(ids).toContain("repl");
+    expect(ids).toContain("aurora");
   });
 
   it("initializes all plugins to active state", async () => {
@@ -50,8 +61,8 @@ describe("bootstrapKernel", () => {
     }
   });
 
-  it("resolves plugins by capability without naming platforms", () => {
-    const k = bootstrapKernel({ platforms: ALL });
+  it("resolves plugins by capability without naming platforms", async () => {
+    const k = await bootstrapKernelAsync({ platforms: ALL });
     const screenProviders = k.resolver
       .resolve({ capabilities: ["screen"] })
       .map((p) => p.manifest.id)

@@ -51,7 +51,8 @@ function loadAll(): FileImport[] {
   }));
 }
 
-const PLATFORM_DIRS = ["adapters/", "adb/", "ios/", "desktop/", "browser/", "aurora/"];
+// aurora/ moved to @claude-in-mobile/plugin-aurora (4.0.0 physical split).
+const PLATFORM_DIRS = ["adapters/", "adb/", "ios/", "desktop/", "browser/"];
 
 describe("architecture", () => {
   const all = loadAll();

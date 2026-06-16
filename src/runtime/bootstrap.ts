@@ -22,7 +22,6 @@ import { createAndroidPlugin } from "../plugins/android/index.js";
 import { createIosPlugin } from "../plugins/ios/index.js";
 import { createDesktopPlugin } from "../plugins/desktop/index.js";
 import { createWebPlugin } from "../plugins/web/index.js";
-import { createAuroraPlugin } from "../plugins/aurora/index.js";
 import { createReplPlugin } from "../plugins/repl/index.js";
 import { resolveEnabledPlatforms, type PlatformId } from "./platform-config.js";
 
@@ -69,20 +68,65 @@ const BASE_BUILTINS: ReadonlyArray<() => SourcePlugin> = [
   () => createReplPlugin(),
 ];
 
-const PLATFORM_FACTORIES: Record<PlatformId, () => SourcePlugin> = {
+/**
+ * Platforms whose implementation still lives in this package (loaded
+ * synchronously). As platforms are extracted into standalone
+ * `@claude-in-mobile/plugin-*` packages (4.0.0 physical split), they move
+ * from here to PACKAGED_PLATFORMS.
+ */
+const IN_BASE_FACTORIES: Partial<Record<PlatformId, () => SourcePlugin>> = {
   android: createAndroidPlugin,
   ios: createIosPlugin,
   web: createWebPlugin,
   desktop: createDesktopPlugin,
-  aurora: createAuroraPlugin,
 };
 
-/** Base plugins + the enabled platform plugins, in deterministic order. */
+/**
+ * Platforms delivered as separate npm packages, loaded by dynamic import only
+ * when enabled AND installed. A missing package degrades gracefully (the
+ * platform is simply unavailable). The specifier is a variable so tsc does not
+ * require the package as a build-time dependency.
+ */
+const PACKAGED_PLATFORMS: Partial<Record<PlatformId, string>> = {
+  aurora: "@claude-in-mobile/plugin-aurora",
+};
+
+/** Base plugins + the enabled in-base platform plugins, in deterministic order. */
 function defaultBuiltins(
   platforms?: ReadonlyArray<PlatformId>
 ): Array<() => SourcePlugin> {
   const enabled = platforms ?? resolveEnabledPlatforms();
-  return [...BASE_BUILTINS, ...enabled.map((p) => PLATFORM_FACTORIES[p])];
+  const inBase = enabled
+    .map((p) => IN_BASE_FACTORIES[p])
+    .filter((f): f is () => SourcePlugin => f !== undefined);
+  return [...BASE_BUILTINS, ...inBase];
+}
+
+/** Load an enabled packaged platform plugin, or undefined if unavailable. */
+async function loadPackagedPlatform(
+  id: PlatformId,
+  logger: Logger
+): Promise<SourcePlugin | undefined> {
+  const pkg = PACKAGED_PLATFORMS[id];
+  if (!pkg) return undefined;
+  try {
+    const mod = (await import(pkg)) as {
+      createPlugin?: () => SourcePlugin;
+      default?: () => SourcePlugin;
+    };
+    const factory = mod.createPlugin ?? mod.default;
+    if (!factory) {
+      logger.warn(`platform plugin '${pkg}' has no createPlugin export`);
+      return undefined;
+    }
+    return factory();
+  } catch {
+    logger.warn(
+      `platform '${id}' is enabled but '${pkg}' is not installed — ` +
+        `run \`claude-in-mobile install ${id}\``
+    );
+    return undefined;
+  }
 }
 
 function consoleLogger(): Logger {
@@ -97,6 +141,19 @@ function consoleLogger(): Logger {
 
 export async function bootstrapKernelAsync(options: BootstrapOptions = {}): Promise<KernelHandle> {
   const handle = bootstrapKernel(options);
+
+  // Load enabled platforms that ship as separate packages (dynamic import).
+  // Skipped entirely when explicit `builtins` are supplied.
+  if (!options.builtins) {
+    const logger = options.logger ?? consoleLogger();
+    const enabled = options.platforms ?? resolveEnabledPlatforms();
+    for (const id of enabled) {
+      if (!(id in PACKAGED_PLATFORMS)) continue;
+      const plugin = await loadPackagedPlatform(id, logger);
+      if (plugin) handle.registry.register(plugin);
+    }
+  }
+
   if (options.externalPlugins) {
     const loaderOpts =
       typeof options.externalPlugins === "object" ? options.externalPlugins : {};

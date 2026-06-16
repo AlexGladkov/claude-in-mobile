@@ -20,5 +20,5 @@ export {
 export { AndroidAdapter } from "./android-adapter.js";
 export { IosAdapter } from "./ios-adapter.js";
 export { DesktopAdapter } from "./desktop-adapter.js";
-export { AuroraAdapter } from "./aurora-adapter.js";
+// AuroraAdapter moved to @claude-in-mobile/plugin-aurora (4.0.0 physical split).
 export { BrowserAdapter } from "./browser-adapter.js";

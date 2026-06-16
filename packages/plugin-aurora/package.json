@@ -1,7 +1,7 @@
 {
   "name": "@claude-in-mobile/plugin-aurora",
   "version": "3.14.0",
-  "description": "Aurora OS plugin shim for claude-in-mobile microkernel.",
+  "description": "Aurora OS platform plugin for claude-in-mobile (audb).",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
