@@ -71,7 +71,7 @@
   "scripts": {
     "build": "npm run build --workspace=packages/plugin-api && tsc && npm run build --workspaces --if-present --workspace=packages/plugin-android --workspace=packages/plugin-ios --workspace=packages/plugin-desktop --workspace=packages/plugin-web --workspace=packages/plugin-aurora",
     "build:lite": "npm run build && npm run build --workspace=packages/lite",
-    "postinstall": "rm -rf node_modules/claude-in-mobile && ln -sf \"$(pwd)\" node_modules/claude-in-mobile 2>/dev/null || true",
+    "prepare": "rm -rf node_modules/claude-in-mobile && ln -sf \"$(pwd)\" node_modules/claude-in-mobile 2>/dev/null || true",
     "build:desktop": "cd desktop-companion && ./gradlew installDist",
     "build:all": "npm run build && npm run build:desktop",
     "watch": "tsc --watch",

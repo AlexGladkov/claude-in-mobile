@@ -38,5 +38,7 @@
     "@types/node": "^22.10.0",
     "typescript": "^5.7.0",
     "vitest": "^4.0.18"
-  }
+  },
+  "private": true,
+  "_note": "BROKEN after 4.0.0 physical split: src/context.ts imports adapters/clients now in @claude-in-mobile/plugin-*. Marked private to prevent publish until rewritten to the kernel path (bootstrapKernelAsync + DeviceManager.fromKernel)."
 }

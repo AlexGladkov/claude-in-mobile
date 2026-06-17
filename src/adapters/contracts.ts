@@ -14,15 +14,41 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+// Named methods document + name-check the surface base tools actually call;
+// the index signature stays as the escape hatch for internal field access
+// (e.g. `.client`, `.sessionManager`) whose full types live in the package.
 export interface BrowserAdapterLike {
+  open(...args: any[]): any;
+  closeSession(...args: any[]): any;
+  listSessions(...args: any[]): any;
+  navigate(...args: any[]): any;
+  clickElement(...args: any[]): any;
+  fillField(...args: any[]): any;
+  fillForm(...args: any[]): any;
+  snapshot(...args: any[]): any;
+  screenshotBrowser(...args: any[]): any;
+  clearSessionData(...args: any[]): any;
   [key: string]: any;
 }
 
 export interface DesktopAdapterLike {
+  launch(...args: any[]): any;
+  stop(...args: any[]): any;
+  isRunning(...args: any[]): any;
+  getClient(...args: any[]): any;
+  getState(...args: any[]): any;
   [key: string]: any;
 }
 
 export interface DesktopClientLike {
+  tapByText(...args: any[]): any;
+  getWindowInfo(...args: any[]): any;
+  focusWindow(...args: any[]): any;
+  getClipboard(...args: any[]): any;
+  setClipboard(...args: any[]): any;
+  getPerformanceMetrics(...args: any[]): any;
+  getMonitors(...args: any[]): any;
+  getTargetPid(...args: any[]): any;
   [key: string]: any;
 }
 

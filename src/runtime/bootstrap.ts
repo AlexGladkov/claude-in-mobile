@@ -118,7 +118,15 @@ async function loadPackagedPlatform(
     return factory();
   } catch (err) {
     const code = (err as NodeJS.ErrnoException)?.code;
-    if (code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") {
+    const msg = err instanceof Error ? err.message : String(err);
+    // ERR_MODULE_NOT_FOUND fires both for a missing package AND for a missing
+    // import *inside* an installed package. Node's ESM loader says "Cannot find
+    // package '<spec>'" only for the genuinely-absent package; a broken install
+    // says "Cannot find module '<path>'" or ERR_PACKAGE_PATH_NOT_EXPORTED.
+    const isMissingPackage =
+      (code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") &&
+      msg.includes("Cannot find package");
+    if (isMissingPackage) {
       logger.warn(
         `platform '${id}' is enabled but '${pkg}' is not installed — ` +
           `run \`claude-in-mobile install ${id}\``
