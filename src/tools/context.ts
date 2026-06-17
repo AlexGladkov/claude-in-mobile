@@ -9,7 +9,7 @@
  */
 
 import { DeviceManager, createFullDeviceManager, Platform } from "../device-manager.js";
-import type { UiElement } from "../adb/ui-parser.js";
+import type { UiElement } from "../ui-tree/ui-parser.js";
 
 // Re-export submodule symbols so every existing import path keeps working
 export {

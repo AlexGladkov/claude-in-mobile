@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { Jimp } from "jimp";
 import { compressScreenshot, annotateScreenshot, compareScreenshots, cropRegion, generateDiffOverlay } from "./image.js";
-import type { UiElement, Bounds } from "../adb/ui-parser.js";
+import type { UiElement, Bounds } from "../ui-tree/ui-parser.js";
 
 // ──────────────────────────────────────────────
 // Helpers

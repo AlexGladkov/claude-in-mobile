@@ -6,7 +6,7 @@
  * Enforces blocklist for destructive actions.
  */
 
-import type { UiElement } from "../adb/ui-parser.js";
+import type { UiElement } from "../ui-tree/ui-parser.js";
 import type { ToolContext } from "../tools/context.js";
 import type { Platform } from "../device-manager.js";
 import type {
@@ -20,7 +20,7 @@ import { DESTRUCTIVE_PATTERNS } from "./types.js";
 import { NavigationGraph } from "./nav-graph.js";
 import { generateScreenFingerprint } from "./screen-fingerprint.js";
 import { getUiElements } from "../tools/helpers/get-elements.js";
-import { detectScreenTitle } from "../adb/ui-parser.js";
+import { detectScreenTitle } from "../ui-tree/ui-parser.js";
 import { ExplorationLimitError } from "../errors.js";
 
 /**

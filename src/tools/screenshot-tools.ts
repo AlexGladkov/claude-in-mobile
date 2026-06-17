@@ -12,7 +12,7 @@ import {
   cropRegion,
   compressScreenshot,
 } from "../utils/image.js";
-import { parseUiHierarchy, UiElement } from "../adb/ui-parser.js";
+import { parseUiHierarchy, UiElement } from "../ui-tree/ui-parser.js";
 
 const STABLE_THRESHOLD_PERCENT = 2;
 

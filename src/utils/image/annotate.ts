@@ -1,5 +1,5 @@
 import { Jimp } from "jimp";
-import type { UiElement } from "../../adb/ui-parser.js";
+import type { UiElement } from "../../ui-tree/ui-parser.js";
 import { compressScreenshot } from "./compress.js";
 import type { AnnotateResult, CompressOptions } from "./types.js";
 import {

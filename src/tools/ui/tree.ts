@@ -1,6 +1,6 @@
 import { defineTool, z } from "../define-tool.js";
 import { platformEnum, deviceIdField } from "../common-schema.js";
-import { parseUiHierarchy, formatUiTree, formatUiTreeSemantic } from "../../adb/ui-parser.js";
+import { parseUiHierarchy, formatUiTree, formatUiTreeSemantic } from "../../ui-tree/ui-parser.js";
 import { parseCommonArgs } from "../../utils/parse-common-args.js";
 import { textResult } from "../../utils/tool-result.js";
 import { TRUNCATION } from "../../constants/truncation.js";

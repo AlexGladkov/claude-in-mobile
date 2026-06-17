@@ -7,7 +7,7 @@
  * Map references they always have.
  */
 
-import type { UiElement } from "../../adb/ui-parser.js";
+import type { UiElement } from "../../ui-tree/ui-parser.js";
 import { getDefaultRuntimeContext } from "../../runtime/runtime-context.js";
 
 const _state = getDefaultRuntimeContext().sharedState;

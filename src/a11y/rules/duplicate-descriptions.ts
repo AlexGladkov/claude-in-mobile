@@ -1,4 +1,4 @@
-import type { UiElement } from "../../adb/ui-parser.js";
+import type { UiElement } from "../../ui-tree/ui-parser.js";
 import type { A11yRule, A11yRuleRunResult, A11yIssue } from "../types.js";
 
 export const duplicateDescriptionsRule: A11yRule = {

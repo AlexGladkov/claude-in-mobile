@@ -8,7 +8,7 @@
 
 import type { ToolContext } from "../context.js";
 import type { Platform } from "../../device-manager.js";
-import { parseUiHierarchy, findByText, findByResourceId } from "../../adb/ui-parser.js";
+import { parseUiHierarchy, findByText, findByResourceId } from "../../ui-tree/ui-parser.js";
 import { ElementNotFoundError } from "../../errors.js";
 
 export interface ResolvedCoordinates {
@@ -118,7 +118,7 @@ export async function resolveElementCoordinates(
     const elements = parseUiHierarchy(xml);
     ctx.setCachedElements("android", elements);
 
-    let found: import("../../adb/ui-parser.js").UiElement[] = [];
+    let found: import("../../ui-tree/ui-parser.js").UiElement[] = [];
     if (args.text) {
       found = findByText(elements, args.text as string);
     } else if (args.resourceId) {

@@ -5,7 +5,7 @@
  * Uses fuzzy matching across text, resourceId, className, and bounds proximity.
  */
 
-import type { UiElement } from "../adb/ui-parser.js";
+import type { UiElement } from "../ui-tree/ui-parser.js";
 import type { OriginalSelector, HealingResult } from "./types.js";
 import { HealingFailedError } from "../errors.js";
 

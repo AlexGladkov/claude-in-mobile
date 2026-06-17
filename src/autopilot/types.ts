@@ -1,4 +1,4 @@
-import type { UiElement } from "../adb/ui-parser.js";
+import type { UiElement } from "../ui-tree/ui-parser.js";
 
 // ── Exploration types ──
 

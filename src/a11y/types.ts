@@ -1,4 +1,4 @@
-import type { UiElement } from "../adb/ui-parser.js";
+import type { UiElement } from "../ui-tree/ui-parser.js";
 
 export type A11ySeverity = "critical" | "serious" | "moderate" | "minor";
 export type WcagLevel = "A" | "AA" | "AAA";

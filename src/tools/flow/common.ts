@@ -1,6 +1,6 @@
 import { getRegisteredToolNames } from "../registry.js";
 import type { ToolContext } from "../context.js";
-import { parseUiHierarchy, UiElement } from "../../adb/ui-parser.js";
+import { parseUiHierarchy, UiElement } from "../../ui-tree/ui-parser.js";
 import { applyScale } from "../helpers/resolve-element.js";
 import { z } from "../define-tool.js";
 import { FLOW } from "../../constants/timeouts.js";

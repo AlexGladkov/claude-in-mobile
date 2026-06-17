@@ -10,7 +10,7 @@ import {
   diffUiElements,
   suggestNextActions,
   UiElement,
-} from "../../adb/ui-parser.js";
+} from "../../ui-tree/ui-parser.js";
 import { iosTreeToUiElements } from "./ios-helpers.js";
 import { getCachedElements, setCachedElements } from "./shared-state.js";
 

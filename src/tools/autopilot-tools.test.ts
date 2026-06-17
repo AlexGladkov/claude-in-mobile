@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import type { UiElement } from "../adb/ui-parser.js";
+import type { UiElement } from "../ui-tree/ui-parser.js";
 import type { ToolContext } from "./context.js";
 import { autopilotTools } from "./autopilot-tools.js";
 import { generateScreenFingerprint, isSameScreen } from "../autopilot/screen-fingerprint.js";

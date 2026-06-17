@@ -6,7 +6,7 @@
  */
 
 import { createHash } from "crypto";
-import type { UiElement } from "../adb/ui-parser.js";
+import type { UiElement } from "../ui-tree/ui-parser.js";
 
 /**
  * Generate a deterministic fingerprint for a screen based on its UI elements.

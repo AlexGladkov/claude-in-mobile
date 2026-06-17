@@ -11,7 +11,7 @@ import {
   parseUiHierarchy,
   desktopHierarchyToUiElements,
   UiElement,
-} from "../../adb/ui-parser.js";
+} from "../../ui-tree/ui-parser.js";
 
 export interface GetUiElementsResult {
   elements: UiElement[];

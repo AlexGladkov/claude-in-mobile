@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type { UiElement } from "../adb/ui-parser.js";
+import type { UiElement } from "../ui-tree/ui-parser.js";
 import type { ToolContext } from "./context.js";
 import { accessibilityTools } from "./accessibility-tools.js";
 import { missingLabelRule } from "../a11y/rules/missing-label.js";

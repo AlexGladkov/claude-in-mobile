@@ -13,8 +13,8 @@ function makeCtx(overrides: {
     findElement: (...args: any[]) => Promise<any>;
     getElementRect: (...args: any[]) => Promise<any>;
   };
-  getCachedElements?: (platform: string) => import("../../adb/ui-parser.js").UiElement[];
-  setCachedElements?: (platform: string, elements: import("../../adb/ui-parser.js").UiElement[]) => void;
+  getCachedElements?: (platform: string) => import("../../ui-tree/ui-parser.js").UiElement[];
+  setCachedElements?: (platform: string, elements: import("../../ui-tree/ui-parser.js").UiElement[]) => void;
   getUiHierarchyAsync?: (platform: string) => Promise<string>;
 } = {}): ToolContext {
   return {
@@ -42,8 +42,8 @@ function makeCtx(overrides: {
 
 /** Minimal UiElement factory — only the fields resolveElementCoordinates actually reads. */
 function makeUiElement(
-  overrides: Partial<import("../../adb/ui-parser.js").UiElement> = {},
-): import("../../adb/ui-parser.js").UiElement {
+  overrides: Partial<import("../../ui-tree/ui-parser.js").UiElement> = {},
+): import("../../ui-tree/ui-parser.js").UiElement {
   return {
     index: 0,
     resourceId: "",

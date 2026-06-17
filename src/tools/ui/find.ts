@@ -1,6 +1,6 @@
 import { defineTool, z } from "../define-tool.js";
 import { platformEnum, deviceIdField } from "../common-schema.js";
-import { findElements, formatElement, findBestMatch } from "../../adb/ui-parser.js";
+import { findElements, formatElement, findBestMatch } from "../../ui-tree/ui-parser.js";
 import { getUiElements } from "../helpers/get-elements.js";
 import { parseCommonArgs } from "../../utils/parse-common-args.js";
 import { textResult } from "../../utils/tool-result.js";

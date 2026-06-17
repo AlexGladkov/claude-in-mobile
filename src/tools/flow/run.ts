@@ -1,5 +1,5 @@
 import type { Platform } from "../../device-manager.js";
-import { findElements } from "../../adb/ui-parser.js";
+import { findElements } from "../../ui-tree/ui-parser.js";
 import { DeviceNotFoundError, DeviceOfflineError, AdbNotInstalledError, ValidationError, MobileError } from "../../errors.js";
 import { MAX_RECURSION_DEPTH } from "../context.js";
 import { defineTool, z } from "../define-tool.js";

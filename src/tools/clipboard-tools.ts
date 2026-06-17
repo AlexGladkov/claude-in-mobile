@@ -2,7 +2,7 @@ import type { ToolDefinition } from "./registry.js";
 import type { ToolContext } from "./context.js";
 import type { Platform } from "../device-manager.js";
 import { defineTool, z } from "./define-tool.js";
-import { parseUiHierarchy, findByText, findByResourceId } from "../adb/ui-parser.js";
+import { parseUiHierarchy, findByText, findByResourceId } from "../ui-tree/ui-parser.js";
 import { parseCommonArgs } from "../utils/parse-common-args.js";
 import { textResult } from "../utils/tool-result.js";
 import { sleep } from "../utils/sleep.js";
@@ -74,7 +74,7 @@ export const clipboardTools: ToolDefinition[] = [
         const elements = parseUiHierarchy(xml);
         ctx.setCachedElements("android", elements);
 
-        let found: import("../adb/ui-parser.js").UiElement[] = [];
+        let found: import("../ui-tree/ui-parser.js").UiElement[] = [];
         if (args.fieldText) {
           found = findByText(elements, args.fieldText);
         } else if (args.fieldId) {

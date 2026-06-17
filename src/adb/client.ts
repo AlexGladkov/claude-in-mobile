@@ -9,7 +9,7 @@ import {
   execAdbRawAsync,
 } from "./exec.js";
 import { escapeAndroidInputText, splitArgs } from "./text-escape.js";
-import { UiTreeCache } from "./ui-tree-cache.js";
+import { UiTreeCache } from "../ui-tree/ui-tree-cache.js";
 import { ANDROID_KEYCODES, ANDROID_KEYCODES_FAST, resolveKeyCode } from "./keycodes.js";
 import {
   parseDevicesOutput,
@@ -26,7 +26,7 @@ import { buildLogcatArgs, filterLogsByPackage, type LogcatOptions } from "./logc
 
 // Re-export helpers so existing imports of `src/adb/client.js` keep working.
 export { escapeAndroidInputText, splitArgs } from "./text-escape.js";
-export { UiTreeCache } from "./ui-tree-cache.js";
+export { UiTreeCache } from "../ui-tree/ui-tree-cache.js";
 export { ANDROID_KEYCODES, ANDROID_KEYCODES_FAST, resolveKeyCode } from "./keycodes.js";
 export {
   EXEC_TIMEOUT_MS,

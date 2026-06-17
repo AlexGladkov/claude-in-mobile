@@ -1,4 +1,4 @@
-import type { UiElement } from "../../adb/ui-parser.js";
+import type { UiElement } from "../../ui-tree/ui-parser.js";
 
 /**
  * SharedState — encapsulates the per-platform caches that used to live as

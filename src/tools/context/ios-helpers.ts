@@ -2,7 +2,7 @@
  * iOS-specific tree parsing: convert WDA accessibility tree to UiElement[].
  */
 
-import type { UiElement } from "../../adb/ui-parser.js";
+import type { UiElement } from "../../ui-tree/ui-parser.js";
 
 /**
  * Convert iOS accessibility tree (from WDA) to UiElement[] for annotation.

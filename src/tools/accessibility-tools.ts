@@ -14,7 +14,7 @@ import {
 } from "../a11y/formatter.js";
 import type { A11yIssue, A11ySeverity, A11yRuleResult, A11yDetailedReport, A11yCategory } from "../a11y/types.js";
 import { getCategoryForRule } from "../a11y/categories.js";
-import type { UiElement } from "../adb/ui-parser.js";
+import type { UiElement } from "../ui-tree/ui-parser.js";
 import { truncateOutput } from "../utils/truncate.js";
 import { ValidationError, A11yRuleNotFoundError } from "../errors.js";
 import { textResult, errorResult } from "../utils/tool-result.js";

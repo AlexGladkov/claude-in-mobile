@@ -10,6 +10,6 @@ export {
   findElements,
   formatElement,
   formatUiTree,
-} from "./ui-parser.js";
+} from "../ui-tree/ui-parser.js";
 
-export type { Bounds, UiElement } from "./ui-parser.js";
+export type { Bounds, UiElement } from "../ui-tree/ui-parser.js";
