@@ -39,7 +39,11 @@ import {
 } from "./context/shared-state.js";
 import { iosTreeToUiElements, formatIOSUITree } from "./context/ios-helpers.js";
 
-// Shared device manager singleton
+// Fallback DeviceManager for tests / callers that don't inject one. The MCP
+// server (src/index.ts) passes a kernel-backed DeviceManager into
+// createToolContext, which is what production tools use. Post-4.0.0 this
+// fallback has an empty adapter map (all platforms are separate packages), so
+// it only serves tests that construct adapters explicitly.
 export const deviceManager = createFullDeviceManager();
 
 // Bound hint functions for the shared deviceManager (non-turbo defaults for backward compat)

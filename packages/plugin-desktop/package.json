@@ -31,7 +31,7 @@
   ],
   "dependencies": {
     "@claude-in-mobile/plugin-api": "1.0.0",
-    "claude-in-mobile": "4.0.0-dev"
+    "claude-in-mobile": "*"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

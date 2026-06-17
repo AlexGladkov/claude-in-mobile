@@ -15,10 +15,10 @@
   "author": "Alex Gladkov",
   "license": "MIT",
   "dependencies": {
-    "@claude-in-mobile/plugin-android": "4.0.0-dev",
-    "@claude-in-mobile/plugin-ios": "4.0.0-dev",
-    "@claude-in-mobile/plugin-web": "4.0.0-dev",
-    "@claude-in-mobile/plugin-desktop": "4.0.0-dev",
-    "@claude-in-mobile/plugin-aurora": "4.0.0-dev"
+    "@claude-in-mobile/plugin-android": "*",
+    "@claude-in-mobile/plugin-ios": "*",
+    "@claude-in-mobile/plugin-web": "*",
+    "@claude-in-mobile/plugin-desktop": "*",
+    "@claude-in-mobile/plugin-aurora": "*"
   }
 }
