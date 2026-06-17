@@ -13,33 +13,34 @@ default no platforms.
   platform → actionable error. (`runtime/platform-config.ts`, `bootstrap.ts`)
 - **Phase 2 — CLI.** `platforms` / `install <p|all>` / `uninstall` / `doctor`
   (toolchain checks). Config persisted. (`runtime/platform-cli.ts`)
-- **Physical split (3/5).** aurora, web, desktop fully extracted into
-  `@claude-in-mobile/plugin-*` standalone packages, loaded by dynamic import,
-  **absent from the base bundle** (verified: no `audb`/`chrome-*`/`src/desktop`
-  in base dist). Base accesses their clients/adapters structurally via
+- **Physical split (5/5 — ALL platforms).** android, ios, web, desktop, aurora
+  fully extracted into `@claude-in-mobile/plugin-*` standalone packages, loaded
+  by dynamic import, **absent from the base bundle**. Base is truly slim
+  (builtin-tools + repl). Base accesses their clients/adapters structurally via
   `adapters/contracts.ts` (no `instanceof` / no impl imports).
+- **Decomposition fix (the keystone).** The generic UI-tree subsystem
+  (`ui-parser`/`ui-scoring`/`ui-tree-cache`) was mis-homed under android's
+  `adb/` though ~33 sites (a11y/autopilot/perf/tools) use it. Extracted to a
+  neutral `src/ui-tree/`, which is what unblocked the android split. `adb/`
+  now holds only android-device code (+ `adb/commands` shell-string builders
+  kept in base for generic sensor/system tools). iOS similarly split:
+  device-control → package, the `ios/build` .ipa pipeline + appstore/TestFlight
+  tools stay in base (independent of device-control).
 - **`@claude-in-mobile/plugin-all`** meta — install all packaged platforms.
 - **vitest** now covers `packages/*/src` tests (1270 total).
 - Version bumped to 4.0.0-dev across all manifests; lockfiles synced; emnapi
   linux branch preserved.
 
-## NOT split — android & ios (gated in-base)
-These remain inside the base package (conditionally loaded, fully functional).
-**Why not extracted:** `src/adb` is not android-only — `adb/ui-parser` (+
-`commands`) is imported by ~33 sites across a11y, autopilot, perf and many
-tools; `src/ios` is similarly large. A clean physical split first requires
-extracting that shared UI-parsing into base/shared-core and decoupling
-`perf/collector` etc. — a separate refactor with real blast radius across the
-tool layer. Forcing it under time pressure would be techdebt; deferred as the
-documented next step.
-
-### Follow-up to finish android/ios extraction
-1. Keep `adb/ui-parser`, `adb/ui-scoring`, `adb/ui-tree-cache`, `adb/commands`
-   in base (shared); expose via `claude-in-mobile/adb/*` export.
-2. Move only device-specific adb files (client, webview, logcat, exec,
-   resolver, keycodes, text-escape, parsers) into `plugin-android`.
-3. Decouple `perf/collector` from `AdbClient` (→ `AdbClientLike`).
-4. Same shared-vs-device triage for `src/ios`.
+## All five split — how the "hard" two were done
+android and ios initially looked un-extractable; that was a **componentization
+gap**, not a hard block:
+- **android:** the generic UI-tree subsystem was mis-homed under `adb/`.
+  Extracting it to neutral `src/ui-tree/` (33 import sites updated) left `adb/`
+  android-only and the split became clean. `adb/commands` (pure shell strings,
+  used by generic sensor/system tools) stays in base via `claude-in-mobile/adb/*`.
+- **ios:** device-control (`client`/`wda`/`go-ios`/`simctl`/`keymap`) moved to
+  the package; the independent `ios/build` .ipa pipeline + appstore/TestFlight
+  tools stay in base. `getIosClient` resolved structurally (`IosClientLike`).
 
 ## Verification
 - Full suite **1270/1270**; tsc clean; build clean.
