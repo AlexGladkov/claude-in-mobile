@@ -26,15 +26,12 @@
  */
 
 import type { CorePlatformAdapter } from "./adapters/platform-adapter.js";
-import { AndroidAdapter } from "./adapters/android-adapter.js";
 import { IosAdapter } from "./adapters/ios-adapter.js";
-import type { AuroraClientLike, BrowserAdapterLike } from "./adapters/contracts.js";
+import type { AdbClientLike, AuroraClientLike, BrowserAdapterLike, WebViewInspectorLike } from "./adapters/contracts.js";
 
-import { AdbClient } from "./adb/client.js";
 import { IosClient } from "./ios/client.js";
 import type { CompressOptions } from "./utils/image.js";
 import type { DesktopClientLike, RawLaunchOptionsLike } from "./adapters/contracts.js";
-import { WebViewInspector } from "./adb/webview.js";
 
 import type { Device, Platform } from "./platform-types.js";
 import { buildDefaultAdapters } from "./device/client-cache.js";
@@ -68,7 +65,6 @@ export interface DeviceManagerConfig {
 
 export class DeviceManager {
   private adapters: Map<Platform, CorePlatformAdapter>;
-  private webViewInspector?: WebViewInspector;
 
   private readonly inputProxy: InputProxy;
   private readonly appProxy: AppProxy;
@@ -163,7 +159,7 @@ export class DeviceManager {
   }
 
   async stopDesktopApp(): Promise<void> { return this.desktopFacade.stop(); }
-  async cleanup(): Promise<void> { return this.desktopFacade.cleanup(this.webViewInspector); }
+  async cleanup(): Promise<void> { return this.desktopFacade.cleanup(); }
   getBrowserAdapter(): BrowserAdapterLike { return this.desktopFacade.getBrowser(); }
   getDesktopClient(): DesktopClientLike { return this.desktopFacade.getClient(); }
   isDesktopRunning(): boolean { return this.desktopFacade.isRunning(); }
@@ -298,10 +294,10 @@ export class DeviceManager {
   // ============ Raw client accessors (legacy — prefer getAdapter + capability guards) ============
 
   /** @deprecated Use `getAdapter("android", deviceId)` + capability type guards from `adapters/platform-adapter.ts`. */
-  getAndroidClient(deviceId?: string): AdbClient {
-    const adapter = this.adapters.get("android");
-    if (!adapter || !(adapter instanceof AndroidAdapter)) {
-      throw new Error("Android adapter is not available in this configuration.");
+  getAndroidClient(deviceId?: string): AdbClientLike {
+    const adapter = this.adapters.get("android") as { getClient?: (deviceId?: string) => AdbClientLike } | undefined;
+    if (!adapter || typeof adapter.getClient !== "function") {
+      throw new Error("Android is not installed. Run `claude-in-mobile install android`.");
     }
     return adapter.getClient(deviceId);
   }
@@ -334,11 +330,12 @@ export class DeviceManager {
     return adapter.getClient();
   }
 
-  getWebViewInspector(): WebViewInspector {
-    if (!this.webViewInspector) {
-      this.webViewInspector = new WebViewInspector(this.getAndroidClient());
+  getWebViewInspector(): WebViewInspectorLike {
+    const adapter = this.adapters.get("android") as { getWebViewInspector?: () => WebViewInspectorLike } | undefined;
+    if (!adapter || typeof adapter.getWebViewInspector !== "function") {
+      throw new Error("Android is not installed. Run `claude-in-mobile install android`.");
     }
-    return this.webViewInspector;
+    return adapter.getWebViewInspector();
   }
 }
 

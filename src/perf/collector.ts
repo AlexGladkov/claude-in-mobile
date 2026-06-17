@@ -5,7 +5,7 @@
  * is validated via validatePackageName() before interpolation.
  */
 
-import type { AdbClient } from "../adb/client.js";
+import type { AdbClientLike } from "../adapters/contracts.js";
 import type { DesktopClientLike } from "../adapters/contracts.js";
 import type { PerfSnapshot, CrashEntry } from "./types.js";
 import { validatePackageName } from "../utils/sanitize.js";
@@ -175,7 +175,7 @@ function sanitizeCrashSummary(summary: string): string {
 /**
  * Detect foreground package from Android device.
  */
-export function detectForegroundPackage(adb: AdbClient): string | undefined {
+export function detectForegroundPackage(adb: AdbClientLike): string | undefined {
   try {
     const activity = adb.getCurrentActivity();
     if (activity && activity !== "unknown" && !activity.includes("could not determine")) {
@@ -192,7 +192,7 @@ export function detectForegroundPackage(adb: AdbClient): string | undefined {
 /**
  * Collect performance snapshot from Android device.
  */
-export function collectAndroidSnapshot(adb: AdbClient, packageName: string): PerfSnapshot {
+export function collectAndroidSnapshot(adb: AdbClientLike, packageName: string): PerfSnapshot {
   validatePackageName(packageName);
 
   let memory: PerfSnapshot["memory"] = null;

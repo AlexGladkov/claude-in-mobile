@@ -16,9 +16,9 @@ import type {
   DesktopAdapterLike,
   DesktopClientLike,
   RawLaunchOptionsLike,
+  WebViewInspectorLike,
 } from "../../adapters/contracts.js";
 import type { Platform } from "../../platform-types.js";
-import type { WebViewInspector } from "../../adb/webview.js";
 
 export class DesktopFacade {
   constructor(private readonly adapters: Map<Platform, CorePlatformAdapter>) {}
@@ -92,7 +92,7 @@ export class DesktopFacade {
    * try/catch swallow semantics so a single broken adapter cannot
    * prevent the others from being torn down.
    */
-  async cleanup(webViewInspector?: WebViewInspector): Promise<void> {
+  async cleanup(webViewInspector?: WebViewInspectorLike): Promise<void> {
     const desktop = this.adapters.get("desktop") as
       | { stop?: () => Promise<void> }
       | undefined;

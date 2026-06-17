@@ -4,7 +4,7 @@
  * can stay free of input-format concerns.
  */
 
-import { validateLogTag, validateLogTimestamp } from "../utils/sanitize.js";
+import { validateLogTag, validateLogTimestamp } from "claude-in-mobile/utils/sanitize";
 
 export interface LogcatOptions {
   tag?: string;

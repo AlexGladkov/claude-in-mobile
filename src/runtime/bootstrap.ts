@@ -18,7 +18,6 @@ import { CapabilityResolver } from "../kernel/resolver.js";
 import { ExternalPluginLoader } from "../kernel/external-loader.js";
 
 import { createBuiltinToolsPlugin } from "../plugins/builtin-tools/index.js";
-import { createAndroidPlugin } from "../plugins/android/index.js";
 import { createIosPlugin } from "../plugins/ios/index.js";
 import { createReplPlugin } from "../plugins/repl/index.js";
 import { resolveEnabledPlatforms, type PlatformId } from "./platform-config.js";
@@ -73,7 +72,6 @@ const BASE_BUILTINS: ReadonlyArray<() => SourcePlugin> = [
  * from here to PACKAGED_PLATFORMS.
  */
 const IN_BASE_FACTORIES: Partial<Record<PlatformId, () => SourcePlugin>> = {
-  android: createAndroidPlugin,
   ios: createIosPlugin,
 };
 
@@ -87,6 +85,7 @@ const PACKAGED_PLATFORMS: Partial<Record<PlatformId, string>> = {
   aurora: "@claude-in-mobile/plugin-aurora",
   web: "@claude-in-mobile/plugin-web",
   desktop: "@claude-in-mobile/plugin-desktop",
+  android: "@claude-in-mobile/plugin-android",
 };
 
 /** Base plugins + the enabled in-base platform plugins, in deterministic order. */

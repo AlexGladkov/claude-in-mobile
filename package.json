@@ -62,6 +62,10 @@
     "./constants/*": {
       "types": "./dist/constants/*.d.ts",
       "default": "./dist/constants/*.js"
+    },
+    "./ui-tree/*": {
+      "types": "./dist/ui-tree/*.d.ts",
+      "default": "./dist/ui-tree/*.js"
     }
   },
   "scripts": {

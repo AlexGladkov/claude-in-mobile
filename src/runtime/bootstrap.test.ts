@@ -24,7 +24,6 @@ describe("bootstrapKernel", () => {
     // aurora + web + desktop ship as separate packages and load only via the
     // async bootstrap (dynamic import) — see the async test below.
     expect(ids).toEqual([
-      "android",
       "builtin-tools",
       "ios",
       "repl",
@@ -74,8 +73,8 @@ describe("bootstrapKernel", () => {
     expect(terminalProviders).toEqual(["repl"]);
   });
 
-  it("only browser/desktop have NO permissions capability", () => {
-    const k = bootstrapKernel({ platforms: ALL });
+  it("only browser/desktop have NO permissions capability", async () => {
+    const k = await bootstrapKernelAsync({ platforms: ALL });
     const permProviders = k.resolver
       .resolve({ capabilities: ["permissions"] })
       .map((p) => p.manifest.id)
@@ -83,8 +82,8 @@ describe("bootstrapKernel", () => {
     expect(permProviders).toEqual(["android", "ios"]);
   });
 
-  it("getPlugin returns typed plugin instance", () => {
-    const k = bootstrapKernel({ platforms: ["android"] });
+  it("getPlugin returns typed plugin instance", async () => {
+    const k = await bootstrapKernelAsync({ platforms: ["android"] });
     const android = k.getPlugin("android");
     expect(android?.manifest.id).toBe("android");
     expect(k.getPlugin("nope")).toBeUndefined();

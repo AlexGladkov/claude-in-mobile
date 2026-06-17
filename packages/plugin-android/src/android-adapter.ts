@@ -15,11 +15,12 @@ import type {
   PermissionAdapter,
   ShellAdapter,
   SyncScreenshotAdapter,
-} from "./platform-adapter.js";
-import type { Device } from "../device-manager.js";
-import { AdbClient } from "../adb/client.js";
-import { MobileError } from "../errors.js";
-import { compressScreenshot, type CompressOptions } from "../utils/image.js";
+} from "claude-in-mobile/adapters/platform-adapter";
+import type { Device } from "claude-in-mobile/device-manager";
+import { AdbClient } from "./adb/client.js";
+import { WebViewInspector } from "./adb/webview.js";
+import { MobileError } from "claude-in-mobile/errors";
+import { compressScreenshot, type CompressOptions } from "claude-in-mobile/utils/image";
 
 export class AndroidAdapter
   implements CorePlatformAdapter, AppManagementAdapter, PermissionAdapter, ShellAdapter, SyncScreenshotAdapter
@@ -36,6 +37,12 @@ export class AndroidAdapter
   /** Raw client access -- needed by tools that call getAndroidClient(). */
   getClient(deviceId?: string): AdbClient {
     return this.clientFor(deviceId);
+  }
+
+  private _webViewInspector?: WebViewInspector;
+  getWebViewInspector(): WebViewInspector {
+    if (!this._webViewInspector) this._webViewInspector = new WebViewInspector(this.client);
+    return this._webViewInspector;
   }
 
   /** Return a client targeting deviceId without mutating global state. */

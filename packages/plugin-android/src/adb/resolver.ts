@@ -17,7 +17,7 @@ import { existsSync } from "fs";
 import { homedir, platform } from "os";
 import { join } from "path";
 import { execSync } from "child_process";
-import { AdbNotInstalledError } from "../errors.js";
+import { AdbNotInstalledError } from "claude-in-mobile/errors";
 
 let cachedPath: string | null = null;
 let resolved = false;
