@@ -11,15 +11,27 @@
       "default": "./dist/index.js"
     }
   },
-  "scripts": { "build": "tsc" },
-  "keywords": ["mcp", "claude-in-mobile", "plugin", "aurora", "audb"],
+  "scripts": {
+    "build": "tsc"
+  },
+  "keywords": [
+    "mcp",
+    "claude-in-mobile",
+    "plugin",
+    "aurora",
+    "audb"
+  ],
   "author": "Alex Gladkov",
   "license": "MIT",
-  "engines": { "node": ">=18.0.0" },
-  "files": ["dist"],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist"
+  ],
   "dependencies": {
     "@claude-in-mobile/plugin-api": "1.0.0",
-    "claude-in-mobile": "*"
+    "claude-in-mobile": "4.0.0-dev"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

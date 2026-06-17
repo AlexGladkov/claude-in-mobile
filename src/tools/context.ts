@@ -75,22 +75,26 @@ export interface ToolContext {
 
 export function createToolContext(
   handleTool: ToolContext["handleTool"],
-  options?: { turboDefault?: boolean },
+  options?: { turboDefault?: boolean; deviceManager?: DeviceManager },
 ): ToolContext {
   const turbo = options?.turboDefault ?? false;
+  // The server injects the kernel-backed DeviceManager (built from the enabled
+  // platform plugins). Falls back to the module singleton only for tests /
+  // callers that don't pass one. Without this injection the tools would route
+  // through the legacy empty adapter map and every platform call would fail.
+  const dm = options?.deviceManager ?? deviceManager;
 
-  // When turbo is enabled, create dedicated hint functions that pass turbo=true
-  // down to DeviceManager and use adaptive delays. When off, use the default
-  // non-turbo singletons for zero-overhead backward compatibility.
+  // Hints must bind to the SAME deviceManager the tools use, else hint
+  // generation and tool execution disagree on which adapters exist.
   const turboHints = turbo
-    ? createGenerateActionHints(deviceManager, { turbo: true })
-    : generateActionHints;
+    ? createGenerateActionHints(dm, { turbo: true })
+    : createGenerateActionHints(dm);
   const turboElements = turbo
-    ? createGetElementsForPlatform(deviceManager, { turbo: true })
-    : getElementsForPlatform;
+    ? createGetElementsForPlatform(dm, { turbo: true })
+    : createGetElementsForPlatform(dm);
 
   return {
-    deviceManager,
+    deviceManager: dm,
     getCachedElements,
     setCachedElements,
     lastScreenshotMap,

@@ -116,11 +116,20 @@ async function loadPackagedPlatform(
       return undefined;
     }
     return factory();
-  } catch {
-    logger.warn(
-      `platform '${id}' is enabled but '${pkg}' is not installed — ` +
-        `run \`claude-in-mobile install ${id}\``
-    );
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") {
+      logger.warn(
+        `platform '${id}' is enabled but '${pkg}' is not installed — ` +
+          `run \`claude-in-mobile install ${id}\``
+      );
+    } else {
+      // The package IS installed but failed to load (broken build / bad
+      // transitive dep / throw-on-import) — surface it, don't mask as missing.
+      logger.error(`platform '${id}': '${pkg}' failed to load`, {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
     return undefined;
   }
 }

@@ -12,6 +12,7 @@ import { getGlobalMetrics } from "./utils/metrics.js";
 import { VALID_PROFILES, type MobileProfile } from "./profiles.js";
 import { recordCall } from "./utils/anti-patterns.js";
 import { bootstrapKernelAsync, type KernelHandle } from "./runtime/bootstrap.js";
+import { DeviceManager } from "./device-manager.js";
 import type { ToolDefinition as PluginToolDefinition } from "@claude-in-mobile/plugin-api";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { captureStep } from "./tools/recorder-tools.js";
@@ -84,8 +85,10 @@ async function handleTool(name: string, args: Record<string, unknown>, depth: nu
 const turboEnabled = process.env.MOBILE_TURBO === "true";
 if (turboEnabled) console.error("[turbo] MOBILE_TURBO=true — flow(run) turbo mode enabled by default");
 
-// Shared context (wired after handleTool is defined)
-const ctx = createToolContext(handleTool, { turboDefault: turboEnabled });
+// Shared context (wired after handleTool is defined). Placeholder until the
+// kernel is bootstrapped below — reassigned with the kernel-backed
+// DeviceManager so tools route through the enabled platform plugins.
+let ctx = createToolContext(handleTool, { turboDefault: turboEnabled });
 
 // Resolve profile from MOBILE_PROFILE env for use in MCP instructions only —
 // the actual registration of meta tools / aliases / module metadata happens
@@ -108,6 +111,15 @@ const kernel: KernelHandle = await bootstrapKernelAsync(
   enableExternal ? { externalPlugins: true } : {}
 );
 await kernel.initAll();
+
+// Route tools through the kernel-backed DeviceManager: its adapters come from
+// the enabled platform plugins (slim base + on-demand platforms). Replaces the
+// placeholder ctx so `getAdapter(platform)` resolves installed platforms and
+// returns the actionable "install <platform>" error for disabled ones.
+ctx = createToolContext(handleTool, {
+  turboDefault: turboEnabled,
+  deviceManager: DeviceManager.fromKernel(kernel),
+});
 
 const kernelToolDefs: ToolDefinition[] = [];
 for (const def of kernel.tools.values()) {

@@ -57,6 +57,19 @@ const PLATFORM_DIRS = ["adapters/", "ios/"];
 describe("architecture", () => {
   const all = loadAll();
 
+  it("base (src/**) must not import the extracted platform packages", () => {
+    // 4.0.0 physical split: platforms live in @claude-in-mobile/plugin-*,
+    // loaded only by dynamic import in bootstrap. Any STATIC import of a
+    // platform package from base would re-bundle it and break the slim base.
+    const violations = all
+      .flatMap((f) =>
+        f.imports
+          .filter((imp) => /@claude-in-mobile\/plugin-(android|ios|web|desktop|aurora|all)/.test(imp))
+          .map((imp) => `${f.file} → ${imp}`)
+      );
+    expect(violations).toEqual([]);
+  });
+
   it("kernel/** must not import from plugins/**", () => {
     const violations = all
       .filter((f) => f.file.startsWith("kernel/"))
