@@ -10,7 +10,6 @@
  */
 
 import type { CorePlatformAdapter } from "../../adapters/platform-adapter.js";
-import { IosAdapter } from "../../adapters/ios-adapter.js";
 import type {
   BrowserAdapterLike,
   DesktopAdapterLike,
@@ -99,9 +98,9 @@ export class DesktopFacade {
     if (desktop && typeof desktop.stop === "function") {
       try { await desktop.stop(); } catch {}
     }
-    const ios = this.adapters.get("ios");
-    if (ios instanceof IosAdapter) {
-      try { ios.getClient().cleanup(); } catch {}
+    const ios = this.adapters.get("ios") as { getClient?: () => { cleanup?: () => void } } | undefined;
+    if (ios && typeof ios.getClient === "function") {
+      try { ios.getClient().cleanup?.(); } catch {}
     }
     try { webViewInspector?.cleanup(); } catch {}
     const browser = this.adapters.get("browser") as

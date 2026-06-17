@@ -3,8 +3,8 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { readFileSync, unlinkSync } from "fs";
 import { WDAManager, WDAClient, WDAElement, WDARect } from "./wda/index.js";
-import { classifySimctlError } from "../errors.js";
-import { validateDeviceId, validateBundleId } from "../utils/sanitize.js";
+import { classifySimctlError } from "claude-in-mobile/errors";
+import { validateDeviceId, validateBundleId } from "claude-in-mobile/utils/sanitize";
 import { execSimctl, execSimctlQuiet, SIMCTL_EXEC_TIMEOUT_MS } from "./simctl-exec.js";
 import type { IosDevice } from "./types.js";
 import {

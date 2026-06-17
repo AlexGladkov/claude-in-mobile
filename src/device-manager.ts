@@ -26,10 +26,8 @@
  */
 
 import type { CorePlatformAdapter } from "./adapters/platform-adapter.js";
-import { IosAdapter } from "./adapters/ios-adapter.js";
-import type { AdbClientLike, AuroraClientLike, BrowserAdapterLike, WebViewInspectorLike } from "./adapters/contracts.js";
+import type { AdbClientLike, AuroraClientLike, BrowserAdapterLike, IosClientLike, WebViewInspectorLike } from "./adapters/contracts.js";
 
-import { IosClient } from "./ios/client.js";
 import type { CompressOptions } from "./utils/image.js";
 import type { DesktopClientLike, RawLaunchOptionsLike } from "./adapters/contracts.js";
 
@@ -303,10 +301,10 @@ export class DeviceManager {
   }
 
   /** @deprecated Use `getAdapter("ios", deviceId)` + capability type guards. */
-  getIosClient(deviceId?: string): IosClient {
-    const adapter = this.adapters.get("ios");
-    if (!adapter || !(adapter instanceof IosAdapter)) {
-      throw new Error("iOS adapter is not available in this configuration.");
+  getIosClient(deviceId?: string): IosClientLike {
+    const adapter = this.adapters.get("ios") as { getClient?: (deviceId?: string) => IosClientLike } | undefined;
+    if (!adapter || typeof adapter.getClient !== "function") {
+      throw new Error("iOS is not installed. Run `claude-in-mobile install ios`.");
     }
     return adapter.getClient(deviceId);
   }

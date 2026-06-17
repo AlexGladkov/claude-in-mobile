@@ -10,8 +10,6 @@
  */
 
 import type { CorePlatformAdapter } from "../adapters/platform-adapter.js";
-import { IosAdapter } from "../adapters/ios-adapter.js";
-import { IosClient } from "../ios/client.js";
 import type { Platform } from "../platform-types.js";
 
 export interface DefaultAdapters {
@@ -27,15 +25,10 @@ export function buildDefaultAdapters(): DefaultAdapters {
   const androidDeviceId = process.env.DEVICE_ID ?? process.env.ANDROID_SERIAL ?? undefined;
   const iosDeviceId = process.env.IOS_DEVICE_ID ?? undefined;
 
-  const iosAdapter = iosDeviceId
-    ? new IosAdapter(new IosClient(iosDeviceId))
-    : new IosAdapter();
-
 
   // Aurora is delivered as a separate package (@claude-in-mobile/plugin-aurora)
   // and wired through the kernel, not this legacy eager map.
   const adapters = new Map<Platform, CorePlatformAdapter>([
-    ["ios", iosAdapter],
   ]);
 
   let envSeededTarget: Platform | undefined;

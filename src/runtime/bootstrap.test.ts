@@ -12,22 +12,18 @@ describe("bootstrapKernel", () => {
     expect(ids).toEqual(["builtin-tools", "repl"]);
   });
 
-  it("loads only the requested platforms", () => {
-    const k = bootstrapKernel({ platforms: ["ios"] });
+  it("loads only the requested platforms (async — platforms are packaged)", async () => {
+    const k = await bootstrapKernelAsync({ platforms: ["ios"] });
     const ids = k.registry.list().map((e) => e.plugin.manifest.id).sort();
     expect(ids).toEqual(["builtin-tools", "ios", "repl"]);
   });
 
-  it("sync bootstrap loads base + in-base platforms (aurora is a separate package)", () => {
+  it("sync bootstrap is base-only — all platforms are separate packages", () => {
     const k = bootstrapKernel({ platforms: ALL });
     const ids = k.registry.list().map((e) => e.plugin.manifest.id).sort();
-    // aurora + web + desktop ship as separate packages and load only via the
-    // async bootstrap (dynamic import) — see the async test below.
-    expect(ids).toEqual([
-      "builtin-tools",
-      "ios",
-      "repl",
-    ]);
+    // Every platform now ships as @claude-in-mobile/plugin-* and loads only via
+    // the async bootstrap (dynamic import).
+    expect(ids).toEqual(["builtin-tools", "repl"]);
   });
 
   it("async bootstrap loads the packaged aurora plugin when installed", async () => {

@@ -35,7 +35,7 @@ export const uiFind = defineTool({
           return textResult("No elements found");
         }
 
-        const list = elements.slice(0, 20).map((el, i) =>
+        const list = elements.slice(0, 20).map((el: any, i: number) =>
           `[${i}] <${el.type}> "${el.label}" @ (${el.rect.x}, ${el.rect.y})`,
         ).join("\n");
 

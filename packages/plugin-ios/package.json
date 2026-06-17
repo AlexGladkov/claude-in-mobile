@@ -1,7 +1,7 @@
 {
   "name": "@claude-in-mobile/plugin-ios",
   "version": "4.0.0-dev",
-  "description": "iOS plugin shim for claude-in-mobile microkernel (third-party consumption).",
+  "description": "iOS platform plugin for claude-in-mobile (simctl + WebDriverAgent + go-ios).",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -11,12 +11,25 @@
       "default": "./dist/index.js"
     }
   },
-  "scripts": { "build": "tsc" },
-  "keywords": ["mcp", "claude-in-mobile", "plugin", "ios", "simctl", "wda"],
+  "scripts": {
+    "build": "tsc"
+  },
+  "keywords": [
+    "mcp",
+    "claude-in-mobile",
+    "plugin",
+    "ios",
+    "simctl",
+    "wda"
+  ],
   "author": "Alex Gladkov",
   "license": "MIT",
-  "engines": { "node": ">=18.0.0" },
-  "files": ["dist"],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist"
+  ],
   "dependencies": {
     "@claude-in-mobile/plugin-api": "1.0.0",
     "claude-in-mobile": "*"

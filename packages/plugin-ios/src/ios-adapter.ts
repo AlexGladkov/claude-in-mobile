@@ -15,11 +15,11 @@ import type {
   PermissionAdapter,
   ShellAdapter,
   SyncScreenshotAdapter,
-} from "./platform-adapter.js";
-import type { Device } from "../device-manager.js";
-import { IosClient } from "../ios/client.js";
-import { MobileError } from "../errors.js";
-import { compressScreenshot, type CompressOptions } from "../utils/image.js";
+} from "claude-in-mobile/adapters/platform-adapter";
+import type { Device } from "claude-in-mobile/device-manager";
+import { IosClient } from "./ios/client.js";
+import { MobileError } from "claude-in-mobile/errors";
+import { compressScreenshot, type CompressOptions } from "claude-in-mobile/utils/image";
 
 export class IosAdapter
   implements CorePlatformAdapter, AppManagementAdapter, PermissionAdapter, ShellAdapter, SyncScreenshotAdapter

@@ -29,6 +29,12 @@ export interface DesktopClientLike {
 /** Shape of desktop launch options — loose; concrete type lives in plugin-desktop. */
 export type RawLaunchOptionsLike = Record<string, unknown>;
 
+export interface IosClientLike {
+  openUrl(url: string, deviceId?: string): void | Promise<void>;
+  cleanup(): void;
+  [key: string]: any;
+}
+
 export interface AdbClientLike {
   [key: string]: any;
 }
