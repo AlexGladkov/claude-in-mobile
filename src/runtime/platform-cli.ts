@@ -1,12 +1,12 @@
 /**
- * Platform management subcommands for the `claude-in-mobile` bin:
+ * Platform management subcommands for the `mcp-devices` bin:
  *
- *   claude-in-mobile platforms              list enabled + available
- *   claude-in-mobile install <p|all>...     enable platform(s)
- *   claude-in-mobile uninstall <p>...        disable platform(s)
- *   claude-in-mobile doctor [p...]          check external toolchains
+ *   mcp-devices platforms              list enabled + available
+ *   mcp-devices install <p|all>...     enable platform(s)
+ *   mcp-devices uninstall <p>...        disable platform(s)
+ *   mcp-devices doctor [p...]          check external toolchains
  *
- * These mutate ~/.claude-in-mobile/config.json (read by the kernel bootstrap).
+ * These mutate ~/.mcp-devices/config.json (read by the kernel bootstrap).
  * Pure set math (applyInstall/applyUninstall) is split out for testing.
  */
 
@@ -83,12 +83,12 @@ export function runPlatformCommand(
       const enabled = resolveEnabledPlatforms();
       console.log(`Enabled:   ${enabled.join(", ") || "none (slim base)"}`);
       console.log(`Available: ${ALL_PLATFORMS.join(", ")}`);
-      console.log(`Enable with: claude-in-mobile install <platform|all>`);
+      console.log(`Enable with: mcp-devices install <platform|all>`);
       break;
     }
     case "install": {
       if (rest.length === 0) {
-        console.error("Usage: claude-in-mobile install <android|ios|web|desktop|aurora|all>...");
+        console.error("Usage: mcp-devices install <android|ios|web|desktop|aurora|all>...");
         return exit(1);
       }
       const next = applyInstall(resolveEnabledPlatforms(), rest);
@@ -108,7 +108,7 @@ export function runPlatformCommand(
     case "doctor": {
       const targets = rest.length ? applyInstall([], rest) : resolveEnabledPlatforms();
       if (targets.length === 0) {
-        console.log("No platforms enabled. `claude-in-mobile install <platform>` first.");
+        console.log("No platforms enabled. `mcp-devices install <platform>` first.");
       } else {
         doctorReport(targets);
       }

@@ -11,12 +11,12 @@ import type {
   PluginContext,
   SourcePlugin,
   ToolDefinition,
-} from "@claude-in-mobile/plugin-api";
+} from "@mcp-devices/plugin-api";
 import {
   ALL_CAPABILITIES,
   PLUGIN_API_VERSION,
   isCapability,
-} from "@claude-in-mobile/plugin-api";
+} from "@mcp-devices/plugin-api";
 import { describe, expect, it } from "vitest";
 
 import { InMemoryEventBus } from "../kernel/eventbus.js";

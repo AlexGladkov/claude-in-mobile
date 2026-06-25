@@ -9,7 +9,7 @@ export class SessionManager {
   readonly profileBaseDir: string;
 
   constructor() {
-    this.profileBaseDir = join(homedir(), ".claude-in-mobile", "browser-profiles");
+    this.profileBaseDir = join(homedir(), ".mcp-devices", "browser-profiles");
   }
 
   sanitizeSessionName(name: string): string {

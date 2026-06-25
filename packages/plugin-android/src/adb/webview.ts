@@ -4,7 +4,7 @@
  */
 
 import { AdbClient } from "./client.js";
-import { WebViewNotFoundError } from "claude-in-mobile/errors";
+import { WebViewNotFoundError } from "mcp-devices/errors";
 
 export interface WebViewTarget {
   description: string;

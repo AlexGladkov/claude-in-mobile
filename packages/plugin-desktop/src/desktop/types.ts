@@ -1,5 +1,5 @@
 /**
- * Desktop platform types for claude-in-mobile
+ * Desktop platform types for mcp-devices
  */
 
 // JSON-RPC protocol types

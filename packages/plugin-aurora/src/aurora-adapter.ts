@@ -16,10 +16,10 @@ import type {
   AppManagementAdapter,
   ShellAdapter,
   SyncScreenshotAdapter,
-} from "claude-in-mobile/adapters/platform-adapter";
-import type { Device } from "claude-in-mobile/device-manager";
+} from "mcp-devices/adapters/platform-adapter";
+import type { Device } from "mcp-devices/device-manager";
 import { auroraClient as defaultAuroraClient, AuroraClient } from "./client.js";
-import { compressScreenshot, type CompressOptions } from "claude-in-mobile/utils/image";
+import { compressScreenshot, type CompressOptions } from "mcp-devices/utils/image";
 
 export class AuroraAdapter
   implements CorePlatformAdapter, AppManagementAdapter, ShellAdapter, SyncScreenshotAdapter

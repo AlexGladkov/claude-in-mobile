@@ -50,7 +50,7 @@ fn simctl_exec(args: &[&str]) -> Result<std::process::Output> {
 const SWIFT_HELPER_SOURCE: &str = include_str!("../assets/simwindow.swift");
 
 /// Get path to compiled Swift helper, compiling on first use or when source changes.
-/// Binary cached at ~/.cache/claude-in-mobile/simwindow
+/// Binary cached at ~/.cache/mcp-devices/simwindow
 fn get_swift_helper_path() -> Result<PathBuf> {
     let cache_dir = dirs_or_fallback();
     std::fs::create_dir_all(&cache_dir).context("Failed to create cache dir")?;
@@ -93,12 +93,12 @@ fn get_swift_helper_path() -> Result<PathBuf> {
     Ok(bin_path)
 }
 
-/// Cache dir: ~/.cache/claude-in-mobile
+/// Cache dir: ~/.cache/mcp-devices
 fn dirs_or_fallback() -> PathBuf {
     if let Some(home) = std::env::var_os("HOME") {
-        PathBuf::from(home).join(".cache").join("claude-in-mobile")
+        PathBuf::from(home).join(".cache").join("mcp-devices")
     } else {
-        PathBuf::from("/tmp/claude-in-mobile")
+        PathBuf::from("/tmp/mcp-devices")
     }
 }
 
@@ -865,7 +865,7 @@ pub fn clear_logs(simulator: Option<&str>) -> Result<()> {
 
     // Fallback: log erase requires root, inform user
     println!("Note: log erase requires elevated privileges on iOS simulator");
-    println!("Workaround: reboot simulator to clear logs (claude-in-mobile reboot ios)");
+    println!("Workaround: reboot simulator to clear logs (mcp-devices reboot ios)");
     Ok(())
 }
 

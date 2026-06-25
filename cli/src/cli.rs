@@ -6,7 +6,7 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "claude-in-mobile")]
+#[command(name = "mcp-devices")]
 #[command(about = "Fast CLI for mobile device automation and store management")]
 #[command(version)]
 pub struct Cli {
@@ -171,7 +171,7 @@ pub enum Commands {
     ///
     /// SECURITY: Disabled by default in non-interactive contexts to prevent
     /// supply-chain / CI misuse. Use --i-know-what-im-doing or set
-    /// CLAUDE_IN_MOBILE_ALLOW_SHELL=1 to enable in scripts.
+    /// MCP_DEVICES_ALLOW_SHELL=1 to enable in scripts.
     Shell {
         /// Platform: android, ios, or aurora
         #[arg(value_parser = ["android", "ios", "aurora"])]
@@ -1395,7 +1395,7 @@ pub enum FlowCommands {
 
     /// Run the same flow file on multiple devices sequentially
     ///
-    /// Example: `claude-in-mobile flow parallel android --file steps.json --devices "device1,device2"`
+    /// Example: `mcp-devices flow parallel android --file steps.json --devices "device1,device2"`
     Parallel {
         /// Platform: android, ios, aurora, or desktop
         #[arg(value_parser = ["android", "ios", "aurora", "desktop"])]

@@ -1,4 +1,4 @@
-import type { SourcePlugin } from "@claude-in-mobile/plugin-api";
+import type { SourcePlugin } from "@mcp-devices/plugin-api";
 import type { PluginRegistry } from "./registry.js";
 
 /**
@@ -6,7 +6,7 @@ import type { PluginRegistry } from "./registry.js";
  *
  * For 3.11.0 the loader is intentionally simple: it accepts an explicit list of
  * built-in plugins and registers them in order. Runtime discovery from
- * filesystem (`~/.claude-in-mobile/plugins/`) and third-party loading are
+ * filesystem (`~/.mcp-devices/plugins/`) and third-party loading are
  * deferred to a later release (see ADR 0001).
  */
 export interface BuiltinLoaderDeps {

@@ -14,8 +14,8 @@ import type {
   CorePlatformAdapter,
   AppManagementAdapter,
   ShellAdapter,
-} from "claude-in-mobile/adapters/platform-adapter";
-import type { Device } from "claude-in-mobile/device-manager";
+} from "mcp-devices/adapters/platform-adapter";
+import type { Device } from "mcp-devices/device-manager";
 import { DesktopClient } from "./desktop/client.js";
 import type { RawLaunchOptions, UiHierarchy } from "./desktop/types.js";
 

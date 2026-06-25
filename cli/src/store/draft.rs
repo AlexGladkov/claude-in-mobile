@@ -12,7 +12,7 @@ fn drafts_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     PathBuf::from(home)
         .join(".config")
-        .join("claude-in-mobile")
+        .join("mcp-devices")
         .join("drafts")
 }
 

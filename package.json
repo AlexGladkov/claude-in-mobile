@@ -1,11 +1,11 @@
 {
-  "name": "claude-in-mobile",
+  "name": "mcp-devices",
   "version": "4.0.0-dev",
   "description": "MCP server for mobile, desktop and browser automation - Android (ADB), iOS Simulator (simctl), Desktop (Compose), Browser (CDP)",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "claude-in-mobile": "dist/index.js"
+    "mcp-devices": "dist/index.js"
   },
   "workspaces": [
     "packages/*"
@@ -71,7 +71,7 @@
   "scripts": {
     "build": "npm run build --workspace=packages/plugin-api && tsc && npm run build --workspaces --if-present --workspace=packages/plugin-android --workspace=packages/plugin-ios --workspace=packages/plugin-desktop --workspace=packages/plugin-web --workspace=packages/plugin-aurora",
     "build:lite": "npm run build && npm run build --workspace=packages/lite",
-    "prepare": "rm -rf node_modules/claude-in-mobile && ln -sf \"$(pwd)\" node_modules/claude-in-mobile 2>/dev/null || true",
+    "prepare": "rm -rf node_modules/mcp-devices && ln -sf \"$(pwd)\" node_modules/mcp-devices 2>/dev/null || true",
     "build:desktop": "cd desktop-companion && ./gradlew installDist",
     "build:all": "npm run build && npm run build:desktop",
     "watch": "tsc --watch",
@@ -115,7 +115,7 @@
     "README.md"
   ],
   "dependencies": {
-    "@claude-in-mobile/plugin-api": "1.0.0",
+    "@mcp-devices/plugin-api": "1.0.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "chrome-launcher": "^1.1.0",
     "chrome-remote-interface": "^0.33.0",
@@ -127,7 +127,7 @@
     "sharp": "^0.33.0"
   },
   "bundledDependencies": [
-    "@claude-in-mobile/plugin-api"
+    "@mcp-devices/plugin-api"
   ],
   "devDependencies": {
     "@types/node": "^22.10.0",

@@ -106,7 +106,7 @@ describe("getConfigSnippet", () => {
     const config = getConfigSnippet("opencode");
     const parsed = JSON.parse(config);
     expect(parsed.mcp.mobile.type).toBe("local");
-    expect(parsed.mcp.mobile.command).toEqual(["npx", "-y", "claude-in-mobile"]);
+    expect(parsed.mcp.mobile.command).toEqual(["npx", "-y", "mcp-devices"]);
     expect(parsed.mcp.mobile.enabled).toBe(true);
   });
 
@@ -114,14 +114,14 @@ describe("getConfigSnippet", () => {
     const config = getConfigSnippet("cursor");
     const parsed = JSON.parse(config);
     expect(parsed.mcpServers.mobile.command).toBe("npx");
-    expect(parsed.mcpServers.mobile.args).toEqual(["-y", "claude-in-mobile"]);
+    expect(parsed.mcpServers.mobile.args).toEqual(["-y", "mcp-devices"]);
   });
 
   it("should generate valid claude-code config", () => {
     const config = getConfigSnippet("claude-code");
     const parsed = JSON.parse(config);
     expect(parsed.mcpServers.mobile.command).toBe("npx");
-    expect(parsed.mcpServers.mobile.args).toEqual(["-y", "claude-in-mobile"]);
+    expect(parsed.mcpServers.mobile.args).toEqual(["-y", "mcp-devices"]);
   });
 
   it("should throw for unsupported client", () => {

@@ -1,13 +1,13 @@
 ---
-name: claude-in-mobile
+name: mcp-devices
 description: "This skill should be used when the user asks to interact with device screens (screenshot, annotate, tap, swipe, type text), manage apps (install, launch, stop, uninstall), transfer files (push, pull), query device info (logs, system info, clipboard, screen size), run shell commands, manage desktop windows, or automate Android, iOS, Aurora OS, or Desktop apps."
 ---
 
-# claude-in-mobile CLI
+# mcp-devices CLI
 
 Fast CLI for mobile device automation across **Android** (via ADB), **iOS** (via simctl), **Aurora OS** (via audb), and **Desktop** (via companion JSON-RPC app).
 
-Binary: `claude-in-mobile` (ensure it's in PATH or use full path to the built binary).
+Binary: `mcp-devices` (ensure it's in PATH or use full path to the built binary).
 
 ## Common Flags
 
@@ -26,10 +26,10 @@ Binary: `claude-in-mobile` (ensure it's in PATH or use full path to the built bi
 List connected devices across platforms.
 
 ```bash
-claude-in-mobile devices              # All platforms
-claude-in-mobile devices android      # Android only
-claude-in-mobile devices ios          # iOS simulators only
-claude-in-mobile devices aurora       # Aurora devices only
+mcp-devices devices              # All platforms
+mcp-devices devices android      # Android only
+mcp-devices devices ios          # iOS simulators only
+mcp-devices devices aurora       # Aurora devices only
 ```
 
 ---

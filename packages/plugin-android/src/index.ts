@@ -15,7 +15,7 @@ import type {
   PluginContext,
   PluginManifest,
   SourcePlugin,
-} from "@claude-in-mobile/plugin-api";
+} from "@mcp-devices/plugin-api";
 
 import { AndroidAdapter } from "./android-adapter.js";
 

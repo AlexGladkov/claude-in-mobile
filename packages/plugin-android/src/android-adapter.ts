@@ -15,12 +15,12 @@ import type {
   PermissionAdapter,
   ShellAdapter,
   SyncScreenshotAdapter,
-} from "claude-in-mobile/adapters/platform-adapter";
-import type { Device } from "claude-in-mobile/device-manager";
+} from "mcp-devices/adapters/platform-adapter";
+import type { Device } from "mcp-devices/device-manager";
 import { AdbClient } from "./adb/client.js";
 import { WebViewInspector } from "./adb/webview.js";
-import { MobileError } from "claude-in-mobile/errors";
-import { compressScreenshot, type CompressOptions } from "claude-in-mobile/utils/image";
+import { MobileError } from "mcp-devices/errors";
+import { compressScreenshot, type CompressOptions } from "mcp-devices/utils/image";
 
 export class AndroidAdapter
   implements CorePlatformAdapter, AppManagementAdapter, PermissionAdapter, ShellAdapter, SyncScreenshotAdapter

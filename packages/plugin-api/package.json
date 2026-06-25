@@ -1,7 +1,7 @@
 {
-  "name": "@claude-in-mobile/plugin-api",
+  "name": "@mcp-devices/plugin-api",
   "version": "1.0.0",
-  "description": "Public plugin contract for claude-in-mobile microkernel. Provides Capability enum, SourcePlugin/PluginManifest/PluginContext types, EventBus topics. Versioned independently of the product.",
+  "description": "Public plugin contract for mcp-devices microkernel. Provides Capability enum, SourcePlugin/PluginManifest/PluginContext types, EventBus topics. Versioned independently of the product.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -19,7 +19,7 @@
     "mcp",
     "plugin-api",
     "microkernel",
-    "claude-in-mobile"
+    "mcp-devices"
   ],
   "author": "Alex Gladkov",
   "license": "MIT",

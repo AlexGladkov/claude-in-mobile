@@ -9,7 +9,7 @@
  * adapters from the kernel via a static factory (see DeviceManager.fromKernel).
  */
 
-import type { Logger, SourcePlugin, ToolDefinition } from "@claude-in-mobile/plugin-api";
+import type { Logger, SourcePlugin, ToolDefinition } from "@mcp-devices/plugin-api";
 
 import { InMemoryEventBus } from "../kernel/eventbus.js";
 import { InMemoryRegistry, type PluginRegistry } from "../kernel/registry.js";
@@ -38,7 +38,7 @@ export interface BootstrapOptions {
   builtins?: ReadonlyArray<() => SourcePlugin>;
   /**
    * Discover third-party plugins from the filesystem.
-   * - `true`  → scan `~/.claude-in-mobile/plugins/` (default off — opt-in for now)
+   * - `true`  → scan `~/.mcp-devices/plugins/` (default off — opt-in for now)
    * - object  → forwarded to `ExternalPluginLoader` for custom roots/api versions
    */
   externalPlugins?: boolean | {
@@ -47,7 +47,7 @@ export interface BootstrapOptions {
   };
   /**
    * Which platform plugins to load. When omitted, resolved from
-   * `CLAUDE_IN_MOBILE_PLATFORMS` / `~/.claude-in-mobile/config.json` /
+   * `MCP_DEVICES_PLATFORMS` / `~/.mcp-devices/config.json` /
    * default (none). Ignored if `builtins` is supplied explicitly.
    */
   platforms?: ReadonlyArray<PlatformId>;
@@ -67,7 +67,7 @@ const BASE_BUILTINS: ReadonlyArray<() => SourcePlugin> = [
 /**
  * Platforms whose implementation still lives in this package (loaded
  * synchronously). As platforms are extracted into standalone
- * `@claude-in-mobile/plugin-*` packages (4.0.0 physical split), they move
+ * `@mcp-devices/plugin-*` packages (4.0.0 physical split), they move
  * from here to PACKAGED_PLATFORMS.
  */
 const IN_BASE_FACTORIES: Partial<Record<PlatformId, () => SourcePlugin>> = {
@@ -80,11 +80,11 @@ const IN_BASE_FACTORIES: Partial<Record<PlatformId, () => SourcePlugin>> = {
  * require the package as a build-time dependency.
  */
 const PACKAGED_PLATFORMS: Partial<Record<PlatformId, string>> = {
-  aurora: "@claude-in-mobile/plugin-aurora",
-  web: "@claude-in-mobile/plugin-web",
-  desktop: "@claude-in-mobile/plugin-desktop",
-  android: "@claude-in-mobile/plugin-android",
-  ios: "@claude-in-mobile/plugin-ios",
+  aurora: "@mcp-devices/plugin-aurora",
+  web: "@mcp-devices/plugin-web",
+  desktop: "@mcp-devices/plugin-desktop",
+  android: "@mcp-devices/plugin-android",
+  ios: "@mcp-devices/plugin-ios",
 };
 
 /** Base plugins + the enabled in-base platform plugins, in deterministic order. */
@@ -129,7 +129,7 @@ async function loadPackagedPlatform(
     if (isMissingPackage) {
       logger.warn(
         `platform '${id}' is enabled but '${pkg}' is not installed — ` +
-          `run \`claude-in-mobile install ${id}\``
+          `run \`mcp-devices install ${id}\``
       );
     } else {
       // The package IS installed but failed to load (broken build / bad

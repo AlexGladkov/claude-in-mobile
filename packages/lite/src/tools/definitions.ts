@@ -5,7 +5,7 @@
  */
 
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
-import type { DeviceManager } from "claude-in-mobile/device-manager";
+import type { DeviceManager } from "mcp-devices/device-manager";
 import { formatUiLine, MAX_UI_ELEMENTS } from "./formatter.js";
 
 export interface LiteToolDefinition {

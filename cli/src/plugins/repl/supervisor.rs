@@ -271,13 +271,13 @@ mod tests {
             outcome,
             ExpectOutcome::PromptMatched | ExpectOutcome::Idle
         ));
-        sup.send("b1", "echo claude-in-mobile", true).unwrap();
+        sup.send("b1", "echo mcp-devices", true).unwrap();
         let after = sup
             .expect("b1", Some(r"\$ $"), 300, 5_000)
             .expect("expect after echo failed");
         assert!(matches!(after, ExpectOutcome::PromptMatched | ExpectOutcome::Idle));
         let snap = sup.snapshot("b1", None).unwrap();
-        assert!(snap.screen.contains("claude-in-mobile"), "snapshot: {}", snap.screen);
+        assert!(snap.screen.contains("mcp-devices"), "snapshot: {}", snap.screen);
         sup.kill("b1").unwrap();
     }
 

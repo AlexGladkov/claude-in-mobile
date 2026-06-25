@@ -2,7 +2,7 @@ import type { BrowserSession, BrowserOpenOptions, BrowserClickOptions, BrowserFi
 import type { CDPClientInterface } from "./cdp-types.js";
 import { ALLOWED_URL_PROTOCOLS, DEFAULT_SESSION } from "./types.js";
 import { SessionManager } from "./session-manager.js";
-import { BrowserRefNotFoundError, BrowserSecurityError } from "claude-in-mobile/errors";
+import { BrowserRefNotFoundError, BrowserSecurityError } from "mcp-devices/errors";
 import { findNodeBySelector, findNodeByText, getCoordinates } from "./cdp-helpers.js";
 import { buildSnapshot } from "./snapshot-builder.js";
 import { pressKeyOnCdp, formatEvaluateResult } from "./key-map.js";

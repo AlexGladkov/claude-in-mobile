@@ -3,12 +3,12 @@ import { describe, expect, it } from "vitest";
 import { ReplBridgeClient, ReplBridgeError } from "./client.js";
 
 describe("ReplBridgeClient construction", () => {
-  it("falls back to CLAUDE_IN_MOBILE_BIN env override", () => {
-    const prior = process.env.CLAUDE_IN_MOBILE_BIN;
-    process.env.CLAUDE_IN_MOBILE_BIN = "/nonexistent/path-to-binary-xyz";
+  it("falls back to MCP_DEVICES_BIN env override", () => {
+    const prior = process.env.MCP_DEVICES_BIN;
+    process.env.MCP_DEVICES_BIN = "/nonexistent/path-to-binary-xyz";
     const c = new ReplBridgeClient();
     expect(c).toBeInstanceOf(ReplBridgeClient);
-    process.env.CLAUDE_IN_MOBILE_BIN = prior;
+    process.env.MCP_DEVICES_BIN = prior;
   });
 
   it("rejects when binary cannot be spawned", async () => {

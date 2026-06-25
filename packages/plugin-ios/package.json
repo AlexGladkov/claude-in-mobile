@@ -1,7 +1,7 @@
 {
-  "name": "@claude-in-mobile/plugin-ios",
+  "name": "@mcp-devices/plugin-ios",
   "version": "4.0.0-dev",
-  "description": "iOS platform plugin for claude-in-mobile (simctl + WebDriverAgent + go-ios).",
+  "description": "iOS platform plugin for mcp-devices (simctl + WebDriverAgent + go-ios).",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -16,7 +16,7 @@
   },
   "keywords": [
     "mcp",
-    "claude-in-mobile",
+    "mcp-devices",
     "plugin",
     "ios",
     "simctl",
@@ -31,8 +31,8 @@
     "dist"
   ],
   "dependencies": {
-    "@claude-in-mobile/plugin-api": "1.0.0",
-    "claude-in-mobile": "*"
+    "@mcp-devices/plugin-api": "1.0.0",
+    "mcp-devices": "*"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

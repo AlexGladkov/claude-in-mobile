@@ -9,16 +9,16 @@ Commands available on multiple platforms (Android, iOS, Aurora, Desktop — vari
 Capture a screenshot. Outputs base64 to stdout by default, or save to file with `-o`.
 
 ```bash
-claude-in-mobile screenshot android
-claude-in-mobile screenshot ios
-claude-in-mobile screenshot aurora
-claude-in-mobile screenshot desktop --companion-path /path/to/companion
+mcp-devices screenshot android
+mcp-devices screenshot ios
+mcp-devices screenshot aurora
+mcp-devices screenshot desktop --companion-path /path/to/companion
 
 # Save to file
-claude-in-mobile screenshot android -o screen.png
+mcp-devices screenshot android -o screen.png
 
 # Compress for LLM (resize + JPEG quality reduction)
-claude-in-mobile screenshot android --compress --max-width 800 --quality 60
+mcp-devices screenshot android --compress --max-width 800 --quality 60
 ```
 
 | Flag | Description | Default |
@@ -39,8 +39,8 @@ claude-in-mobile screenshot android --compress --max-width 800 --quality 60
 Capture screenshot with UI element bounding boxes drawn over it. Useful for visual debugging and identifying tap targets.
 
 ```bash
-claude-in-mobile annotate android -o annotated.png
-claude-in-mobile annotate ios -o annotated.png
+mcp-devices annotate android -o annotated.png
+mcp-devices annotate ios -o annotated.png
 ```
 
 | Flag | Description |
@@ -56,8 +56,8 @@ claude-in-mobile annotate ios -o annotated.png
 Get screen resolution in pixels.
 
 ```bash
-claude-in-mobile screen-size android
-claude-in-mobile screen-size ios
+mcp-devices screen-size android
+mcp-devices screen-size ios
 ```
 
 **Platforms:** Android, iOS
@@ -70,20 +70,20 @@ Tap at exact coordinates, or by text/resource-id/index.
 
 ```bash
 # By coordinates
-claude-in-mobile tap android 500 800
-claude-in-mobile tap ios 200 400
-claude-in-mobile tap aurora 300 600
-claude-in-mobile tap desktop 100 200 --companion-path /path/to/companion
+mcp-devices tap android 500 800
+mcp-devices tap ios 200 400
+mcp-devices tap aurora 300 600
+mcp-devices tap desktop 100 200 --companion-path /path/to/companion
 
 # By text (searches UI tree, finds element, taps center)
-claude-in-mobile tap android 0 0 --text "Login"
-claude-in-mobile tap desktop 0 0 --text "Submit" --companion-path /path/to/companion
+mcp-devices tap android 0 0 --text "Login"
+mcp-devices tap desktop 0 0 --text "Submit" --companion-path /path/to/companion
 
 # By resource-id (Android)
-claude-in-mobile tap android 0 0 --resource-id "btn_login"
+mcp-devices tap android 0 0 --resource-id "btn_login"
 
 # By element index from ui-dump (Android)
-claude-in-mobile tap android 0 0 --index 5
+mcp-devices tap android 0 0 --index 5
 ```
 
 | Flag | Description | Platforms |
@@ -101,8 +101,8 @@ claude-in-mobile tap android 0 0 --index 5
 Find an element by text, resource-id, or content-desc in the UI hierarchy and tap it. Shortcut for `find` + `tap`.
 
 ```bash
-claude-in-mobile tap-text android "Submit"
-claude-in-mobile tap-text ios "Login"
+mcp-devices tap-text android "Submit"
+mcp-devices tap-text ios "Login"
 ```
 
 **Platforms:** Android, iOS
@@ -114,8 +114,8 @@ claude-in-mobile tap-text ios "Login"
 Search UI hierarchy for an element by text, resource-id, or content-desc. Returns element coordinates and bounds.
 
 ```bash
-claude-in-mobile find android "Login"
-claude-in-mobile find ios "Submit"
+mcp-devices find android "Login"
+mcp-devices find ios "Submit"
 ```
 
 **Platforms:** Android, iOS
@@ -128,12 +128,12 @@ Long press at coordinates or by text. Duration configurable in milliseconds.
 
 ```bash
 # By coordinates
-claude-in-mobile long-press android 500 800 -d 2000
-claude-in-mobile long-press ios 300 600
-claude-in-mobile long-press aurora 400 700
+mcp-devices long-press android 500 800 -d 2000
+mcp-devices long-press ios 300 600
+mcp-devices long-press aurora 400 700
 
 # By text (Android: finds element, long presses at center)
-claude-in-mobile long-press android 0 0 --text "Delete"
+mcp-devices long-press android 0 0 --text "Delete"
 ```
 
 | Flag | Description | Default |
@@ -151,12 +151,12 @@ Swipe gesture between coordinates, or by named direction (up/down/left/right).
 
 ```bash
 # By coordinates (x1 y1 x2 y2)
-claude-in-mobile swipe android 500 1500 500 500 -d 300
+mcp-devices swipe android 500 1500 500 500 -d 300
 
 # By direction (uses screen center, swipes 400px)
-claude-in-mobile swipe android 0 0 0 0 --direction up
-claude-in-mobile swipe ios 0 0 0 0 --direction left
-claude-in-mobile swipe aurora 0 0 0 0 --direction down
+mcp-devices swipe android 0 0 0 0 --direction up
+mcp-devices swipe ios 0 0 0 0 --direction left
+mcp-devices swipe aurora 0 0 0 0 --direction down
 ```
 
 | Flag | Description | Default |
@@ -173,10 +173,10 @@ claude-in-mobile swipe aurora 0 0 0 0 --direction down
 Type text into the currently focused field.
 
 ```bash
-claude-in-mobile input android "Hello world"
-claude-in-mobile input ios "Search query"
-claude-in-mobile input aurora "user@example.com"
-claude-in-mobile input desktop "text" --companion-path /path/to/companion
+mcp-devices input android "Hello world"
+mcp-devices input ios "Search query"
+mcp-devices input aurora "user@example.com"
+mcp-devices input desktop "text" --companion-path /path/to/companion
 ```
 
 **Platforms:** Android, iOS, Aurora, Desktop
@@ -188,12 +188,12 @@ claude-in-mobile input desktop "text" --companion-path /path/to/companion
 Press a hardware/software key or button.
 
 ```bash
-claude-in-mobile key android back
-claude-in-mobile key android home
-claude-in-mobile key android enter
-claude-in-mobile key ios home
-claude-in-mobile key aurora back
-claude-in-mobile key desktop enter --companion-path /path/to/companion
+mcp-devices key android back
+mcp-devices key android home
+mcp-devices key android enter
+mcp-devices key ios home
+mcp-devices key aurora back
+mcp-devices key desktop enter --companion-path /path/to/companion
 ```
 
 Common keys: `home`, `back`, `enter`, `power`, `volume_up`, `volume_down`, `tab`, `delete`.
@@ -207,10 +207,10 @@ Common keys: `home`, `back`, `enter`, `power`, `volume_up`, `volume_down`, `tab`
 Dump the current UI hierarchy. Default format is JSON; also supports XML for Android.
 
 ```bash
-claude-in-mobile ui-dump android
-claude-in-mobile ui-dump android -f xml
-claude-in-mobile ui-dump ios
-claude-in-mobile ui-dump desktop --companion-path /path/to/companion
+mcp-devices ui-dump android
+mcp-devices ui-dump android -f xml
+mcp-devices ui-dump ios
+mcp-devices ui-dump desktop --companion-path /path/to/companion
 ```
 
 | Flag | Description | Default |
@@ -227,10 +227,10 @@ claude-in-mobile ui-dump desktop --companion-path /path/to/companion
 List installed applications, optionally filtered by name.
 
 ```bash
-claude-in-mobile apps android
-claude-in-mobile apps android -f "myapp"
-claude-in-mobile apps ios
-claude-in-mobile apps aurora
+mcp-devices apps android
+mcp-devices apps android -f "myapp"
+mcp-devices apps ios
+mcp-devices apps aurora
 ```
 
 | Flag | Description |
@@ -246,10 +246,10 @@ claude-in-mobile apps aurora
 Launch an application by package name, bundle ID, or path.
 
 ```bash
-claude-in-mobile launch android com.example.app
-claude-in-mobile launch ios com.example.app
-claude-in-mobile launch aurora harbour-myapp
-claude-in-mobile launch desktop /path/to/app --companion-path /path/to/companion
+mcp-devices launch android com.example.app
+mcp-devices launch ios com.example.app
+mcp-devices launch aurora harbour-myapp
+mcp-devices launch desktop /path/to/app --companion-path /path/to/companion
 ```
 
 **Platforms:** Android, iOS, Aurora, Desktop
@@ -261,10 +261,10 @@ claude-in-mobile launch desktop /path/to/app --companion-path /path/to/companion
 Force-stop/kill an application.
 
 ```bash
-claude-in-mobile stop android com.example.app
-claude-in-mobile stop ios com.example.app
-claude-in-mobile stop aurora harbour-myapp
-claude-in-mobile stop desktop "AppName" --companion-path /path/to/companion
+mcp-devices stop android com.example.app
+mcp-devices stop ios com.example.app
+mcp-devices stop aurora harbour-myapp
+mcp-devices stop desktop "AppName" --companion-path /path/to/companion
 ```
 
 **Platforms:** Android, iOS, Aurora, Desktop
@@ -276,9 +276,9 @@ claude-in-mobile stop desktop "AppName" --companion-path /path/to/companion
 Install an application package onto the device.
 
 ```bash
-claude-in-mobile install android /path/to/app.apk
-claude-in-mobile install ios /path/to/app.app
-claude-in-mobile install aurora /path/to/app.rpm
+mcp-devices install android /path/to/app.apk
+mcp-devices install ios /path/to/app.app
+mcp-devices install aurora /path/to/app.rpm
 ```
 
 **Platforms:** Android, iOS, Aurora
@@ -290,9 +290,9 @@ claude-in-mobile install aurora /path/to/app.rpm
 Remove an installed application from the device.
 
 ```bash
-claude-in-mobile uninstall android com.example.app
-claude-in-mobile uninstall ios com.example.app
-claude-in-mobile uninstall aurora harbour-myapp
+mcp-devices uninstall android com.example.app
+mcp-devices uninstall ios com.example.app
+mcp-devices uninstall aurora harbour-myapp
 ```
 
 **Platforms:** Android, iOS, Aurora
@@ -304,8 +304,8 @@ claude-in-mobile uninstall aurora harbour-myapp
 Copy a local file to the device filesystem.
 
 ```bash
-claude-in-mobile push-file android /local/path /sdcard/remote/path
-claude-in-mobile push-file aurora /local/file /home/user/file
+mcp-devices push-file android /local/path /sdcard/remote/path
+mcp-devices push-file aurora /local/file /home/user/file
 ```
 
 **Platforms:** Android, Aurora
@@ -317,8 +317,8 @@ claude-in-mobile push-file aurora /local/file /home/user/file
 Copy a file from device filesystem to local machine.
 
 ```bash
-claude-in-mobile pull-file android /sdcard/remote/file /local/path
-claude-in-mobile pull-file aurora /home/user/file /local/file
+mcp-devices pull-file android /sdcard/remote/file /local/path
+mcp-devices pull-file aurora /home/user/file /local/file
 ```
 
 **Platforms:** Android, Aurora
@@ -330,9 +330,9 @@ claude-in-mobile pull-file aurora /home/user/file /local/file
 Read current clipboard content from the device.
 
 ```bash
-claude-in-mobile get-clipboard android
-claude-in-mobile get-clipboard ios
-claude-in-mobile get-clipboard desktop --companion-path /path/to/companion
+mcp-devices get-clipboard android
+mcp-devices get-clipboard ios
+mcp-devices get-clipboard desktop --companion-path /path/to/companion
 ```
 
 **Platforms:** Android, iOS, Desktop
@@ -344,9 +344,9 @@ claude-in-mobile get-clipboard desktop --companion-path /path/to/companion
 Set clipboard content on the device.
 
 ```bash
-claude-in-mobile set-clipboard android "copied text"
-claude-in-mobile set-clipboard ios "copied text"
-claude-in-mobile set-clipboard desktop "text" --companion-path /path/to/companion
+mcp-devices set-clipboard android "copied text"
+mcp-devices set-clipboard ios "copied text"
+mcp-devices set-clipboard desktop "text" --companion-path /path/to/companion
 ```
 
 **Platforms:** Android, iOS, Desktop
@@ -358,10 +358,10 @@ claude-in-mobile set-clipboard desktop "text" --companion-path /path/to/companio
 Retrieve device logs. Supports line limit and filtering.
 
 ```bash
-claude-in-mobile logs android -l 50
-claude-in-mobile logs android -f "MyTag"
-claude-in-mobile logs ios -l 200
-claude-in-mobile logs aurora -l 100
+mcp-devices logs android -l 50
+mcp-devices logs android -f "MyTag"
+mcp-devices logs ios -l 200
+mcp-devices logs aurora -l 100
 ```
 
 | Flag | Description | Default |
@@ -381,9 +381,9 @@ claude-in-mobile logs aurora -l 100
 Clear all device logs.
 
 ```bash
-claude-in-mobile clear-logs android
-claude-in-mobile clear-logs ios
-claude-in-mobile clear-logs aurora
+mcp-devices clear-logs android
+mcp-devices clear-logs ios
+mcp-devices clear-logs aurora
 ```
 
 **Platforms:** Android, iOS, Aurora
@@ -395,9 +395,9 @@ claude-in-mobile clear-logs aurora
 Get device system information (battery, memory, OS version, etc.).
 
 ```bash
-claude-in-mobile system-info android
-claude-in-mobile system-info ios
-claude-in-mobile system-info aurora
+mcp-devices system-info android
+mcp-devices system-info ios
+mcp-devices system-info aurora
 ```
 
 **Platforms:** Android, iOS, Aurora
@@ -409,8 +409,8 @@ claude-in-mobile system-info aurora
 Get the currently displayed activity or foreground app.
 
 ```bash
-claude-in-mobile current-activity android
-claude-in-mobile current-activity ios
+mcp-devices current-activity android
+mcp-devices current-activity ios
 ```
 
 **Platforms:** Android, iOS
@@ -422,8 +422,8 @@ claude-in-mobile current-activity ios
 Reboot the device or restart the simulator.
 
 ```bash
-claude-in-mobile reboot android
-claude-in-mobile reboot ios
+mcp-devices reboot android
+mcp-devices reboot ios
 ```
 
 **Platforms:** Android, iOS
@@ -435,9 +435,9 @@ claude-in-mobile reboot ios
 Open a URL in the device's default browser.
 
 ```bash
-claude-in-mobile open-url android "https://example.com"
-claude-in-mobile open-url ios "https://example.com"
-claude-in-mobile open-url aurora "https://example.com"
+mcp-devices open-url android "https://example.com"
+mcp-devices open-url ios "https://example.com"
+mcp-devices open-url aurora "https://example.com"
 ```
 
 **Platforms:** Android, iOS, Aurora
@@ -449,9 +449,9 @@ claude-in-mobile open-url aurora "https://example.com"
 Execute an arbitrary shell command on the device.
 
 ```bash
-claude-in-mobile shell android "ls /sdcard"
-claude-in-mobile shell ios "ls ~/Documents"
-claude-in-mobile shell aurora "uname -a"
+mcp-devices shell android "ls /sdcard"
+mcp-devices shell ios "ls ~/Documents"
+mcp-devices shell aurora "uname -a"
 ```
 
 **Platforms:** Android, iOS, Aurora
@@ -463,8 +463,8 @@ claude-in-mobile shell aurora "uname -a"
 Pause execution for a specified duration. Useful in automation scripts between actions.
 
 ```bash
-claude-in-mobile wait 2000    # wait 2 seconds
-claude-in-mobile wait 500     # wait 500ms
+mcp-devices wait 2000    # wait 2 seconds
+mcp-devices wait 500     # wait 500ms
 ```
 
 **Platforms:** cross-platform (no device interaction)

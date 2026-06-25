@@ -26,7 +26,7 @@ export function buildDefaultAdapters(): DefaultAdapters {
   const iosDeviceId = process.env.IOS_DEVICE_ID ?? undefined;
 
 
-  // Aurora is delivered as a separate package (@claude-in-mobile/plugin-aurora)
+  // Aurora is delivered as a separate package (@mcp-devices/plugin-aurora)
   // and wired through the kernel, not this legacy eager map.
   const adapters = new Map<Platform, CorePlatformAdapter>([
   ]);

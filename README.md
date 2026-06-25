@@ -1,9 +1,9 @@
-# claude-in-mobile 4.0.0-dev — modular / plugin edition
+# mcp-devices 4.0.0-dev — modular / plugin edition
 
-> **Pre-release (`dev` tag).** The stable line is 3.x. This 4.0.0-dev artifact
-> is an experiment: the base package is **slim** and each platform ships as a
-> separate plugin you install on demand. Try it, break it, send feedback.
-> `npm i -g claude-in-mobile` still gives you stable 3.x.
+> **New name + pre-release.** This project was `claude-in-mobile` (stable 3.x);
+> 4.0 is rebranded to **`mcp-devices`** (no longer Claude-only or mobile-only).
+> This 4.0.0-dev artifact is an experiment: slim base + platforms installed on
+> demand. Stable 3.x stays on the old name — `npm i -g claude-in-mobile`.
 
 ## What changed
 
@@ -13,13 +13,13 @@ kernel + built-in tools + REPL only — and platforms are delivered as
 separate packages, loaded **on demand**:
 
 ```
-claude-in-mobile                 # slim base (no platforms)
-@claude-in-mobile/plugin-android # Android (ADB)
-@claude-in-mobile/plugin-ios     # iOS (simctl + WebDriverAgent + go-ios)
-@claude-in-mobile/plugin-web     # Web (Chrome DevTools Protocol)
-@claude-in-mobile/plugin-desktop # Desktop (Compose)
-@claude-in-mobile/plugin-aurora  # Aurora OS (audb)
-@claude-in-mobile/plugin-all     # meta: every platform at once
+mcp-devices                 # slim base (no platforms)
+@mcp-devices/plugin-android # Android (ADB)
+@mcp-devices/plugin-ios     # iOS (simctl + WebDriverAgent + go-ios)
+@mcp-devices/plugin-web     # Web (Chrome DevTools Protocol)
+@mcp-devices/plugin-desktop # Desktop (Compose)
+@mcp-devices/plugin-aurora  # Aurora OS (audb)
+@mcp-devices/plugin-all     # meta: every platform at once
 ```
 
 By default **no platforms are loaded** — you enable only what you need.
@@ -28,32 +28,32 @@ By default **no platforms are loaded** — you enable only what you need.
 
 ```sh
 # 1. base (slim) — pre-release, needs the `dev` tag
-npm i -g claude-in-mobile@dev
+npm i -g mcp-devices@dev
 
 # 2. add the platform(s) you need
-npm i -g @claude-in-mobile/plugin-ios@dev
-claude-in-mobile install ios
+npm i -g @mcp-devices/plugin-ios@dev
+mcp-devices install ios
 
 # …or everything at once
-npm i -g @claude-in-mobile/plugin-all@dev
-claude-in-mobile install all
+npm i -g @mcp-devices/plugin-all@dev
+mcp-devices install all
 ```
 
-`install` records the enabled set in `~/.claude-in-mobile/config.json`; the
+`install` records the enabled set in `~/.mcp-devices/config.json`; the
 MCP server loads exactly those platforms on its next start. Override per-run
-with `CLAUDE_IN_MOBILE_PLATFORMS=ios,web` (csv / `all` / `none`).
+with `MCP_DEVICES_PLATFORMS=ios,web` (csv / `all` / `none`).
 
 ## CLI
 
 ```sh
-claude-in-mobile platforms          # list enabled + available
-claude-in-mobile install <p|all>    # enable platform(s)
-claude-in-mobile uninstall <p>      # disable platform(s)
-claude-in-mobile doctor [p...]      # check external toolchains (adb/xcrun/…)
+mcp-devices platforms          # list enabled + available
+mcp-devices install <p|all>    # enable platform(s)
+mcp-devices uninstall <p>      # disable platform(s)
+mcp-devices doctor [p...]      # check external toolchains (adb/xcrun/…)
 ```
 
 A platform tool invoked without its plugin installed returns an actionable
-"Platform '<p>' is not installed — run `claude-in-mobile install <p>`" error.
+"Platform '<p>' is not installed — run `mcp-devices install <p>`" error.
 
 ## External toolchains (per platform)
 
@@ -65,7 +65,7 @@ A platform tool invoked without its plugin installed returns an actionable
 | desktop  | JDK (desktop companion) |
 | aurora   | Aurora Flutter SDK (`audb`) |
 
-Run `claude-in-mobile doctor` to check them.
+Run `mcp-devices doctor` to check them.
 
 ## MCP client config
 
@@ -75,7 +75,7 @@ from your enabled set, not from the client config:
 ```jsonc
 {
   "mcpServers": {
-    "mobile": { "command": "claude-in-mobile" }
+    "mobile": { "command": "mcp-devices" }
   }
 }
 ```
@@ -85,6 +85,6 @@ from your enabled set, not from the client config:
 - Experimental pre-release; API and packaging may change before 4.0.0 final.
 - All five platforms are physically split into separate packages; the base
   bundle contains none of them.
-- `claude-in-mobile-lite` is temporarily disabled (being migrated to the
+- `mcp-devices-lite` is temporarily disabled (being migrated to the
   plugin model).
-- Stable production: **3.x** (`npm i -g claude-in-mobile`).
+- Stable production: **3.x** as `claude-in-mobile` (`npm i -g claude-in-mobile`).

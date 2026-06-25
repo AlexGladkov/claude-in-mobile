@@ -7,7 +7,7 @@
  */
 
 import { execFileSync } from "child_process";
-import { classifySimctlError } from "claude-in-mobile/errors";
+import { classifySimctlError } from "mcp-devices/errors";
 
 export const SIMCTL_EXEC_TIMEOUT_MS = 15_000;
 

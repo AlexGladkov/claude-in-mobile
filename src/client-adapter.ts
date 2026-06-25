@@ -91,7 +91,7 @@ const CONFIG_TEMPLATES: Record<string, object> = {
     mcp: {
       mobile: {
         type: "local",
-        command: ["npx", "-y", "claude-in-mobile"],
+        command: ["npx", "-y", "mcp-devices"],
         enabled: true,
       },
     },
@@ -100,7 +100,7 @@ const CONFIG_TEMPLATES: Record<string, object> = {
     mcpServers: {
       mobile: {
         command: "npx",
-        args: ["-y", "claude-in-mobile"],
+        args: ["-y", "mcp-devices"],
       },
     },
   },
@@ -108,7 +108,7 @@ const CONFIG_TEMPLATES: Record<string, object> = {
     mcpServers: {
       mobile: {
         command: "npx",
-        args: ["-y", "claude-in-mobile"],
+        args: ["-y", "mcp-devices"],
       },
     },
   },

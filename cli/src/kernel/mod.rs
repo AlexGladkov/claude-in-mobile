@@ -1,4 +1,4 @@
-//! Rust mirror of the claude-in-mobile microkernel.
+//! Rust mirror of the mcp-devices microkernel.
 //!
 //! Pair with `src/kernel/` on the TypeScript side. Provides the same
 //! [`Capability`] enum, [`PluginManifest`] descriptor, [`SourcePlugin`] trait

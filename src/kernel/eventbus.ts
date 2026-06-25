@@ -1,4 +1,4 @@
-import type { CoreTopics, EventBus, Unsubscribe } from "@claude-in-mobile/plugin-api";
+import type { CoreTopics, EventBus, Unsubscribe } from "@mcp-devices/plugin-api";
 
 type Handler<P> = (payload: P) => void;
 

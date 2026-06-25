@@ -21,7 +21,7 @@ describe("bootstrapKernel", () => {
   it("sync bootstrap is base-only — all platforms are separate packages", () => {
     const k = bootstrapKernel({ platforms: ALL });
     const ids = k.registry.list().map((e) => e.plugin.manifest.id).sort();
-    // Every platform now ships as @claude-in-mobile/plugin-* and loads only via
+    // Every platform now ships as @mcp-devices/plugin-* and loads only via
     // the async bootstrap (dynamic import).
     expect(ids).toEqual(["builtin-tools", "repl"]);
   });

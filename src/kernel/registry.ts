@@ -6,7 +6,7 @@ import {
   type PluginManifest,
   type PluginState,
   type SourcePlugin,
-} from "@claude-in-mobile/plugin-api";
+} from "@mcp-devices/plugin-api";
 
 export interface RegistryEntry {
   readonly plugin: SourcePlugin;

@@ -1,5 +1,5 @@
 /**
- * claude-in-mobile microkernel.
+ * mcp-devices microkernel.
  *
  * Kernel composition: registry + lifecycle + event bus + resolver + loader +
  * guard. Knows nothing about concrete platform plugins — see ADR 0001.

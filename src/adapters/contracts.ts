@@ -2,7 +2,7 @@
  * Structural ("…Like") views of platform clients/adapters.
  *
  * After the 4.0.0 physical split, the concrete implementations live in the
- * separate `@claude-in-mobile/plugin-*` packages, so the base package (device
+ * separate `@mcp-devices/plugin-*` packages, so the base package (device
  * manager, tools, facades) must NOT import them. These permissive structural
  * types let base code keep calling the legacy `getXClient()` / `getXAdapter()`
  * escape hatches without a build-time dependency on the implementation.

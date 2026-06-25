@@ -2,7 +2,7 @@ import {
   CapabilityMissingError,
   type Capability,
   type SourcePlugin,
-} from "@claude-in-mobile/plugin-api";
+} from "@mcp-devices/plugin-api";
 
 export function requireCapability(plugin: SourcePlugin, cap: Capability): void {
   if (!plugin.manifest.capabilities.includes(cap)) {

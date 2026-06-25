@@ -3,14 +3,14 @@
  * No Aurora, no Browser. Minimal memory footprint.
  */
 
-import { DeviceManager } from "claude-in-mobile/device-manager";
-import { AndroidAdapter } from "claude-in-mobile/adapters/android-adapter";
-import { IosAdapter } from "claude-in-mobile/adapters/ios-adapter";
-import { DesktopAdapter } from "claude-in-mobile/adapters/desktop-adapter";
-import { AdbClient } from "claude-in-mobile/adb/client";
-import { IosClient } from "claude-in-mobile/ios/client";
-import type { Platform } from "claude-in-mobile/device-manager";
-import type { CorePlatformAdapter } from "claude-in-mobile/adapters/platform-adapter";
+import { DeviceManager } from "mcp-devices/device-manager";
+import { AndroidAdapter } from "mcp-devices/adapters/android-adapter";
+import { IosAdapter } from "mcp-devices/adapters/ios-adapter";
+import { DesktopAdapter } from "mcp-devices/adapters/desktop-adapter";
+import { AdbClient } from "mcp-devices/adb/client";
+import { IosClient } from "mcp-devices/ios/client";
+import type { Platform } from "mcp-devices/device-manager";
+import type { CorePlatformAdapter } from "mcp-devices/adapters/platform-adapter";
 
 export function createLiteDeviceManager(): DeviceManager {
   const androidDeviceId = process.env.DEVICE_ID ?? process.env.ANDROID_SERIAL ?? undefined;

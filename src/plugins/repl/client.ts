@@ -1,7 +1,7 @@
 /**
  * JSON-RPC stdio client for the Rust REPL supervisor.
  *
- * Spawns `claude-in-mobile repl-supervisor` once per plugin instance and
+ * Spawns `mcp-devices repl-supervisor` once per plugin instance and
  * multiplexes requests over its stdin/stdout. Line-delimited JSON; correlation
  * by `id`. The supervisor process is killed on `dispose()` and on Node exit.
  */
@@ -10,7 +10,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, type Interface } from "node:readline";
 
 export interface ReplBridgeOptions {
-  /** Path to the claude-in-mobile binary. Defaults to the env override or "claude-in-mobile". */
+  /** Path to the mcp-devices binary. Defaults to the env override or "mcp-devices". */
   binaryPath?: string;
   /** Sanitized environment passed to the supervisor process. */
   env?: NodeJS.ProcessEnv;
@@ -52,8 +52,8 @@ export class ReplBridgeClient {
   constructor(opts: ReplBridgeOptions = {}) {
     this.binaryPath =
       opts.binaryPath ??
-      process.env.CLAUDE_IN_MOBILE_BIN ??
-      "claude-in-mobile";
+      process.env.MCP_DEVICES_BIN ??
+      "mcp-devices";
     this.env = opts.env ?? minimalEnv();
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 30_000;
     this.startTimeoutMs = opts.startTimeoutMs ?? 10_000;

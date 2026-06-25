@@ -1,7 +1,7 @@
 {
-  "name": "@claude-in-mobile/plugin-aurora",
+  "name": "@mcp-devices/plugin-aurora",
   "version": "4.0.0-dev",
-  "description": "Aurora OS platform plugin for claude-in-mobile (audb).",
+  "description": "Aurora OS platform plugin for mcp-devices (audb).",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -16,7 +16,7 @@
   },
   "keywords": [
     "mcp",
-    "claude-in-mobile",
+    "mcp-devices",
     "plugin",
     "aurora",
     "audb"
@@ -30,8 +30,8 @@
     "dist"
   ],
   "dependencies": {
-    "@claude-in-mobile/plugin-api": "1.0.0",
-    "claude-in-mobile": "*"
+    "@mcp-devices/plugin-api": "1.0.0",
+    "mcp-devices": "*"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

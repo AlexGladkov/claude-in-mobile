@@ -1,11 +1,11 @@
 {
-  "name": "claude-in-mobile-lite",
+  "name": "mcp-devices-lite",
   "version": "1.0.0",
   "description": "Lightweight MCP server for mobile automation — optimized for small local LLMs (Llama 3 8B, Mistral 7B, Phi-3, Gemma 2B)",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "claude-in-mobile-lite": "dist/index.js"
+    "mcp-devices-lite": "dist/index.js"
   },
   "scripts": {
     "build": "tsc",
@@ -31,7 +31,6 @@
     "dist"
   ],
   "dependencies": {
-    "claude-in-mobile": "*",
     "@modelcontextprotocol/sdk": "^1.0.0"
   },
   "devDependencies": {
@@ -40,5 +39,5 @@
     "vitest": "^4.0.18"
   },
   "private": true,
-  "_note": "BROKEN after 4.0.0 physical split: src/context.ts imports adapters/clients now in @claude-in-mobile/plugin-*. Marked private to prevent publish until rewritten to the kernel path (bootstrapKernelAsync + DeviceManager.fromKernel)."
+  "_note": "BROKEN after 4.0.0 physical split: src/context.ts imports adapters/clients now in @mcp-devices/plugin-*. Marked private to prevent publish until rewritten to the kernel path (bootstrapKernelAsync + DeviceManager.fromKernel)."
 }

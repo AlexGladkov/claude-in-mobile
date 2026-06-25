@@ -13,7 +13,7 @@
  *     supported list before registration; mismatches are reported and the
  *     plugin is skipped (never thrown — one bad plugin must not kill the host).
  *
- * Search roots default to `~/.claude-in-mobile/plugins/`. Callers can pass
+ * Search roots default to `~/.mcp-devices/plugins/`. Callers can pass
  * additional directories via `additionalRoots` for tests or vendoring.
  *
  * The loader is intentionally side-effect-free at construction; call `discover`
@@ -25,10 +25,10 @@ import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import type { Logger, SourcePlugin } from "@claude-in-mobile/plugin-api";
+import type { Logger, SourcePlugin } from "@mcp-devices/plugin-api";
 
 export interface ExternalLoaderOptions {
-  /** Extra search roots in addition to `~/.claude-in-mobile/plugins/`. */
+  /** Extra search roots in addition to `~/.mcp-devices/plugins/`. */
   additionalRoots?: ReadonlyArray<string>;
   /** API versions the host understands. Plugins outside this set are skipped. */
   supportedApiVersions?: ReadonlyArray<string>;
@@ -44,7 +44,7 @@ export interface DiscoveredPlugin {
 
 const DEFAULT_API_VERSIONS = ["1"] as const;
 
-const defaultRoot = (): string => join(homedir(), ".claude-in-mobile", "plugins");
+const defaultRoot = (): string => join(homedir(), ".mcp-devices", "plugins");
 
 async function exists(path: string): Promise<boolean> {
   try {

@@ -17,4 +17,4 @@ export {
 } from "./platform-adapter.js";
 
 // Concrete adapters
-// AuroraAdapter moved to @claude-in-mobile/plugin-aurora (4.0.0 physical split).
+// AuroraAdapter moved to @mcp-devices/plugin-aurora (4.0.0 physical split).

@@ -1,5 +1,5 @@
 [package]
-name = "claude-in-mobile"
+name = "mcp-devices"
 version = "4.0.0-dev"
 edition = "2021"
 description = "Fast native CLI for mobile device automation (Android/iOS/Aurora/Desktop)"

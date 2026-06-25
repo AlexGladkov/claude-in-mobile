@@ -1,4 +1,4 @@
-//! claude-in-mobile library - shared types and utilities
+//! mcp-devices library - shared types and utilities
 
 pub mod android;
 pub mod aurora;

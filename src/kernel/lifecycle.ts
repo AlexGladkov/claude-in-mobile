@@ -3,7 +3,7 @@ import type {
   Logger,
   PluginContext,
   ToolDefinition,
-} from "@claude-in-mobile/plugin-api";
+} from "@mcp-devices/plugin-api";
 import type { PluginRegistry, RegistryEntry } from "./registry.js";
 
 export const DEFAULT_INIT_TIMEOUT_MS = 10_000;

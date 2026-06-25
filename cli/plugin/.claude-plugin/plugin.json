@@ -1,5 +1,5 @@
 {
-  "name": "claude-in-mobile",
+  "name": "mcp-devices",
   "version": "4.0.0-dev",
   "description": "Mobile device automation CLI for Android, iOS, Aurora OS, and Desktop platforms",
   "author": {
@@ -7,6 +7,6 @@
     "url": "https://github.com/defendend"
   },
   "skills": [
-    "./skills/claude-in-mobile"
+    "./skills/mcp-devices"
   ]
 }

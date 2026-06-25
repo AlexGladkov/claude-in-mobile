@@ -26,7 +26,7 @@ export class DesktopFacade {
     const desktop = this.adapters.get("desktop") as DesktopAdapterLike | undefined;
     if (!desktop || typeof desktop.launch !== "function") {
       throw new Error(
-        "Desktop is not installed. Run `claude-in-mobile install desktop`."
+        "Desktop is not installed. Run `mcp-devices install desktop`."
       );
     }
     return desktop;
@@ -79,7 +79,7 @@ export class DesktopFacade {
     const adapter = this.adapters.get("browser");
     if (!adapter) {
       throw new Error(
-        "Web is not installed. Run `claude-in-mobile install web`."
+        "Web is not installed. Run `mcp-devices install web`."
       );
     }
     return adapter as unknown as BrowserAdapterLike;

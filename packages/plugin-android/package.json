@@ -1,7 +1,7 @@
 {
-  "name": "@claude-in-mobile/plugin-android",
+  "name": "@mcp-devices/plugin-android",
   "version": "4.0.0-dev",
-  "description": "Android (ADB) platform plugin for claude-in-mobile.",
+  "description": "Android (ADB) platform plugin for mcp-devices.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -16,7 +16,7 @@
   },
   "keywords": [
     "mcp",
-    "claude-in-mobile",
+    "mcp-devices",
     "plugin",
     "android",
     "adb"
@@ -30,8 +30,8 @@
     "dist"
   ],
   "dependencies": {
-    "@claude-in-mobile/plugin-api": "1.0.0",
-    "claude-in-mobile": "*"
+    "@mcp-devices/plugin-api": "1.0.0",
+    "mcp-devices": "*"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

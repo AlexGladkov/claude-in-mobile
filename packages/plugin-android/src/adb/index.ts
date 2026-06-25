@@ -10,6 +10,6 @@ export {
   findElements,
   formatElement,
   formatUiTree,
-} from "claude-in-mobile/ui-tree/ui-parser";
+} from "mcp-devices/ui-tree/ui-parser";
 
-export type { Bounds, UiElement } from "claude-in-mobile/ui-tree/ui-parser";
+export type { Bounds, UiElement } from "mcp-devices/ui-tree/ui-parser";

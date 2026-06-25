@@ -28,19 +28,19 @@ describe("parsePlatformList", () => {
 });
 
 describe("resolveEnabledPlatforms", () => {
-  const prev = process.env.CLAUDE_IN_MOBILE_PLATFORMS;
+  const prev = process.env.MCP_DEVICES_PLATFORMS;
   afterEach(() => {
-    if (prev === undefined) delete process.env.CLAUDE_IN_MOBILE_PLATFORMS;
-    else process.env.CLAUDE_IN_MOBILE_PLATFORMS = prev;
+    if (prev === undefined) delete process.env.MCP_DEVICES_PLATFORMS;
+    else process.env.MCP_DEVICES_PLATFORMS = prev;
   });
 
   it("env wins and parses", () => {
-    process.env.CLAUDE_IN_MOBILE_PLATFORMS = "ios,web";
+    process.env.MCP_DEVICES_PLATFORMS = "ios,web";
     expect(resolveEnabledPlatforms().sort()).toEqual(["ios", "web"]);
   });
 
   it("env=none → empty", () => {
-    process.env.CLAUDE_IN_MOBILE_PLATFORMS = "none";
+    process.env.MCP_DEVICES_PLATFORMS = "none";
     expect(resolveEnabledPlatforms()).toEqual([]);
   });
 });

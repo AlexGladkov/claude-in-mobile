@@ -9,7 +9,7 @@
 
 import { execFile, execFileSync } from "child_process";
 import { promisify } from "util";
-import { classifyAdbError } from "claude-in-mobile/errors";
+import { classifyAdbError } from "mcp-devices/errors";
 import { resolveAdbPath } from "./resolver.js";
 
 const execFileAsync = promisify(execFile);

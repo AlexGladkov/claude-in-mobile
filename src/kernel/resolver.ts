@@ -1,5 +1,5 @@
-import type { Capability, SourcePlugin } from "@claude-in-mobile/plugin-api";
-import { CapabilityMissingError } from "@claude-in-mobile/plugin-api";
+import type { Capability, SourcePlugin } from "@mcp-devices/plugin-api";
+import { CapabilityMissingError } from "@mcp-devices/plugin-api";
 import type { PluginRegistry } from "./registry.js";
 
 export interface ResolveQuery {

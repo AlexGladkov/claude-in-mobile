@@ -1,24 +1,24 @@
 {
-  "name": "@claude-in-mobile/plugin-all",
+  "name": "@mcp-devices/plugin-all",
   "version": "4.0.0-dev",
-  "description": "Meta-package: installs all claude-in-mobile platform plugins (android, ios, web, desktop, aurora).",
+  "description": "Meta-package: installs all mcp-devices platform plugins (android, ios, web, desktop, aurora).",
   "type": "module",
   "files": [
     "README.md"
   ],
   "keywords": [
     "mcp",
-    "claude-in-mobile",
+    "mcp-devices",
     "plugin",
     "meta"
   ],
   "author": "Alex Gladkov",
   "license": "MIT",
   "dependencies": {
-    "@claude-in-mobile/plugin-android": "*",
-    "@claude-in-mobile/plugin-ios": "*",
-    "@claude-in-mobile/plugin-web": "*",
-    "@claude-in-mobile/plugin-desktop": "*",
-    "@claude-in-mobile/plugin-aurora": "*"
+    "@mcp-devices/plugin-android": "*",
+    "@mcp-devices/plugin-ios": "*",
+    "@mcp-devices/plugin-web": "*",
+    "@mcp-devices/plugin-desktop": "*",
+    "@mcp-devices/plugin-aurora": "*"
   }
 }

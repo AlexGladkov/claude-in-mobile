@@ -9,16 +9,16 @@
 //!
 //! ```text
 //! # Enable turbo globally
-//! claude-in-mobile config set turbo true
+//! mcp-devices config set turbo true
 //!
 //! # Check current value
-//! claude-in-mobile config get turbo
+//! mcp-devices config get turbo
 //!
 //! # List all settings
-//! claude-in-mobile config list
+//! mcp-devices config list
 //!
 //! # Remove a key
-//! claude-in-mobile config reset turbo
+//! mcp-devices config reset turbo
 //! ```
 
 use std::collections::HashMap;

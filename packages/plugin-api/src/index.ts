@@ -1,7 +1,7 @@
 /**
- * @claude-in-mobile/plugin-api
+ * @mcp-devices/plugin-api
  *
- * Public plugin contract for the claude-in-mobile microkernel.
+ * Public plugin contract for the mcp-devices microkernel.
  *
  * Versioned independently of the product. See docs/adr/0002-plugin-api-v1.md
  * for the formal contract, lifecycle FSM, and event bus topics.

@@ -1,7 +1,7 @@
 {
-  "name": "@claude-in-mobile/plugin-web",
+  "name": "@mcp-devices/plugin-web",
   "version": "4.0.0-dev",
-  "description": "Web/browser platform plugin for claude-in-mobile (Chrome DevTools Protocol).",
+  "description": "Web/browser platform plugin for mcp-devices (Chrome DevTools Protocol).",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -16,7 +16,7 @@
   },
   "keywords": [
     "mcp",
-    "claude-in-mobile",
+    "mcp-devices",
     "plugin",
     "browser",
     "cdp",
@@ -31,10 +31,10 @@
     "dist"
   ],
   "dependencies": {
-    "@claude-in-mobile/plugin-api": "1.0.0",
+    "@mcp-devices/plugin-api": "1.0.0",
     "chrome-launcher": "^1.1.0",
     "chrome-remote-interface": "^0.33.0",
-    "claude-in-mobile": "*"
+    "mcp-devices": "*"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

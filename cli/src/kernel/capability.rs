@@ -1,4 +1,4 @@
-//! Capability enum mirroring `@claude-in-mobile/plugin-api` (v1).
+//! Capability enum mirroring `@mcp-devices/plugin-api` (v1).
 //!
 //! Update both sides together — the TypeScript enum lives in
 //! `packages/plugin-api/src/index.ts`. The string form on the wire MUST match

@@ -5,12 +5,12 @@
  * Those capabilities are NOT implemented here -- no more "not supported" throws.
  */
 
-import type { CorePlatformAdapter } from "claude-in-mobile/adapters/platform-adapter";
-import type { Platform, Device } from "claude-in-mobile/device-manager";
-import type { CompressOptions } from "claude-in-mobile/utils/image";
+import type { CorePlatformAdapter } from "mcp-devices/adapters/platform-adapter";
+import type { Platform, Device } from "mcp-devices/device-manager";
+import type { CompressOptions } from "mcp-devices/utils/image";
 import { BrowserClient } from "./browser/client.js";
 import { SessionManager } from "./browser/session-manager.js";
-import { compressScreenshot } from "claude-in-mobile/utils/image";
+import { compressScreenshot } from "mcp-devices/utils/image";
 import type {
   BrowserOpenOptions,
   BrowserNavigateOptions,
@@ -19,7 +19,7 @@ import type {
   BrowserFillFormOptions,
 } from "./browser/types.js";
 import { DEFAULT_SESSION } from "./browser/types.js";
-import { BrowserNoSessionError, BrowserSessionNotFoundError } from "claude-in-mobile/errors";
+import { BrowserNoSessionError, BrowserSessionNotFoundError } from "mcp-devices/errors";
 
 const VIRTUAL_BROWSER_DEVICE: Device = {
   id: "browser",

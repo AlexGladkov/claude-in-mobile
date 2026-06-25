@@ -11,8 +11,8 @@
 
 import { ChildProcess, execFileSync, spawn } from "child_process";
 import type { GradleLauncher } from "./gradle.js";
-import { MobileError } from "claude-in-mobile/errors";
-import { validateBundleId } from "claude-in-mobile/utils/sanitize";
+import { MobileError } from "mcp-devices/errors";
+import { validateBundleId } from "mcp-devices/utils/sanitize";
 import type { LaunchOptions, LogType } from "./types.js";
 import {
   BUNDLE_LAUNCH_POLL_INTERVAL_MS,

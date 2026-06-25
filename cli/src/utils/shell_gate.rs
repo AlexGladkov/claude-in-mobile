@@ -1,6 +1,6 @@
 //! Opt-in gate for the `shell` subcommand (CLI-arbitrary-command sink).
 //!
-//! The `shell` family of subcommands (`claude-in-mobile shell …`) executes
+//! The `shell` family of subcommands (`mcp-devices shell …`) executes
 //! arbitrary device-side commands. While the on-device shell string itself is
 //! quoted via [`crate::utils::device_shell::DeviceShellCmd`] (see #42), the
 //! semantic of the command — "run whatever the caller passed, verbatim" —
@@ -17,7 +17,7 @@
 //! # Bypass rules — gate passes if ANY of:
 //!
 //! 1. The per-invocation flag `--i-know-what-im-doing` is set.
-//! 2. The environment variable `CLAUDE_IN_MOBILE_ALLOW_SHELL=1` is set.
+//! 2. The environment variable `MCP_DEVICES_ALLOW_SHELL=1` is set.
 //! 3. Both stdin and stderr are connected to a TTY (interactive use).
 //!
 //! Otherwise the gate returns an error documenting the three opt-ins, and
@@ -37,7 +37,7 @@ use std::io::{stderr, stdin, IsTerminal};
 use anyhow::{bail, Result};
 
 /// Environment variable that bypasses the gate when set to `1`.
-pub const ALLOW_SHELL_ENV: &str = "CLAUDE_IN_MOBILE_ALLOW_SHELL";
+pub const ALLOW_SHELL_ENV: &str = "MCP_DEVICES_ALLOW_SHELL";
 
 /// Warning emitted to stderr before running `shell` in any non-interactive
 /// path that has explicitly opted in (flag or env-var). Suppressed when the
@@ -54,7 +54,7 @@ fn detect_interactive() -> bool {
     stdin().is_terminal() && stderr().is_terminal()
 }
 
-/// Check whether `CLAUDE_IN_MOBILE_ALLOW_SHELL` is set to a truthy value.
+/// Check whether `MCP_DEVICES_ALLOW_SHELL` is set to a truthy value.
 ///
 /// "Truthy" here is strictly the literal `1` — matching the documented
 /// contract in user-facing error messages. Avoid leniency (`yes`, `true`,
@@ -68,7 +68,7 @@ fn env_allows_shell() -> bool {
 /// Gate the `shell` subcommand against unintended non-interactive use.
 ///
 /// Pure wrapper around [`check_shell_allowed_with`] that auto-detects the
-/// TTY status and the `CLAUDE_IN_MOBILE_ALLOW_SHELL` env-var. Production
+/// TTY status and the `MCP_DEVICES_ALLOW_SHELL` env-var. Production
 /// call-sites should use this function; the `_with` variant exists for
 /// testability (no global state in tests).
 ///
@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn env_bypass_allows_in_non_interactive_no_flag() {
-        // CLAUDE_IN_MOBILE_ALLOW_SHELL=1 alone is enough.
+        // MCP_DEVICES_ALLOW_SHELL=1 alone is enough.
         assert!(check_shell_allowed_with(false, true, false).is_ok());
     }
 

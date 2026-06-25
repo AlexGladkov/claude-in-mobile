@@ -9,10 +9,10 @@ use anyhow::{bail, Context, Result};
 
 use crate::cli::SetupCommands;
 
-const SKILL_NAME: &str = "claude-in-mobile";
-const SKILL_MD: &str = include_str!("../../plugin/skills/claude-in-mobile/SKILL.md");
+const SKILL_NAME: &str = "mcp-devices";
+const SKILL_MD: &str = include_str!("../../plugin/skills/mcp-devices/SKILL.md");
 const PLATFORM_SUPPORT_MD: &str =
-    include_str!("../../plugin/skills/claude-in-mobile/references/platform-support.md");
+    include_str!("../../plugin/skills/mcp-devices/references/platform-support.md");
 
 pub fn run(command: SetupCommands) -> Result<()> {
     match command {
@@ -138,7 +138,7 @@ fn install_agent_skill(
     };
 
     println!(
-        "Installed {} skill ({}) at {}\nRestart {}, then ask it to use the claude-in-mobile skill.",
+        "Installed {} skill ({}) at {}\nRestart {}, then ask it to use the mcp-devices skill.",
         agent_name,
         scope_label,
         target_dir.display(),

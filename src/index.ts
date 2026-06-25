@@ -13,7 +13,7 @@ import { VALID_PROFILES, type MobileProfile } from "./profiles.js";
 import { recordCall } from "./utils/anti-patterns.js";
 import { bootstrapKernelAsync, type KernelHandle } from "./runtime/bootstrap.js";
 import { DeviceManager } from "./device-manager.js";
-import type { ToolDefinition as PluginToolDefinition } from "@claude-in-mobile/plugin-api";
+import type { ToolDefinition as PluginToolDefinition } from "@mcp-devices/plugin-api";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { captureStep } from "./tools/recorder-tools.js";
 import { resolveToolCall } from "./tools/registry.js";
@@ -102,11 +102,11 @@ const activeProfile: MobileProfile = VALID_PROFILES.includes(rawProfile as Mobil
 // short-circuit before any kernel/server boot — they just mutate config.
 runPlatformCommand(process.argv);
 
-// Kernel bootstrap — see runtime/bootstrap.ts. `CLAUDE_IN_MOBILE_EXTERNAL_PLUGINS=1`
-// opts in to filesystem discovery from `~/.claude-in-mobile/plugins/`.
-const enableExternal = process.env.CLAUDE_IN_MOBILE_EXTERNAL_PLUGINS === "1";
+// Kernel bootstrap — see runtime/bootstrap.ts. `MCP_DEVICES_EXTERNAL_PLUGINS=1`
+// opts in to filesystem discovery from `~/.mcp-devices/plugins/`.
+const enableExternal = process.env.MCP_DEVICES_EXTERNAL_PLUGINS === "1";
 // Always async: enabled platforms shipped as separate packages
-// (e.g. @claude-in-mobile/plugin-aurora) are loaded via dynamic import.
+// (e.g. @mcp-devices/plugin-aurora) are loaded via dynamic import.
 const kernel: KernelHandle = await bootstrapKernelAsync(
   enableExternal ? { externalPlugins: true } : {}
 );
@@ -144,7 +144,7 @@ if (kernelToolDefs.length > 0) {
 freezeRegistry();
 
 // --help / --version / --init short-circuit. Without these flags, agents that
-// probe `npx -y claude-in-mobile --help` (notably Gemini) cause the MCP server
+// probe `npx -y mcp-devices --help` (notably Gemini) cause the MCP server
 // to start its stdio JSON-RPC loop and block forever waiting on stdin, which
 // looks like a deadlock from the agent's side. See issue #44.
 runCliIfRequested(process.argv, pkg.version);

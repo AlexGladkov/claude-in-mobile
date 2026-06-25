@@ -2,8 +2,8 @@
  * Platform enablement config — which platform plugins the kernel loads.
  *
  * Resolution order (first wins):
- *   1. `CLAUDE_IN_MOBILE_PLATFORMS` env (csv, or `all` / `none`)
- *   2. `~/.claude-in-mobile/config.json` → `{ "platforms": [...] }`
+ *   1. `MCP_DEVICES_PLATFORMS` env (csv, or `all` / `none`)
+ *   2. `~/.mcp-devices/config.json` → `{ "platforms": [...] }`
  *   3. default: none (base is slim; platforms are opt-in / installed on demand)
  *
  * The `install` CLI writes the config file; the bootstrap reads it. Keeping the
@@ -25,7 +25,7 @@ export const ALL_PLATFORMS = [
 export type PlatformId = (typeof ALL_PLATFORMS)[number];
 
 export function configPath(): string {
-  return join(homedir(), ".claude-in-mobile", "config.json");
+  return join(homedir(), ".mcp-devices", "config.json");
 }
 
 function isPlatformId(s: string): s is PlatformId {
@@ -63,14 +63,14 @@ function readConfigPlatforms(path = configPath()): PlatformId[] | undefined {
 
 /** Resolve the enabled platform set per the documented precedence. */
 export function resolveEnabledPlatforms(): PlatformId[] {
-  const env = process.env.CLAUDE_IN_MOBILE_PLATFORMS;
+  const env = process.env.MCP_DEVICES_PLATFORMS;
   if (env !== undefined) return parsePlatformList(env);
   const fromConfig = readConfigPlatforms();
   if (fromConfig) return fromConfig;
   return [];
 }
 
-/** Persist the enabled platform set (used by `claude-in-mobile install`). */
+/** Persist the enabled platform set (used by `mcp-devices install`). */
 export function writeEnabledPlatforms(
   platforms: readonly PlatformId[],
   path = configPath()

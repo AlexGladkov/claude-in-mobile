@@ -3,8 +3,8 @@ import type {
   PluginContext,
   SourcePlugin,
   ToolDefinition,
-} from "@claude-in-mobile/plugin-api";
-import { ApiVersionMismatchError, PluginContractError } from "@claude-in-mobile/plugin-api";
+} from "@mcp-devices/plugin-api";
+import { ApiVersionMismatchError, PluginContractError } from "@mcp-devices/plugin-api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {

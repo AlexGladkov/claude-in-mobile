@@ -1,4 +1,4 @@
-//! claude-in-mobile - Fast CLI for mobile device automation
+//! mcp-devices - Fast CLI for mobile device automation
 //!
 //! Supports Android (via ADB), iOS (via simctl), Aurora (via audb), Desktop (via companion app)
 //! Also supports Google Play, Huawei AppGallery, and RuStore store management.

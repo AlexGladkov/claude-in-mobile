@@ -9,7 +9,7 @@ import type {
   PluginContext,
   PluginManifest,
   SourcePlugin,
-} from "@claude-in-mobile/plugin-api";
+} from "@mcp-devices/plugin-api";
 
 import { BrowserAdapter } from "./browser-adapter.js";
 

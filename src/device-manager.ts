@@ -120,8 +120,8 @@ export class DeviceManager {
       const available = [...this.adapters.keys()].join(", ") || "none";
       throw new Error(
         `Platform '${target}' is not installed. ` +
-          `Enable it with \`claude-in-mobile install ${target}\` ` +
-          `(or set CLAUDE_IN_MOBILE_PLATFORMS=${target}). ` +
+          `Enable it with \`mcp-devices install ${target}\` ` +
+          `(or set MCP_DEVICES_PLATFORMS=${target}). ` +
           `Currently available: ${available}.`
       );
     }
@@ -295,7 +295,7 @@ export class DeviceManager {
   getAndroidClient(deviceId?: string): AdbClientLike {
     const adapter = this.adapters.get("android") as { getClient?: (deviceId?: string) => AdbClientLike } | undefined;
     if (!adapter || typeof adapter.getClient !== "function") {
-      throw new Error("Android is not installed. Run `claude-in-mobile install android`.");
+      throw new Error("Android is not installed. Run `mcp-devices install android`.");
     }
     return adapter.getClient(deviceId);
   }
@@ -304,7 +304,7 @@ export class DeviceManager {
   getIosClient(deviceId?: string): IosClientLike {
     const adapter = this.adapters.get("ios") as { getClient?: (deviceId?: string) => IosClientLike } | undefined;
     if (!adapter || typeof adapter.getClient !== "function") {
-      throw new Error("iOS is not installed. Run `claude-in-mobile install ios`.");
+      throw new Error("iOS is not installed. Run `mcp-devices install ios`.");
     }
     return adapter.getClient(deviceId);
   }
@@ -312,7 +312,7 @@ export class DeviceManager {
   /**
    * @deprecated Use `getAdapter("aurora")` + capability type guards.
    *
-   * Aurora ships as the separate `@claude-in-mobile/plugin-aurora` package
+   * Aurora ships as the separate `@mcp-devices/plugin-aurora` package
    * (4.0.0 physical split), so this resolves the client structurally via the
    * adapter's `getClient()` rather than an `instanceof` on a bundled class.
    */
@@ -322,7 +322,7 @@ export class DeviceManager {
       | undefined;
     if (!adapter || typeof adapter.getClient !== "function") {
       throw new Error(
-        "Aurora is not installed. Run `claude-in-mobile install aurora`."
+        "Aurora is not installed. Run `mcp-devices install aurora`."
       );
     }
     return adapter.getClient();
@@ -331,7 +331,7 @@ export class DeviceManager {
   getWebViewInspector(): WebViewInspectorLike {
     const adapter = this.adapters.get("android") as { getWebViewInspector?: () => WebViewInspectorLike } | undefined;
     if (!adapter || typeof adapter.getWebViewInspector !== "function") {
-      throw new Error("Android is not installed. Run `claude-in-mobile install android`.");
+      throw new Error("Android is not installed. Run `mcp-devices install android`.");
     }
     return adapter.getWebViewInspector();
   }

@@ -66,7 +66,7 @@ function loadPluginPackages(): Array<FileImport & { pkg: string }> {
   return out;
 }
 
-// aurora/ moved to @claude-in-mobile/plugin-aurora (4.0.0 physical split).
+// aurora/ moved to @mcp-devices/plugin-aurora (4.0.0 physical split).
 const PLATFORM_DIRS = ["adapters/", "ios/"];
 
 describe("architecture", () => {
@@ -78,7 +78,7 @@ describe("architecture", () => {
       f.imports
         .filter((imp) =>
           PLUGIN_PKGS.filter((o) => o !== f.pkg).some((o) =>
-            imp.includes(`@claude-in-mobile/plugin-${o}`)
+            imp.includes(`@mcp-devices/plugin-${o}`)
           )
         )
         .map((imp) => `plugin-${f.pkg}/${f.file} → ${imp}`)
@@ -87,13 +87,13 @@ describe("architecture", () => {
   });
 
   it("base (src/**) must not import the extracted platform packages", () => {
-    // 4.0.0 physical split: platforms live in @claude-in-mobile/plugin-*,
+    // 4.0.0 physical split: platforms live in @mcp-devices/plugin-*,
     // loaded only by dynamic import in bootstrap. Any STATIC import of a
     // platform package from base would re-bundle it and break the slim base.
     const violations = all
       .flatMap((f) =>
         f.imports
-          .filter((imp) => /@claude-in-mobile\/plugin-(android|ios|web|desktop|aurora|all)/.test(imp))
+          .filter((imp) => /@mcp-devices\/plugin-(android|ios|web|desktop|aurora|all)/.test(imp))
           .map((imp) => `${f.file} → ${imp}`)
       );
     expect(violations).toEqual([]);
