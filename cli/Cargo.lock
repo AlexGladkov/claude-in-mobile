@@ -352,27 +352,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a822ea5bc7590f9d40f1ba12c0dc3c2760f3482c6984db1573ad11031420831"
 
 [[package]]
-name = "claude-in-mobile"
-version = "4.0.0-dev"
-dependencies = [
- "ab_glyph",
- "anyhow",
- "base64",
- "clap",
- "colored",
- "image",
- "imageproc",
- "portable-pty",
- "regex",
- "reqwest",
- "rsa",
- "serde",
- "serde_json",
- "tempfile",
- "vt100",
-]
-
-[[package]]
 name = "color_quant"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1167,6 +1146,27 @@ checksum = "8ea1f30cedd69f0a2954655f7188c6a834246d2bcf1e315e2ac40c4b24dc9519"
 dependencies = [
  "cfg-if",
  "rayon",
+]
+
+[[package]]
+name = "mcp-devices"
+version = "4.0.0-dev"
+dependencies = [
+ "ab_glyph",
+ "anyhow",
+ "base64",
+ "clap",
+ "colored",
+ "image",
+ "imageproc",
+ "portable-pty",
+ "regex",
+ "reqwest",
+ "rsa",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "vt100",
 ]
 
 [[package]]
