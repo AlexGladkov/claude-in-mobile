@@ -14,6 +14,35 @@ permissions:
 # artifacts dynamically from the upload-artifact filenames.
 
 jobs:
+  # Classifies the tag: a version with a prerelease component (e.g. 4.0.0-dev,
+  # 4.0.0-rc.1) is published as a GitHub *pre-release* (does NOT become "Latest")
+  # and to a non-`latest` npm dist-tag, so the stable 3.x line stays the default
+  # install. Downstream jobs read these outputs instead of re-deriving them.
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.classify.outputs.version }}
+      prerelease: ${{ steps.classify.outputs.prerelease }}
+      npm_tag: ${{ steps.classify.outputs.npm_tag }}
+    steps:
+      - name: Classify tag
+        id: classify
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [[ "$VERSION" == *-* ]]; then
+            # Prerelease: derive the npm dist-tag from the identifier
+            # (4.0.0-dev -> dev, 4.0.0-rc.1 -> rc); fall back to `next`.
+            NPM_TAG=$(echo "$VERSION" | sed -nE 's/^[0-9]+\.[0-9]+\.[0-9]+-([a-zA-Z][a-zA-Z0-9]*).*/\1/p')
+            [ -z "$NPM_TAG" ] && NPM_TAG=next
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=$NPM_TAG" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
+          fi
+          cat "$GITHUB_OUTPUT"
+
   build:
     strategy:
       matrix:
@@ -44,7 +73,7 @@ jobs:
       - name: Package
         run: |
           ARCHIVE="claude-in-mobile-${{ steps.version.outputs.version }}-${{ matrix.platform }}.tar.gz"
-          tar -czf "$ARCHIVE" -C cli/target/${{ matrix.target }}/release claude-in-mobile
+          tar -czf "$ARCHIVE" -C cli/target/${{ matrix.target }}/release mcp-devices
           shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
 
       - name: Upload artifact
@@ -95,7 +124,7 @@ jobs:
           echo "All versions match tag $TAG"
 
   release:
-    needs: build
+    needs: [build, setup]
     runs-on: ubuntu-latest
 
     steps:
@@ -109,9 +138,13 @@ jobs:
         with:
           generate_release_notes: true
           files: "*.tar.gz"
+          # Prerelease tags (e.g. 4.0.0-dev) are flagged as pre-release and are
+          # NOT promoted to "Latest" — the stable line keeps that badge.
+          prerelease: ${{ needs.setup.outputs.prerelease == 'true' }}
+          make_latest: ${{ needs.setup.outputs.prerelease == 'false' }}
 
   publish-npm:
-    needs: [build, verify-plugin-versions]
+    needs: [build, verify-plugin-versions, setup]
     runs-on: ubuntu-latest
     # `--provenance` on `npm publish` mints a Sigstore attestation linking
     # the published tarball to this exact workflow run. The npm CLI rejects
@@ -146,11 +179,30 @@ jobs:
       - name: Publish to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish --access public --provenance
+          NPM_TAG: ${{ needs.setup.outputs.npm_tag }}
+        # Prerelease versions go to a side dist-tag (e.g. `dev`); `latest` keeps
+        # pointing at the stable line so `npm i mcp-devices` is unaffected.
+        #
+        # Idempotent: a version already in the registry (e.g. re-running a tag,
+        # or a manually-published dev build) cannot be re-published — npm rejects
+        # it with 403. In that case just (re)point the dist-tag instead of failing.
+        run: |
+          NAME=$(jq -r '.name' package.json)
+          VERSION=$(jq -r '.version' package.json)
+          if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "${NAME}@${VERSION} already published — moving dist-tag '${NPM_TAG}'"
+            npm dist-tag add "${NAME}@${VERSION}" "${NPM_TAG}"
+          else
+            npm publish --access public --provenance --tag "${NPM_TAG}"
+          fi
 
   update-homebrew:
-    needs: release
+    needs: [release, setup]
     runs-on: ubuntu-latest
+    # Never bump the stable Homebrew formula to a prerelease — brew users on the
+    # stable tap must not be jumped to a dev build. verify-checksums depends on
+    # this job, so it is skipped for prereleases too.
+    if: needs.setup.outputs.prerelease == 'false'
 
     steps:
       - name: Extract version from tag
