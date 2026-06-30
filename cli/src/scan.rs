@@ -239,17 +239,16 @@ fn encode_video(png: &Path, mp4: &Path, hold: f32) -> Result<()> {
     )?;
 
     const LOOP_SECS: f32 = 60.0;
-    // The videofile camera source loops the file, so the barcode would reappear
-    // every loop. With `hold`, pad a very long blank tail (~1h) so in practice
-    // the code shows once and the camera stays quiet for the whole session.
-    // Static white compresses to almost nothing, so the file stays small.
-    const BLANK_TAIL_SECS: f32 = 3600.0;
     let scale = format!("scale={}:{}", FRAME_W, FRAME_H);
 
-    // hold <= 0 keeps the barcode visible the whole loop: the app scans it
-    // continuously while it sits in frame. Otherwise the barcode shows for
-    // `hold` seconds then the feed goes blank, so the app decodes it once.
-    let args: Vec<String> = if hold <= 0.0 {
+    // The videofile camera source plays on a global timeline that does NOT reset
+    // on camera reopen, so the file must LOOP for the barcode to be available
+    // whenever the app opens its scanner. hold <= 0 (or >= loop) keeps the
+    // barcode visible the whole loop — the app scans it continuously while it
+    // sits in frame. Otherwise the barcode shows for `hold` seconds then the
+    // feed goes blank for the rest of the loop, so the app decodes it roughly
+    // once per loop instead of every frame.
+    let args: Vec<String> = if hold <= 0.0 || hold >= LOOP_SECS {
         vec![
             "-y".into(),
             "-loop".into(), "1".into(),
@@ -262,7 +261,7 @@ fn encode_video(png: &Path, mp4: &Path, hold: f32) -> Result<()> {
             mp4.to_string_lossy().into_owned(),
         ]
     } else {
-        let blank = BLANK_TAIL_SECS.to_string();
+        let blank = (LOOP_SECS - hold).to_string();
         vec![
             "-y".into(),
             "-loop".into(), "1".into(), "-t".into(), hold.to_string(),

@@ -1344,11 +1344,12 @@ pub enum Commands {
         #[arg(long, default_value = "true")]
         tile: bool,
 
-        /// Seconds the barcode stays visible before the feed goes blank, so the
-        /// app decodes it once instead of firing continuously while it sits in
-        /// frame. A long blank tail follows (~1h), so in practice the code shows
-        /// once and the camera stays quiet. Set 0 to keep the barcode visible
-        /// the whole time (continuous scanning).
+        /// Seconds the barcode stays visible before the feed goes blank for the
+        /// rest of the 60s loop, so the app decodes it about once per loop
+        /// instead of firing every frame while it sits in frame. The videofile
+        /// plays on a global timeline that does not reset on camera reopen, so
+        /// the feed must loop for the code to be available whenever the scanner
+        /// opens. Set 0 to keep the barcode visible the whole time (continuous).
         #[arg(long, default_value = "3.0")]
         hold: f32,
     },
