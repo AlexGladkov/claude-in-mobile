@@ -1349,8 +1349,11 @@ pub enum Commands {
         /// instead of firing every frame while it sits in frame. The videofile
         /// plays on a global timeline that does not reset on camera reopen, so
         /// the feed must loop for the code to be available whenever the scanner
-        /// opens. Set 0 to keep the barcode visible the whole time (continuous).
-        #[arg(long, default_value = "3.0")]
+        /// opens. Default 0 keeps the barcode visible the whole time so it is
+        /// always there on open (apps that stop after the first decode, like an
+        /// info lookup, scan it once anyway). Use a positive value to throttle
+        /// apps that keep scanning while the code sits in frame.
+        #[arg(long, default_value = "0")]
         hold: f32,
     },
 }
