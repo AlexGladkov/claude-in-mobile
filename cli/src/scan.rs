@@ -30,6 +30,7 @@ pub fn run(
     avd: Option<&str>,
     video_path: Option<&str>,
     tile: bool,
+    hold: f32,
 ) -> Result<()> {
     let serial = resolve_emulator_serial(device)?;
     let video = resolve_video_path(video_path)?;
@@ -44,7 +45,7 @@ pub fn run(
         .save(&png_path)
         .with_context(|| format!("Failed to write frame image {}", png_path.display()))?;
 
-    encode_video(&png_path, &video)?;
+    encode_video(&png_path, &video, hold)?;
 
     if setup {
         setup_emulator(&serial, avd, &video)?;
@@ -231,30 +232,54 @@ fn encode_linear(text: &str, kind: &str) -> Result<Vec<u8>> {
 
 /// Wrap the still barcode image into a short looping MP4 — the emulator's
 /// videofile camera source needs a video stream, not a still image.
-fn encode_video(png: &Path, mp4: &Path) -> Result<()> {
+fn encode_video(png: &Path, mp4: &Path, hold: f32) -> Result<()> {
     which("ffmpeg").context(
         "ffmpeg is required to build the camera video but was not found in PATH.\n\
          Install it (e.g. `brew install ffmpeg`) and retry.",
     )?;
+
+    const TOTAL_SECS: f32 = 60.0;
+    let scale = format!("scale={}:{}", FRAME_W, FRAME_H);
+
+    // hold <= 0 (or >= total) keeps the barcode visible the whole loop: the app
+    // scans it continuously while it sits in frame. Otherwise the barcode shows
+    // for `hold` seconds then the feed goes blank for the rest of the loop, so
+    // the app decodes it once per loop instead of firing every frame.
+    let args: Vec<String> = if hold <= 0.0 || hold >= TOTAL_SECS {
+        vec![
+            "-y".into(),
+            "-loop".into(), "1".into(),
+            "-i".into(), png.to_string_lossy().into_owned(),
+            "-t".into(), TOTAL_SECS.to_string(),
+            "-r".into(), "10".into(),
+            "-g".into(), "10".into(),
+            "-pix_fmt".into(), "yuv420p".into(),
+            "-vf".into(), scale,
+            mp4.to_string_lossy().into_owned(),
+        ]
+    } else {
+        let blank = (TOTAL_SECS - hold).to_string();
+        vec![
+            "-y".into(),
+            "-loop".into(), "1".into(), "-t".into(), hold.to_string(),
+            "-i".into(), png.to_string_lossy().into_owned(),
+            "-f".into(), "lavfi".into(), "-t".into(), blank,
+            "-i".into(), format!("color=c=white:s={}x{}:r=10", FRAME_W, FRAME_H),
+            "-filter_complex".into(),
+            format!(
+                "[0:v]{},setsar=1[a];[1:v]setsar=1[b];[a][b]concat=n=2:v=1:a=0[v]",
+                scale
+            ),
+            "-map".into(), "[v]".into(),
+            "-r".into(), "10".into(),
+            "-g".into(), "10".into(),
+            "-pix_fmt".into(), "yuv420p".into(),
+            mp4.to_string_lossy().into_owned(),
+        ]
+    };
+
     let status = Command::new("ffmpeg")
-        .args([
-            "-y",
-            "-loop",
-            "1",
-            "-i",
-            &png.to_string_lossy(),
-            "-t",
-            "60",
-            "-r",
-            "10",
-            "-g",
-            "10",
-            "-pix_fmt",
-            "yuv420p",
-            "-vf",
-            &format!("scale={}:{}", FRAME_W, FRAME_H),
-            &mp4.to_string_lossy(),
-        ])
+        .args(&args)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()

@@ -647,6 +647,7 @@ pub fn run(command: Commands) -> Result<()> {
             avd,
             video_path,
             tile,
+            hold,
         } => crate::scan::run(
             &text,
             &r#type,
@@ -655,6 +656,7 @@ pub fn run(command: Commands) -> Result<()> {
             avd.as_deref(),
             video_path.as_deref(),
             tile,
+            hold,
         ),
 
         // -- Config commands --------------------------------------------------
