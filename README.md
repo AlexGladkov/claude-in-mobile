@@ -296,6 +296,30 @@ claude-in-mobile input android "hello world"
 claude-in-mobile ui-dump android | grep "Login"
 ```
 
+#### Camera barcode injection (`scan`, Android emulator)
+
+Feed a real, decodable barcode/QR to the emulator's **back camera** so an app
+actually reads it through its own camera pipeline (CameraX / ML Kit / ZXing) —
+no app changes, no mocking. It uses the emulator's `videofile` camera source to
+play a generated barcode as a full-frame, flat-on feed.
+
+```bash
+# One-time per emulator session: cold-boot the AVD into videofile camera mode
+claude-in-mobile scan "ITEM-12345" --setup
+
+# After that, swapping the code is instant — just reopen the app's scanner screen
+claude-in-mobile scan "ITEM-67890"
+
+# Other symbologies
+claude-in-mobile scan "1234567890" --type code128
+claude-in-mobile scan "590123412345" --type ean13
+```
+
+The barcode is tiled across the frame so a copy always lands inside an app's
+scan region-of-interest. Requires `ffmpeg` on the host (the videofile source
+needs a video stream). The generated video defaults to
+`~/.claude-mobile/scan/feed.mp4` (override with `--video-path`).
+
 #### Coordinate space (raw `x`/`y` in tap / swipe / long_press)
 
 When you call an input tool with raw `x`/`y` (or `x1`/`y1`/`x2`/`y2` for swipe), the values are interpreted in **the most recent screenshot's pixel space** and auto-scaled to device coordinates before dispatch. The scale comes from the last `screen_capture` call: e.g., capture at `preset='low'` (270×480) on a 1080×2400 device sets a 4× factor, so `tap(135, 240)` becomes `tap(540, 960)` on the device.

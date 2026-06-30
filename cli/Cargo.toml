@@ -19,6 +19,9 @@ colored = "2.0"
 regex = "1.10"
 reqwest = { version = "0.12", features = ["blocking", "json", "multipart", "rustls-tls"], default-features = false }
 rsa = { version = "0.9", features = ["pem", "sha2"] }
+qrcode = { version = "0.14", default-features = false }
+barcoders = "1.0"
+dirs = "5.0"
 
 [dev-dependencies]
 tempfile = "3"

@@ -10,6 +10,7 @@ mod commands;
 mod desktop;
 mod ios;
 mod scale;
+mod scan;
 mod screenshot;
 mod store;
 

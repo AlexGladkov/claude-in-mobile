@@ -638,6 +638,25 @@ pub fn run(command: Commands) -> Result<()> {
         // -- Sync commands ----------------------------------------------------
         Commands::Sync { command } => sync::run(command),
 
+        // -- Scan (camera barcode injection) ----------------------------------
+        Commands::Scan {
+            text,
+            r#type,
+            device,
+            setup,
+            avd,
+            video_path,
+            tile,
+        } => crate::scan::run(
+            &text,
+            &r#type,
+            device.as_deref(),
+            setup,
+            avd.as_deref(),
+            video_path.as_deref(),
+            tile,
+        ),
+
         // -- Config commands --------------------------------------------------
         Commands::Config { command } => {
             match command {

@@ -1303,6 +1303,47 @@ pub enum Commands {
         #[command(subcommand)]
         command: ConfigCommands,
     },
+
+    /// Inject a scannable barcode/QR into the emulator camera (Android emulator only)
+    ///
+    /// Generates a barcode of the requested symbology and feeds it to the
+    /// back camera as a full-frame `videofile` source, so the app under test
+    /// really decodes it via its own camera stack (CameraX / ML Kit / ZXing).
+    ///
+    /// First run on a given emulator needs `--setup` (cold-boots the AVD into
+    /// videofile camera mode). After that, re-running `scan` just swaps the
+    /// image; reopen the app's camera screen to pick up the new code.
+    Scan {
+        /// Text payload to encode (e.g. an item/box code)
+        text: String,
+
+        /// Barcode symbology
+        #[arg(long, default_value = "qr", value_parser = ["qr", "code128", "ean13"])]
+        r#type: String,
+
+        /// Android emulator serial (default: first attached emulator)
+        #[arg(long)]
+        device: Option<String>,
+
+        /// Cold-boot the emulator into videofile camera mode before injecting.
+        /// Required once per emulator session (changes the camera source).
+        #[arg(long, default_value = "false")]
+        setup: bool,
+
+        /// AVD name to (re)launch with `--setup` (auto-detected from the device if omitted)
+        #[arg(long)]
+        avd: Option<String>,
+
+        /// Host path for the managed camera video
+        /// (default: ~/.claude-mobile/scan/feed.mp4)
+        #[arg(long)]
+        video_path: Option<String>,
+
+        /// Tile the barcode across the frame so a copy always lands inside the
+        /// app's scan region-of-interest. Disable for a single centered code.
+        #[arg(long, default_value = "true")]
+        tile: bool,
+    },
 }
 
 // -- Flow subcommands ---------------------------------------------------------
