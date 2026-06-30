@@ -238,19 +238,23 @@ fn encode_video(png: &Path, mp4: &Path, hold: f32) -> Result<()> {
          Install it (e.g. `brew install ffmpeg`) and retry.",
     )?;
 
-    const TOTAL_SECS: f32 = 60.0;
+    const LOOP_SECS: f32 = 60.0;
+    // The videofile camera source loops the file, so the barcode would reappear
+    // every loop. With `hold`, pad a very long blank tail (~1h) so in practice
+    // the code shows once and the camera stays quiet for the whole session.
+    // Static white compresses to almost nothing, so the file stays small.
+    const BLANK_TAIL_SECS: f32 = 3600.0;
     let scale = format!("scale={}:{}", FRAME_W, FRAME_H);
 
-    // hold <= 0 (or >= total) keeps the barcode visible the whole loop: the app
-    // scans it continuously while it sits in frame. Otherwise the barcode shows
-    // for `hold` seconds then the feed goes blank for the rest of the loop, so
-    // the app decodes it once per loop instead of firing every frame.
-    let args: Vec<String> = if hold <= 0.0 || hold >= TOTAL_SECS {
+    // hold <= 0 keeps the barcode visible the whole loop: the app scans it
+    // continuously while it sits in frame. Otherwise the barcode shows for
+    // `hold` seconds then the feed goes blank, so the app decodes it once.
+    let args: Vec<String> = if hold <= 0.0 {
         vec![
             "-y".into(),
             "-loop".into(), "1".into(),
             "-i".into(), png.to_string_lossy().into_owned(),
-            "-t".into(), TOTAL_SECS.to_string(),
+            "-t".into(), LOOP_SECS.to_string(),
             "-r".into(), "10".into(),
             "-g".into(), "10".into(),
             "-pix_fmt".into(), "yuv420p".into(),
@@ -258,7 +262,7 @@ fn encode_video(png: &Path, mp4: &Path, hold: f32) -> Result<()> {
             mp4.to_string_lossy().into_owned(),
         ]
     } else {
-        let blank = (TOTAL_SECS - hold).to_string();
+        let blank = BLANK_TAIL_SECS.to_string();
         vec![
             "-y".into(),
             "-loop".into(), "1".into(), "-t".into(), hold.to_string(),

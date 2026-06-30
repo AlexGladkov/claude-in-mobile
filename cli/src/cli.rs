@@ -1346,8 +1346,9 @@ pub enum Commands {
 
         /// Seconds the barcode stays visible before the feed goes blank, so the
         /// app decodes it once instead of firing continuously while it sits in
-        /// frame. The feed loops, so the code reappears once per loop. Set 0 to
-        /// keep the barcode visible the whole time (continuous scanning).
+        /// frame. A long blank tail follows (~1h), so in practice the code shows
+        /// once and the camera stays quiet. Set 0 to keep the barcode visible
+        /// the whole time (continuous scanning).
         #[arg(long, default_value = "3.0")]
         hold: f32,
     },
