@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/alexgladkov-claude-in-mobile-badge.png)](https://mseep.ai/app/alexgladkov-claude-in-mobile)
+
 # Claude Mobile
 
 > **Known Issue — Homebrew upgrade not working?**
