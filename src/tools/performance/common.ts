@@ -55,8 +55,40 @@ export async function collectSnapshot(
         return collectDesktopSnapshot(desktop);
       },
       ios: () => collectIosSnapshot(),
+      aurora: () => {
+        if (!packageName) {
+          throw new PerfCollectionError("aurora", "Aurora performance collection requires packageName.");
+        }
+        validatePackageName(packageName);
+        const audb = ctx.deviceManager.getAuroraClient();
+        const raw = audb.execute<Record<string, unknown>>([
+          "perf", "snapshot", packageName, "--sample-interval", "0.2",
+        ]);
+        const crashData = audb.execute<{ events?: Array<Record<string, unknown>> }>([
+          "crash", "list", packageName,
+        ]);
+        const timestampSeconds = Number(raw.timestamp ?? Date.now() / 1000);
+        return {
+          platform: "aurora",
+          timestamp: new Date(timestampSeconds * 1000).toISOString(),
+          packageName,
+          memory: {
+            usedMb: Number(raw.memoryBytes ?? 0) / (1024 * 1024),
+            totalMb: Number(raw.memoryPeakBytes ?? raw.memoryBytes ?? 0) / (1024 * 1024),
+          },
+          cpu: { appPercent: Number(raw.cpuPercent ?? 0) },
+          fps: null,
+          battery: null,
+          crashes: (crashData.events ?? []).map((event) => ({
+            type: "crash" as const,
+            timestamp: String(event.timestamp ?? ""),
+            process: packageName,
+            summary: String(event.line ?? event.summary ?? event.type ?? "Aurora crash event"),
+          })),
+        };
+      },
       unsupported: (p) => {
-        throw new ValidationError(`Performance collection is not supported for platform "${p}". Supported: android, desktop, ios.`);
+        throw new ValidationError(`Performance collection is not supported for platform "${p}". Supported: android, desktop, ios, aurora.`);
       },
     }),
   );

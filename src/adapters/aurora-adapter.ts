@@ -46,9 +46,8 @@ export class AuroraAdapter
     }
   }
 
-  selectDevice(_deviceId: string): void {
-    // Aurora device selection is managed by audb config, not by the client.
-    // No-op here.
+  selectDevice(deviceId: string): void {
+    this.client.selectDevice(deviceId);
   }
 
   getSelectedDeviceId(): string | undefined {

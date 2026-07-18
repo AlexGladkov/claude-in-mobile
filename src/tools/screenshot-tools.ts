@@ -218,7 +218,9 @@ export const screenshotTools: ToolDefinition[] = [
       const currentPlat = platform ?? ctx.deviceManager.getCurrentPlatform();
       if (currentPlat === "desktop" || currentPlat === "aurora") {
         return textResult(
-          `screen(action:'annotate') is not supported for ${currentPlat} platform. Use screen(action:'capture') + ui(action:'tree') instead.`,
+          currentPlat === "aurora"
+            ? "screen(action:'annotate') is not supported for Aurora because audb has no UI accessibility hierarchy. Use screen(action:'capture') with coordinate input."
+            : "screen(action:'annotate') is not supported for desktop platform.",
         );
       }
 

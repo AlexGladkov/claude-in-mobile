@@ -13,6 +13,7 @@ import { textResult } from "../utils/tool-result.js";
 import { sleep } from "../utils/sleep.js";
 import { AM, PIDOF } from "../adb/commands.js";
 import { dispatchByPlatform } from "./helpers/dispatch.js";
+import { auroraSystemCapabilityTools } from "./aurora-capability-tools.js";
 
 const commonFields = {
   platform: platformEnum,
@@ -51,12 +52,15 @@ export const systemTools: ToolDefinition[] = [
           "Single shell command, no chaining or shell metacharacters. " +
             "Example: 'pm list packages -3' (valid), 'pm list packages | grep foo' (rejected).",
         ),
+      root: z.boolean().default(false).describe("Run as root (Aurora only)"),
       ...commonFields,
     }),
     handler: async (args, ctx) => {
       const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
       validateShellCommand(args.command);
-      const output = ctx.deviceManager.shell(args.command, platform, deviceId);
+      const output = platform === "aurora" && args.root
+        ? ctx.deviceManager.getAuroraClient().shell(args.command, args.root)
+        : ctx.deviceManager.shell(args.command, platform, deviceId);
       return textResult(truncateOutput(output || "(no output)"));
     },
   }),
@@ -98,8 +102,12 @@ export const systemTools: ToolDefinition[] = [
           ctx.deviceManager.getIosClient(deviceId).openUrl(args.url);
           return textResult(`Opened URL: ${args.url}`);
         },
+        aurora: () => {
+          const result = ctx.deviceManager.getAuroraClient().execute(["open", args.url]);
+          return textResult(`Opened URL: ${args.url}\n${JSON.stringify(result)}`);
+        },
         unsupported: (p) =>
-          textResult(`open_url is not supported for ${p} platform. Supported: android, ios.`),
+          textResult(`open_url is not supported for ${p} platform. Supported: android, ios, aurora.`),
       });
     },
   }),
@@ -121,17 +129,23 @@ export const systemTools: ToolDefinition[] = [
         .default(100)
         .describe("Number of lines to return (default: 100)"),
       package: z.string().optional().describe("Filter by package/bundle ID"),
+      priority: z.string().optional().describe("journal priority (Aurora)"),
+      unit: z.string().optional().describe("systemd unit filter (Aurora)"),
+      grep: z.string().optional().describe("journal regex filter (Aurora)"),
+      since: z.string().optional().describe("journal timestamp (Aurora)"),
+      kernel: z.boolean().default(false).describe("Read kernel journal (Aurora)"),
     }),
     handler: async (args, ctx) => {
       const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
-      const logs = ctx.deviceManager.getLogs({
-        platform,
-        deviceId,
-        level: args.level,
-        tag: args.tag,
-        lines: Math.min(args.lines, 500),
-        package: args.package,
-      });
+      const logs = platform === "aurora"
+        ? ctx.deviceManager.getAuroraClient().getLogs({
+            lines: Math.min(args.lines, 500), priority: args.priority ?? args.level,
+            unit: args.unit, grep: args.grep ?? args.package, since: args.since, kernel: args.kernel,
+          })
+        : ctx.deviceManager.getLogs({
+            platform, deviceId, level: args.level, tag: args.tag,
+            lines: Math.min(args.lines, 500), package: args.package,
+          });
       return textResult(truncateOutput(logs || "(no logs)", { maxLines: 500 }));
     },
   }),
@@ -248,8 +262,8 @@ export const systemTools: ToolDefinition[] = [
 
   defineTool({
     name: "system_clear_logs",
-    description: "Clear device log buffer (Android only)",
-    schema: z.object({ deviceId: deviceIdField }),
+    description: "Clear device log buffer",
+    schema: z.object({ deviceId: deviceIdField, platform: platformEnum }),
     handler: async (args, ctx) => {
       const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
       const result = ctx.deviceManager.clearLogs(platform, deviceId);
@@ -304,10 +318,12 @@ export const systemTools: ToolDefinition[] = [
   defineTool({
     name: "system_info",
     description: "Get battery and memory info",
-    schema: z.object({ ...commonFields }),
+    schema: z.object({ category: z.string().optional().describe("Aurora info category"), ...commonFields }),
     handler: async (args, ctx) => {
       const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
-      const info = await ctx.deviceManager.getSystemInfo(platform, deviceId);
+      const info = platform === "aurora"
+        ? ctx.deviceManager.getAuroraClient().getSystemInfo(args.category)
+        : await ctx.deviceManager.getSystemInfo(platform, deviceId);
       return textResult(info);
     },
   }),
@@ -341,4 +357,5 @@ export const systemTools: ToolDefinition[] = [
       return textResult(output);
     },
   }),
+  ...auroraSystemCapabilityTools,
 ];

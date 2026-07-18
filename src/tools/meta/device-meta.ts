@@ -50,7 +50,7 @@ export const deviceMeta: ToolDefinition = {
       properties: {
         action: {
           type: "string",
-          enum: ["list", "set", "set_target", "get_target", "enable_module", "disable_module", "list_modules"],
+          enum: ["list", "set", "set_target", "get_target", "emulator_status", "emulator_start", "emulator_stop", "aurora_setup_status", "enable_module", "disable_module", "list_modules"],
         },
         deviceId: { type: "string", description: "Device ID (for set)" },
         platform: {
@@ -63,6 +63,7 @@ export const deviceMeta: ToolDefinition = {
           enum: ["android", "ios", "desktop", "aurora", "browser"],
           description: "Target platform to switch to (for set_target)",
         },
+        timeout: { type: "number", description: "Aurora Emulator startup timeout in seconds" },
         module: {
           oneOf: [
             { type: "string", enum: [...ALL_HIDEABLE_MODULES] },
@@ -154,7 +155,7 @@ export const deviceMeta: ToolDefinition = {
 
     // Device actions
     const handler = handlers.get(action);
-    if (!handler) throw new UnknownActionError("device", action, ["list", "set", "set_target", "get_target", "enable_module", "disable_module", "list_modules"]);
+    if (!handler) throw new UnknownActionError("device", action, ["list", "set", "set_target", "get_target", "emulator_status", "emulator_start", "emulator_stop", "aurora_setup_status", "enable_module", "disable_module", "list_modules"]);
     return handler(args, ctx, depth);
   },
 };

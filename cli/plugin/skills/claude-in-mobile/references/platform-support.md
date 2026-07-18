@@ -18,10 +18,11 @@
 
 ### Aurora OS
 
-- **Backend:** audb (Aurora Debug Bridge, similar to ADB)
-- **Device selection:** `--device <serial>`
-- **Supported:** screenshot, tap, long-press, swipe, input, key, devices, apps, launch, stop, install, uninstall, push-file, pull-file, logs, clear-logs, system-info, open-url, shell
-- **Not supported:** annotate, ui-dump, find, tap-text, analyze-screen, find-and-tap, clipboard, current-activity, reboot, screen power, screen-size
+- **Backend:** `audb >= 0.2.0` (`AUDB_PATH` override supported)
+- **Device selection:** emulator-only, ID `emulator`
+- **Supported:** screenshot and input, app/package lifecycle, process waits, clear-data, files/logs/info/shell, display control, performance/crashes, sandbox/SQLite, network/proxy/offline, location and raw sensors
+- **Aurora namespace:** `claude-in-mobile aurora emulator|display|app|perf|crash|sandbox|network|location|sensor|package ...`
+- **Not supported:** UI accessibility/annotation and reliable global clipboard; physical devices are deferred
 
 ### Desktop (Compose/Swing/AWT)
 
@@ -59,11 +60,11 @@
 | system-info | yes | yes | yes | no |
 | current-activity | yes | yes | no | no |
 | reboot | yes | yes | no | no |
-| screen (power) | yes | no | no | no |
+| screen (power) | yes | no | yes | no |
 | screen-size | yes | yes | no | no |
 | open-url | yes | yes | yes | no |
 | shell | yes | yes | yes | no |
 | wait | n/a | n/a | n/a | n/a |
 | window mgmt | no | no | no | yes |
 | monitors | no | no | no | yes |
-| perf metrics | no | no | no | yes |
+| perf metrics | yes | partial | yes | yes |

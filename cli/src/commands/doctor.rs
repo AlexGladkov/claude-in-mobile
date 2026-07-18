@@ -62,6 +62,7 @@ fn which(binary: &str) -> Option<PathBuf> {
     // Check explicit env-var overrides first.
     let env_candidates: &[&str] = match binary {
         "adb" => &["ADB_PATH"],
+        "audb" => &["AUDB_PATH"],
         "java" => &["JAVA_HOME"],
         _ => &[],
     };
@@ -268,17 +269,28 @@ fn check_aurora() -> bool {
     let mut all_ok = true;
 
     // audb (Aurora debug bridge, analogous to adb)
-    if let Some(audb) = which("audb").or_else(|| which("audb-client")) {
-        let version = run_output(audb.to_str().unwrap_or("audb"), &["version"])
-            .or_else(|| run_output(audb.to_str().unwrap_or("audb"), &["--version"]))
+    if let Some(audb) = which("audb") {
+        let version = run_output(audb.to_str().unwrap_or("audb"), &["--version"])
             .unwrap_or_else(|| "?".to_owned());
-        ok(&format!(
-            "audb found: {} ({})",
-            audb.display(),
-            version.trim()
-        ));
+        let supported = regex::Regex::new(r"(?:^|\s)(\d+)\.(\d+)\.(\d+)")
+            .ok()
+            .and_then(|re| re.captures(&version))
+            .and_then(|caps| Some((caps.get(1)?.as_str().parse::<u64>().ok()?, caps.get(2)?.as_str().parse::<u64>().ok()?, caps.get(3)?.as_str().parse::<u64>().ok()?)))
+            .is_some_and(|v| v >= (0, 2, 0));
+        if supported {
+            ok(&format!("audb found: {} ({})", audb.display(), version.trim()));
+            if run_output(audb.to_str().unwrap_or("audb"), &["--json", "setup-status"]).is_some() {
+                ok("audb setup status is readable");
+            } else {
+                fail("audb setup-status failed");
+                all_ok = false;
+            }
+        } else {
+            fail(&format!("audb >=0.2.0 required, found: {}", version.trim()));
+            all_ok = false;
+        }
     } else {
-        fail("audb-client not found — install: cargo install audb-client");
+        fail("audb not found — install: cargo install audb-client --version 0.2.0, or set AUDB_PATH");
         all_ok = false;
     }
 

@@ -20,15 +20,15 @@ impl AuroraPlugin {
                 capabilities: vec![
                     Capability::Screen,
                     Capability::Input,
-                    Capability::Ui,
                     Capability::Shell,
                     Capability::AppLifecycle,
                     Capability::Logs,
+                    Capability::FileTransfer,
                     Capability::DeviceMgmt,
                 ],
                 tools: vec![],
                 description: Some(
-                    "Aurora OS automation via audb (screen, input, app lifecycle, shell, logs)"
+                    "Aurora Emulator automation via audb >=0.2.0"
                         .into(),
                 ),
             },

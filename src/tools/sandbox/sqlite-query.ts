@@ -22,13 +22,14 @@ export const sandboxSqliteQueryTool = defineTool({
     package: z.string().describe("App package name, e.g. com.example.app"),
     database: z.string().describe('Database filename, e.g. "app.db" or "mydata.sqlite"'),
     query: z.string().describe("SQL query to execute. Only SELECT and PRAGMA are allowed."),
+    root: z.enum(["config", "cache", "data"]).optional().describe("Aurora sandbox root (default: data)"),
     platform: androidPlatformEnum,
     deviceId: deviceIdField,
   }),
   handler: async (args, ctx) => {
     const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
-    if (platform !== "android") {
-      return errorResult("sandbox_sqlite_query is only available on Android.");
+    if (platform !== "android" && platform !== "aurora") {
+      return errorResult("sandbox_sqlite_query is available on Android and Aurora.");
     }
 
     const pkg = args.package;
@@ -39,6 +40,13 @@ export const sandboxSqliteQueryTool = defineTool({
 
     const query = args.query;
     validateSqlQuery(query);
+
+    if (platform === "aurora") {
+      const result = ctx.deviceManager.getAuroraClient().execute([
+        "sandbox", "sqlite", pkg, args.root ?? "data", rawDb, query,
+      ]);
+      return textResult(truncateOutput(JSON.stringify(result, null, 2), { maxChars: 20000, maxLines: 500 }));
+    }
 
     // Sanitize the query for safe shell quoting (single-quote based).
     // Escape single quotes inside the query by ending the string, adding \',

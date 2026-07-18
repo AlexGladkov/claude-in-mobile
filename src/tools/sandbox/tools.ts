@@ -4,6 +4,7 @@ import { sandboxPrefsWriteTool } from "./prefs-write.js";
 import { sandboxSqliteQueryTool } from "./sqlite-query.js";
 import { sandboxFileListTool } from "./file-list.js";
 import { sandboxFileReadTool } from "./file-read.js";
+import { auroraSandboxCapabilityTools } from "../aurora-capability-tools.js";
 
 export const sandboxTools: ToolDefinition[] = [
   sandboxPrefsReadTool,
@@ -11,4 +12,5 @@ export const sandboxTools: ToolDefinition[] = [
   sandboxSqliteQueryTool,
   sandboxFileListTool,
   sandboxFileReadTool,
+  ...auroraSandboxCapabilityTools,
 ];

@@ -273,7 +273,7 @@ describe("sandbox_sqlite_query", () => {
       makeIosContext(),
     );
     expect((result as { text: string; isError: boolean }).isError).toBe(true);
-    expect((result as { text: string }).text).toContain("only available on Android");
+    expect((result as { text: string }).text).toContain("available on Android and Aurora");
   });
 
   it("throws MobileError for invalid package name", async () => {
@@ -403,7 +403,7 @@ describe("sandbox_file_list", () => {
       makeIosContext(),
     );
     expect((result as { text: string; isError: boolean }).isError).toBe(true);
-    expect((result as { text: string }).text).toContain("only available on Android");
+    expect((result as { text: string }).text).toContain("available on Android and Aurora");
   });
 
   it("throws MobileError for invalid package name", async () => {
@@ -492,7 +492,7 @@ describe("sandbox_file_read", () => {
       makeIosContext(),
     );
     expect((result as { text: string; isError: boolean }).isError).toBe(true);
-    expect((result as { text: string }).text).toContain("only available on Android");
+    expect((result as { text: string }).text).toContain("available on Android and Aurora");
   });
 
   it("throws MobileError for invalid package name", async () => {

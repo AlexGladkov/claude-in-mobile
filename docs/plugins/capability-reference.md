@@ -28,13 +28,11 @@ Adding a new capability requires:
 
 ## Built-in plugin coverage
 
-| Plugin   | screen | input | ui | shell | appLifecycle | permissions | logs | terminal | deviceMgmt |
-|----------|--------|-------|----|-------|--------------|-------------|------|----------|------------|
-| android  | ✓      | ✓     | ✓  | ✓     | ✓            | ✓           | ✓    |          | ✓          |
-| ios      | ✓      | ✓     | ✓  | ✓     | ✓            | ✓           | ✓    |          | ✓          |
-| desktop  | ✓      | ✓     | ✓  | ✓     | ✓            |             | ✓    |          | ✓          |
-| web      | ✓      | ✓     | ✓  |       |              |             |      |          |            |
-| aurora   | ✓      | ✓     | ✓  | ✓     | ✓            |             | ✓    |          | ✓          |
-| repl     |        | ✓     |    |       |              |             |      | ✓        |            |
-
-`fileTransfer` is reserved for v3.12 (SSH / android push-pull plugins).
+| Plugin   | screen | input | ui | shell | appLifecycle | permissions | logs | terminal | fileTransfer | deviceMgmt |
+|----------|--------|-------|----|-------|--------------|-------------|------|----------|--------------|------------|
+| android  | ✓      | ✓     | ✓  | ✓     | ✓            | ✓           | ✓    |          |              | ✓          |
+| ios      | ✓      | ✓     | ✓  | ✓     | ✓            | ✓           | ✓    |          |              | ✓          |
+| desktop  | ✓      | ✓     | ✓  | ✓     | ✓            |             | ✓    |          |              | ✓          |
+| web      | ✓      | ✓     | ✓  |       |              |             |      |          |              |            |
+| aurora   | ✓      | ✓     |    | ✓     | ✓            |             | ✓    |          | ✓            | ✓          |
+| repl     |        | ✓     |    |       |              |             |      | ✓        |              |            |

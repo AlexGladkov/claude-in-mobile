@@ -5,6 +5,7 @@ import { validatePackageName, validatePath } from "../utils/sanitize.js";
 import { parseCommonArgs } from "../utils/parse-common-args.js";
 import { textResult } from "../utils/tool-result.js";
 import { sleep } from "../utils/sleep.js";
+import { auroraAppCapabilityTools } from "./aurora-capability-tools.js";
 
 const commonFields = {
   platform: platformEnum,
@@ -94,14 +95,16 @@ export const appTools: ToolDefinition[] = [
     description: "List installed apps (Aurora only)",
     schema: z.object({
       platform: z.literal("aurora").optional(),
+      filter: z.string().optional(),
     }),
     handler: async (args, ctx) => {
       const { platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
       if (platform !== "aurora") {
         return textResult("list_apps is only available for Aurora OS.");
       }
-      const packages = ctx.deviceManager.getAuroraClient().listPackages();
+      const packages = ctx.deviceManager.getAuroraClient().listPackages(args.filter);
       return textResult(`Installed packages (${packages.length}):\n${packages.join("\n")}`);
     },
   }),
+  ...auroraAppCapabilityTools,
 ];

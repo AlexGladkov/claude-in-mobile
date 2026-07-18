@@ -37,8 +37,12 @@ pub fn apply_scale(
     };
 
     let (dev_w, dev_h): (f64, f64) = match platform {
-        "android" | "aurora" => {
+        "android" => {
             let (w, h) = crate::android::get_screen_size(device)?;
+            (w as f64, h as f64)
+        }
+        "aurora" => {
+            let (w, h) = crate::aurora::get_screen_size(device)?;
             (w as f64, h as f64)
         }
         "ios" => {

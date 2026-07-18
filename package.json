@@ -35,6 +35,10 @@
       "types": "./dist/ios/*.d.ts",
       "default": "./dist/ios/*.js"
     },
+    "./aurora/*": {
+      "types": "./dist/aurora/*.d.ts",
+      "default": "./dist/aurora/*.js"
+    },
     "./desktop/*": {
       "types": "./dist/desktop/*.d.ts",
       "default": "./dist/desktop/*.js"

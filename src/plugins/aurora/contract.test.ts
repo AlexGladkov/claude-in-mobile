@@ -13,4 +13,9 @@ describe("AuroraPlugin specifics", () => {
   it("declares shell capability (Aurora supports remote shell via audb)", () => {
     expect(AURORA_PLUGIN_MANIFEST.capabilities).toContain("shell");
   });
+
+  it("does not claim UI accessibility and does declare file transfer", () => {
+    expect(AURORA_PLUGIN_MANIFEST.capabilities).not.toContain("ui");
+    expect(AURORA_PLUGIN_MANIFEST.capabilities).toContain("fileTransfer");
+  });
 });

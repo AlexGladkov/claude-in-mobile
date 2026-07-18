@@ -37,7 +37,10 @@ describeUnix("AuroraClient — host-side injection regression (issue #40)", () =
 
     // Fake audb: exit 0, ignore args. Real audb would also exit 0 for many sub-commands;
     // we only care about host-side side-effects here.
-    writeFileSync(fakeAudb, "#!/bin/sh\nexit 0\n");
+    writeFileSync(
+      fakeAudb,
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "audb 0.2.0"; else echo \'{"ok":true,"deviceId":"emulator","data":{}}\'; fi\n',
+    );
     chmodSync(fakeAudb, 0o755);
 
     savedPath = process.env.PATH;
@@ -101,5 +104,54 @@ describeUnix("AuroraClient — host-side injection regression (issue #40)", () =
     // Both args pass through to `audb push <local> <remote>` as distinct argv slots.
     client.pushFile("/tmp/local.bin", `/tmp/remote.bin; touch ${proofFile}`);
     expect(existsSync(proofFile)).toBe(false);
+  });
+});
+
+describeUnix("AuroraClient — audb 0.2 JSON contract", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "cim-audb-json-"));
+  });
+
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  function shim(body: string): string {
+    const path = join(dir, "audb");
+    writeFileSync(path, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 'audb 0.2.0'; exit 0; fi\n${body}\n`);
+    chmodSync(path, 0o755);
+    return path;
+  }
+
+  it("parses device list from the stable envelope", () => {
+    const binaryPath = shim(`echo '{"ok":true,"deviceId":"emulator","data":[{"id":"emulator","name":"Aurora Emulator","state":"online","kind":"emulator","host":"127.0.0.1"}]}'`);
+    expect(new AuroraClient({ binaryPath }).listDevices()).toEqual([{
+      id: "emulator", name: "Aurora Emulator", platform: "aurora", state: "connected",
+      isSimulator: true, host: "127.0.0.1",
+    }]);
+  });
+
+  it("preserves audb error code and data even on non-zero exit", () => {
+    const binaryPath = shim(`echo '{"ok":false,"deviceId":"emulator","error":{"code":"EMULATOR_OFF","message":"offline"},"data":{"running":false}}'; exit 10`);
+    try {
+      new AuroraClient({ binaryPath }).execute(["status"]);
+      throw new Error("expected execute to fail");
+    } catch (error: unknown) {
+      expect(error).toMatchObject({ code: "EMULATOR_OFF", message: "offline", data: { running: false } });
+    }
+  });
+
+  it("rejects old audb versions before issuing a command", () => {
+    const binaryPath = join(dir, "audb");
+    writeFileSync(binaryPath, "#!/bin/sh\necho 'audb 0.1.9'\n");
+    chmodSync(binaryPath, 0o755);
+    expect(() => new AuroraClient({ binaryPath }).execute(["status"]))
+      .toThrow(/audb >= 0\.2\.0 is required/);
+  });
+
+  it("rejects malformed non-envelope output", () => {
+    const binaryPath = shim("echo not-json");
+    expect(() => new AuroraClient({ binaryPath }).execute(["status"]))
+      .toThrow(/invalid JSON/);
   });
 });

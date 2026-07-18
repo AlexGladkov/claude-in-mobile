@@ -10,6 +10,9 @@ import {
   looksLikeBinary,
   runAsUnavailableHint,
 } from "./helpers.js";
+import { randomBytes } from "crypto";
+import { readFileSync, unlinkSync } from "fs";
+import { tmpdir } from "os";
 
 export const sandboxFileReadTool = defineTool({
   name: "sandbox_file_read",
@@ -28,17 +31,31 @@ export const sandboxFileReadTool = defineTool({
       .number()
       .optional()
       .describe("Maximum characters of file content to return (default: 10000, max: 50000)."),
+    root: z.enum(["config", "cache", "data"]).optional().describe("Aurora sandbox root (default: data)"),
     platform: androidPlatformEnum,
     deviceId: deviceIdField,
   }),
   handler: async (args, ctx) => {
     const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
-    if (platform !== "android") {
-      return errorResult("sandbox_file_read is only available on Android.");
+    if (platform !== "android" && platform !== "aurora") {
+      return errorResult("sandbox_file_read is available on Android and Aurora.");
     }
 
     const pkg = args.package;
     validatePackageName(pkg);
+
+    if (platform === "aurora") {
+      validatePath(args.path, "path");
+      const output = `${tmpdir()}/cim_aurora_sandbox_${randomBytes(8).toString("hex")}`;
+      try {
+        ctx.deviceManager.getAuroraClient().execute(["sandbox", "pull", pkg, args.root ?? "data", args.path, output]);
+        const content = readFileSync(output);
+        if (content.includes(0)) return textResult(`File "${args.path}" appears to be binary. Use sandbox(action:'file_pull') to save it.`);
+        return textResult(truncateOutput(content.toString("utf-8"), { maxChars: Math.min(Math.max(1, args.maxBytes ?? 10_000), 50_000), maxLines: 1000 }));
+      } finally {
+        try { unlinkSync(output); } catch {}
+      }
+    }
 
     const rawPath = args.path;
     validatePath(rawPath, "path");

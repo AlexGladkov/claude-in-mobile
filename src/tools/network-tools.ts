@@ -4,12 +4,13 @@
 
 import type { ToolDefinition } from "./registry.js";
 import { defineTool, z } from "./define-tool.js";
-import { deviceIdField } from "./common-schema.js";
+import { deviceIdField, platformEnum } from "./common-schema.js";
 import { ValidationError } from "../errors.js";
 import { truncateOutput } from "../utils/truncate.js";
 import { validatePackageName } from "../utils/sanitize.js";
 import { parseCommonArgs } from "../utils/parse-common-args.js";
 import { textResult } from "../utils/tool-result.js";
+import { auroraNetworkCapabilityTools } from "./aurora-capability-tools.js";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -107,9 +108,13 @@ export const networkTools: ToolDefinition[] = [
         .optional()
         .describe("App package name (e.g. com.example.app). Omit to show global interface totals."),
       deviceId: deviceIdField,
+      platform: platformEnum,
     }),
     handler: async (args, ctx) => {
       const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      if (platform === "aurora") {
+        return textResult(JSON.stringify(ctx.deviceManager.getAuroraClient().execute(["network", "traffic"]), null, 2));
+      }
       if (platform !== "android") {
         return textResult(ANDROID_ONLY_MSG("network_traffic"));
       }
@@ -182,9 +187,13 @@ export const networkTools: ToolDefinition[] = [
       "Get current network connectivity info: active network type (WiFi/Mobile/etc), connection state, IP address, DNS servers, and basic WiFi details (SSID, RSSI). Android only.",
     schema: z.object({
       deviceId: deviceIdField,
+      platform: platformEnum,
     }),
     handler: async (args, ctx) => {
       const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      if (platform === "aurora") {
+        return textResult(JSON.stringify(ctx.deviceManager.getAuroraClient().execute(["network", "status"]), null, 2));
+      }
       if (platform !== "android") {
         return textResult(ANDROID_ONLY_MSG("network_connectivity"));
       }
@@ -265,9 +274,23 @@ export const networkTools: ToolDefinition[] = [
         .describe("Proxy port (set mode, default: 8080). Range: 1–65535."),
       clear: z.boolean().optional().describe("Clear the current proxy setting."),
       deviceId: deviceIdField,
+      platform: platformEnum,
     }),
     handler: async (args, ctx) => {
       const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      if (platform === "aurora") {
+        const host = args.host;
+        const port = args.port;
+        const clear = args.clear;
+        if (clear) return textResult(JSON.stringify(ctx.deviceManager.getAuroraClient().execute(["network", "proxy", "clear"]), null, 2));
+        if (host !== undefined) {
+          if (!HOST_RE.test(host)) throw new ValidationError(`Invalid proxy host: "${host}".`);
+          const resolvedPort = port ?? 8080;
+          if (!Number.isInteger(resolvedPort) || resolvedPort < 1 || resolvedPort > 65535) throw new ValidationError(`Invalid proxy port: ${resolvedPort}.`);
+          return textResult(JSON.stringify(ctx.deviceManager.getAuroraClient().execute(["network", "proxy", "set", host, String(resolvedPort)]), null, 2));
+        }
+        return textResult(JSON.stringify(ctx.deviceManager.getAuroraClient().execute(["network", "proxy", "get"]), null, 2));
+      }
       if (platform !== "android") {
         return textResult(ANDROID_ONLY_MSG("network_proxy"));
       }
@@ -314,6 +337,7 @@ export const networkTools: ToolDefinition[] = [
     schema: z.object({
       enabled: z.unknown().describe("true to enable airplane mode, false to disable it."),
       deviceId: deviceIdField,
+      platform: platformEnum,
     }),
     handler: async (args, ctx) => {
       const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
@@ -335,4 +359,5 @@ export const networkTools: ToolDefinition[] = [
       return textResult(`Airplane mode ${state}.`);
     },
   }),
+  ...auroraNetworkCapabilityTools,
 ];
