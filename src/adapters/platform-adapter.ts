@@ -92,6 +92,17 @@ export interface SyncScreenshotAdapter {
   screenshotRaw(): string;
 }
 
+// ============ Secure-window detection (Android) ============
+
+export interface SecureWindowAdapter {
+  /**
+   * Whether the currently-focused window has FLAG_SECURE set. Secure windows
+   * make the OS return an all-black `screencap` frame, so a true result means
+   * callers should fall back to the accessibility tree.
+   */
+  isCurrentWindowSecure(deviceId?: string): boolean;
+}
+
 // ============ Type guards ============
 
 export function hasAppManagement(adapter: CorePlatformAdapter): adapter is CorePlatformAdapter & AppManagementAdapter {
@@ -120,6 +131,10 @@ export function hasShell(adapter: CorePlatformAdapter): adapter is CorePlatformA
 
 export function hasSyncScreenshot(adapter: CorePlatformAdapter): adapter is CorePlatformAdapter & SyncScreenshotAdapter {
   return "screenshotRaw" in adapter;
+}
+
+export function hasSecureWindowCheck(adapter: CorePlatformAdapter): adapter is CorePlatformAdapter & SecureWindowAdapter {
+  return "isCurrentWindowSecure" in adapter;
 }
 
 // ============ Capability requirement helpers ============

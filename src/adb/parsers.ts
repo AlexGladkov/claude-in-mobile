@@ -82,6 +82,35 @@ export function parseFocusFromDumpsysWindow(output: string): string | null {
 }
 
 /**
+ * Determine whether the currently-focused window has `FLAG_SECURE` set by
+ * parsing `dumpsys window`. Secure windows make the OS return an all-black
+ * frame for `screencap` (banking / auth / DRM apps), so detecting this lets
+ * callers advise the accessibility-tree fallback instead of a silent black
+ * screenshot.
+ *
+ * Strategy: isolate the focused window's block (windows are printed as
+ * `Window #N Window{...}:` sections) and look for a decoded `fl=... SECURE`
+ * flag line inside it. If the focused block cannot be isolated, fall back to
+ * a global presence check — callers only invoke this after a frame already
+ * looks blank, so a conservative match is acceptable.
+ */
+export function parseWindowSecureFlag(output: string, focusToken?: string): boolean {
+  const focus = focusToken ?? parseCurrentFocusFromWindows(output) ?? undefined;
+  const secureInBlock = (block: string): boolean =>
+    /\bfl=[^\n]*\bSECURE\b/i.test(block) || /FLAG_SECURE/.test(block);
+
+  if (focus) {
+    // Split into per-window blocks; a header line looks like `  Window #3 Window{...}:`
+    const blocks = output.split(/(?=^\s*Window #\d+\b)/m);
+    const focused = blocks.find((b) => b.includes(focus));
+    if (focused) return secureInBlock(focused);
+  }
+
+  // Fallback: no focused block isolated — treat any decoded SECURE flag as a hit.
+  return secureInBlock(output);
+}
+
+/**
  * Parse `am broadcast -a clipper.get` result for `data="..."` payload.
  */
 export function parseClipboardBroadcast(output: string): string | null {

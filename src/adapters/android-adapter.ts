@@ -15,6 +15,7 @@ import type {
   PermissionAdapter,
   ShellAdapter,
   SyncScreenshotAdapter,
+  SecureWindowAdapter,
 } from "./platform-adapter.js";
 import type { Device } from "../device-manager.js";
 import { AdbClient } from "../adb/client.js";
@@ -22,7 +23,7 @@ import { MobileError } from "../errors.js";
 import { compressScreenshot, type CompressOptions } from "../utils/image.js";
 
 export class AndroidAdapter
-  implements CorePlatformAdapter, AppManagementAdapter, PermissionAdapter, ShellAdapter, SyncScreenshotAdapter
+  implements CorePlatformAdapter, AppManagementAdapter, PermissionAdapter, ShellAdapter, SyncScreenshotAdapter, SecureWindowAdapter
 {
   readonly platform = "android" as const;
   private client: AdbClient;
@@ -155,6 +156,12 @@ export class AndroidAdapter
 
   screenshotRaw(): string {
     return this.client.screenshot();
+  }
+
+  // ============ Secure-window detection (SecureWindowAdapter) ============
+
+  isCurrentWindowSecure(deviceId?: string): boolean {
+    return this.clientFor(deviceId).isCurrentWindowSecure();
   }
 
   // ============ UI ============

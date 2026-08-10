@@ -22,6 +22,7 @@ export type {
   ScreenDiffResult,
   DiffOverlayResult,
   AnnotateResult,
+  UniformFrameResult,
 } from "./image/index.js";
 
 export {
@@ -31,4 +32,5 @@ export {
   cropRegion,
   generateDiffOverlay,
   annotateScreenshot,
+  detectUniformFrame,
 } from "./image/index.js";

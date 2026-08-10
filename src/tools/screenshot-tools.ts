@@ -11,10 +11,70 @@ import {
   compareScreenshots,
   cropRegion,
   compressScreenshot,
+  detectUniformFrame,
 } from "../utils/image.js";
 import { parseUiHierarchy, UiElement } from "../adb/ui-parser.js";
+import { hasSecureWindowCheck } from "../adapters/platform-adapter.js";
+import type { ToolContext } from "./context.js";
 
 const STABLE_THRESHOLD_PERCENT = 2;
+
+interface BlankFrameAdvisory {
+  /** When set, capture is a confirmed secure/black frame — return this instead of the image. */
+  earlyReturn?: ToolResult;
+  /** A heads-up to prepend to an otherwise-normal result. */
+  note?: string;
+}
+
+/**
+ * A uniform/black screenshot is usually a FLAG_SECURE window (banking/auth/DRM),
+ * a blank screen, or a GPU/emulator glitch — the OS enforces the black frame at
+ * the screencap level, so retrying is wasted tokens. Detect it and steer the
+ * caller to ui(action:'tree'), which Android exempts from FLAG_SECURE.
+ */
+async function assessBlankFrame(
+  pngBuffer: Buffer,
+  platform: Platform,
+  deviceId: string | undefined,
+  ctx: ToolContext,
+  bypass: boolean,
+): Promise<BlankFrameAdvisory | null> {
+  if (bypass) return null;
+  let frame;
+  try {
+    frame = await detectUniformFrame(pngBuffer);
+  } catch {
+    return null; // detection is best-effort, never blocks a capture
+  }
+  if (!frame.uniform) return null;
+
+  if (platform === "android") {
+    let secure = false;
+    try {
+      const adapter = ctx.deviceManager.getAdapter("android", deviceId);
+      if (hasSecureWindowCheck(adapter)) secure = adapter.isCurrentWindowSecure(deviceId);
+    } catch {
+      /* best-effort; fall through to the softer advisory */
+    }
+    if (secure) {
+      return {
+        earlyReturn: textResult(
+          "Screenshot is blank because the focused window has FLAG_SECURE — the OS returns an all-black frame for screencap by design (common in banking / auth / DRM apps). " +
+            "The accessibility tree is NOT affected by FLAG_SECURE: call ui(action:'tree') to read the screen content. " +
+            "Pass bypassSecureCheck:true to force the raw (black) frame anyway.",
+        ),
+      };
+    }
+  }
+
+  const kind = frame.nearBlack ? "black" : "single-color";
+  return {
+    note:
+      `Note: captured frame is ~uniform ${kind} (${Math.round(frame.coverage * 100)}% one color). ` +
+      `Likely a FLAG_SECURE window, a blank/loading screen, or a GPU/emulator backend issue — ` +
+      `ui(action:'tree') is unaffected by FLAG_SECURE if you need the content.`,
+  };
+}
 
 async function waitForStableScreenshot(getBuffer: () => Promise<Buffer>): Promise<Buffer> {
   let prev = await getBuffer();
@@ -33,7 +93,8 @@ async function waitForStableScreenshot(getBuffer: () => Promise<Buffer>): Promis
 export const screenshotTools: ToolDefinition[] = [
   defineTool({
     name: "screen_capture",
-    description: "Take screenshot. Auto-compressed. Use diff=true to see only changes.",
+    description:
+      "Take screenshot. Auto-compressed. Use diff=true to see only changes. Blank/all-black frames from FLAG_SECURE windows (banking/auth) are detected and steer you to ui(action:'tree'); pass bypassSecureCheck:true to force the raw frame.",
     schema: z.object({
       platform: platformEnum,
       compress: z
@@ -83,6 +144,12 @@ export const screenshotTools: ToolDefinition[] = [
           "Wait for UI to stabilize before capturing. Takes two captures ~300ms apart and compares them; retries up to 3 times until change < 2%. Useful after navigation or animations.",
         ),
       preset: z.string().optional(),
+      bypassSecureCheck: z
+        .boolean()
+        .default(false)
+        .describe(
+          "Skip the FLAG_SECURE / blank-frame check and return the raw capture even if it's an all-black secure frame (default: false).",
+        ),
       deviceId: deviceIdField,
     }),
     handler: async (args, ctx) => {
@@ -92,6 +159,7 @@ export const screenshotTools: ToolDefinition[] = [
       const diffMode = args.diff === true;
       const stableMode = args.waitForStable === true;
       const diffThreshold = args.diffThreshold;
+      const bypassSecureCheck = args.bypassSecureCheck === true;
 
       // Resolve preset to concrete values (explicit params override preset)
       const presetValues: Record<
@@ -119,6 +187,16 @@ export const screenshotTools: ToolDefinition[] = [
         const pngBuffer = stableMode
           ? await waitForStableScreenshot(captureBuffer)
           : await captureBuffer();
+
+        const advisory = await assessBlankFrame(
+          pngBuffer,
+          currentPlatform,
+          deviceId,
+          ctx,
+          bypassSecureCheck,
+        );
+        if (advisory?.earlyReturn) return advisory.earlyReturn;
+
         const prevBuffer = ctx.lastScreenshotMap.get(currentPlatform);
         ctx.lastScreenshotMap.set(currentPlatform, pngBuffer);
 
@@ -164,9 +242,19 @@ export const screenshotTools: ToolDefinition[] = [
         : await captureBuffer();
       ctx.lastScreenshotMap.set(currentPlatform, pngBuffer);
 
+      const advisory = await assessBlankFrame(
+        pngBuffer,
+        currentPlatform,
+        deviceId,
+        ctx,
+        bypassSecureCheck,
+      );
+      if (advisory?.earlyReturn) return advisory.earlyReturn;
+
       if (!compress) {
         return {
           image: { data: pngBuffer.toString("base64"), mimeType: "image/png" },
+          text: advisory?.note,
         } as unknown as ToolResult;
       }
 
@@ -178,11 +266,14 @@ export const screenshotTools: ToolDefinition[] = [
       // Store scale so interaction tools can auto-correct coordinates
       ctx.screenshotScaleMap.set(currentPlatform, { scaleX, scaleY });
 
+      const scaleNote = scaled
+        ? `Screenshot: ${result.width}x${result.height} (device: ${result.originalWidth}x${result.originalHeight}). Coordinate scaling applied automatically.`
+        : undefined;
+      const text = [advisory?.note, scaleNote].filter(Boolean).join("\n") || undefined;
+
       return {
         image: { data: result.data, mimeType: result.mimeType },
-        text: scaled
-          ? `Screenshot: ${result.width}x${result.height} (device: ${result.originalWidth}x${result.originalHeight}). Coordinate scaling applied automatically.`
-          : undefined,
+        text,
       } as unknown as ToolResult;
     },
   }),

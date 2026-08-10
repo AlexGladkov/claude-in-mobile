@@ -16,3 +16,4 @@ export { toBase64Png } from "./encode.js";
 export { compareScreenshots, cropRegion } from "./compare.js";
 export { generateDiffOverlay } from "./overlay.js";
 export { annotateScreenshot } from "./annotate.js";
+export { detectUniformFrame, type UniformFrameResult } from "./analyze.js";

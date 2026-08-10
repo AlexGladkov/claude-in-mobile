@@ -17,6 +17,7 @@ import {
   parseCurrentActivityFromActivities,
   parseCurrentFocusFromWindows,
   parseFocusFromDumpsysWindow,
+  parseWindowSecureFlag,
   parseClipboardBroadcast,
   parseLaunchActivity,
   stripDumpPrefix,
@@ -466,6 +467,21 @@ export class AdbClient {
       } catch {
         return "unknown (could not determine)";
       }
+    }
+  }
+
+  /**
+   * Whether the currently-focused window has FLAG_SECURE set. Such windows
+   * force `screencap` to return an all-black frame, so callers can advise the
+   * accessibility-tree fallback instead of a silent black screenshot. Returns
+   * false on any dumpsys failure — detection is best-effort, never fatal.
+   */
+  isCurrentWindowSecure(): boolean {
+    try {
+      const output = this.execArgs(["shell", "dumpsys", "window"]);
+      return parseWindowSecureFlag(output);
+    } catch {
+      return false;
     }
   }
 
