@@ -11,6 +11,7 @@ import {
 import { escapeAndroidInputText, splitArgs } from "./text-escape.js";
 import { UiTreeCache } from "./ui-tree-cache.js";
 import { ANDROID_KEYCODES, ANDROID_KEYCODES_FAST, resolveKeyCode } from "./keycodes.js";
+import type { DragOptions } from "../adapters/platform-adapter.js";
 import {
   parseDevicesOutput,
   parseScreenSize,
@@ -224,6 +225,60 @@ export class AdbClient {
    */
   swipe(x1: number, y1: number, x2: number, y2: number, durationMs: number = 300): void {
     this.exec(`shell input swipe ${x1} ${y1} ${x2} ${y2} ${durationMs}`);
+  }
+
+  /**
+   * Drag-and-drop with a single continuous held pointer.
+   *
+   * Simple case (no waypoints / explicit holds) uses `input draganddrop`, which
+   * AOSP implements as one-process held drag — it waits the long-press timeout
+   * after touch-down, so it arms long-press-armed draggables (Compose
+   * reorderable lists, home-screen icons) that a plain `swipe` cannot grab.
+   *
+   * Rich case (waypoints, explicit grab-hold or end-dwell) is emitted as a
+   * single device-side `sh -c` stream of `input motionevent` events, so the
+   * whole DOWN → hold → MOVE… → dwell → UP sequence rides one shell round-trip.
+   * Every coordinate is a truncated integer passed through one argv slot — no
+   * user-controlled string reaches a host or device shell (same pattern as
+   * doubleTap).
+   */
+  drag(
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    opts: DragOptions = {},
+  ): void {
+    const { waypoints = [], grabHoldMs, dwellMs, durationMs = 800 } = opts;
+    const ix = (n: number) => Math.trunc(n);
+    const sx = ix(x1), sy = ix(y1), ex = ix(x2), ey = ix(y2);
+    const rich = waypoints.length > 0 || grabHoldMs != null || dwellMs != null;
+
+    if (!rich) {
+      this.exec(`shell input draganddrop ${sx} ${sy} ${ex} ${ey} ${ix(durationMs)}`);
+      return;
+    }
+
+    const sec = (ms: number) => (Math.max(0, ms) / 1000).toFixed(2);
+    const grab = grabHoldMs ?? 500; // default hold arms long-press-draggables
+    const dwell = dwellMs ?? 0;
+    const path: Array<[number, number]> = [
+      [sx, sy],
+      ...waypoints.map(([wx, wy]) => [ix(wx), ix(wy)] as [number, number]),
+      [ex, ey],
+    ];
+    const segments = Math.max(1, path.length - 1);
+    const perSegMs = durationMs / segments;
+
+    const cmds: string[] = [`input motionevent DOWN ${sx} ${sy}`, `sleep ${sec(grab)}`];
+    for (let i = 1; i < path.length; i++) {
+      cmds.push(`input motionevent MOVE ${path[i][0]} ${path[i][1]}`);
+      if (i < path.length - 1) cmds.push(`sleep ${sec(perSegMs)}`);
+    }
+    if (dwell > 0) cmds.push(`sleep ${sec(dwell)}`);
+    cmds.push(`input motionevent UP ${ex} ${ey}`);
+
+    this.execArgs(["shell", "sh", "-c", cmds.join("; ")]);
   }
 
   /**

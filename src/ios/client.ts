@@ -228,6 +228,30 @@ export class IosClient {
   }
 
   /**
+   * Drag-and-drop with a single continuous held pointer via WDA Actions API.
+   */
+  async drag(
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    opts: {
+      waypoints?: Array<[number, number]>;
+      grabHoldMs?: number;
+      dwellMs?: number;
+      durationMs?: number;
+    } = {},
+    deviceIdOverride?: string,
+  ): Promise<void> {
+    try {
+      const wdaClient = await this.ensureWDA(deviceIdOverride);
+      await wdaClient.drag(x1, y1, x2, y2, opts);
+    } catch (error: unknown) {
+      throw wdaRequiredError("Drag", error);
+    }
+  }
+
+  /**
    * Long press at coordinates via WDA Actions API
    */
   async longPress(x: number, y: number, durationMs: number = 1000, deviceIdOverride?: string): Promise<void> {

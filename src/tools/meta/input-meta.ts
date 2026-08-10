@@ -4,7 +4,7 @@ import { interactionTools } from "../interaction-tools.js";
 const { meta, aliases } = createMetaTool({
   name: "input",
   description:
-    "Input actions. tap/double_tap/long_press: coords or text/id/label/index. swipe: direction or coords. text: type text. key: press key.",
+    "Input actions. tap/double_tap/long_press: coords or text/id/label/index. swipe: direction or coords. drag: continuous held drag-and-drop (grab-hold → waypoints → dwell → release) for reorder/merge/move. text: type text. key: press key.",
   tools: interactionTools,
   prefix: "input_",
   extraSchema: {

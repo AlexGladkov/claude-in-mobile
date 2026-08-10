@@ -15,6 +15,8 @@ import type {
   PermissionAdapter,
   ShellAdapter,
   SyncScreenshotAdapter,
+  DragAdapter,
+  DragOptions,
 } from "./platform-adapter.js";
 import type { Device } from "../device-manager.js";
 import { IosClient } from "../ios/client.js";
@@ -22,7 +24,7 @@ import { MobileError } from "../errors.js";
 import { compressScreenshot, type CompressOptions } from "../utils/image.js";
 
 export class IosAdapter
-  implements CorePlatformAdapter, AppManagementAdapter, PermissionAdapter, ShellAdapter, SyncScreenshotAdapter
+  implements CorePlatformAdapter, AppManagementAdapter, PermissionAdapter, ShellAdapter, SyncScreenshotAdapter, DragAdapter
 {
   readonly platform = "ios" as const;
   private client: IosClient;
@@ -108,6 +110,17 @@ export class IosAdapter
 
   async swipeDirection(direction: "up" | "down" | "left" | "right", deviceId?: string): Promise<void> {
     await this.clientFor(deviceId).swipeDirection(direction);
+  }
+
+  async drag(
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    opts?: DragOptions,
+    deviceId?: string,
+  ): Promise<void> {
+    await this.clientFor(deviceId).drag(x1, y1, x2, y2, opts, deviceId);
   }
 
   async inputText(text: string, _targetPid?: number, deviceId?: string): Promise<void> {

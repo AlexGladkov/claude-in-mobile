@@ -230,6 +230,75 @@ export const interactionTools: ToolDefinition[] = [
   }),
 
   defineTool({
+    name: "input_drag",
+    description:
+      "Drag-and-drop as ONE continuous held pointer: grab (with a hold to arm long-press-draggables) → move through optional waypoints → dwell over the target → release. Use for drag-to-reorder, drag-into-folder/merge, and drag-between-containers — cases plain swipe/long_press cannot express because each is a separate touch stream. Coordinates are screenshot-space and auto-scaled. Android/iOS have a native held-drag backend; other platforms fall back to long_press+swipe.",
+    schema: z.object({
+      x1: z.number().describe("Grab X (screenshot pixel space)"),
+      y1: z.number().describe("Grab Y (screenshot pixel space)"),
+      x2: z.number().describe("Drop X (screenshot pixel space)"),
+      y2: z.number().describe("Drop Y (screenshot pixel space)"),
+      waypoints: z
+        .array(z.tuple([z.number(), z.number()]))
+        .optional()
+        .describe("Optional intermediate path points [[x,y],...] in screenshot space, traversed in order."),
+      grabHoldMs: z
+        .number()
+        .optional()
+        .describe("Hold at the grab point before moving, ms (default ~500-600 — arms long-press-armed draggables)."),
+      dwellMs: z
+        .number()
+        .optional()
+        .describe("Hold over the target before releasing, ms (default 0 — set for hover/merge drop targets)."),
+      durationMs: z.number().default(800).describe("Total travel time across the move, ms (default: 800). Controls speed."),
+      hints: z.boolean().default(true).describe("Return hints about what changed after the action."),
+      platform: platformEnum,
+      deviceId: deviceIdField,
+    }),
+    handler: async (args, ctx) => {
+      const { deviceId, platform: currentPlatform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      const platform = args.platform;
+
+      const { x1, y1, x2, y2 } = args;
+      if (x1 === undefined || y1 === undefined || x2 === undefined || y2 === undefined) {
+        throw new ValidationError("input_drag requires x1, y1, x2, y2.");
+      }
+
+      const p1 = applyScale(x1, y1, currentPlatform ?? undefined, ctx);
+      const p2 = applyScale(x2, y2, currentPlatform ?? undefined, ctx);
+      const waypoints = (args.waypoints as Array<[number, number]> | undefined)?.map(([wx, wy]) => {
+        const s = applyScale(wx, wy, currentPlatform ?? undefined, ctx);
+        return [s.x, s.y] as [number, number];
+      });
+      const durationMs = args.durationMs;
+      const grabHoldMs = args.grabHoldMs as number | undefined;
+      const dwellMs = args.dwellMs as number | undefined;
+
+      let note = "";
+      if (ctx.deviceManager.supportsDrag(platform, deviceId)) {
+        await ctx.deviceManager.drag(
+          p1.x, p1.y, p2.x, p2.y,
+          { waypoints, grabHoldMs, dwellMs, durationMs },
+          platform, deviceId,
+        );
+      } else {
+        // Graceful degradation for platforms without a first-class held pointer.
+        await ctx.deviceManager.longPress(p1.x, p1.y, grabHoldMs ?? 500, platform, deviceId);
+        await ctx.deviceManager.swipe(p1.x, p1.y, p2.x, p2.y, durationMs, platform, deviceId);
+        note = " (no native drag on this platform — approximated with long_press + swipe)";
+      }
+
+      ctx.invalidateUiTreeCache(currentPlatform ?? undefined);
+      const via = waypoints?.length ? ` via ${waypoints.length} waypoint(s)` : "";
+      let result = `Dragged from (${p1.x}, ${p1.y}) to (${p2.x}, ${p2.y})${via}${note}`;
+      if (args.hints) {
+        result += await ctx.generateActionHints(args.platform);
+      }
+      return textResult(result);
+    },
+  }),
+
+  defineTool({
     name: "input_text",
     description: "Type text into focused input field",
     schema: z.object({

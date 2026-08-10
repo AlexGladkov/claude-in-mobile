@@ -92,6 +92,35 @@ export interface SyncScreenshotAdapter {
   screenshotRaw(): string;
 }
 
+// ============ Drag capability (held multi-phase pointer) ============
+
+export interface DragOptions {
+  /** Intermediate path points between grab and drop (screenshot-space, pre-scaled by the adapter's caller). */
+  waypoints?: Array<[number, number]>;
+  /** Hold at the grab point before moving — arms long-press-armed draggables (Compose/RecyclerView). */
+  grabHoldMs?: number;
+  /** Hold over the target before releasing — lets hover/merge drop targets accept. */
+  dwellMs?: number;
+  /** Total travel time across the move segments (controls speed). */
+  durationMs?: number;
+}
+
+/**
+ * A single continuous held pointer: DOWN → hold → MOVE (waypoints) → hold → UP,
+ * expressed as one gesture. This is the capability the composable tap/swipe/
+ * long_press primitives cannot provide (each is a separate touch stream).
+ */
+export interface DragAdapter {
+  drag(
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    opts?: DragOptions,
+    deviceId?: string,
+  ): Promise<void>;
+}
+
 // ============ Secure-window detection (Android) ============
 
 export interface SecureWindowAdapter {
@@ -135,6 +164,10 @@ export function hasSyncScreenshot(adapter: CorePlatformAdapter): adapter is Core
 
 export function hasSecureWindowCheck(adapter: CorePlatformAdapter): adapter is CorePlatformAdapter & SecureWindowAdapter {
   return "isCurrentWindowSecure" in adapter;
+}
+
+export function hasDrag(adapter: CorePlatformAdapter): adapter is CorePlatformAdapter & DragAdapter {
+  return "drag" in adapter;
 }
 
 // ============ Capability requirement helpers ============

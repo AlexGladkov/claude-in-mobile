@@ -25,7 +25,7 @@
  * FIX #8: auto-detect device when no deviceId is selected -- see getAdapter().
  */
 
-import type { CorePlatformAdapter } from "./adapters/platform-adapter.js";
+import type { CorePlatformAdapter, DragOptions } from "./adapters/platform-adapter.js";
 import { AndroidAdapter } from "./adapters/android-adapter.js";
 import { IosAdapter } from "./adapters/ios-adapter.js";
 import { AuroraAdapter } from "./adapters/aurora-adapter.js";
@@ -231,6 +231,17 @@ export class DeviceManager {
     platform?: Platform, deviceId?: string,
   ): Promise<void> {
     return this.inputProxy.swipeDirection(direction, platform, deviceId);
+  }
+
+  supportsDrag(platform?: Platform, deviceId?: string): boolean {
+    return this.inputProxy.supportsDrag(platform, deviceId);
+  }
+
+  async drag(
+    x1: number, y1: number, x2: number, y2: number,
+    opts?: DragOptions, platform?: Platform, deviceId?: string,
+  ): Promise<void> {
+    return this.inputProxy.drag(x1, y1, x2, y2, opts, platform, deviceId);
   }
 
   async inputText(text: string, platform?: Platform, targetPid?: number, deviceId?: string): Promise<void> {

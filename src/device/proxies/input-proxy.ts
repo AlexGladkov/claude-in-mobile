@@ -6,7 +6,8 @@
  * and delegates to it. No state lives on the proxy.
  */
 
-import type { CorePlatformAdapter } from "../../adapters/platform-adapter.js";
+import type { CorePlatformAdapter, DragOptions } from "../../adapters/platform-adapter.js";
+import { hasDrag, CapabilityNotSupportedError } from "../../adapters/platform-adapter.js";
 import type { Platform } from "../../platform-types.js";
 
 export type AdapterResolver = (platform?: Platform, deviceId?: string) => CorePlatformAdapter;
@@ -61,6 +62,27 @@ export class InputProxy {
   ): Promise<void> {
     const adapter = this.resolve(platform, deviceId);
     await adapter.swipeDirection(direction, deviceId);
+  }
+
+  /** True when the resolved adapter supports a first-class held drag. */
+  supportsDrag(platform?: Platform, deviceId?: string): boolean {
+    return hasDrag(this.resolve(platform, deviceId));
+  }
+
+  async drag(
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    opts?: DragOptions,
+    platform?: Platform,
+    deviceId?: string,
+  ): Promise<void> {
+    const adapter = this.resolve(platform, deviceId);
+    if (!hasDrag(adapter)) {
+      throw new CapabilityNotSupportedError(adapter.platform, "Drag");
+    }
+    await adapter.drag(x1, y1, x2, y2, opts, deviceId);
   }
 
   async inputText(text: string, platform?: Platform, targetPid?: number, deviceId?: string): Promise<void> {

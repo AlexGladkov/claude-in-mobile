@@ -246,6 +246,58 @@ export class WDAClient {
     });
   }
 
+  async drag(
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    opts: {
+      waypoints?: Array<[number, number]>;
+      grabHoldMs?: number;
+      dwellMs?: number;
+      durationMs?: number;
+    } = {},
+  ): Promise<void> {
+    if (!this.sessionId) {
+      throw new Error("No active WDA session");
+    }
+
+    const { waypoints = [], grabHoldMs = 600, dwellMs = 0, durationMs = 800 } = opts;
+    const path: Array<[number, number]> = [[x1, y1], ...waypoints, [x2, y2]];
+    const segments = Math.max(1, path.length - 1);
+    const perSegMs = Math.round(durationMs / segments);
+
+    // Single continuous pointer: move to grab, press, hold to arm long-press
+    // draggables, travel through waypoints, dwell over the target, release.
+    const actions: Array<Record<string, unknown>> = [
+      { type: "pointerMove", duration: 0, x: x1, y: y1 },
+      { type: "pointerDown", button: 0 },
+      { type: "pause", duration: grabHoldMs },
+    ];
+    for (let i = 1; i < path.length; i++) {
+      actions.push({
+        type: "pointerMove",
+        duration: perSegMs,
+        x: path[i][0],
+        y: path[i][1],
+        origin: "viewport",
+      });
+    }
+    if (dwellMs > 0) actions.push({ type: "pause", duration: dwellMs });
+    actions.push({ type: "pointerUp", button: 0 });
+
+    await this.request("POST", `/session/${this.sessionId}/actions`, {
+      actions: [
+        {
+          type: "pointer",
+          id: "finger1",
+          parameters: { pointerType: "touch" },
+          actions,
+        },
+      ],
+    });
+  }
+
   async getElementRect(elementId: string): Promise<WDARect> {
     if (!this.sessionId) {
       throw new Error("No active WDA session");

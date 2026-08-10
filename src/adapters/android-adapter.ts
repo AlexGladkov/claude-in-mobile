@@ -16,6 +16,8 @@ import type {
   ShellAdapter,
   SyncScreenshotAdapter,
   SecureWindowAdapter,
+  DragAdapter,
+  DragOptions,
 } from "./platform-adapter.js";
 import type { Device } from "../device-manager.js";
 import { AdbClient } from "../adb/client.js";
@@ -23,7 +25,7 @@ import { MobileError } from "../errors.js";
 import { compressScreenshot, type CompressOptions } from "../utils/image.js";
 
 export class AndroidAdapter
-  implements CorePlatformAdapter, AppManagementAdapter, PermissionAdapter, ShellAdapter, SyncScreenshotAdapter, SecureWindowAdapter
+  implements CorePlatformAdapter, AppManagementAdapter, PermissionAdapter, ShellAdapter, SyncScreenshotAdapter, SecureWindowAdapter, DragAdapter
 {
   readonly platform = "android" as const;
   private client: AdbClient;
@@ -126,6 +128,17 @@ export class AndroidAdapter
 
   async swipeDirection(direction: "up" | "down" | "left" | "right", deviceId?: string): Promise<void> {
     this.clientFor(deviceId).swipeDirection(direction);
+  }
+
+  async drag(
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    opts?: DragOptions,
+    deviceId?: string,
+  ): Promise<void> {
+    this.clientFor(deviceId).drag(x1, y1, x2, y2, opts);
   }
 
   async inputText(text: string, _targetPid?: number, deviceId?: string): Promise<void> {
