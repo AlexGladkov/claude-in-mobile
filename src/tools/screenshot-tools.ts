@@ -19,6 +19,12 @@ import type { ToolContext } from "./context.js";
 
 const STABLE_THRESHOLD_PERCENT = 2;
 
+const SCREEN_PRESETS: Record<string, { maxWidth: number; maxHeight: number; quality: number }> = {
+  low: { maxWidth: 270, maxHeight: 480, quality: 40 },
+  medium: { maxWidth: 540, maxHeight: 960, quality: 55 },
+  high: { maxWidth: 810, maxHeight: 1440, quality: 70 },
+};
+
 interface BlankFrameAdvisory {
   /** When set, capture is a confirmed secure/black frame — return this instead of the image. */
   earlyReturn?: ToolResult;
@@ -162,15 +168,7 @@ export const screenshotTools: ToolDefinition[] = [
       const bypassSecureCheck = args.bypassSecureCheck === true;
 
       // Resolve preset to concrete values (explicit params override preset)
-      const presetValues: Record<
-        string,
-        { maxWidth: number; maxHeight: number; quality: number }
-      > = {
-        low: { maxWidth: 270, maxHeight: 480, quality: 40 },
-        medium: { maxWidth: 540, maxHeight: 960, quality: 55 },
-        high: { maxWidth: 810, maxHeight: 1440, quality: 70 },
-      };
-      const preset = args.preset ? presetValues[args.preset] : undefined;
+      const preset = args.preset ? SCREEN_PRESETS[args.preset] : undefined;
       const compressOptions = {
         maxWidth: args.maxWidth ?? preset?.maxWidth,
         maxHeight: args.maxHeight ?? preset?.maxHeight,
@@ -275,6 +273,81 @@ export const screenshotTools: ToolDefinition[] = [
         image: { data: result.data, mimeType: result.mimeType },
         text,
       } as unknown as ToolResult;
+    },
+  }),
+
+  defineTool({
+    name: "screen_burst",
+    description:
+      "Capture a burst of N time-ordered frames to observe MOTION over time — animations, drag-follow, reorder/transition smoothness, or short-lived states (skeleton/loading placeholders) that a single screenshot or ui(tree) can't catch. Low preset by default to bound token cost.",
+    schema: z.object({
+      platform: platformEnum,
+      frames: z
+        .number()
+        .int()
+        .min(2)
+        .max(12)
+        .default(6)
+        .describe("Number of frames to capture (2-12, default 6)."),
+      intervalMs: z
+        .number()
+        .int()
+        .min(30)
+        .max(2000)
+        .default(150)
+        .describe("Target delay between frames in ms (default 150). Actual spacing includes capture time."),
+      preset: z
+        .string()
+        .optional()
+        .describe("Quality preset low|medium|high (default: low, to keep the burst cheap)."),
+      maxWidth: z.number().optional().describe("Override max width in px (else from preset)."),
+      maxHeight: z.number().optional().describe("Override max height in px (else from preset)."),
+      quality: z.number().optional().describe("Override JPEG quality 1-100 (else from preset)."),
+      deviceId: deviceIdField,
+    }),
+    handler: async (args, ctx) => {
+      const { deviceId } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      const platform = (args.platform as Platform | undefined) ??
+        ctx.deviceManager.getCurrentPlatform() ?? "android";
+      const frames = (args.frames as number) ?? 6;
+      const intervalMs = (args.intervalMs as number) ?? 150;
+
+      const presetVals = SCREEN_PRESETS[(args.preset as string) ?? "low"] ?? SCREEN_PRESETS.low;
+      const compressOptions = {
+        maxWidth: (args.maxWidth as number) ?? presetVals.maxWidth,
+        maxHeight: (args.maxHeight as number) ?? presetVals.maxHeight,
+        quality: (args.quality as number) ?? presetVals.quality,
+        turbo: ctx.turboDefault,
+      };
+
+      // Capture first (fast, back-to-back) so timing reflects the real motion;
+      // compress afterwards so encode latency doesn't stretch the sampling window.
+      const captured: { offsetMs: number; buf: Buffer }[] = [];
+      const start = Date.now();
+      for (let i = 0; i < frames; i++) {
+        if (i > 0) await sleep(intervalMs);
+        const buf = await ctx.deviceManager.getScreenshotBufferAsync(platform, deviceId);
+        captured.push({ offsetMs: Date.now() - start, buf });
+      }
+      const spanMs = captured[captured.length - 1]?.offsetMs ?? 0;
+
+      const content: Array<
+        { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
+      > = [
+        {
+          type: "text",
+          text:
+            `Burst: ${frames} frames over ~${spanMs}ms (target interval ${intervalMs}ms + capture time). ` +
+            `Frames are time-ordered — compare consecutive frames to judge motion, trajectory, or catch short-lived states.`,
+        },
+      ];
+      for (let i = 0; i < captured.length; i++) {
+        const c = await compressScreenshot(captured[i].buf, compressOptions);
+        content.push({ type: "text", text: `frame ${i + 1}/${frames} @ +${captured[i].offsetMs}ms` });
+        content.push({ type: "image", data: c.data, mimeType: c.mimeType });
+      }
+
+      return { content, text: `Captured ${frames} frames over ~${spanMs}ms` } as unknown as ToolResult;
     },
   }),
 

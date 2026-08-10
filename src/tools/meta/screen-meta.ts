@@ -4,7 +4,7 @@ import { screenshotTools } from "../screenshot-tools.js";
 const { meta, aliases } = createMetaTool({
   name: "screen",
   description:
-    "Screen capture and annotation. capture: screenshot with compression/diff. annotate: screenshot with element bounding boxes.",
+    "Screen capture and annotation. capture: screenshot with compression/diff. burst: N time-ordered frames to observe motion/animations/short-lived states. annotate: screenshot with element bounding boxes.",
   tools: screenshotTools,
   prefix: "screen_",
   extraSchema: {
