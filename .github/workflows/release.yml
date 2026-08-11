@@ -108,7 +108,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: "*.tar.gz"
+          # Upload the sidecars too so CI OWNS them. Previously only "*.tar.gz"
+          # was uploaded; a manually pre-uploaded (stale) .sha256 could then
+          # survive a CI run and ship mismatched — this is issue #54's root cause.
+          files: |
+            *.tar.gz
+            *.tar.gz.sha256
 
   publish-npm:
     needs: [build, verify-plugin-versions]
@@ -240,57 +245,34 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - uses: actions/checkout@v4
+
       - name: Extract version from tag
         id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Download release assets and verify against formula
+      - name: Download release assets + formula and verify integrity
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        # Loops over every release asset matching the version, so adding a
-        # platform to the build matrix automatically enrolls it in checksum
-        # verification with no further edits here.
+        # Fetches the LIVE published assets (tarballs + .sha256 sidecars) and the
+        # tap formula, then delegates to scripts/verify-release-checksums.sh which
+        # asserts, per platform: tarball == its sidecar == the formula sha bound
+        # to that platform's url block. Downloading the live assets also catches a
+        # post-publish swap. Adding a platform to the build matrix auto-enrols it.
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           REPO="AlexGladkov/claude-in-mobile"
           TAP_REPO="AlexGladkov/homebrew-claude-in-mobile"
-          FAILED=0
 
           echo "::group::Fetching formula from tap"
           gh api "repos/${TAP_REPO}/contents/Formula/claude-in-mobile.rb" --jq '.content' | base64 -d > formula.rb
           cat formula.rb
           echo "::endgroup::"
 
-          ASSETS=$(gh api "repos/${REPO}/releases/tags/v${VERSION}" \
-            --jq '.assets[] | select(.name | endswith(".tar.gz")) | .name')
+          echo "::group::Downloading release assets (tarballs + sidecars)"
+          mkdir -p assets
+          gh release download "v${VERSION}" --repo "${REPO}" --pattern '*.tar.gz*' --dir assets
+          ls -l assets
+          echo "::endgroup::"
 
-          if [ -z "$ASSETS" ]; then
-            echo "::error::No tar.gz assets found in release v${VERSION}"
-            exit 1
-          fi
-
-          while IFS= read -r ASSET; do
-            URL="https://github.com/${REPO}/releases/download/v${VERSION}/${ASSET}"
-            echo "::group::Verifying ${ASSET}"
-            echo "Downloading ${URL}"
-            curl -fsSL -o "${ASSET}" "${URL}"
-
-            ACTUAL=$(shasum -a 256 "${ASSET}" | awk '{print $1}')
-            echo "Actual SHA256: ${ACTUAL}"
-
-            if ! grep -q "${ACTUAL}" formula.rb; then
-              echo "::error::Checksum mismatch for ${ASSET}! Formula does not contain ${ACTUAL}"
-              FAILED=1
-            else
-              echo "Checksum verified for ${ASSET}"
-            fi
-            echo "::endgroup::"
-          done <<< "$ASSETS"
-
-          if [ "$FAILED" -ne 0 ]; then
-            echo "::error::Checksum verification failed! Release assets do not match the Homebrew formula."
-            echo "::error::This usually means release assets were manually replaced after CI updated the formula."
-            exit 1
-          fi
-
-          echo "All checksums verified successfully"
+          bash scripts/verify-release-checksums.sh formula.rb assets "${VERSION}"
