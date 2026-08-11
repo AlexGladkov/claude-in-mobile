@@ -42,6 +42,7 @@ import { sandboxMeta, sandboxAliases } from "./sandbox-meta.js";
 import { intentMeta, intentAliases } from "./intent-meta.js";
 import { sensorMeta, sensorAliases } from "./sensor-meta.js";
 import { networkMeta, networkAliases } from "./network-meta.js";
+import { debugMeta, debugAliases } from "./debug-meta.js";
 
 /** Backward-compat alias map shape — canonical tool name + per-call default args. */
 export type AliasMap = Record<
@@ -94,6 +95,7 @@ export const META_TOOL_DESCRIPTORS: readonly MetaToolDescriptor[] = [
   { name: "intent", meta: intentMeta, aliases: intentAliases },
   { name: "sensor", meta: sensorMeta, aliases: sensorAliases },
   { name: "network", meta: networkMeta, aliases: networkAliases },
+  { name: "debug", meta: debugMeta, aliases: debugAliases },
 ];
 
 /**

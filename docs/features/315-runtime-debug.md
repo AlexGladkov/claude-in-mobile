@@ -1,6 +1,29 @@
-# 3.15.0 — Runtime debugger for AI agents (Android JDWP, iOS LLDB later)
+# 3.15.0 — Runtime debugger for AI agents (Android JDWP + iOS LLDB)
 
 Date: 2026-08-11 · Type: feature (multi-iteration)
+
+## Status (delivered)
+
+Both backends live-validated + a unified MCP surface, all green (suite 1276):
+- **Android JDWP** (`src/debug/jdwp/`): attach, class/method/line resolution,
+  line + method-entry breakpoints, event poll-queue, stack frames (named, with
+  lines), top-frame locals, single-step, resume/detach. Validated on Android 14
+  against a debuggable Compose app.
+- **iOS LLDB** (`scripts/ios-debug-daemon.py` + `src/debug/lldb/client.ts`):
+  Python SB-API sidecar, 14 verbs. Validated on the iPhone 17 Pro simulator
+  against a swiftc -g Debug app (attach→break→hit→locals→eval→setVar→step→detach).
+- **Unified** (`src/debug/controller.ts` + `src/tools/debug-tools.ts` +
+  `debug` meta): DebugController holds sessions across MCP calls and dispatches
+  by platform. Controller live-validated end-to-end on Android
+  (MCP tool → controller → JDWP → device).
+
+Pending before tagging 3.15.0 / follow-ups:
+- Android eval + set-var (JDWP InvokeMethod) — iOS has both; Android returns a
+  clear "pending" for now.
+- Android deferred breakpoints (ClassPrepare binding), watchpoints, exception
+  traps, coroutine-frame locals.
+- iOS physical device (RemoteXPC tunnel + DDI) — Simulator only today.
+- Release gating per `.claude/profiles/release.md`.
 
 ## Goal
 

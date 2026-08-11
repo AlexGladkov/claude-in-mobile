@@ -91,6 +91,9 @@ export const MODULE_METADATA: readonly ModuleMeta[] = [
   { name: "intent", description: "Intent & deep link engine — am start/broadcast with typed extras", category: "platform", actions: ["start", "broadcast", "deeplink", "services"] },
   { name: "sensor", description: "Sensor & environment simulation — GPS, battery, notifications, thermal", category: "testing", actions: ["location", "battery", "notifications", "thermal"] },
   { name: "network", description: "Network layer — traffic stats, connectivity, proxy, airplane mode", category: "testing", actions: ["traffic", "connectivity", "proxy", "airplane"] },
+
+  // Debug module — runtime debugger (Android JDWP / iOS LLDB), debuggable builds only
+  { name: "debug", description: "Runtime debugger — attach, breakpoints, poll, pause-state/locals, eval, set-var, step (Android JDWP / iOS LLDB; debuggable builds only)", category: "testing", actions: ["attach", "break", "remove_break", "poll", "pause_state", "eval", "set_var", "step", "resume", "detach", "sessions"] },
 ];
 
 /** Quick lookup: module name -> metadata */

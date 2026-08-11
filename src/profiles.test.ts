@@ -69,8 +69,8 @@ describe("profiles", () => {
 });
 
 describe("MODULE_METADATA", () => {
-  it("has 20 modules total", () => {
-    expect(MODULE_METADATA.length).toBe(20);
+  it("has 21 modules total", () => {
+    expect(MODULE_METADATA.length).toBe(21);
   });
 
   it("covers all always-visible modules", () => {
