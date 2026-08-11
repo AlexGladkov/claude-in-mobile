@@ -38,12 +38,33 @@ export const VirtualMachineCmd = {
   IDSizes: 7,
   Suspend: 8,
   Resume: 9,
+  CreateString: 11,
   Capabilities: 17,
+} as const;
+
+export const ObjectReferenceCmd = {
+  ReferenceType: 1,
+  GetValues: 2,
+  InvokeMethod: 6,
+} as const;
+
+export const ClassTypeCmd = {
+  Superclass: 1,
+} as const;
+
+export const StringReferenceCmd = {
+  Value: 1,
+} as const;
+
+/** InvokeMethod options bitmask. */
+export const InvokeOptions = {
+  SINGLE_THREADED: 0x01,
 } as const;
 
 export const ReferenceTypeCmd = {
   Signature: 1,
   SourceFile: 7,
+  FieldsWithGeneric: 14,
   MethodsWithGeneric: 15,
 } as const;
 
@@ -66,6 +87,7 @@ export const EventRequestCmd = {
 
 export const StackFrameCmd = {
   GetValues: 1,
+  SetValues: 2,
 } as const;
 
 /** JDWP EventKind (used in EventRequest.Set and incoming Event.Composite). */

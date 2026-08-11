@@ -8,7 +8,16 @@
 import type { JdwpSession } from "./session.js";
 import type { JdwpConnection } from "./connection.js";
 import { JdwpReader, JdwpWriter, type IdSizes } from "./packet.js";
-import { decodeByTag, prettyTypeSignature, classNameToSignature, type DecodedValue } from "./values.js";
+import {
+  decodeByTag,
+  prettyTypeSignature,
+  classNameToSignature,
+  writeTaggedValue,
+  parseLiteral,
+  coerceForSignature,
+  type DecodedValue,
+  type EncodableValue,
+} from "./values.js";
 import {
   CommandSet,
   VirtualMachineCmd,
@@ -17,9 +26,14 @@ import {
   ThreadReferenceCmd,
   EventRequestCmd,
   StackFrameCmd,
+  ObjectReferenceCmd,
+  StringReferenceCmd,
+  ClassTypeCmd,
+  InvokeOptions,
   EventKind,
   SuspendPolicy,
   ModifierKind,
+  Tag,
 } from "./constants.js";
 
 export interface JdwpLocation {
@@ -55,6 +69,12 @@ export interface Local {
   value: string; // rendered
   objectId?: string;
   tag: string;
+}
+
+export interface EvalResult {
+  type: string;
+  value: string;
+  objectId?: string;
 }
 
 interface MethodInfo {
@@ -480,6 +500,268 @@ export class JdwpDebugger {
     return out;
   }
 
+  // ---------- eval / set-var ----------
+
+  private async stringValue(objectId: bigint): Promise<string> {
+    const data = await this.req(
+      CommandSet.StringReference,
+      StringReferenceCmd.Value,
+      this.w().objectID(objectId).build(),
+    );
+    return this.r(data).string();
+  }
+
+  private async renderDecoded(dv: DecodedValue): Promise<EvalResult> {
+    if (dv.kind === "string" && dv.objectId && dv.objectId !== "0") {
+      const s = await this.stringValue(BigInt(dv.objectId)).catch(() => "");
+      return { type: "String", value: JSON.stringify(s), objectId: dv.objectId };
+    }
+    return {
+      type: dv.kind === "primitive" ? dv.tag : dv.kind,
+      value: renderValue(dv),
+      objectId: dv.objectId && dv.objectId !== "0" ? dv.objectId : undefined,
+    };
+  }
+
+  private async objectClass(objectId: bigint): Promise<bigint> {
+    const data = await this.req(
+      CommandSet.ObjectReference,
+      ObjectReferenceCmd.ReferenceType,
+      this.w().objectID(objectId).build(),
+    );
+    const r = this.r(data);
+    r.byte(); // refTypeTag
+    return r.referenceTypeID();
+  }
+
+  private async fieldsOf(classID: bigint): Promise<{ fieldID: bigint; name: string; sig: string }[]> {
+    const data = await this.req(
+      CommandSet.ReferenceType,
+      ReferenceTypeCmd.FieldsWithGeneric,
+      this.w().referenceTypeID(classID).build(),
+    );
+    const r = this.r(data);
+    const n = r.int();
+    const out: { fieldID: bigint; name: string; sig: string }[] = [];
+    for (let i = 0; i < n; i++) {
+      const fieldID = r.fieldID();
+      const name = r.string();
+      const sig = r.string();
+      r.string(); // generic
+      r.int(); // modBits
+      out.push({ fieldID, name, sig });
+    }
+    return out;
+  }
+
+  private async createString(s: string): Promise<bigint> {
+    const data = await this.req(
+      CommandSet.VirtualMachine,
+      VirtualMachineCmd.CreateString,
+      this.w().string(s).build(),
+    );
+    return this.r(data).objectID();
+  }
+
+  /** Resolve the receiver object for an eval expression (a top-frame local or `this`). */
+  private async resolveReceiver(threadId: bigint, name: string): Promise<bigint> {
+    const raw = await this.framesRaw(threadId, 1);
+    if (raw.length === 0) throw new Error("no stack frame");
+    const top = raw[0];
+    if (name === "this") {
+      const data = await this.req(
+        CommandSet.StackFrame,
+        3, // ThisObject
+        this.w().threadID(threadId).frameID(top.frameId).build(),
+      );
+      const r = this.r(data);
+      const obj = decodeByTag(r.byte(), r);
+      if (!obj.objectId || obj.objectId === "0") throw new Error("`this` is null / unavailable");
+      return BigInt(obj.objectId);
+    }
+    const locals = await this.locals(threadId, top.frameId, top.loc.classID, top.loc.methodID, top.loc.index);
+    const local = locals.find((l) => l.name === name);
+    if (!local?.objectId) throw new Error(`local '${name}' is not an object (or not in scope)`);
+    return BigInt(local.objectId);
+  }
+
+  private async invokeMethod(
+    objectId: bigint,
+    threadId: bigint,
+    methodName: string,
+    argTokens: string[],
+  ): Promise<EvalResult> {
+    const objClassID = await this.objectClass(objectId);
+    // Methods can be inherited — walk up the superclass chain to find the
+    // declaring class, and invoke against THAT class type.
+    const resolved = await this.resolveMethodInHierarchy(objClassID, methodName, argTokens.length);
+    if (!resolved) throw new Error(`no method '${methodName}' on the receiver (or its superclasses)`);
+    const { classID, method: chosen } = resolved;
+
+    // Encode args (literals only; strings created in the VM).
+    const encoded: EncodableValue[] = [];
+    for (const tok of argTokens) {
+      const lit = parseLiteral(tok);
+      if (!lit) throw new Error(`unsupported argument literal: ${tok}`);
+      if (lit.tag === Tag.STRING && lit.str !== undefined) {
+        encoded.push({ tag: Tag.STRING, objectId: await this.createString(lit.str) });
+      } else {
+        encoded.push(lit);
+      }
+    }
+
+    const w = this.w()
+      .objectID(objectId)
+      .threadID(threadId)
+      .referenceTypeID(classID)
+      .methodID(chosen.methodID)
+      .int(encoded.length);
+    for (const a of encoded) writeTaggedValue(w, a);
+    w.int(InvokeOptions.SINGLE_THREADED);
+
+    const data = await this.req(CommandSet.ObjectReference, ObjectReferenceCmd.InvokeMethod, w.build());
+    const r = this.r(data);
+    const ret = decodeByTag(r.byte(), r);
+    const exc = decodeByTag(r.byte(), r);
+    if (exc.objectId && exc.objectId !== "0") {
+      return { type: "exception", value: `threw ${exc.tag}@${exc.objectId}`, objectId: exc.objectId };
+    }
+    return this.renderDecoded(ret);
+  }
+
+  private async superclassOf(classID: bigint): Promise<bigint> {
+    try {
+      const data = await this.req(
+        CommandSet.ClassType,
+        ClassTypeCmd.Superclass,
+        this.w().referenceTypeID(classID).build(),
+      );
+      return this.r(data).referenceTypeID();
+    } catch {
+      return 0n;
+    }
+  }
+
+  /** Find a method by name (and arg count) in a class or any superclass. */
+  private async resolveMethodInHierarchy(
+    startClassID: bigint,
+    methodName: string,
+    argCount: number,
+  ): Promise<{ classID: bigint; method: MethodInfo } | null> {
+    let classID = startClassID;
+    for (let hop = 0; hop < 32 && classID !== 0n; hop++) {
+      if (!this.methodCache.has(classID.toString())) {
+        try {
+          await this.methodsOf(classID);
+        } catch {
+          break;
+        }
+      }
+      const candidates = this.methodCache.get(classID.toString())?.filter((m) => m.name === methodName) ?? [];
+      const pick = candidates.find((m) => paramCount(m.signature) === argCount) ?? candidates[0];
+      if (pick) return { classID, method: pick };
+      classID = await this.superclassOf(classID);
+    }
+    return null;
+  }
+
+  /** Find a field by name in a class or any superclass. */
+  private async resolveFieldInHierarchy(
+    startClassID: bigint,
+    fieldName: string,
+  ): Promise<{ classID: bigint; fieldID: bigint } | null> {
+    let classID = startClassID;
+    for (let hop = 0; hop < 32 && classID !== 0n; hop++) {
+      const f = (await this.fieldsOf(classID).catch(() => [])).find((x) => x.name === fieldName);
+      if (f) return { classID, fieldID: f.fieldID };
+      classID = await this.superclassOf(classID);
+    }
+    return null;
+  }
+
+  private async readField(objectId: bigint, fieldName: string): Promise<EvalResult> {
+    const objClassID = await this.objectClass(objectId);
+    const f = await this.resolveFieldInHierarchy(objClassID, fieldName);
+    if (!f) throw new Error(`no field '${fieldName}' on the receiver (or its superclasses)`);
+    const w = this.w().objectID(objectId).int(1).fieldID(f.fieldID);
+    const data = await this.req(CommandSet.ObjectReference, ObjectReferenceCmd.GetValues, w.build());
+    const r = this.r(data);
+    r.int(); // count
+    return this.renderDecoded(decodeByTag(r.byte(), r));
+  }
+
+  /**
+   * Evaluate a small expression against a paused thread. Supported forms:
+   *   `name`                → value of a top-frame local (or `this`)
+   *   `name.field`          → read an instance field
+   *   `name.method(a, b)`   → invoke a method (literal args: int/long/float/bool/null/"str")
+   * Full arithmetic/operators are out of scope (use eval on getters + inspect).
+   */
+  async eval(threadId: bigint, expr: string): Promise<EvalResult> {
+    const m = expr.trim().match(/^([A-Za-z_$][\w$]*)(?:\.([A-Za-z_$][\w$]*)(\((.*)\))?)?$/);
+    if (!m) throw new Error("unsupported expression (supported: name, name.field, name.method(args))");
+    const [, recv, member, callParens, argsStr] = m;
+
+    if (!member) {
+      // bare local
+      const raw = await this.framesRaw(threadId, 1);
+      const top = raw[0];
+      const locals = await this.locals(threadId, top.frameId, top.loc.classID, top.loc.methodID, top.loc.index);
+      const local = locals.find((l) => l.name === recv);
+      if (!local) throw new Error(`local '${recv}' not in scope`);
+      if (local.objectId) {
+        return this.renderDecoded({ tag: local.tag, kind: "object", value: null, objectId: local.objectId });
+      }
+      return { type: local.type, value: local.value };
+    }
+
+    const objectId = await this.resolveReceiver(threadId, recv);
+    if (callParens !== undefined) {
+      const args = (argsStr ?? "").trim();
+      const tokens = args === "" ? [] : splitArgs(args);
+      return this.invokeMethod(objectId, threadId, member, tokens);
+    }
+    return this.readField(objectId, member);
+  }
+
+  /** Set a top-frame local to a new value (primitives + null; strings created in VM). */
+  async setVar(threadId: bigint, name: string, rawValue: string): Promise<void> {
+    const raw = await this.framesRaw(threadId, 1);
+    if (raw.length === 0) throw new Error("no stack frame");
+    const top = raw[0];
+
+    // find the slot + signature for the named local from the variable table
+    const data = await this.req(
+      CommandSet.Method,
+      MethodCmd.VariableTableWithGeneric,
+      this.w().referenceTypeID(top.loc.classID).methodID(top.loc.methodID).build(),
+    );
+    const r = this.r(data);
+    r.int(); // argCnt
+    const n = r.int();
+    let target: { slot: number; sig: string } | undefined;
+    for (let i = 0; i < n; i++) {
+      const start = r.long();
+      const vName = r.string();
+      const sig = r.string();
+      r.string();
+      const length = r.int();
+      const slot = r.int();
+      if (vName === name && top.loc.index >= start && top.loc.index < start + BigInt(length)) {
+        target = { slot, sig };
+      }
+    }
+    if (!target) throw new Error(`local '${name}' not found / not in scope`);
+
+    const enc = coerceForSignature(target.sig, rawValue);
+    if (enc.tag === Tag.STRING && enc.str !== undefined) {
+      enc.objectId = await this.createString(enc.str);
+    }
+    const w = this.w().threadID(threadId).frameID(top.frameId).int(1).int(target.slot);
+    writeTaggedValue(w, enc);
+    await this.req(CommandSet.StackFrame, StackFrameCmd.SetValues, w.build());
+  }
+
   // ---------- stepping ----------
 
   async step(threadId: bigint, action: "OVER" | "INTO" | "OUT"): Promise<number> {
@@ -508,4 +790,51 @@ function renderValue(dv: DecodedValue): string {
   if (dv.kind === "array") return `array@${dv.objectId}`;
   if (dv.kind === "object") return `${dv.tag}@${dv.objectId}`;
   return String(dv.value);
+}
+
+/** Split a call argument list at top-level commas (respects quotes). */
+function splitArgs(s: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let quote: string | null = null;
+  let cur = "";
+  for (const ch of s) {
+    if (quote) {
+      cur += ch;
+      if (ch === quote) quote = null;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+      cur += ch;
+    } else if (ch === "(" || ch === "[") {
+      depth++;
+      cur += ch;
+    } else if (ch === ")" || ch === "]") {
+      depth--;
+      cur += ch;
+    } else if (ch === "," && depth === 0) {
+      out.push(cur.trim());
+      cur = "";
+    } else {
+      cur += ch;
+    }
+  }
+  if (cur.trim() !== "") out.push(cur.trim());
+  return out;
+}
+
+/** Count parameters in a JVM method signature "(II)V" etc. */
+function paramCount(sig: string): number {
+  const inner = sig.slice(sig.indexOf("(") + 1, sig.indexOf(")"));
+  let i = 0;
+  let count = 0;
+  while (i < inner.length) {
+    while (inner[i] === "[") i++;
+    if (inner[i] === "L") {
+      i = inner.indexOf(";", i) + 1;
+    } else {
+      i++;
+    }
+    count++;
+  }
+  return count;
 }

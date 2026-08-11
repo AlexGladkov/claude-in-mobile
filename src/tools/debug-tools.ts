@@ -115,7 +115,8 @@ export const debugTools: ToolDefinition[] = [
 
   defineTool({
     name: "debug_eval",
-    description: "Evaluate an expression on a paused thread (iOS now; Android JDWP InvokeMethod pending).",
+    description:
+      "Evaluate an expression on a paused thread. Android supports: a local name, `name.field`, or `name.method(args)` with literal args (int/long/float/bool/null/\"str\"); `this` is a valid receiver. iOS: full LLDB expression eval.",
     schema: z.object({ sessionId: z.string(), threadId: z.string(), expr: z.string() }),
     handler: async (args) => {
       const res = await ctrl().eval(args.sessionId, args.threadId, args.expr);
@@ -125,7 +126,8 @@ export const debugTools: ToolDefinition[] = [
 
   defineTool({
     name: "debug_set_var",
-    description: "Mutate a local variable on a paused thread (iOS now; Android pending).",
+    description:
+      "Mutate a local variable on a paused thread. Android: primitives (int/long/bool/float/…), null, and strings; the value is coerced to the local's declared type. iOS: LLDB set / expression assignment.",
     schema: z.object({ sessionId: z.string(), threadId: z.string(), name: z.string(), value: z.string() }),
     handler: async (args) => {
       const res = await ctrl().setVar(args.sessionId, args.threadId, args.name, args.value);

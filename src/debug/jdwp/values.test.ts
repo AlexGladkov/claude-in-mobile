@@ -1,6 +1,14 @@
 import { describe, it, expect } from "vitest";
 import { JdwpWriter, type IdSizes } from "./packet.js";
-import { decodeByTag, prettyTypeSignature, classNameToSignature } from "./values.js";
+import {
+  decodeByTag,
+  prettyTypeSignature,
+  classNameToSignature,
+  parseLiteral,
+  coerceForSignature,
+  writeTaggedValue,
+  tagForSignature,
+} from "./values.js";
 import { Tag } from "./constants.js";
 import { JdwpReader } from "./packet.js";
 
@@ -32,6 +40,42 @@ describe("decodeByTag", () => {
 
   it("treats a null object reference (id 0) as null", () => {
     expect(decodeByTag(Tag.OBJECT, reader((w) => w.objectID(0n)))).toMatchObject({ kind: "null", objectId: "0" });
+  });
+});
+
+describe("literal parsing + encoding (eval args / set-var)", () => {
+  it("parses int/long/float/bool/null/string literals", () => {
+    expect(parseLiteral("42")).toMatchObject({ tag: Tag.INT, num: 42 });
+    expect(parseLiteral("100L")).toMatchObject({ tag: Tag.LONG, big: 100n });
+    expect(parseLiteral("1.5")).toMatchObject({ tag: Tag.DOUBLE, num: 1.5 });
+    expect(parseLiteral("1.5f")).toMatchObject({ tag: Tag.FLOAT });
+    expect(parseLiteral("true")).toMatchObject({ tag: Tag.BOOLEAN, bool: true });
+    expect(parseLiteral("null")).toMatchObject({ tag: Tag.OBJECT, objectId: 0n });
+    expect(parseLiteral('"hi"')).toMatchObject({ tag: Tag.STRING, str: "hi" });
+    expect(parseLiteral("someLocal")).toBeNull();
+  });
+
+  it("maps signatures to tags and coerces set-var values", () => {
+    expect(tagForSignature("I")).toBe(Tag.INT);
+    expect(tagForSignature("Ljava/lang/String;")).toBe(Tag.OBJECT);
+    expect(coerceForSignature("Z", "true")).toMatchObject({ tag: Tag.BOOLEAN, bool: true });
+    expect(coerceForSignature("J", "9000000000")).toMatchObject({ tag: Tag.LONG, big: 9_000_000_000n });
+  });
+
+  it("round-trips an encoded tagged INT through the decoder", () => {
+    const w = new JdwpWriter(SIZES);
+    writeTaggedValue(w, { tag: Tag.INT, num: -123 });
+    const r = new JdwpReader(w.build(), SIZES);
+    expect(decodeByTag(r.byte(), r)).toMatchObject({ kind: "primitive", value: -123 });
+  });
+
+  it("round-trips an encoded tagged LONG and BOOLEAN", () => {
+    const w = new JdwpWriter(SIZES);
+    writeTaggedValue(w, { tag: Tag.LONG, big: 5_000_000_000n });
+    writeTaggedValue(w, { tag: Tag.BOOLEAN, bool: true });
+    const r = new JdwpReader(w.build(), SIZES);
+    expect(decodeByTag(r.byte(), r)).toMatchObject({ value: 5_000_000_000n });
+    expect(decodeByTag(r.byte(), r)).toMatchObject({ value: true });
   });
 });
 

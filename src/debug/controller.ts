@@ -146,8 +146,7 @@ export class DebugController {
       const c = await this.ios();
       return c.rpc("eval", { sessionId: e.iosSessionId, threadId, expr });
     }
-    // Android expression eval (InvokeMethod) is not implemented yet.
-    throw new Error("eval is not yet supported on Android (JDWP InvokeMethod pending)");
+    return e.dbg.eval(BigInt(threadId), expr);
   }
 
   async setVar(sessionId: string, threadId: string, name: string, value: string): Promise<unknown> {
@@ -156,7 +155,8 @@ export class DebugController {
       const c = await this.ios();
       return c.rpc("setVar", { sessionId: e.iosSessionId, threadId, name, value });
     }
-    throw new Error("setVar is not yet supported on Android (JDWP InvokeMethod pending)");
+    await e.dbg.setVar(BigInt(threadId), name, value);
+    return { ok: true };
   }
 
   async step(sessionId: string, threadId: string, action: "OVER" | "INTO" | "OUT"): Promise<void> {
