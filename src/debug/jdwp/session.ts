@@ -38,6 +38,11 @@ export class JdwpSession {
     return this.conn.connected;
   }
 
+  /** Low-level connection — used by the higher-level debugger surface. */
+  get connection(): JdwpConnection {
+    return this.conn;
+  }
+
   onEvent(listener: (cmd: { data: Buffer }) => void): void {
     this.conn.on("event", listener);
   }

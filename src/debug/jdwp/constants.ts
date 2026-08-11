@@ -32,6 +32,7 @@ export const CommandSet = {
 export const VirtualMachineCmd = {
   Version: 1,
   ClassesBySignature: 2,
+  AllClasses: 3,
   AllThreads: 4,
   Dispose: 6,
   IDSizes: 7,
@@ -41,8 +42,9 @@ export const VirtualMachineCmd = {
 } as const;
 
 export const ReferenceTypeCmd = {
-  MethodsWithGeneric: 15,
+  Signature: 1,
   SourceFile: 7,
+  MethodsWithGeneric: 15,
 } as const;
 
 export const MethodCmd = {
