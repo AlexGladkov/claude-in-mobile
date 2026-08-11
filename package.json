@@ -116,7 +116,10 @@
     "zod": "^4.4.3"
   },
   "optionalDependencies": {
-    "sharp": "^0.33.0"
+    "sharp": "^0.35.3"
+  },
+  "overrides": {
+    "sharp": "^0.35.3"
   },
   "bundledDependencies": [
     "@claude-in-mobile/plugin-api"
