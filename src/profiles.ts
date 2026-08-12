@@ -57,7 +57,7 @@ export const PROFILE_VISIBLE: Record<MobileProfile, readonly string[]> = {
 export const VALID_PROFILES: readonly MobileProfile[] = ["minimal", "core", "android", "web", "full"];
 
 // ---------------------------------------------------------------------------
-// Module metadata catalog — all 20 modules (including always-visible)
+// Module metadata catalog — all 21 modules (including always-visible)
 // ---------------------------------------------------------------------------
 
 export const MODULE_METADATA: readonly ModuleMeta[] = [

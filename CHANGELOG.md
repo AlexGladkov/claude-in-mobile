@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.15.0] — 2026-08-12
+
+Runtime debugger for AI agents — white-box debugging of a live **debuggable**
+Android app (breakpoints, stepping, stack/locals inspection, expression eval,
+variable mutation) to complement the existing black-box UI automation. Inspired
+by the *approach* of [debroid](https://github.com/PatilShreyas/debroid)
+(Apache-2.0), implemented from scratch in our own stack.
+
+### Added
+
+- **`debug` MCP module** (off by default — `device(enable_module:'debug')`).
+  A native TypeScript JDWP client speaks the protocol directly over
+  `adb forward tcp:<port> jdwp:<pid>` — no JDI/JVM dependency, no extra deps.
+  Actions: `attach`, `break` (line or method-entry), `remove_break`, `poll`
+  (non-blocking event queue: BREAKPOINT_HIT / STEP_HIT / EXCEPTION_HIT /
+  CLASS_PREPARE / VM_DEATH, with resolved class/method/line), `pause_state`
+  (stack frames + top-frame locals), `threads`, `eval` (a local, `name.field`,
+  or `name.method(args)` with literal args and superclass-chain resolution;
+  `this` receiver), `set_var`, `step` (OVER/INTO/OUT), `resume`, `detach`,
+  `sessions`. Sessions persist across tool calls and are serialized per session.
+- Precondition: only **debuggable builds** (`android:debuggable=true`) are
+  attachable — the runtime-debug analogue of the FLAG_SECURE screenshot limit.
+
+### Security
+
+- All agent-supplied identifiers that reach `adb shell` are validated
+  (`validatePackageName`/`validateDeviceId`) — closes device-side shell
+  injection via the attach package name.
+- Documented residual risk: `adb forward` exposes JDWP on an unauthenticated
+  localhost port (JDWP has no auth by design) — run on trusted single-user
+  hosts. Forwards are torn down on detach and on VM death.
+
+### Changed
+
+- Debug sessions have bounded lifecycle: per-session mutex, session cap, port
+  free-list, adb-forward teardown on VM/socket death, and dead-session reaping.
+
+### Notes
+
+- **iOS/Simulator (LLDB) runtime debug is not enabled in this release** — the
+  sidecar code is in-tree but `platform:'ios'` attach is rejected; it ships in
+  3.16 after its own hardening pass. Also deferred to 3.16: JDWP deferred
+  breakpoints (not-yet-loaded classes), watchpoints/exception-trap verbs, and
+  `eval` overload resolution by full signature (currently by arity).
+
 ## [3.14.0] — 2026-06-16
 
 REPL plugin hardening (closes the #46 hang) plus a systemic audit of the
