@@ -11,6 +11,10 @@ import { attachAndroid, resolvePid, type AdbRunner } from "./jdwp/session.js";
 import type { JdwpSession } from "./jdwp/session.js";
 import { JdwpDebugger } from "./jdwp/debugger.js";
 import { LldbClient } from "./lldb/client.js";
+import { validatePackageName, validateDeviceId, validateBundleId } from "../utils/sanitize.js";
+
+/** Hard cap on concurrent debug sessions — bounds ports/daemon/socket growth. */
+const MAX_SESSIONS = 16;
 
 export type DebugPlatform = "android" | "ios";
 
@@ -24,6 +28,7 @@ interface AndroidEntry {
   platform: "android";
   session: JdwpSession;
   dbg: JdwpDebugger;
+  port: number;
 }
 interface IosEntry {
   platform: "ios";
@@ -38,7 +43,8 @@ export class DebugController {
   private sessions = new Map<string, Entry>();
   private lldb?: LldbClient;
   private nextId = 1;
-  private nextPort = 8100;
+  private static readonly PORT_BASE = 8100;
+  private usedPorts = new Set<number>();
 
   constructor(
     private readonly androidAdb: AndroidAdbFactory,
@@ -49,6 +55,17 @@ export class DebugController {
     return `dbg_${this.nextId++}`;
   }
 
+  /** Lowest free localhost port for an adb JDWP forward (recycled on detach). */
+  private allocPort(): number {
+    for (let p = DebugController.PORT_BASE; p < DebugController.PORT_BASE + 4096; p++) {
+      if (!this.usedPorts.has(p)) {
+        this.usedPorts.add(p);
+        return p;
+      }
+    }
+    throw new Error("no free debug port available");
+  }
+
   // ---------- attach / detach ----------
 
   async attach(opts: {
@@ -57,17 +74,37 @@ export class DebugController {
     deviceId?: string;
     launch?: boolean;
   }): Promise<AttachResult> {
+    if (this.sessions.size >= MAX_SESSIONS) {
+      throw new Error(`too many debug sessions (max ${MAX_SESSIONS}) — detach some first`);
+    }
+
     if (opts.platform === "android") {
+      // Agent-supplied strings reach `adb shell` (device-side sh) — validate.
+      validatePackageName(opts.app);
+      if (opts.deviceId) validateDeviceId(opts.deviceId);
+
       const adb = this.androidAdb(opts.deviceId);
       const pid = await resolvePid(adb, opts.app);
-      const session = await attachAndroid({ pid, adb, localPort: this.nextPort++ });
+      const port = this.allocPort();
+      let session: JdwpSession;
+      try {
+        session = await attachAndroid({ pid, adb, localPort: port });
+      } catch (e) {
+        this.usedPorts.delete(port); // attachAndroid already removed its forward
+        throw e;
+      }
       const dbg = new JdwpDebugger(session);
       const sessionId = this.id();
-      this.sessions.set(sessionId, { platform: "android", session, dbg });
+      const entry: AndroidEntry = { platform: "android", session, dbg, port };
+      this.sessions.set(sessionId, entry);
+      // Free the port when the VM/socket dies; keep the session so the agent's
+      // next poll delivers the terminal VM_DEATH event (JdwpDebugger pushes it).
+      session.onClose(() => this.usedPorts.delete(port));
       return { sessionId, platform: "android", pid };
     }
 
-    // iOS → LLDB sidecar
+    // iOS → LLDB sidecar (bundle id reaches simctl/launchctl argv — validate).
+    validateBundleId(opts.app);
     const client = await this.ios();
     const res = await client.rpc("attach", { bundleId: opts.app, launch: opts.launch ?? true });
     const sessionId = this.id();
@@ -79,99 +116,144 @@ export class DebugController {
     const e = this.get(sessionId);
     if (e.platform === "android") {
       await e.session.dispose();
+      this.usedPorts.delete(e.port);
     } else {
       await this.ios().then((c) => c.rpc("detach", { sessionId: e.iosSessionId }));
     }
     this.sessions.delete(sessionId);
+    this.locks.delete(sessionId);
+  }
+
+  // Per-session serialization: debug ops mutate shared VM/thread state, so
+  // concurrent tool calls on one session must not interleave (a step resuming
+  // while another reads frames → INVALID_FRAMEID). poll is included so its
+  // lazy request round-trips don't race a mutating op.
+  private locks = new Map<string, Promise<unknown>>();
+  private lock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.locks.get(sessionId) ?? Promise.resolve();
+    const next = prev.then(fn, fn);
+    this.locks.set(
+      sessionId,
+      next.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return next;
   }
 
   // ---------- breakpoints ----------
 
-  async setBreakpoint(
+  setBreakpoint(
     sessionId: string,
     spec: { className?: string; method?: string; file?: string; line?: number },
   ): Promise<{ id: string; verified: boolean }> {
-    const e = this.get(sessionId);
-    if (e.platform === "android") {
-      if (spec.className && spec.method != null && spec.line == null) {
-        const r = await e.dbg.setMethodBreakpoint(spec.className, spec.method, true);
-        return { id: String(r.requestId ?? ""), verified: r.verified };
+    return this.lock(sessionId, async () => {
+      const e = this.get(sessionId);
+      if (e.platform === "android") {
+        if (spec.className && spec.method != null && spec.line == null) {
+          const r = await e.dbg.setMethodBreakpoint(spec.className, spec.method, true);
+          return { id: r.requestId != null ? String(r.requestId) : "", verified: r.verified };
+        }
+        if (spec.className && spec.line != null) {
+          const r = await e.dbg.setLineBreakpoint(spec.className, spec.line, true);
+          return { id: r.requestId != null ? String(r.requestId) : "", verified: r.verified };
+        }
+        throw new Error("android breakpoint needs {className, line} or {className, method}");
       }
-      if (spec.className && spec.line != null) {
-        const r = await e.dbg.setLineBreakpoint(spec.className, spec.line, true);
-        return { id: String(r.requestId ?? ""), verified: r.verified };
+      const c = await this.ios();
+      if (spec.file && spec.line != null) {
+        const r = await c.rpc("setBreakpoint", { sessionId: e.iosSessionId, file: spec.file, line: spec.line });
+        return { id: String(r.breakpointId), verified: !!r.verified };
       }
-      throw new Error("android breakpoint needs {className, line} or {className, method}");
-    }
-    const c = await this.ios();
-    if (spec.file && spec.line != null) {
-      const r = await c.rpc("setBreakpoint", { sessionId: e.iosSessionId, file: spec.file, line: spec.line });
-      return { id: String(r.breakpointId), verified: !!r.verified };
-    }
-    if (spec.method) {
-      const r = await c.rpc("setFunctionBreakpoint", { sessionId: e.iosSessionId, symbol: spec.method });
-      return { id: String(r.breakpointId), verified: !!r.verified };
-    }
-    throw new Error("ios breakpoint needs {file, line} or {method}");
+      if (spec.method) {
+        const r = await c.rpc("setFunctionBreakpoint", { sessionId: e.iosSessionId, symbol: spec.method });
+        return { id: String(r.breakpointId), verified: !!r.verified };
+      }
+      throw new Error("ios breakpoint needs {file, line} or {method}");
+    });
   }
 
-  async removeBreakpoint(sessionId: string, breakpointId: string): Promise<void> {
-    const e = this.get(sessionId);
-    if (e.platform === "android") {
-      await e.dbg.clearBreakpoint(parseInt(breakpointId, 10));
-    } else {
-      await this.ios().then((c) => c.rpc("removeBreakpoint", { sessionId: e.iosSessionId, breakpointId }));
-    }
+  removeBreakpoint(sessionId: string, breakpointId: string): Promise<void> {
+    return this.lock(sessionId, async () => {
+      const e = this.get(sessionId);
+      if (e.platform === "android") {
+        await e.dbg.clearBreakpoint(intId(breakpointId, "breakpointId"));
+      } else {
+        await this.ios().then((c) => c.rpc("removeBreakpoint", { sessionId: e.iosSessionId, breakpointId }));
+      }
+    });
   }
 
   // ---------- poll / inspect / step ----------
 
-  async poll(sessionId: string, cursor: number): Promise<{ events: unknown[]; nextCursor: number }> {
-    const e = this.get(sessionId);
-    if (e.platform === "android") return e.dbg.poll(cursor);
-    const c = await this.ios();
-    return c.rpc("poll", { sessionId: e.iosSessionId, cursor });
-  }
-
-  async pauseState(sessionId: string, threadId: string): Promise<unknown> {
-    const e = this.get(sessionId);
-    if (e.platform === "android") return e.dbg.pauseState(BigInt(threadId));
-    const c = await this.ios();
-    return c.rpc("pauseState", { sessionId: e.iosSessionId, threadId });
-  }
-
-  async eval(sessionId: string, threadId: string, expr: string): Promise<unknown> {
-    const e = this.get(sessionId);
-    if (e.platform === "ios") {
+  poll(sessionId: string, cursor: number): Promise<{ events: unknown[]; nextCursor: number }> {
+    return this.lock(sessionId, async () => {
+      const e = this.get(sessionId);
+      if (e.platform === "android") return e.dbg.poll(cursor);
       const c = await this.ios();
-      return c.rpc("eval", { sessionId: e.iosSessionId, threadId, expr });
-    }
-    return e.dbg.eval(BigInt(threadId), expr);
+      return c.rpc("poll", { sessionId: e.iosSessionId, cursor });
+    });
   }
 
-  async setVar(sessionId: string, threadId: string, name: string, value: string): Promise<unknown> {
-    const e = this.get(sessionId);
-    if (e.platform === "ios") {
+  pauseState(sessionId: string, threadId: string): Promise<unknown> {
+    return this.lock(sessionId, async () => {
+      const e = this.get(sessionId);
+      if (e.platform === "android") return e.dbg.pauseState(bigId(threadId, "threadId"));
       const c = await this.ios();
-      return c.rpc("setVar", { sessionId: e.iosSessionId, threadId, name, value });
-    }
-    await e.dbg.setVar(BigInt(threadId), name, value);
-    return { ok: true };
+      return c.rpc("pauseState", { sessionId: e.iosSessionId, threadId });
+    });
   }
 
-  async step(sessionId: string, threadId: string, action: "OVER" | "INTO" | "OUT"): Promise<void> {
-    const e = this.get(sessionId);
-    if (e.platform === "android") {
-      await e.dbg.step(BigInt(threadId), action);
-    } else {
-      await this.ios().then((c) => c.rpc("step", { sessionId: e.iosSessionId, threadId, action }));
-    }
+  eval(sessionId: string, threadId: string, expr: string): Promise<unknown> {
+    return this.lock(sessionId, async () => {
+      const e = this.get(sessionId);
+      if (e.platform === "ios") {
+        const c = await this.ios();
+        return c.rpc("eval", { sessionId: e.iosSessionId, threadId, expr });
+      }
+      return e.dbg.eval(bigId(threadId, "threadId"), expr);
+    });
   }
 
-  async resume(sessionId: string): Promise<void> {
-    const e = this.get(sessionId);
-    if (e.platform === "android") await e.dbg.resume();
-    else await this.ios().then((c) => c.rpc("step", { sessionId: e.iosSessionId, threadId: "0", action: "RESUME" }));
+  setVar(sessionId: string, threadId: string, name: string, value: string): Promise<unknown> {
+    return this.lock(sessionId, async () => {
+      const e = this.get(sessionId);
+      if (e.platform === "ios") {
+        const c = await this.ios();
+        return c.rpc("setVar", { sessionId: e.iosSessionId, threadId, name, value });
+      }
+      await e.dbg.setVar(bigId(threadId, "threadId"), name, value);
+      return { ok: true };
+    });
+  }
+
+  step(sessionId: string, threadId: string, action: "OVER" | "INTO" | "OUT"): Promise<void> {
+    return this.lock(sessionId, async () => {
+      const e = this.get(sessionId);
+      if (e.platform === "android") {
+        await e.dbg.step(bigId(threadId, "threadId"), action);
+      } else {
+        await this.ios().then((c) => c.rpc("step", { sessionId: e.iosSessionId, threadId, action }));
+      }
+    });
+  }
+
+  resume(sessionId: string): Promise<void> {
+    return this.lock(sessionId, async () => {
+      const e = this.get(sessionId);
+      if (e.platform === "android") await e.dbg.resume();
+      else await this.ios().then((c) => c.rpc("step", { sessionId: e.iosSessionId, threadId: "0", action: "RESUME" }));
+    });
+  }
+
+  /** List threads of the debugged VM (Android). */
+  threads(sessionId: string): Promise<unknown> {
+    return this.lock(sessionId, async () => {
+      const e = this.get(sessionId);
+      if (e.platform === "android") return e.session.listThreads();
+      throw new Error("thread listing is not yet available on iOS");
+    });
   }
 
   listSessions(): { sessionId: string; platform: DebugPlatform }[] {
@@ -203,4 +285,17 @@ export class DebugController {
     }
     return this.lldb;
   }
+}
+
+/** Parse an agent-supplied JDWP object/thread id (decimal) into a bigint. */
+function bigId(v: string, label: string): bigint {
+  if (!/^-?\d+$/.test(v.trim())) throw new Error(`invalid ${label}: ${JSON.stringify(v)}`);
+  return BigInt(v.trim());
+}
+
+/** Parse an agent-supplied breakpoint/request id (int) safely. */
+function intId(v: string, label: string): number {
+  const n = Number(v);
+  if (!Number.isInteger(n)) throw new Error(`invalid ${label}: ${JSON.stringify(v)}`);
+  return n;
 }

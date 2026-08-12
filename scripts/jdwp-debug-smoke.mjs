@@ -55,7 +55,7 @@ let cursor = 0;
 let hit = null;
 for (let i = 0; i < 12; i++) {
   await sleep(500);
-  const { events, nextCursor } = dbg.poll(cursor);
+  const { events, nextCursor } = await dbg.poll(cursor);
   cursor = nextCursor;
   const bpHit = events.find((e) => e.kind === "BREAKPOINT_HIT");
   if (bpHit) {

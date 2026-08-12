@@ -41,6 +41,11 @@ describe("decodeByTag", () => {
   it("treats a null object reference (id 0) as null", () => {
     expect(decodeByTag(Tag.OBJECT, reader((w) => w.objectID(0n)))).toMatchObject({ kind: "null", objectId: "0" });
   });
+
+  it("throws on an unknown tag rather than guessing the width (desync-safe)", () => {
+    // 0x3f is not a valid JDWP tag — guessing its width would desync the stream.
+    expect(() => decodeByTag(0x3f, reader((w) => w.int(0)))).toThrow(/unknown value tag/);
+  });
 });
 
 describe("literal parsing + encoding (eval args / set-var)", () => {

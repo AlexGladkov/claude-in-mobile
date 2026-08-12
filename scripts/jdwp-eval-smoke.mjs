@@ -24,7 +24,7 @@ await tryAdb(["shell", "am", "start", "-n", activity]);
 let cursor = 0, hit = null;
 for (let i = 0; i < 12; i++) {
   await sleep(500);
-  const p = dbg.poll(cursor); cursor = p.nextCursor;
+  const p = await dbg.poll(cursor); cursor = p.nextCursor;
   hit = p.events.find((e) => e.kind === "BREAKPOINT_HIT");
   if (hit) break;
 }

@@ -103,15 +103,12 @@ class Session:
         self._objects = {}
         self._object_ids = itertools.count(1)
 
-        # IMPORTANT: reuse the SAME SBListener that was passed to
-        # AttachToProcessWithID. The process's state-changed events are routed
-        # to whichever listener owns the attach; creating a second listener
-        # here would silently swallow every stop event (and, empirically, also
-        # wedges process.Continue()). We re-assert the subscription to be safe.
+        # IMPORTANT: reuse the SAME SBListener that AttachToProcessWithID was
+        # given — the process's state-changed events are routed to that listener.
+        # Re-adding it here with a narrowed mask can drop/duplicate stop events
+        # and, empirically, wedge process.Continue(). So we do NOT re-assert;
+        # the attach-time subscription is complete and sufficient.
         self._listener = listener
-        self.process.GetBroadcaster().AddListener(
-            self._listener, lldb.SBProcess.eBroadcastBitStateChanged
-        )
 
         self._stop = threading.Event()
         self._thread = threading.Thread(
@@ -258,6 +255,15 @@ class Daemon:
         lldb.SBDebugger.Initialize()
         self.debugger = lldb.SBDebugger.Create()
         self.debugger.SetAsync(True)
+        # CRITICAL: stdout is reserved for the NDJSON protocol. LLDB emits
+        # warnings / expression-evaluator / Swift module chatter on the
+        # debugger's own fd 1 by default, which would corrupt a response line
+        # and hang the caller. Route all LLDB output to stderr.
+        try:
+            self.debugger.SetOutputFileHandle(sys.stderr, False)
+            self.debugger.SetErrorFileHandle(sys.stderr, False)
+        except Exception:
+            pass
         self.sessions = {}
         self._session_ids = itertools.count(1)
 
@@ -290,8 +296,11 @@ class Daemon:
         except Exception:
             out = ""
         # launchctl list lines: "<pid>\t<status>\tUIKitApplication:<bundle>[...]"
+        # Anchor on the exact "UIKitApplication:<bundle>[" token so that
+        # com.example.App does not also match com.example.App2 / .App.Extension.
+        needle = "UIKitApplication:%s[" % bundle_id
         for line in out.splitlines():
-            if bundle_id in line:
+            if needle in line:
                 cols = line.split("\t")
                 if cols and cols[0].strip().isdigit():
                     return int(cols[0].strip())

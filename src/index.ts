@@ -15,6 +15,7 @@ import { bootstrapKernel, bootstrapKernelAsync, type KernelHandle } from "./runt
 import type { ToolDefinition as PluginToolDefinition } from "@claude-in-mobile/plugin-api";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { captureStep } from "./tools/recorder-tools.js";
+import { disposeDebugSessions } from "./tools/debug-tools.js";
 import { resolveToolCall } from "./tools/registry.js";
 import { buildInstructions } from "./runtime/mcp-instructions.js";
 import { runCliIfRequested } from "./runtime/cli.js";
@@ -151,6 +152,11 @@ async function shutdown(signal: string): Promise<void> {
     await kernel.disposeAll();
   } catch (e) {
     console.error("Kernel dispose error:", e);
+  }
+  try {
+    await disposeDebugSessions();
+  } catch (e) {
+    console.error("Debug dispose error:", e);
   }
   process.exit(0);
 }

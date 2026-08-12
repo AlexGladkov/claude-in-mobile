@@ -38,6 +38,15 @@ function ctrl(): DebugController {
   return controller;
 }
 
+/**
+ * Tear down all debug sessions (dispose VMs, remove adb forwards, kill the LLDB
+ * daemon). Call from process shutdown so nothing is leaked/orphaned.
+ */
+export async function disposeDebugSessions(): Promise<void> {
+  await controller?.disposeAll();
+  controller = undefined;
+}
+
 export const debugTools: ToolDefinition[] = [
   defineTool({
     name: "debug_attach",
@@ -167,6 +176,13 @@ export const debugTools: ToolDefinition[] = [
       await ctrl().detach(args.sessionId);
       return textResult(`detached ${args.sessionId}`);
     },
+  }),
+
+  defineTool({
+    name: "debug_threads",
+    description: "List threads of the debugged VM with ids and names (Android). Use an id to inspect/step a specific thread.",
+    schema: z.object({ sessionId: z.string() }),
+    handler: async (args) => jsonResult(await ctrl().threads(args.sessionId)),
   }),
 
   defineTool({

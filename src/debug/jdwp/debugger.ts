@@ -92,18 +92,38 @@ interface ClassInfo {
 const STEP_SIZE_LINE = 1;
 const STEP_DEPTH = { INTO: 0, OVER: 1, OUT: 2 } as const;
 
+interface InternalEvent extends DebugEvent {
+  /** Raw location kept for lazy name/line resolution in poll() (never returned). */
+  rawLoc?: { classID: bigint; methodID: bigint; index: bigint };
+  resolved?: boolean;
+}
+
 export class JdwpDebugger {
   private readonly conn: JdwpConnection;
   private readonly idSizes: IdSizes;
-  private events: DebugEvent[] = [];
+  private events: InternalEvent[] = [];
   private classCache = new Map<string, ClassInfo>(); // signature → class
   private methodCache = new Map<string, MethodInfo[]>(); // classID → methods
   private nameByClassId = new Map<string, string>();
+  private closed = false;
+  private stepRequests = new Set<number>(); // active SINGLE_STEP requests to clear on hit
 
   constructor(private readonly session: JdwpSession) {
     this.conn = session.connection;
     this.idSizes = session.idSizes;
     this.session.onEvent((cmd) => this.ingestComposite(cmd.data));
+    // Surface an abrupt VM/socket death as a terminal poll event so the agent
+    // isn't left polling a corpse or reading stale state.
+    this.session.onClose(() => {
+      if (this.closed) return;
+      this.closed = true;
+      this.events.push({ cursor: this.events.length, kind: "VM_DEATH" });
+    });
+  }
+
+  /** Whether the underlying VM/connection is still alive. */
+  get alive(): boolean {
+    return !this.closed && this.session.connected;
   }
 
   private req(set: number, cmd: number, data?: Buffer): Promise<Buffer> {
@@ -278,82 +298,166 @@ export class JdwpDebugger {
 
   // ---------- events / poll ----------
 
+  /**
+   * Decode one Event.Composite packet. Every JDWP EventKind that can appear is
+   * parsed with its EXACT field layout — a wrong width in any one event desyncs
+   * the rest of the packet — and an unknown kind aborts the packet (poison)
+   * rather than fabricating misaligned events. Runs in the socket callback, so
+   * it must not block: hit locations are stored raw and resolved lazily in poll().
+   */
   private ingestComposite(data: Buffer): void {
     const r = this.r(data);
     r.byte(); // suspendPolicy
     const count = r.int();
     for (let i = 0; i < count; i++) {
-      const kind = r.byte();
-      const requestId = r.int();
+      let kind: number;
+      let requestId: number;
+      try {
+        kind = r.byte();
+        requestId = r.int();
+      } catch {
+        return; // truncated — stop
+      }
       const cursor = this.events.length;
-      switch (kind) {
-        case EventKind.BREAKPOINT:
-        case EventKind.SINGLE_STEP:
-        case EventKind.METHOD_ENTRY: {
-          const threadId = r.threadID();
-          const loc = r.location();
-          this.events.push({
-            cursor,
-            kind: kind === EventKind.SINGLE_STEP ? "STEP_HIT" : "BREAKPOINT_HIT",
-            requestId,
-            threadId: threadId.toString(),
-            location: this.describeLocation(loc),
-          });
-          break;
+      try {
+        switch (kind) {
+          case EventKind.SINGLE_STEP:
+          case EventKind.BREAKPOINT:
+          case EventKind.METHOD_ENTRY:
+          case 41 /* METHOD_EXIT */: {
+            const threadId = r.threadID();
+            const loc = r.location();
+            this.events.push({
+              cursor,
+              kind: kind === EventKind.SINGLE_STEP ? "STEP_HIT" : "BREAKPOINT_HIT",
+              requestId,
+              threadId: threadId.toString(),
+              rawLoc: loc,
+            });
+            break;
+          }
+          case 42 /* METHOD_EXIT_WITH_RETURN_VALUE */: {
+            const threadId = r.threadID();
+            const loc = r.location();
+            decodeByTag(r.byte(), r); // return value
+            this.events.push({ cursor, kind: "BREAKPOINT_HIT", requestId, threadId: threadId.toString(), rawLoc: loc });
+            break;
+          }
+          case EventKind.EXCEPTION: {
+            const threadId = r.threadID();
+            const loc = r.location();
+            decodeByTag(r.byte(), r); // exception object (tagged)
+            r.location(); // catch location (all-zero if uncaught)
+            this.events.push({ cursor, kind: "EXCEPTION_HIT", requestId, threadId: threadId.toString(), rawLoc: loc });
+            break;
+          }
+          case EventKind.CLASS_PREPARE: {
+            const threadId = r.threadID();
+            r.byte(); // refTypeTag
+            r.referenceTypeID(); // typeID
+            const sig = r.string();
+            r.int(); // status
+            this.events.push({
+              cursor, kind: "CLASS_PREPARE", requestId,
+              threadId: threadId.toString(), location: { className: prettyTypeSignature(sig) }, resolved: true,
+            });
+            break;
+          }
+          case 9 /* CLASS_UNLOAD */: {
+            r.string(); // signature
+            this.events.push({ cursor, kind: "CLASS_UNLOAD", requestId, resolved: true });
+            break;
+          }
+          case EventKind.THREAD_START:
+          case EventKind.THREAD_DEATH:
+          case 90 /* VM_START */: {
+            const threadId = r.threadID();
+            this.events.push({
+              cursor, kind: kind === EventKind.THREAD_START ? "THREAD_START" : kind === EventKind.THREAD_DEATH ? "THREAD_DEATH" : "VM_START",
+              requestId, threadId: threadId.toString(), resolved: true,
+            });
+            break;
+          }
+          case 20 /* FIELD_ACCESS */: {
+            r.threadID(); r.location(); r.byte(); r.referenceTypeID(); r.fieldID(); decodeByTag(r.byte(), r);
+            this.events.push({ cursor, kind: "FIELD_ACCESS", requestId, resolved: true });
+            break;
+          }
+          case 21 /* FIELD_MODIFICATION */: {
+            r.threadID(); r.location(); r.byte(); r.referenceTypeID(); r.fieldID(); decodeByTag(r.byte(), r); decodeByTag(r.byte(), r);
+            this.events.push({ cursor, kind: "FIELD_MODIFICATION", requestId, resolved: true });
+            break;
+          }
+          case 43: case 44 /* MONITOR_CONTENDED_ENTER/ED */: {
+            r.threadID(); decodeByTag(r.byte(), r); r.location();
+            this.events.push({ cursor, kind: "MONITOR", requestId, resolved: true });
+            break;
+          }
+          case 45 /* MONITOR_WAIT */: {
+            r.threadID(); decodeByTag(r.byte(), r); r.location(); r.long();
+            this.events.push({ cursor, kind: "MONITOR", requestId, resolved: true });
+            break;
+          }
+          case 46 /* MONITOR_WAITED */: {
+            r.threadID(); decodeByTag(r.byte(), r); r.location(); r.boolean();
+            this.events.push({ cursor, kind: "MONITOR", requestId, resolved: true });
+            break;
+          }
+          case EventKind.VM_DEATH:
+            this.events.push({ cursor, kind: "VM_DEATH", requestId, resolved: true });
+            break;
+          default:
+            // Unknown kind → we don't know its width; abort the packet rather
+            // than desync. (We never request kinds we can't decode.)
+            this.events.push({ cursor, kind: `UNKNOWN_${kind}`, requestId, resolved: true });
+            return;
         }
-        case EventKind.EXCEPTION: {
-          const threadId = r.threadID();
-          const loc = r.location();
-          decodeByTag(r.byte(), r); // exception object (tagged) — skip payload for now
-          r.location(); // catch location
-          this.events.push({
-            cursor,
-            kind: "EXCEPTION_HIT",
-            requestId,
-            threadId: threadId.toString(),
-            location: this.describeLocation(loc),
-          });
-          break;
-        }
-        case EventKind.CLASS_PREPARE: {
-          const threadId = r.threadID();
-          r.byte(); // refTypeTag
-          r.referenceTypeID(); // typeID
-          const sig = r.string();
-          r.int(); // status
-          this.events.push({
-            cursor,
-            kind: "CLASS_PREPARE",
-            requestId,
-            threadId: threadId.toString(),
-            location: { className: prettyTypeSignature(sig) },
-          });
-          break;
-        }
-        case EventKind.VM_DEATH:
-          this.events.push({ cursor, kind: "VM_DEATH", requestId });
-          break;
-        default:
-          this.events.push({ cursor, kind: `UNKNOWN_${kind}`, requestId });
+      } catch {
+        return; // any mid-event decode failure: stop, don't emit garbage
       }
     }
   }
 
-  private describeLocation(loc: {
-    classID: bigint;
-    methodID: bigint;
-    index: bigint;
-  }): DebugEvent["location"] {
-    const className = this.nameByClassId.get(loc.classID.toString());
-    const methods = this.methodCache.get(loc.classID.toString());
-    const method = methods?.find((m) => m.methodID === loc.methodID)?.name;
-    return { className, method };
+  /** Resolve an event's raw location to {className, method, line} once, lazily. */
+  private async resolveEvent(ev: InternalEvent): Promise<void> {
+    if (ev.resolved) return;
+    if (ev.rawLoc) {
+      const { classID, methodID, index } = ev.rawLoc;
+      const className = await this.classNameOf(classID);
+      if (!this.methodCache.has(classID.toString())) {
+        try { await this.methodsOf(classID); } catch { /* non-inspectable */ }
+      }
+      const method = this.methodCache.get(classID.toString())?.find((m) => m.methodID === methodID)?.name;
+      const line = await this.lineForIndex(classID, methodID, index);
+      ev.location = { className, method, line };
+    }
+    ev.resolved = true;
+    delete ev.rawLoc;
   }
 
-  /** Return events at/after cursor and the next cursor to poll with. */
-  poll(cursor: number): { events: DebugEvent[]; nextCursor: number } {
+  /** Return events at/after cursor (locations resolved) and the next cursor. */
+  async poll(cursor: number): Promise<{ events: DebugEvent[]; nextCursor: number; alive: boolean }> {
     const from = Math.max(0, cursor);
-    return { events: this.events.slice(from), nextCursor: this.events.length };
+    const slice = this.events.slice(from);
+    for (const ev of slice) {
+      await this.resolveEvent(ev);
+      // A single-step is one-shot: clear its request once delivered so it
+      // doesn't keep firing on every subsequent line (no request leak).
+      if (ev.kind === "STEP_HIT" && ev.requestId != null && this.stepRequests.has(ev.requestId)) {
+        this.stepRequests.delete(ev.requestId);
+        try {
+          await this.req(
+            CommandSet.EventRequest,
+            EventRequestCmd.Clear,
+            this.w().byte(EventKind.SINGLE_STEP).int(ev.requestId).build(),
+          );
+        } catch {
+          /* best effort */
+        }
+      }
+    }
+    const events = slice.map(({ rawLoc: _r, resolved: _s, ...pub }) => pub as DebugEvent);
+    return { events, nextCursor: this.events.length, alive: this.alive };
   }
 
   // ---------- pause state ----------
@@ -427,6 +531,7 @@ export class JdwpDebugger {
     threadId: bigint,
     maxFrames = 16,
   ): Promise<{ frames: Frame[]; locals: Local[] }> {
+    await this.assertSuspended(threadId);
     const raw = await this.framesRaw(threadId, maxFrames);
     const frames = await Promise.all(raw.map((f) => this.toFrame(f)));
     let locals: Local[] = [];
@@ -698,6 +803,7 @@ export class JdwpDebugger {
    * Full arithmetic/operators are out of scope (use eval on getters + inspect).
    */
   async eval(threadId: bigint, expr: string): Promise<EvalResult> {
+    await this.assertSuspended(threadId);
     const m = expr.trim().match(/^([A-Za-z_$][\w$]*)(?:\.([A-Za-z_$][\w$]*)(\((.*)\))?)?$/);
     if (!m) throw new Error("unsupported expression (supported: name, name.field, name.method(args))");
     const [, recv, member, callParens, argsStr] = m;
@@ -726,6 +832,7 @@ export class JdwpDebugger {
 
   /** Set a top-frame local to a new value (primitives + null; strings created in VM). */
   async setVar(threadId: bigint, name: string, rawValue: string): Promise<void> {
+    await this.assertSuspended(threadId);
     const raw = await this.framesRaw(threadId, 1);
     if (raw.length === 0) throw new Error("no stack frame");
     const top = raw[0];
@@ -765,6 +872,7 @@ export class JdwpDebugger {
   // ---------- stepping ----------
 
   async step(threadId: bigint, action: "OVER" | "INTO" | "OUT"): Promise<number> {
+    await this.assertSuspended(threadId);
     const w = this.w()
       .byte(EventKind.SINGLE_STEP)
       .byte(SuspendPolicy.EVENT_THREAD)
@@ -775,12 +883,39 @@ export class JdwpDebugger {
       .int(STEP_DEPTH[action]);
     const data = await this.req(CommandSet.EventRequest, EventRequestCmd.Set, w.build());
     const requestId = this.r(data).int();
+    this.stepRequests.add(requestId); // cleared once the STEP_HIT is polled (no leak)
     await this.session.resume();
     return requestId;
   }
 
   async resume(): Promise<void> {
     await this.session.resume();
+  }
+
+  /**
+   * Assert a thread is suspended before frame/local/invoke/step ops, turning
+   * the raw JDWP THREAD_NOT_SUSPENDED (error 13) into an actionable message.
+   */
+  private async assertSuspended(threadId: bigint): Promise<void> {
+    try {
+      const data = await this.req(
+        CommandSet.ThreadReference,
+        ThreadReferenceCmd.Status,
+        this.w().threadID(threadId).build(),
+      );
+      const r = this.r(data);
+      r.int(); // threadStatus
+      const suspendStatus = r.int();
+      if ((suspendStatus & 0x1) === 0) {
+        throw new Error(
+          `thread ${threadId} is not suspended — inspect/step require a thread paused at a breakpoint/exception/step`,
+        );
+      }
+    } catch (e) {
+      if (e instanceof Error && e.message.includes("not suspended")) throw e;
+      // Status query itself failed (e.g. invalid thread) — surface plainly.
+      throw new Error(`cannot verify thread ${threadId} suspend state: ${(e as Error).message}`);
+    }
   }
 }
 

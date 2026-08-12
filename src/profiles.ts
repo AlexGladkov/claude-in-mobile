@@ -38,6 +38,7 @@ export const ALL_HIDEABLE_MODULES: readonly string[] = [
   "visual", "recorder", "sync",
   "accessibility", "performance", "autopilot",
   "sandbox", "intent", "sensor", "network",
+  "debug",
 ];
 
 // ---------------------------------------------------------------------------
@@ -93,7 +94,7 @@ export const MODULE_METADATA: readonly ModuleMeta[] = [
   { name: "network", description: "Network layer — traffic stats, connectivity, proxy, airplane mode", category: "testing", actions: ["traffic", "connectivity", "proxy", "airplane"] },
 
   // Debug module — runtime debugger (Android JDWP / iOS LLDB), debuggable builds only
-  { name: "debug", description: "Runtime debugger — attach, breakpoints, poll, pause-state/locals, eval, set-var, step (Android JDWP / iOS LLDB; debuggable builds only)", category: "testing", actions: ["attach", "break", "remove_break", "poll", "pause_state", "eval", "set_var", "step", "resume", "detach", "sessions"] },
+  { name: "debug", description: "Runtime debugger — attach, breakpoints, poll, pause-state/locals, eval, set-var, step, threads (Android JDWP / iOS LLDB; debuggable builds only)", category: "testing", actions: ["attach", "break", "remove_break", "poll", "pause_state", "eval", "set_var", "step", "resume", "detach", "threads", "sessions"] },
 ];
 
 /** Quick lookup: module name -> metadata */

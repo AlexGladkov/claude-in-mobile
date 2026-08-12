@@ -104,6 +104,7 @@
   "files": [
     "dist",
     "desktop-companion/build/install/desktop-companion",
+    "scripts/ios-debug-daemon.py",
     "README.md"
   ],
   "dependencies": {

@@ -81,8 +81,9 @@ export function decodeByTag(tag: number, r: JdwpReader): DecodedValue {
       };
     }
     default:
-      // Unknown tag → best-effort: treat as an object id so we don't desync.
-      return { tag: ch, value: null, objectId: r.objectID().toString(), kind: "object" };
+      // Unknown tag → we cannot know the field width, so guessing would desync
+      // the whole stream. Fail loud instead.
+      throw new Error(`JDWP: unknown value tag 0x${tag.toString(16)} ('${ch}')`);
   }
 }
 
