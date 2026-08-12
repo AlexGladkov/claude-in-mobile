@@ -44,7 +44,7 @@ Full command documentation split by scope:
 | [`references/android-only.md`](references/android-only.md) | analyze-screen, find-and-tap, screen on/off | Android |
 | [`references/desktop.md`](references/desktop.md) | get-window-info, focus-window, resize-window, launch/stop desktop apps, metrics, monitors | Desktop |
 | [`references/platform-support.md`](references/platform-support.md) | Per-platform support matrix and backend details | All |
-| [`references/debug.md`](references/debug.md) | Runtime debugger: attach, breakpoints, poll, pause-state/locals, eval, set-var, step (debuggable builds only) | Android (JDWP) / iOS (LLDB, Simulator) |
+| [`references/debug.md`](references/debug.md) | Runtime debugger: attach, breakpoints, poll, pause-state/locals, eval, set-var, step (debuggable builds only) | Android (JDWP); iOS/Simulator in 3.16 |
 
 ---
 

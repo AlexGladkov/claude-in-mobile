@@ -28,11 +28,28 @@ export interface ThreadInfo {
 export type AdbRunner = (args: string[]) => Promise<string>;
 
 export class JdwpSession {
+  private cleanedUp = false;
+
   constructor(
     private readonly conn: JdwpConnection,
     readonly idSizes: IdSizes,
     private readonly cleanup: () => void,
-  ) {}
+  ) {
+    // Tear down the adb forward on ANY socket death (abrupt VM/app kill,
+    // device drop) — not only on explicit dispose() — so a dead session never
+    // leaves a dangling localhost JDWP forward whose port could be recycled.
+    this.conn.on("close", () => this.runCleanup());
+  }
+
+  private runCleanup(): void {
+    if (this.cleanedUp) return;
+    this.cleanedUp = true;
+    try {
+      this.cleanup();
+    } catch {
+      /* best effort */
+    }
+  }
 
   get connected(): boolean {
     return this.conn.connected;
@@ -120,7 +137,7 @@ export class JdwpSession {
 
   close(): void {
     this.conn.close();
-    this.cleanup();
+    this.runCleanup();
   }
 }
 

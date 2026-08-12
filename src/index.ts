@@ -141,7 +141,10 @@ const { server, start } = createMcpServer({
 });
 
 // Graceful shutdown
+let shuttingDown = false;
 async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return; // guard against overlapping signals (SIGTERM + stdin-close)
+  shuttingDown = true;
   console.error(`MCP server received ${signal}, shutting down...`);
   try {
     await ctx.deviceManager.cleanup();

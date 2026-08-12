@@ -4,7 +4,7 @@ import { debugTools } from "../debug-tools.js";
 const { meta, aliases } = createMetaTool({
   name: "debug",
   description:
-    "Runtime debugger for a DEBUGGABLE live app (Android JDWP / iOS LLDB). attach → break → poll (for hits) → pause_state (frames+locals) → eval / set_var / step → resume / detach. Only debuggable builds are attachable (android:debuggable / iOS get-task-allow), same idea as the FLAG_SECURE screenshot limit.",
+    "Runtime debugger for a DEBUGGABLE live Android app (JDWP). attach → break → poll (for hits) → pause_state (frames+locals) → eval / set_var / step → resume / detach. Only android:debuggable=true builds are attachable (same idea as the FLAG_SECURE screenshot limit). iOS/Simulator (LLDB) support ships in 3.16.",
   tools: debugTools,
   prefix: "debug_",
   extraSchema: {

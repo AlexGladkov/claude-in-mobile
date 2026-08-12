@@ -55,6 +55,25 @@ export class DebugController {
     return `dbg_${this.nextId++}`;
   }
 
+  /** Count sessions that are still alive (dead ones don't hold the cap). */
+  private aliveSessionCount(): number {
+    let n = 0;
+    for (const e of this.sessions.values()) {
+      if (e.platform === "ios" || e.dbg.alive) n++;
+    }
+    return n;
+  }
+
+  /** Evict Android sessions whose VM/socket has died (forward already freed). */
+  private reapDeadSessions(): void {
+    for (const [id, e] of [...this.sessions.entries()]) {
+      if (e.platform === "android" && !e.dbg.alive) {
+        this.sessions.delete(id);
+        this.locks.delete(id);
+      }
+    }
+  }
+
   /** Lowest free localhost port for an adb JDWP forward (recycled on detach). */
   private allocPort(): number {
     for (let p = DebugController.PORT_BASE; p < DebugController.PORT_BASE + 4096; p++) {
@@ -74,7 +93,14 @@ export class DebugController {
     deviceId?: string;
     launch?: boolean;
   }): Promise<AttachResult> {
-    if (this.sessions.size >= MAX_SESSIONS) {
+    if (opts.platform === "ios") {
+      // iOS runtime debug (LLDB Simulator backend) is not enabled in this
+      // release — it ships in 3.16 after the sidecar hardening pass.
+      throw new Error("iOS runtime debug is not enabled in this release (Android only; iOS lands in 3.16)");
+    }
+
+    this.reapDeadSessions();
+    if (this.aliveSessionCount() >= MAX_SESSIONS) {
       throw new Error(`too many debug sessions (max ${MAX_SESSIONS}) — detach some first`);
     }
 
@@ -113,14 +139,20 @@ export class DebugController {
   }
 
   async detach(sessionId: string): Promise<void> {
-    const e = this.get(sessionId);
-    if (e.platform === "android") {
-      await e.session.dispose();
-      this.usedPorts.delete(e.port);
-    } else {
-      await this.ios().then((c) => c.rpc("detach", { sessionId: e.iosSessionId }));
-    }
-    this.sessions.delete(sessionId);
+    if (!this.sessions.has(sessionId)) return; // idempotent (already reaped/detached)
+    // Serialize teardown after any in-flight op on this session so we don't
+    // destroy the socket/frames out from under a pending pauseState/step.
+    await this.lock(sessionId, async () => {
+      const e = this.sessions.get(sessionId);
+      if (!e) return;
+      if (e.platform === "android") {
+        await e.session.dispose();
+        this.usedPorts.delete(e.port);
+      } else {
+        await this.ios().then((c) => c.rpc("detach", { sessionId: e.iosSessionId }));
+      }
+      this.sessions.delete(sessionId);
+    });
     this.locks.delete(sessionId);
   }
 

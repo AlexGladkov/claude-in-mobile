@@ -51,7 +51,7 @@ export const debugTools: ToolDefinition[] = [
   defineTool({
     name: "debug_attach",
     description:
-      "Attach the runtime debugger to a DEBUGGABLE running app. Android: pass the package (android:debuggable=true build). iOS: pass the bundle id (Debug build, Simulator); launch=true starts it suspended. Returns a sessionId for all other debug calls.",
+      "Attach the runtime debugger to a DEBUGGABLE running app. Android (JDWP): pass the package of an android:debuggable=true build. Returns a sessionId for all other debug calls. (iOS/Simulator support lands in 3.16 — attaching with platform:'ios' is rejected in this release.)",
     schema: z.object({
       platform: z.enum(["android", "ios"]).describe("android (JDWP) or ios (LLDB, Simulator)."),
       app: z.string().describe("Android package name or iOS bundle id."),
