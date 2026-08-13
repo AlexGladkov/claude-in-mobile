@@ -30,6 +30,16 @@
 - **Supported:** screenshot, tap (coordinates + text), input, key, ui-dump, launch, stop, clipboard, window management, monitors, performance metrics
 - **Not supported:** annotate, long-press, swipe, find, tap-text, analyze-screen, find-and-tap, apps listing, install, uninstall, push/pull files, logs, system-info, shell
 
+### Telegram (bot testing)
+
+- **Backend:** MTProto userbot via GramJS — the bot conversation is modelled as a UI tree
+- **Plugin:** on-demand, install with `mcp-devices install telegram`
+- **Identity:** disposable test-DC userbot, configured purely via env (`TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, `TELEGRAM_STRING_SESSION`); never your personal account
+- **Capabilities:** `ui`, `input`, `deviceMgmt` only
+- **Supported:** ui-dump (dialog snapshot), input text/command, tap (inline/reply buttons by text/index/resourceId), wait, ui assertions
+- **Not supported:** screenshot/annotate (text via ui-dump is cheaper), swipe/long-press/gestures, url/webapp buttons, apps/install/uninstall, push/pull files, logs, system-info, shell
+- See [`references/telegram.md`](telegram.md) for the full workflow.
+
 ## Platform Support Matrix
 
 | Command | Android | iOS | Aurora | Desktop |

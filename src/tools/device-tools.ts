@@ -3,7 +3,7 @@ import type { Platform } from "../device-manager.js";
 import { defineTool, z } from "./define-tool.js";
 import { textResult } from "../utils/tool-result.js";
 
-const platformEnum = z.enum(["android", "ios", "desktop", "aurora", "browser"]);
+const platformEnum = z.string();
 
 export const deviceTools: ToolDefinition[] = [
   defineTool({

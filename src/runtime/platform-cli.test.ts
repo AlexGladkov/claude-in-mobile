@@ -12,7 +12,7 @@ describe("applyInstall", () => {
   });
   it("expands all", () => {
     expect(applyInstall([], ["all"]).sort()).toEqual(
-      ["android", "aurora", "desktop", "ios", "web"].sort()
+      ["android", "aurora", "desktop", "ios", "telegram", "web"].sort()
     );
   });
   it("ignores unknown tokens", () => {

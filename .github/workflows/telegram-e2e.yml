@@ -1,0 +1,164 @@
+# REQUIRES GitHub secrets: TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_TEST_BOT_TOKEN
+# (+ TELEGRAM_PROD_STRING_SESSION for the telegram-prod-smoke job).
+# Until these secrets are configured, this workflow will fail at the "Provision
+# test-DC session" step -- that is expected and intentional.
+# Do NOT put real credentials in this file or commit them to the repository.
+
+name: Telegram E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "Number of e2e loop iterations (test job only)"
+        required: false
+        default: "1"
+      soak:
+        description: "Soak mode: loop until first failure (test job only)"
+        required: false
+        default: "false"
+      target:
+        description: "DC target: 'test' (default) or 'prod' (triggers telegram-prod-smoke)"
+        required: false
+        default: "test"
+  schedule:
+    # Nightly at 02:00 UTC.
+    - cron: "0 2 * * *"
+  push:
+    branches:
+      - main
+      - "release/**"
+    paths:
+      - "packages/plugin-telegram/**"
+
+jobs:
+  telegram-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Level-1 prod guard: DC is hardcoded here and is never a workflow input.
+      # The runtime (identity.ts::resolveDcMode) and the fake phone number
+      # provide the remaining two guard layers.
+      TELEGRAM_DC: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # plugin-api workspace must emit dist/types before main tsc can resolve
+      # @mcp-devices/plugin-api (mirrors ci.yml to avoid 3.11.1-class regressions).
+      - name: Build plugin-api workspace
+        run: npm run build --workspace=packages/plugin-api
+
+      - name: Build main package (includes plugin-telegram)
+        run: npm run build
+
+      # Auto-registers a disposable identity on the Telegram test DC.
+      # The session string is masked immediately and never written to disk.
+      # Subsequent steps receive TELEGRAM_STRING_SESSION via GITHUB_ENV.
+      - name: Provision test-DC session
+        id: provision
+        run: |
+          SESSION=$(node scripts/telegram-provision.mjs)
+          echo "::add-mask::$SESSION"
+          echo "TELEGRAM_STRING_SESSION=$SESSION" >> "$GITHUB_ENV"
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+
+      # Starts the fixture echo-bot in the background as a subprocess.
+      # The bot PID is stored in GITHUB_ENV so the cleanup step can kill it
+      # even when earlier steps fail (if: always()).
+      - name: Start test bot (fixture)
+        run: |
+          node scripts/telegram-test-bot.mjs &
+          BOT_PID=$!
+          echo "BOT_PID=$BOT_PID" >> "$GITHUB_ENV"
+          sleep 2
+        env:
+          TELEGRAM_TEST_BOT_TOKEN: ${{ secrets.TELEGRAM_TEST_BOT_TOKEN }}
+          TELEGRAM_DC: ${{ env.TELEGRAM_DC }}
+
+      # TELEGRAM_STRING_SESSION is already in env from the provision step above.
+      - name: Run telegram e2e
+        run: node scripts/telegram-e2e.mjs
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          TELEGRAM_ITERATIONS: ${{ github.event.inputs.iterations || '1' }}
+          TELEGRAM_SOAK: ${{ github.event.inputs.soak || 'false' }}
+          # Username of the fixture bot created on the Telegram test DC.
+          # Replace with the actual @username after bot creation.
+          TELEGRAM_BOT_USERNAME: "@mcp_devices_ci_bot"
+
+      - name: Stop test bot
+        if: always()
+        run: |
+          if [ -n "$BOT_PID" ]; then
+            kill "$BOT_PID" 2>/dev/null || true
+          fi
+
+      - name: Upload e2e report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-e2e-report-${{ github.run_id }}
+          path: swarm-report/telegram-e2e-*/
+          retention-days: 30
+
+  # Prod smoke: separate job, triggered only by manual workflow_dispatch with
+  # target=prod. No provision, no test bot, single-shot (no loop), no soak.
+  # Requires TELEGRAM_PROD_STRING_SESSION -- a throwaway session on the prod DC
+  # created once by a human and stored as a repository secret.
+  telegram-prod-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.target == 'prod'
+    env:
+      # Explicit opt-in flag read by identity.ts::resolveDcMode.
+      TELEGRAM_ALLOW_PROD: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build plugin-api workspace
+        run: npm run build --workspace=packages/plugin-api
+
+      - name: Build main package (includes plugin-telegram)
+        run: npm run build
+
+      # Single-shot prod smoke -- no test bot, no loop, no soak.
+      # TELEGRAM_PROD_STRING_SESSION is a pre-provisioned throwaway session.
+      - name: Run prod smoke (single-shot)
+        run: node scripts/telegram-e2e.mjs
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          TELEGRAM_PROD_STRING_SESSION: ${{ secrets.TELEGRAM_PROD_STRING_SESSION }}
+          TELEGRAM_ITERATIONS: "1"
+          TELEGRAM_SOAK: "false"
+          # Username of the prod smoke bot (distinct from test-DC fixture bot).
+          TELEGRAM_BOT_USERNAME: "@mcp_devices_smoke_bot"
+
+      - name: Upload prod smoke report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-prod-smoke-report-${{ github.run_id }}
+          path: swarm-report/telegram-e2e-*/
+          retention-days: 30

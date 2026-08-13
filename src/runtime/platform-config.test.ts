@@ -18,7 +18,7 @@ describe("parsePlatformList", () => {
 
   it("expands all", () => {
     expect(parsePlatformList("all").sort()).toEqual(
-      ["android", "aurora", "desktop", "ios", "web"].sort()
+      ["android", "aurora", "desktop", "ios", "telegram", "web"].sort()
     );
   });
 

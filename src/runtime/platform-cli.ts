@@ -34,6 +34,7 @@ const TOOLCHAIN: Record<PlatformId, { probe: string[]; hint: string }> = {
   web: { probe: [], hint: "Chrome/Chromium — launched on demand by the bundled CDP client" },
   desktop: { probe: ["java"], hint: "JDK for the desktop companion" },
   aurora: { probe: ["flutter-aurora"], hint: "Aurora Flutter SDK (`flutter-aurora`)" },
+  telegram: { probe: [], hint: "Pure Node (GramJS) — no external CLI; set TELEGRAM_API_ID/API_HASH/SESSION" },
 };
 
 /** Add platforms (csv / `all`) to the current set, deduped. */
@@ -88,7 +89,7 @@ export function runPlatformCommand(
     }
     case "install": {
       if (rest.length === 0) {
-        console.error("Usage: mcp-devices install <android|ios|web|desktop|aurora|all>...");
+        console.error("Usage: mcp-devices install <android|ios|web|desktop|aurora|telegram|all>...");
         return exit(1);
       }
       const next = applyInstall(resolveEnabledPlatforms(), rest);

@@ -1087,3 +1087,43 @@ describe("sanitizeErrorMessage JWT redaction", () => {
     expect(sanitizeErrorMessage("plain error, nothing secret")).toBe("plain error, nothing secret");
   });
 });
+
+// ──────────────────────────────────────────────
+// sanitizeErrorMessage — Telegram secrets redaction
+// ──────────────────────────────────────────────
+
+describe("sanitizeErrorMessage Telegram redaction", () => {
+  const BOT_TOKEN = "123456789:AAGm0123456789abcdefABCDEF_-ghijklmnopq";
+  // ~200-char base64 blob mimicking a GramJS StringSession / auth-key.
+  const SESSION = "A".repeat(100) + "bCdEfGhIjKlMnOpQrStUvWxYz0123456789" + "B".repeat(80) + "==";
+
+  it("redacts a Telegram bot token", () => {
+    const out = sanitizeErrorMessage(`telegram login failed for ${BOT_TOKEN} on startup`);
+    expect(out).not.toContain(BOT_TOKEN);
+    expect(out).not.toContain("AAGm0123456789");
+    expect(out).toContain("[REDACTED_BOT_TOKEN]");
+    expect(out).toContain("telegram login failed for");
+    expect(out).toContain("on startup");
+  });
+
+  it("redacts a GramJS StringSession base64 blob", () => {
+    const out = sanitizeErrorMessage(`session restore error: ${SESSION} is invalid`);
+    expect(out).not.toContain(SESSION);
+    expect(out).toContain("[REDACTED_SESSION]");
+    expect(out).toContain("session restore error:");
+    expect(out).toContain("is invalid");
+  });
+
+  it("does not touch short base64-ish fragments", () => {
+    const msg = "status AbCdEf123 returned for request";
+    expect(sanitizeErrorMessage(msg)).toBe(msg);
+  });
+
+  it("redacts both Telegram secrets in one message", () => {
+    const out = sanitizeErrorMessage(`bot ${BOT_TOKEN} session ${SESSION}`);
+    expect(out).not.toContain(BOT_TOKEN);
+    expect(out).not.toContain(SESSION);
+    expect(out).toContain("[REDACTED_BOT_TOKEN]");
+    expect(out).toContain("[REDACTED_SESSION]");
+  });
+});

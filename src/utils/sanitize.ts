@@ -264,6 +264,16 @@ export function sanitizeErrorMessage(msg: string): string {
     .replace(/Bearer\s+[A-Za-z0-9\-._~+/]+=*/g, "Bearer [REDACTED]")
     .replace(/token[=:]\s*[A-Za-z0-9\-._~+/]+=*/gi, "token=[REDACTED]")
     .replace(/key[=:]\s*[A-Za-z0-9\-._~+/]+=*/gi, "key=[REDACTED]")
-    // Standalone JWTs (header always base64url-encodes '{"' as "eyJ")
-    .replace(/eyJ[A-Za-z0-9._-]+/g, "[REDACTED_JWT]");
+    // Telegram bot token: <8-10 digit bot id> ":" <base64url secret>.
+    // Must run before the JWT/broad-base64 rules — its ':' separator and
+    // '-'/'_' alphabet make it distinct, but the trailing secret would
+    // otherwise be partially eaten by later catch-alls.
+    .replace(/\b\d{8,10}:[A-Za-z0-9_-]{32,}\b/g, "[REDACTED_BOT_TOKEN]")
+    // Standalone JWTs (header always base64url-encodes '{"' as "eyJ").
+    // Kept before the broad base64 rule so JWTs get the specific marker.
+    .replace(/eyJ[A-Za-z0-9._-]+/g, "[REDACTED_JWT]")
+    // GramJS StringSession / MTProto auth-key base64 blob — full account
+    // access. Broad, so it runs LAST (specific → broad); the {120,} floor
+    // keeps it clear of ordinary base64 fragments and the rules above.
+    .replace(/[A-Za-z0-9+/]{120,}={0,2}/g, "[REDACTED_SESSION]");
 }

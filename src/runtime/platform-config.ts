@@ -20,6 +20,7 @@ export const ALL_PLATFORMS = [
   "web",
   "desktop",
   "aurora",
+  "telegram",
 ] as const;
 
 export type PlatformId = (typeof ALL_PLATFORMS)[number];

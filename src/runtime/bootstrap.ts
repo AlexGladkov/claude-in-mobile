@@ -81,6 +81,7 @@ const IN_BASE_FACTORIES: Partial<Record<PlatformId, () => SourcePlugin>> = {
  */
 const PACKAGED_PLATFORMS: Partial<Record<PlatformId, string>> = {
   aurora: "@mcp-devices/plugin-aurora",
+  telegram: "@mcp-devices/plugin-telegram",
   web: "@mcp-devices/plugin-web",
   desktop: "@mcp-devices/plugin-desktop",
   android: "@mcp-devices/plugin-android",

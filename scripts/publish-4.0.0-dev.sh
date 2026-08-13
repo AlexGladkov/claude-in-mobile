@@ -9,7 +9,7 @@
 # The base `mcp-devices@4.0.0-dev` is already published under tag `dev`
 # (latest stays 3.x). This script publishes the 6 scoped packages:
 #   @mcp-devices/plugin-api      → latest (stable 1.0.0 contract)
-#   @mcp-devices/plugin-{android,ios,web,desktop,aurora} → tag dev
+#   @mcp-devices/plugin-{android,ios,web,desktop,aurora,telegram} → tag dev
 #   @mcp-devices/plugin-all      → tag dev
 #
 # Source keeps `mcp-devices: "*"` (required so fresh `npm install` links
@@ -19,7 +19,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 VER="4.0.0-dev"
-PLUGINS=(plugin-android plugin-ios plugin-web plugin-desktop plugin-aurora)
+PLUGINS=(plugin-android plugin-ios plugin-web plugin-desktop plugin-aurora plugin-telegram)
 
 echo "==> npm user: $(npm whoami)"
 echo "==> verifying @mcp-devices org access…"

@@ -1,0 +1,42 @@
+{
+  "name": "@mcp-devices/plugin-telegram",
+  "version": "4.0.0-dev",
+  "description": "Telegram bot-testing platform plugin for mcp-devices (MTProto userbot via GramJS).",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "keywords": [
+    "mcp",
+    "mcp-devices",
+    "plugin",
+    "telegram",
+    "bot-testing",
+    "gramjs"
+  ],
+  "author": "Alex Gladkov",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@mcp-devices/plugin-api": "1.0.0",
+    "mcp-devices": "*",
+    "telegram": "^2.26.22"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}

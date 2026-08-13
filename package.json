@@ -69,7 +69,7 @@
     }
   },
   "scripts": {
-    "build": "npm run build --workspace=packages/plugin-api && tsc && npm run build --workspaces --if-present --workspace=packages/plugin-android --workspace=packages/plugin-ios --workspace=packages/plugin-desktop --workspace=packages/plugin-web --workspace=packages/plugin-aurora",
+    "build": "npm run build --workspace=packages/plugin-api && tsc && npm run build --workspaces --if-present --workspace=packages/plugin-android --workspace=packages/plugin-ios --workspace=packages/plugin-desktop --workspace=packages/plugin-web --workspace=packages/plugin-aurora --workspace=packages/plugin-telegram",
     "build:lite": "npm run build && npm run build --workspace=packages/lite",
     "prepare": "rm -rf node_modules/mcp-devices && ln -sf \"$(pwd)\" node_modules/mcp-devices 2>/dev/null || true",
     "build:desktop": "cd desktop-companion && ./gradlew installDist",
