@@ -196,6 +196,27 @@ jobs:
             npm publish --access public --provenance --tag "${NPM_TAG}"
           fi
 
+      - name: Publish claude-in-mobile compat shim
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TAG: ${{ needs.setup.outputs.npm_tag }}
+        # Keeps the old `claude-in-mobile` npm name installable and updatable
+        # after the 4.0 rename: a thin package that depends on `mcp-devices` at
+        # the same version and forwards its CLI. Version + dep are synced to the
+        # tag so `npm i -g claude-in-mobile@latest` always pulls the matching
+        # engine. Idempotent (dist-tag move if already published), like above.
+        working-directory: compat/claude-in-mobile
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          jq --arg v "$VERSION" '.version=$v | .dependencies["mcp-devices"]=$v' package.json > package.json.tmp
+          mv package.json.tmp package.json
+          if npm view "claude-in-mobile@${VERSION}" version >/dev/null 2>&1; then
+            echo "claude-in-mobile@${VERSION} already published — moving dist-tag '${NPM_TAG}'"
+            npm dist-tag add "claude-in-mobile@${VERSION}" "${NPM_TAG}"
+          else
+            npm publish --access public --tag "${NPM_TAG}"
+          fi
+
   update-homebrew:
     needs: [release, setup]
     runs-on: ubuntu-latest
