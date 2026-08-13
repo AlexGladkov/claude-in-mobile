@@ -1,0 +1,30 @@
+{
+  "name": "claude-in-mobile",
+  "version": "4.0.0-dev",
+  "description": "Compatibility shim — claude-in-mobile was renamed to mcp-devices in 4.0. This thin package keeps `claude-in-mobile` installable and updatable; it depends on `mcp-devices` and forwards to the real CLI. Prefer installing `mcp-devices` directly.",
+  "type": "module",
+  "bin": {
+    "claude-in-mobile": "bin.mjs"
+  },
+  "scripts": {
+    "postinstall": "node postinstall.mjs"
+  },
+  "dependencies": {
+    "mcp-devices": "4.0.0-dev"
+  },
+  "files": [
+    "bin.mjs",
+    "postinstall.mjs",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": ["mcp", "mcp-devices", "claude-in-mobile", "android", "ios", "automation", "deprecated-alias"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AlexGladkov/claude-in-mobile.git"
+  },
+  "homepage": "https://github.com/AlexGladkov/claude-in-mobile#readme"
+}

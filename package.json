@@ -5,7 +5,8 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "mcp-devices": "dist/index.js"
+    "mcp-devices": "dist/index.js",
+    "claude-in-mobile": "dist/index.js"
   },
   "workspaces": [
     "packages/*"
