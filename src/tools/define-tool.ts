@@ -35,8 +35,15 @@ export interface DefineToolOptions<S extends z.ZodTypeAny> {
 export function defineTool<S extends z.ZodTypeAny>(
   opts: DefineToolOptions<S>,
 ): ToolDefinition {
+  // MUST stay "draft-2020-12": the Anthropic Messages API validates every
+  // `tools[].custom.input_schema` against the JSON Schema draft 2020-12
+  // meta-schema and rejects the whole request with HTTP 400 otherwise.
+  // Under "draft-7" zod emits the tuple form `items: [schemaA, schemaB]`
+  // for `z.tuple(...)`, which 2020-12 removed in favour of `prefixItems`
+  // (`items` there is `{"$dynamicRef": "#meta"}` — a schema, not an array).
+  // See src/tools/schema-dialect.test.ts for the regression guard.
   const json = z.toJSONSchema(opts.schema, {
-    target: "draft-7",
+    target: "draft-2020-12",
   }) as Record<string, unknown>;
 
   const tool: Tool = {
