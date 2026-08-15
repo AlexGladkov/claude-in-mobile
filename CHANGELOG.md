@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.0] — 2026-08-15
+
+The **mcp-devices** edition. `claude-in-mobile` is renamed to `mcp-devices` and
+re-architected into a microkernel + on-demand platform plugins. The old name
+stays fully installable and updatable — nothing breaks for existing users.
+
+### Changed
+- **BREAKING — renamed `claude-in-mobile` → `mcp-devices`.** The npm package,
+  the CLI, and the Homebrew formula are renamed. The old name keeps working via
+  a compatibility shim (npm) and Homebrew `oldname`, so
+  `npm i -g claude-in-mobile` and `brew upgrade claude-in-mobile` continue to
+  resolve to the new engine. Both `mcp-devices` and `claude-in-mobile` commands
+  are installed.
+- **Plugin edition / slim base.** `npm i mcp-devices` now installs only the
+  microkernel; each platform is loaded on demand from its own package. This
+  drops the base install footprint and lets users pull in just the platforms
+  they need.
+
+### Added
+- On-demand platform packages: `@mcp-devices/plugin-android`,
+  `@mcp-devices/plugin-ios`, `@mcp-devices/plugin-web`,
+  `@mcp-devices/plugin-desktop`, `@mcp-devices/plugin-aurora`, plus the
+  `@mcp-devices/plugin-all` meta-package that pulls in all five.
+- `@mcp-devices/plugin-api` — the public plugin contract (Capability enum,
+  `SourcePlugin` / `PluginManifest` / `PluginContext` types, EventBus topics),
+  versioned independently of the product so plugins can target a stable API.
+- `claude-in-mobile` npm compatibility shim that depends on `mcp-devices` and
+  forwards its CLI, keeping the old name a first-class install path.
+
+### Security
+- Scoped platform plugins are published with npm provenance (Sigstore
+  attestation), so the on-demand code that runs in the user's MCP runtime is
+  verifiably built from this repository.
+
+### Notes
+- The 3.15.x `debug` module (Android JDWP / iOS LLDB) is **not** part of this
+  edition yet — it will be ported onto the plugin architecture in a follow-up.
+
 ## [3.14.0] — 2026-06-16
 
 REPL plugin hardening (closes the #46 hang) plus a systemic audit of the

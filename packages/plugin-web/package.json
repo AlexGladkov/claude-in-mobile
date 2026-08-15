@@ -1,6 +1,6 @@
 {
   "name": "@mcp-devices/plugin-web",
-  "version": "4.0.0-dev",
+  "version": "4.0.0",
   "description": "Web/browser platform plugin for mcp-devices (Chrome DevTools Protocol).",
   "type": "module",
   "main": "dist/index.js",

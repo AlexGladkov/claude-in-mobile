@@ -1,6 +1,6 @@
 {
   "name": "@mcp-devices/plugin-desktop",
-  "version": "4.0.0-dev",
+  "version": "4.0.0",
   "description": "Desktop (Compose) platform plugin for mcp-devices.",
   "type": "module",
   "main": "dist/index.js",

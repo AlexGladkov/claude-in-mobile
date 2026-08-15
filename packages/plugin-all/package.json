@@ -1,6 +1,6 @@
 {
   "name": "@mcp-devices/plugin-all",
-  "version": "4.0.0-dev",
+  "version": "4.0.0",
   "description": "Meta-package: installs all mcp-devices platform plugins (android, ios, web, desktop, aurora).",
   "type": "module",
   "files": [

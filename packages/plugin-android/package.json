@@ -1,6 +1,6 @@
 {
   "name": "@mcp-devices/plugin-android",
-  "version": "4.0.0-dev",
+  "version": "4.0.0",
   "description": "Android (ADB) platform plugin for mcp-devices.",
   "type": "module",
   "main": "dist/index.js",
