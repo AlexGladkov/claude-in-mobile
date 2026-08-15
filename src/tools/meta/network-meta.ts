@@ -10,8 +10,8 @@ const { meta, aliases } = createMetaTool({
   extraSchema: {
     platform: {
       type: "string",
-      enum: ["android"],
-      description: "Target platform (network tools are Android-only).",
+      enum: ["android", "aurora"],
+      description: "Target platform. Aurora supports traffic, connectivity, interfaces, proxy and offline isolation.",
     },
   },
 });

@@ -17,6 +17,7 @@ import { performanceCompare } from "./performance/compare.js";
 import { performanceMonitor } from "./performance/monitor.js";
 import { performanceCrashes } from "./performance/crashes.js";
 import { performanceFramestats } from "./performance/framestats.js";
+import { auroraPerformanceCapabilityTools } from "./aurora-capability-tools.js";
 
 export const performanceTools: ToolDefinition[] = [
   performanceSnapshot,
@@ -25,4 +26,5 @@ export const performanceTools: ToolDefinition[] = [
   performanceMonitor,
   performanceCrashes,
   performanceFramestats,
+  ...auroraPerformanceCapabilityTools,
 ];

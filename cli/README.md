@@ -87,8 +87,29 @@ After installing the plugin, Claude Code can:
 - Platform tools:
   - **Android**: `adb` in PATH
   - **iOS**: Xcode with `simctl`
-  - **Aurora**: `audb` in PATH
+  - **Aurora Emulator**: `audb >= 0.2.0` in PATH (`cargo install audb-client --version 0.2.0`) or `AUDB_PATH`
   - **Desktop**: companion app configured
+
+---
+
+## Aurora Emulator namespace
+
+Common commands keep the cross-platform form (`screenshot aurora`, `tap aurora`,
+`launch aurora`, and so on). Aurora-specific APIs are grouped under `aurora`:
+
+```bash
+claude-in-mobile aurora setup-status
+claude-in-mobile aurora emulator status
+claude-in-mobile aurora emulator start --timeout 90
+claude-in-mobile aurora display lock
+claude-in-mobile aurora app pid ru.example.App
+claude-in-mobile aurora network offline on
+claude-in-mobile aurora sensor list
+```
+
+The integration is emulator-only and does not expose `audb install/uninstall`.
+UI accessibility and a reliable global clipboard are not available without an
+Aurora helper application.
 
 ---
 

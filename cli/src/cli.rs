@@ -147,6 +147,10 @@ pub enum Commands {
         /// Android/Aurora device serial
         #[arg(long)]
         device: Option<String>,
+
+        /// Scale coordinates from screenshot size WxH (e.g. 720x1600).
+        #[arg(long)]
+        from_size: Option<String>,
     },
 
     /// Open URL in browser
@@ -187,6 +191,10 @@ pub enum Commands {
         /// Android/Aurora device serial
         #[arg(long)]
         device: Option<String>,
+
+        /// Run as root (Aurora only)
+        #[arg(long)]
+        root: bool,
 
         /// Acknowledge that this subcommand runs arbitrary device-side commands
         /// and bypass the non-interactive safety gate (see issue #41).
@@ -561,15 +569,15 @@ pub enum Commands {
 
     /// Get screen resolution
     ScreenSize {
-        /// Platform: android or ios
-        #[arg(value_parser = ["android", "ios"])]
+        /// Platform: android, ios, or aurora
+        #[arg(value_parser = ["android", "ios", "aurora"])]
         platform: String,
 
         /// iOS Simulator name
         #[arg(long)]
         simulator: Option<String>,
 
-        /// Android device serial
+        /// Android/Aurora device serial
         #[arg(long)]
         device: Option<String>,
     },
@@ -1313,11 +1321,123 @@ pub enum Commands {
         command: ConfigCommands,
     },
 
+    /// Aurora Emulator-specific audb >=0.2.0 operations
+    Aurora {
+        #[command(subcommand)]
+        command: AuroraCommands,
+    },
+
     /// REPL supervisor — long-lived JSON-RPC stdio loop hosting interactive
     /// PTY sessions. Used by the TypeScript REPL plugin; not intended for
     /// direct human use. Wire protocol is documented in
     /// cli/src/plugins/repl/bridge.rs.
     ReplSupervisor,
+}
+
+#[derive(Subcommand)]
+pub enum AuroraCommands {
+    /// QMP/bridge runtime status
+    Status,
+    /// Inspect audb QEMU wrapper installation without changing it
+    SetupStatus,
+    /// Explicit Aurora Emulator lifecycle: start, stop, status
+    Emulator {
+        #[arg(value_parser = ["start", "stop", "status"])]
+        action: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Display state: status, on, off, dim, lock, wake
+    Display {
+        #[arg(value_parser = ["status", "on", "off", "dim", "lock", "wake"])]
+        action: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// App lifecycle/process/data operations
+    App {
+        #[arg(value_parser = ["launch", "stop", "list-running", "pid", "wait-running", "wait-stopped", "clear-data"])]
+        action: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Performance operations: snapshot, monitor, visual-fps
+    Perf {
+        #[arg(value_parser = ["snapshot", "monitor", "visual-fps"])]
+        action: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Crash operations: list, watch, clear
+    Crash {
+        #[arg(value_parser = ["list", "watch", "clear"])]
+        action: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Canonical app sandbox operations: paths, list, pull, sqlite
+    Sandbox {
+        #[arg(value_parser = ["paths", "list", "pull", "sqlite"])]
+        action: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Network operations: status, interfaces, traffic, proxy, offline
+    Network {
+        #[arg(value_parser = ["status", "interfaces", "traffic", "proxy", "offline"])]
+        action: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Location operations: set, track
+    Location {
+        #[arg(value_parser = ["set", "track"])]
+        action: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Emulator sensors: list, enable, disable, set-vector, set-scalar
+    Sensor {
+        #[arg(value_parser = ["list", "enable", "disable", "set-vector", "set-scalar"])]
+        action: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Clipboard capability status
+    ClipboardStatus,
+    /// RPM operations: list, install, uninstall, sign, validate
+    Package {
+        #[arg(value_parser = ["list", "install", "uninstall", "sign", "validate"])]
+        action: String,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+}
+
+impl AuroraCommands {
+    pub fn into_audb_args(self) -> Vec<String> {
+        match self {
+            Self::Status => vec!["status".into()],
+            Self::SetupStatus => vec!["setup-status".into()],
+            Self::ClipboardStatus => vec!["clipboard".into(), "status".into()],
+            Self::Emulator { action, args } => grouped("emulator", action, args),
+            Self::Display { action, args } => grouped("display", action, args),
+            Self::App { action, args } => grouped("app", action, args),
+            Self::Perf { action, args } => grouped("perf", action, args),
+            Self::Crash { action, args } => grouped("crash", action, args),
+            Self::Sandbox { action, args } => grouped("sandbox", action, args),
+            Self::Network { action, args } => grouped("network", action, args),
+            Self::Location { action, args } => grouped("location", action, args),
+            Self::Sensor { action, args } => grouped("sensor", action, args),
+            Self::Package { action, args } => grouped("package", action, args),
+        }
+    }
+}
+
+fn grouped(group: &str, action: String, args: Vec<String>) -> Vec<String> {
+    let mut result = vec![group.into(), action];
+    result.extend(args);
+    result
 }
 
 // -- Flow subcommands ---------------------------------------------------------

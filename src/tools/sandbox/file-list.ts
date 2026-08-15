@@ -21,17 +21,27 @@ export const sandboxFileListTool = defineTool({
         'Relative path inside the sandbox to list (default: "."). ' +
           'Examples: "databases", "shared_prefs", "files/cache".',
       ),
+    root: z.enum(["config", "cache", "data"]).optional().describe("Aurora sandbox root (default: data)"),
     platform: androidPlatformEnum,
     deviceId: deviceIdField,
   }),
   handler: async (args, ctx) => {
     const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
-    if (platform !== "android") {
-      return errorResult("sandbox_file_list is only available on Android.");
+    if (platform !== "android" && platform !== "aurora") {
+      return errorResult("sandbox_file_list is available on Android and Aurora.");
     }
 
     const pkg = args.package;
     validatePackageName(pkg);
+
+    if (platform === "aurora") {
+      const rawPath = args.path ?? "";
+      validatePath(rawPath || ".", "path");
+      const result = ctx.deviceManager.getAuroraClient().execute([
+        "sandbox", "list", pkg, args.root ?? "data", rawPath,
+      ]);
+      return textResult(truncateOutput(JSON.stringify(result, null, 2), { maxChars: 15000, maxLines: 300 }));
+    }
 
     const rawPath = args.path ?? ".";
     validatePath(rawPath, "path");

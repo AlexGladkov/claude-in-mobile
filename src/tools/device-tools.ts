@@ -2,6 +2,7 @@ import type { ToolDefinition } from "./registry.js";
 import type { Platform } from "../device-manager.js";
 import { defineTool, z } from "./define-tool.js";
 import { textResult } from "../utils/tool-result.js";
+import { auroraDeviceCapabilityTools } from "./aurora-capability-tools.js";
 
 const platformEnum = z.enum(["android", "ios", "desktop", "aurora", "browser"]);
 
@@ -120,4 +121,5 @@ export const deviceTools: ToolDefinition[] = [
       return textResult(`Current target: ${target} (${status})`);
     },
   }),
+  ...auroraDeviceCapabilityTools,
 ];

@@ -18,8 +18,8 @@ export const AURORA_PLUGIN_MANIFEST: PluginManifest = {
   name: "Aurora OS",
   version: "3.11.0",
   apiVersion: "1",
-  capabilities: ["screen", "input", "ui", "shell", "appLifecycle", "logs", "deviceMgmt"],
-  description: "Aurora OS automation via audb (screen, input, app lifecycle, shell, logs)",
+  capabilities: ["screen", "input", "shell", "appLifecycle", "logs", "fileTransfer", "deviceMgmt"],
+  description: "Aurora Emulator automation via audb >=0.2.0",
 };
 
 export class AuroraPlugin implements SourcePlugin {

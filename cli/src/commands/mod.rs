@@ -79,6 +79,7 @@ pub fn run(command: Commands) -> Result<()> {
             text,
             simulator,
             device,
+            from_size,
         } => device::long_press(
             &platform,
             x,
@@ -87,6 +88,7 @@ pub fn run(command: Commands) -> Result<()> {
             text.as_deref(),
             simulator.as_deref(),
             device.as_deref(),
+            from_size.as_deref(),
         ),
 
         Commands::OpenUrl {
@@ -101,12 +103,14 @@ pub fn run(command: Commands) -> Result<()> {
             command,
             simulator,
             device,
+            root,
             i_know_what_im_doing,
         } => device::shell(
             &platform,
             &command,
             simulator.as_deref(),
             device.as_deref(),
+            root,
             i_know_what_im_doing,
         ),
 
@@ -654,6 +658,9 @@ pub fn run(command: Commands) -> Result<()> {
                 crate::cli::ConfigCommands::Reset { key } => config::reset(&key),
             }
         }
+
+        // -- Aurora Emulator-specific audb namespace -------------------------
+        Commands::Aurora { command } => crate::aurora::passthrough(&command.into_audb_args()),
 
         // -- REPL supervisor (long-lived JSON-RPC stdio loop) ----------------
         Commands::ReplSupervisor => crate::plugins::repl::bridge::run_supervisor_loop(),

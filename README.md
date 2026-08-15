@@ -459,9 +459,9 @@ Browser automation via Chrome DevTools Protocol (CDP). The `browser` module load
 ### Aurora OS
 
 **Requirements:**
-- `audb` CLI: `cargo install audb-client`
-- SSH-enabled Aurora OS device
-- Python on device for tap/swipe: `devel-su pkcon install python`
+- Aurora SDK Emulator (physical Aurora devices are not supported yet)
+- `audb >= 0.2.0`: `cargo install audb-client --version 0.2.0`
+- Optional custom binary path: `AUDB_PATH=/path/to/audb`
 
 **Examples:**
 
@@ -473,7 +473,16 @@ Browser automation via Chrome DevTools Protocol (CDP). The `browser` module load
 "List installed apps on Aurora"
 "Get logs from Aurora device"
 "Push file.txt to /home/defaultuser/"
+"Start the Aurora emulator"
+"Lock and wake the Aurora display"
+"Get performance metrics for ru.example.app"
 ```
+
+Aurora supports coordinate input, screenshots, app lifecycle/process inspection,
+RPM operations, logs, shell/root, file transfer, display state, performance/crash
+diagnostics, sandbox access, network isolation/proxy, location and raw emulator
+sensors. UI accessibility hierarchy and the global clipboard are unavailable
+without an application-side helper. Emulator start/stop is always explicit.
 
 ---
 

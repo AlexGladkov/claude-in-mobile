@@ -38,6 +38,7 @@ export const systemMeta: ToolDefinition = {
           type: "string",
           enum: [
             "activity", "shell", "wait", "open_url", "logs", "clear_logs", "info", "webview",
+            "display_status", "display_on", "display_off", "display_dim", "display_lock", "display_wake", "clipboard_status",
             "clipboard_select", "clipboard_copy", "clipboard_paste", "clipboard_get",
             "permission_grant", "permission_revoke", "permission_reset",
             "file_push", "file_pull",
@@ -45,12 +46,20 @@ export const systemMeta: ToolDefinition = {
           ],
         },
         command: { type: "string", description: "Shell command to execute (shell)" },
+        root: { type: "boolean", description: "Run shell as root (Aurora only)" },
         url: { type: "string", description: "URL to open (open_url)" },
         ms: { type: "number", description: "Duration in milliseconds (wait, default: 1000)" },
         level: { type: "string", description: "Log level filter (logs)" },
         tag: { type: "string", description: "Filter by tag (logs, Android only)" },
         lines: { type: "number", description: "Number of log lines (logs, default: 100)" },
         package: { type: "string", description: "Package name (logs, permissions)" },
+        priority: { type: "string", description: "Journal priority (Aurora logs)" },
+        unit: { type: "string", description: "systemd unit (Aurora logs)" },
+        grep: { type: "string", description: "Journal regex (Aurora logs)" },
+        since: { type: "string", description: "Journal timestamp (Aurora logs)" },
+        kernel: { type: "boolean", description: "Kernel journal (Aurora logs)" },
+        category: { type: "string", description: "Aurora info category" },
+        timeout: { type: "number", description: "Display transition timeout in seconds" },
         permission: { type: "string", description: "Permission to grant/revoke (permission_grant/revoke)" },
         fieldText: { type: "string", description: "Find input field by text before paste (clipboard_paste)" },
         fieldId: { type: "string", description: "Find input field by resource ID before paste (clipboard_paste)" },
@@ -80,7 +89,7 @@ export const systemMeta: ToolDefinition = {
     }
 
     const handler = handlers.get(action);
-    if (!handler) throw new UnknownActionError("system", action, ["activity", "shell", "wait", "open_url", "logs", "clear_logs", "info", "webview", "clipboard_select", "clipboard_copy", "clipboard_paste", "clipboard_get", "permission_grant", "permission_revoke", "permission_reset", "file_push", "file_pull", "metrics", "reset_metrics"]);
+    if (!handler) throw new UnknownActionError("system", action, ["activity", "shell", "wait", "open_url", "logs", "clear_logs", "info", "webview", "display_status", "display_on", "display_off", "display_dim", "display_lock", "display_wake", "clipboard_status", "clipboard_select", "clipboard_copy", "clipboard_paste", "clipboard_get", "permission_grant", "permission_revoke", "permission_reset", "file_push", "file_pull", "metrics", "reset_metrics"]);
     return handler(args, ctx, depth);
   },
 };

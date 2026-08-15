@@ -20,8 +20,8 @@ const { meta, aliases } = createMetaTool({
     },
     platform: {
       type: "string",
-      enum: ["android"],
-      description: "Target platform. Sandbox access is Android-only.",
+      enum: ["android", "aurora"],
+      description: "Target platform. Aurora uses canonical config/cache/data roots discovered by audb.",
     },
   },
 });

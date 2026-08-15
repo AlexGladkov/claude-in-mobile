@@ -53,10 +53,12 @@ pub fn tap(
     from_size: Option<&str>,
 ) -> Result<()> {
     if let Some(t) = text {
-        if platform == "desktop" {
-            return desktop::tap_by_text(t, companion_path);
-        }
-        return android::tap_element(t, device);
+        return match platform {
+            "android" => android::tap_element(t, device),
+            "desktop" => desktop::tap_by_text(t, companion_path),
+            "aurora" => anyhow::bail!("UI accessibility is unavailable for Aurora Emulator"),
+            _ => anyhow::bail!("Tap by text is unavailable for {platform}"),
+        };
     }
     let (sx, sy) = scale::apply_scale(x, y, from_size, platform, device, simulator)?;
     match platform {
@@ -76,17 +78,22 @@ pub fn long_press(
     text: Option<&str>,
     simulator: Option<&str>,
     device: Option<&str>,
+    from_size: Option<&str>,
 ) -> Result<()> {
     if let Some(t) = text {
+        if platform != "android" {
+            anyhow::bail!("Long press by text is unavailable for {platform}");
+        }
         if let Some((cx, cy)) = android::find_element(t, device)? {
             return android::long_press(cx, cy, duration, device);
         }
         anyhow::bail!("Element '{}' not found for long press", t);
     }
+    let (sx, sy) = scale::apply_scale(x, y, from_size, platform, device, simulator)?;
     match platform {
-        "android" => android::long_press(x, y, duration, device),
-        "ios" => ios::long_press(x, y, duration, simulator),
-        "aurora" => aurora::long_press(x, y, duration, device),
+        "android" => android::long_press(sx, sy, duration, device),
+        "ios" => ios::long_press(sx, sy, duration, simulator),
+        "aurora" => aurora::long_press(sx, sy, duration, device),
         _ => unreachable!(),
     }
 }
@@ -112,6 +119,7 @@ pub fn shell(
     command: &str,
     simulator: Option<&str>,
     device: Option<&str>,
+    root: bool,
     i_know_what_im_doing: bool,
 ) -> Result<()> {
     // SECURITY (issue #41): `shell` executes whatever the caller passes,
@@ -122,9 +130,11 @@ pub fn shell(
     shell_gate::emit_warning_if_needed();
 
     match platform {
+        "android" if root => anyhow::bail!("--root is only supported for Aurora"),
+        "ios" if root => anyhow::bail!("--root is only supported for Aurora"),
         "android" => { android::shell(command, device)?; }
         "ios" => { ios::shell(command, simulator)?; }
-        "aurora" => { aurora::shell(command, device)?; }
+        "aurora" => { aurora::shell(command, root, device)?; }
         _ => unreachable!(),
     }
     Ok(())
@@ -145,6 +155,9 @@ pub fn swipe(
     from_size: Option<&str>,
 ) -> Result<()> {
     if let Some(dir) = direction {
+        if platform == "aurora" {
+            return aurora::swipe_direction(dir, duration, device);
+        }
         let (cx, cy) = (540, 960);
         let dist = 400;
         match dir.to_lowercase().as_str() {
@@ -413,8 +426,12 @@ pub fn screen_size(
     simulator: Option<&str>,
     device: Option<&str>,
 ) -> Result<()> {
-    if platform == "android" {
-        let (w, h) = android::get_screen_size(device)?;
+    if platform == "android" || platform == "aurora" {
+        let (w, h) = if platform == "android" {
+            android::get_screen_size(device)?
+        } else {
+            aurora::get_screen_size(device)?
+        };
         println!("Screen size: {}x{}", w, h);
         Ok(())
     } else {
