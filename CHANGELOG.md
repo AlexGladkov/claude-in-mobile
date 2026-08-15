@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.15.1] — 2026-08-15
+
+Hotfix for a critical API-compatibility regression introduced in 3.15.0.
+
+### Fixed
+
+- **#57 — every Claude API request 400s when the `input` tool is loaded.**
+  `defineTool` emitted tool `inputSchema` as JSON Schema **draft-07**, but the
+  Claude API validates against **draft 2020-12**. This was latent until 3.15.0's
+  drag tool added `z.tuple()` (`input.waypoints`), which draft-07 serialises as
+  array-form `items` — a form 2020-12 removed in favour of `prefixItems`. Because
+  the API validates the whole `tools` array up front, one bad schema rejected
+  every request in any session that loaded the core `input` tool, with an
+  unattributable `tools.N.custom.input_schema` error. Fix: emit `draft-2020-12`.
+  Added a regression test that fails if any tool schema reintroduces draft-07
+  array-form `items`.
+- **#56 — `screen(action:'capture')` ignored `preset`.** Zod `.default()` on
+  `maxWidth`/`maxHeight`/`quality` masked the preset (`?? preset` never saw an
+  undefined value), so `preset:'low'` returned the medium default and did not
+  reduce token cost. Those params are now `.optional()`; precedence is
+  explicit-param → preset → medium default.
+
 ## [3.15.0] — 2026-08-12
 
 Runtime debugger for AI agents — white-box debugging of a live **debuggable**
