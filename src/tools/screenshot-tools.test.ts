@@ -13,6 +13,15 @@ async function solidPng(color: number): Promise<Buffer> {
   return await new Jimp({ width: 80, height: 160, color }).getBuffer("image/png");
 }
 
+async function solidPngSized(w: number, h: number, color: number): Promise<Buffer> {
+  return await new Jimp({ width: w, height: h, color }).getBuffer("image/png");
+}
+
+async function decodedWidth(dataB64: string): Promise<number> {
+  const img = await Jimp.read(Buffer.from(dataB64, "base64"));
+  return img.width;
+}
+
 function makeCtx(overrides?: Partial<ToolContext>): ToolContext {
   return {
     deviceManager: {
@@ -26,6 +35,39 @@ function makeCtx(overrides?: Partial<ToolContext>): ToolContext {
     ...overrides,
   } as any;
 }
+
+describe("screen_capture — preset applies (#56)", () => {
+  const handler = findHandler("screen_capture");
+
+  async function captureWidth(args: Record<string, unknown>): Promise<number> {
+    // Source larger than the high preset so downscaling differences are visible.
+    const src = await solidPngSized(1000, 2000, 0x112233ff);
+    const ctx = makeCtx({
+      deviceManager: {
+        getCurrentPlatform: vi.fn(() => "android"),
+        getScreenshotBufferAsync: vi.fn(async () => src),
+        getAdapter: vi.fn(() => ({ platform: "android", isCurrentWindowSecure: () => false })),
+      } as any,
+    });
+    const res: any = await handler({ platform: "android", ...args }, ctx);
+    return decodedWidth(res.image.data);
+  }
+
+  it("low < medium(default) < high — preset changes the output size", async () => {
+    const low = await captureWidth({ preset: "low" });
+    const def = await captureWidth({}); // no preset → medium default
+    const high = await captureWidth({ preset: "high" });
+    expect(low).toBeLessThan(def);
+    expect(def).toBeLessThan(high);
+    expect(low).toBeLessThanOrEqual(270);
+    expect(high).toBeGreaterThan(540);
+  });
+
+  it("explicit maxWidth overrides preset", async () => {
+    const w = await captureWidth({ preset: "high", maxWidth: 100 });
+    expect(w).toBeLessThanOrEqual(100);
+  });
+});
 
 describe("screen_burst", () => {
   const handler = findHandler("screen_burst");

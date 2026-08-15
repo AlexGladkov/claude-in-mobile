@@ -107,23 +107,26 @@ export const screenshotTools: ToolDefinition[] = [
         .boolean()
         .default(true)
         .describe("Compress image (default: true). Set false for original quality."),
+      // Optional (NOT .default) so an unset value stays undefined and lets
+      // `preset` win; the medium default is applied last (see handler). Fixes
+      // #56 where a zod default masked preset entirely.
       maxWidth: z
         .number()
-        .default(540)
+        .optional()
         .describe(
-          "Max width in pixels (default: 540). Lower values reduce token cost. Max 2000 for API.",
+          "Max width in pixels (overrides preset; default via preset or 540). Lower values reduce token cost. Max 2000 for API.",
         ),
       maxHeight: z
         .number()
-        .default(960)
+        .optional()
         .describe(
-          "Max height in pixels (default: 960). Lower values reduce token cost. Max 2000 for API.",
+          "Max height in pixels (overrides preset; default via preset or 960). Lower values reduce token cost. Max 2000 for API.",
         ),
       quality: z
         .number()
-        .default(55)
+        .optional()
         .describe(
-          "JPEG quality 1-100 (default: 55). Lower = smaller size, faster processing.",
+          "JPEG quality 1-100 (overrides preset; default via preset or 55). Lower = smaller size, faster processing.",
         ),
       monitorIndex: z
         .number()
@@ -167,12 +170,14 @@ export const screenshotTools: ToolDefinition[] = [
       const diffThreshold = args.diffThreshold;
       const bypassSecureCheck = args.bypassSecureCheck === true;
 
-      // Resolve preset to concrete values (explicit params override preset)
+      // Precedence: explicit param → preset → medium default. Because the
+      // params are now optional (no zod default), an unset value is undefined
+      // and preset actually takes effect (#56).
       const preset = args.preset ? SCREEN_PRESETS[args.preset] : undefined;
       const compressOptions = {
-        maxWidth: args.maxWidth ?? preset?.maxWidth,
-        maxHeight: args.maxHeight ?? preset?.maxHeight,
-        quality: args.quality ?? preset?.quality,
+        maxWidth: args.maxWidth ?? preset?.maxWidth ?? SCREEN_PRESETS.medium.maxWidth,
+        maxHeight: args.maxHeight ?? preset?.maxHeight ?? SCREEN_PRESETS.medium.maxHeight,
+        quality: args.quality ?? preset?.quality ?? SCREEN_PRESETS.medium.quality,
         monitorIndex: args.monitorIndex,
         turbo: ctx.turboDefault,
       };
