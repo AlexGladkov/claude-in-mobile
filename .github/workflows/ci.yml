@@ -78,4 +78,10 @@ jobs:
       - name: Install cargo-audit
         run: cargo install --locked cargo-audit
       - name: Audit Rust dependencies
-        run: cd cli && cargo audit --deny warnings
+        # RUSTSEC-2026-0192: ttf-parser is flagged "unmaintained" (not an
+        # exploitable vuln). It is a transitive dep via ab_glyph ->
+        # owned_ttf_parser, used only for font rendering in screenshot
+        # annotation; there is no fixed/maintained release to move to without
+        # replacing ab_glyph. Ignored deliberately; revisit if ab_glyph adopts
+        # a maintained parser. All actual vulnerabilities still fail the build.
+        run: cd cli && cargo audit --deny warnings --ignore RUSTSEC-2026-0192

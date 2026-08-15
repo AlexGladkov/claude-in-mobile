@@ -1,6 +1,6 @@
 {
   "name": "mcp-devices",
-  "version": "4.0.0-dev",
+  "version": "4.0.0",
   "description": "MCP server for mobile, desktop and browser automation - Android (ADB), iOS Simulator (simctl), Desktop (Compose), Browser (CDP)",
   "type": "module",
   "main": "dist/index.js",
@@ -125,7 +125,7 @@
     "zod": "^4.4.3"
   },
   "optionalDependencies": {
-    "sharp": "^0.33.0"
+    "sharp": "^0.35.3"
   },
   "bundledDependencies": [
     "@mcp-devices/plugin-api"
@@ -134,5 +134,9 @@
     "@types/node": "^22.10.0",
     "typescript": "^5.7.0",
     "vitest": "^4.0.18"
+  },
+  "overrides": {
+    "sharp": "^0.35.3",
+    "ip-address": "^10.5.0"
   }
 }
