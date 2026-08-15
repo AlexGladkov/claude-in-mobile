@@ -20,6 +20,7 @@ import { ExternalPluginLoader } from "../kernel/external-loader.js";
 import { createBuiltinToolsPlugin } from "../plugins/builtin-tools/index.js";
 import { createReplPlugin } from "../plugins/repl/index.js";
 import { resolveEnabledPlatforms, type PlatformId } from "./platform-config.js";
+import { resolveEnabledToolPlugins, type ToolPluginId } from "./tool-plugin-config.js";
 
 export interface KernelHandle {
   readonly registry: PluginRegistry;
@@ -51,6 +52,12 @@ export interface BootstrapOptions {
    * default (none). Ignored if `builtins` is supplied explicitly.
    */
   platforms?: ReadonlyArray<PlatformId>;
+  /**
+   * Which tool plugins to load (e.g. ["debug"]). When omitted, resolved from
+   * `MCP_DEVICES_TOOL_PLUGINS` env / config.json `tool_plugins` / default (none).
+   * Tool plugins register MCP tools via ctx.registerTool() but are NOT platforms.
+   */
+  toolPlugins?: ReadonlyArray<ToolPluginId>;
 }
 
 /**
@@ -85,6 +92,16 @@ const PACKAGED_PLATFORMS: Partial<Record<PlatformId, string>> = {
   desktop: "@mcp-devices/plugin-desktop",
   android: "@mcp-devices/plugin-android",
   ios: "@mcp-devices/plugin-ios",
+};
+
+/**
+ * Tool plugins delivered as separate npm packages. Unlike platform plugins they
+ * are NOT bound to PlatformId and do NOT appear in ALL_PLATFORMS. They provide
+ * cross-cutting MCP tools (e.g. debug = JDWP + LLDB). Each is opt-in (off by
+ * default). Missing packages degrade gracefully — no kernel crash.
+ */
+const PACKAGED_TOOL_PLUGINS: Record<ToolPluginId, string> = {
+  debug: "@mcp-devices/plugin-debug",
 };
 
 /** Base plugins + the enabled in-base platform plugins, in deterministic order. */
@@ -142,6 +159,47 @@ async function loadPackagedPlatform(
   }
 }
 
+/**
+ * Load an enabled tool plugin package, or return undefined if unavailable.
+ * Mirrors the graceful-missing semantics of loadPackagedPlatform — the kernel
+ * does not crash when the package is not installed.
+ */
+async function loadToolPlugin(
+  id: ToolPluginId,
+  logger: Logger,
+): Promise<SourcePlugin | undefined> {
+  const pkg = PACKAGED_TOOL_PLUGINS[id];
+  try {
+    const mod = (await import(pkg)) as {
+      createPlugin?: () => SourcePlugin;
+      default?: () => SourcePlugin;
+    };
+    const factory = mod.createPlugin ?? mod.default;
+    if (!factory) {
+      logger.warn(`tool plugin '${pkg}' has no createPlugin export`);
+      return undefined;
+    }
+    return factory();
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    const msg = err instanceof Error ? err.message : String(err);
+    const isMissingPackage =
+      (code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") &&
+      msg.includes("Cannot find package");
+    if (isMissingPackage) {
+      logger.warn(
+        `tool plugin '${id}' is enabled but '${pkg}' is not installed — ` +
+          `run \`npm install ${pkg}\` or \`mcp-devices install ${id}\``,
+      );
+    } else {
+      logger.error(`tool plugin '${id}': '${pkg}' failed to load`, {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return undefined;
+  }
+}
+
 function consoleLogger(): Logger {
   // stderr-only: stdout is reserved for MCP JSON-RPC framing.
   return {
@@ -163,6 +221,14 @@ export async function bootstrapKernelAsync(options: BootstrapOptions = {}): Prom
     for (const id of enabled) {
       if (!(id in PACKAGED_PLATFORMS)) continue;
       const plugin = await loadPackagedPlatform(id, logger);
+      if (plugin) handle.registry.register(plugin);
+    }
+
+    // Load enabled tool plugins (debug, etc.) — NOT platforms; NOT in ALL_PLATFORMS.
+    // Registered tools flow into the existing tools Map → served by MCP.
+    const enabledToolPlugins = options.toolPlugins ?? resolveEnabledToolPlugins();
+    for (const id of enabledToolPlugins) {
+      const plugin = await loadToolPlugin(id, logger);
       if (plugin) handle.registry.register(plugin);
     }
   }

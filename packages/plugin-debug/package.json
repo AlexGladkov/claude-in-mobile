@@ -1,0 +1,49 @@
+{
+  "name": "@mcp-devices/plugin-debug",
+  "version": "4.0.0",
+  "description": "Runtime debug plugin for mcp-devices (Android JDWP + iOS LLDB).",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc && chmod +x bin/ios-debug-daemon.py"
+  },
+  "keywords": [
+    "mcp",
+    "mcp-devices",
+    "plugin",
+    "debug",
+    "jdwp",
+    "lldb",
+    "android",
+    "ios"
+  ],
+  "author": "Alex Gladkov",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist",
+    "bin"
+  ],
+  "dependencies": {
+    "@mcp-devices/plugin-api": "1.0.0",
+    "mcp-devices": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AlexGladkov/claude-in-mobile.git",
+    "directory": "packages/plugin-debug"
+  }
+}
