@@ -35,8 +35,13 @@ export interface DefineToolOptions<S extends z.ZodTypeAny> {
 export function defineTool<S extends z.ZodTypeAny>(
   opts: DefineToolOptions<S>,
 ): ToolDefinition {
+  // The Claude API requires tool input_schema to be JSON Schema draft 2020-12.
+  // Emitting draft-07 (the previous target) serialises z.tuple() as array-form
+  // `items`, which 2020-12 removed in favour of `prefixItems` — the API then
+  // rejects the ENTIRE tools array with a 400 (see issue #57). 2020-12 is what
+  // the API validates against, so target it directly.
   const json = z.toJSONSchema(opts.schema, {
-    target: "draft-7",
+    target: "draft-2020-12",
   }) as Record<string, unknown>;
 
   const tool: Tool = {
