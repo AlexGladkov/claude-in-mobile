@@ -20,5 +20,10 @@
     "@mcp-devices/plugin-web": "*",
     "@mcp-devices/plugin-desktop": "*",
     "@mcp-devices/plugin-aurora": "*"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AlexGladkov/claude-in-mobile.git",
+    "directory": "packages/plugin-all"
   }
 }

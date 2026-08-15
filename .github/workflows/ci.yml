@@ -19,9 +19,12 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
       - run: npm ci
-      # plugin-api workspace must emit dist/types before main tsc can
-      # resolve @claude-in-mobile/plugin-api (3.11.1-class regression)
-      - run: npm run build --workspace=packages/plugin-api
+      # FULL build (not just plugin-api): bootstrap.test dynamically imports the
+      # @mcp-devices/plugin-* platform packages at runtime, which must have dist/
+      # or the kernel loads zero platform plugins and those tests fail. The root
+      # build script compiles plugin-api first (the 3.11.1-class tsc-resolution
+      # fix), then tsc, then every platform workspace.
+      - run: npm run build
       - run: npx tsc --noEmit
       - run: npx vitest run
 

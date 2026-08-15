@@ -117,8 +117,19 @@ jobs:
             fi
           done
 
+          # Scoped platform plugins ship on the same version line as the tag
+          # (plugin-api is deliberately excluded — independently versioned).
+          for p in plugin-android plugin-ios plugin-web plugin-desktop plugin-aurora plugin-all; do
+            PV=$(jq -r '.version' "packages/$p/package.json")
+            echo "packages/$p:                           $PV"
+            if [ "$PV" != "$TAG" ]; then
+              echo "::error::@mcp-devices/$p version ($PV) does not match tag ($TAG)"
+              FAIL=1
+            fi
+          done
+
           if [ "$FAIL" -ne 0 ]; then
-            echo "::error::Version drift detected. All four version fields must equal the tag."
+            echo "::error::Version drift detected. All version fields must equal the tag."
             exit 1
           fi
           echo "All versions match tag $TAG"
@@ -195,6 +206,53 @@ jobs:
           else
             npm publish --access public --provenance --tag "${NPM_TAG}"
           fi
+
+      - name: Publish @mcp-devices/plugin-api
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # Shared SDK/contract package that BOTH the root `mcp-devices` engine and
+        # every platform plugin depend on. Versioned INDEPENDENTLY of the release
+        # tag (its own semver), so it is published as-is and is a no-op when the
+        # version is unchanged. Without it on the registry, `npm i mcp-devices`
+        # 404s on its `@mcp-devices/plugin-api` dependency.
+        working-directory: packages/plugin-api
+        run: |
+          NAME=$(jq -r '.name' package.json)
+          VERSION=$(jq -r '.version' package.json)
+          if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
+            echo "${NAME}@${VERSION} already published — nothing to do"
+          else
+            npm publish --access public --provenance
+          fi
+
+      - name: Publish scoped platform plugins
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TAG: ${{ needs.setup.outputs.npm_tag }}
+        # Slim-base install model: `npm i mcp-devices` pulls only the kernel, and
+        # each platform is fetched on demand as `@mcp-devices/plugin-<x>`. Those
+        # packages must therefore be (re)published on every release at the SAME
+        # version as the tag (unlike plugin-api). plugin-all is the meta-package
+        # that depends on all five. Idempotent + prerelease dist-tag, like root.
+        # Ordered so dependents publish after their deps (an install-time nicety;
+        # `npm publish` itself never resolves dependencies).
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          for p in plugin-android plugin-ios plugin-web plugin-desktop plugin-aurora plugin-all; do
+            dir="packages/$p"
+            NAME=$(jq -r '.name' "$dir/package.json")
+            VERSION=$(jq -r '.version' "$dir/package.json")
+            if [ "$VERSION" != "$TAG_VERSION" ]; then
+              echo "::error::$NAME version ($VERSION) does not match tag ($TAG_VERSION) — bump it before tagging"
+              exit 1
+            fi
+            if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
+              echo "${NAME}@${VERSION} already published — moving dist-tag '${NPM_TAG}'"
+              npm dist-tag add "${NAME}@${VERSION}" "${NPM_TAG}"
+            else
+              ( cd "$dir" && npm publish --access public --provenance --tag "${NPM_TAG}" )
+            fi
+          done
 
       - name: Publish claude-in-mobile compat shim
         env:
