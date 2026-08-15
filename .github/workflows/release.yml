@@ -119,7 +119,7 @@ jobs:
 
           # Scoped platform plugins ship on the same version line as the tag
           # (plugin-api is deliberately excluded — independently versioned).
-          for p in plugin-android plugin-ios plugin-web plugin-desktop plugin-aurora plugin-all; do
+          for p in plugin-android plugin-ios plugin-web plugin-desktop plugin-aurora plugin-debug plugin-all; do
             PV=$(jq -r '.version' "packages/$p/package.json")
             echo "packages/$p:                           $PV"
             if [ "$PV" != "$TAG" ]; then
@@ -238,7 +238,7 @@ jobs:
         # `npm publish` itself never resolves dependencies).
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
-          for p in plugin-android plugin-ios plugin-web plugin-desktop plugin-aurora plugin-all; do
+          for p in plugin-android plugin-ios plugin-web plugin-desktop plugin-aurora plugin-debug plugin-all; do
             dir="packages/$p"
             NAME=$(jq -r '.name' "$dir/package.json")
             VERSION=$(jq -r '.version' "$dir/package.json")

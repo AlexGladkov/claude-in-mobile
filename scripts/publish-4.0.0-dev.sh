@@ -19,7 +19,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 VER="4.0.0-dev"
-PLUGINS=(plugin-android plugin-ios plugin-web plugin-desktop plugin-aurora)
+PLUGINS=(plugin-android plugin-ios plugin-web plugin-desktop plugin-aurora plugin-debug)
 
 echo "==> npm user: $(npm whoami)"
 echo "==> verifying @mcp-devices org access…"
