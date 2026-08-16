@@ -1,15 +1,16 @@
-# mcp-devices 4.0.0-dev — modular / plugin edition
+# mcp-devices 4.0.0 — modular / plugin edition
 
 > **New name + pre-release.** This project was `claude-in-mobile` (stable 3.x);
 > 4.0 is rebranded to **`mcp-devices`** (no longer Claude-only or mobile-only).
-> This 4.0.0-dev artifact is an experiment: slim base + platforms installed on
-> demand. Stable 3.x stays on the old name — `npm i -g claude-in-mobile`.
+> This 4.0.0 release (published under npm dist-tag `dev`) features a slim base
+> with platforms and tools installed on demand. Stable 3.x stays on the old
+> name — `npm i -g claude-in-mobile`.
 
 ## What changed
 
 In 3.x the single `claude-in-mobile` package bundled every platform
-(Android, iOS, Web, Desktop, Aurora). In 4.0.0 the base is **slim** —
-kernel + built-in tools + REPL only — and platforms are delivered as
+(Android, iOS, Web, Desktop, Aurora). In 4.0 the base is **slim** —
+kernel + 20 built-in tools + REPL only — and platforms are delivered as
 separate packages, loaded **on demand**:
 
 ```
@@ -80,11 +81,27 @@ from your enabled set, not from the client config:
 }
 ```
 
-## Status / caveats (4.0.0-dev)
+## Modules & Tools
 
-- Experimental pre-release; API and packaging may change before 4.0.0 final.
+mcp-devices 4.0 is organized around three types of modules:
+
+1. **Platform plugins** — Device platforms (Android, iOS, Web, Desktop, Aurora)
+   as separate npm packages, installed on demand
+2. **Tool plugins** — Specialized tools (e.g., runtime debugging) as separate packages
+3. **Built-in tools** — 20 core device-control and testing modules bundled in
+   the base package, hidden/shown via startup profile or enabled at runtime
+
+**By default no platforms or tool plugins are loaded.** Install only what you need.
+
+See [docs/modules/README.md](./docs/modules/README.md) for the complete guide.
+
+## Status / caveats (4.0.0)
+
+- Pre-release; published under npm dist-tag `dev` (`npm i -g mcp-devices@dev`).
 - All five platforms are physically split into separate packages; the base
   bundle contains none of them.
 - `mcp-devices-lite` is temporarily disabled (being migrated to the
   plugin model).
+- Tool plugins (e.g., debug) are not yet included in `mcp-devices install` —
+  enable them via environment variable or config file.
 - Stable production: **3.x** as `claude-in-mobile` (`npm i -g claude-in-mobile`).
