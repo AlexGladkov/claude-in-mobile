@@ -83,17 +83,47 @@ from your enabled set, not from the client config:
 
 ## Modules & Tools
 
-mcp-devices 4.0 is organized around three types of modules:
+mcp-devices 4.0 has three kinds of modules. **By default none of the platforms
+or tool plugins are loaded** — install only what you need. Full guide:
+[docs/modules/](./docs/modules/README.md).
 
-1. **Platform plugins** — Device platforms (Android, iOS, Web, Desktop, Aurora)
-   as separate npm packages, installed on demand
-2. **Tool plugins** — Specialized tools (e.g., runtime debugging) as separate packages
-3. **Built-in tools** — 20 core device-control and testing modules bundled in
-   the base package, hidden/shown via startup profile or enabled at runtime
+### 1. Platform plugins (separate npm packages, on-demand)
 
-**By default no platforms or tool plugins are loaded.** Install only what you need.
+Enable after install with `mcp-devices install <name>` (writes
+`~/.mcp-devices/config.json`), then restart. Check toolchains with
+`mcp-devices doctor`.
 
-See [docs/modules/README.md](./docs/modules/README.md) for the complete guide.
+| Package | Covers | Prerequisites | Docs |
+|---------|--------|---------------|------|
+| `@mcp-devices/plugin-android` | Android automation via ADB | `adb` (platform-tools) | [android](./docs/modules/plugin-android.md) |
+| `@mcp-devices/plugin-ios` | iOS Simulator + physical (simctl, WebDriverAgent, go-ios) | `xcrun` (Xcode CLT); `go-ios` for physical | [ios](./docs/modules/plugin-ios.md) |
+| `@mcp-devices/plugin-web` | Browser via Chrome DevTools Protocol | Chrome/Chromium (launched on demand) | [web](./docs/modules/plugin-web.md) |
+| `@mcp-devices/plugin-desktop` | Compose desktop apps | JDK (`java`) | [desktop](./docs/modules/plugin-desktop.md) |
+| `@mcp-devices/plugin-aurora` | Aurora OS | `flutter-aurora` SDK | [aurora](./docs/modules/plugin-aurora.md) |
+| `@mcp-devices/plugin-all` | Meta-package: all five platforms at once | — | — |
+
+### 2. Tool plugins (separate npm packages)
+
+| Package | What it does | Tools | Docs |
+|---------|--------------|-------|------|
+| `@mcp-devices/plugin-debug` | White-box runtime debugging of a live **debuggable** app — breakpoints, stepping, stack/locals, expression eval, variable mutation (Android JDWP + iOS LLDB) | `debug_attach` · `debug_break` · `debug_remove_break` · `debug_poll` · `debug_pause_state` · `debug_threads` · `debug_eval` · `debug_set_var` · `debug_step` · `debug_resume` · `debug_detach` · `debug_sessions` (12) | [debug](./docs/modules/plugin-debug.md) |
+
+Enable debug via `MCP_DEVICES_TOOL_PLUGINS=debug` or `config.json`
+`"tool_plugins": ["debug"]` (not yet part of `mcp-devices install`).
+
+### 3. Built-in tool modules (bundled, toggled at runtime)
+
+20 modules in the base package. `device` and `screen` are always on; the rest are
+shown by startup profile (`MOBILE_PROFILE`) or enabled at runtime via
+`device(action:'enable_module', module:'<name>')`. Full catalog with every action:
+[built-in-tools.md](./docs/modules/built-in-tools.md).
+
+| Category | Modules (key actions) |
+|----------|-----------------------|
+| **Core** | `device` (list, set_target, enable_module…) · `screen` (capture, annotate) · `input` (tap, swipe, text, key…) · `ui` (tree, find, assert_visible…) · `app` (launch, stop, install…) · `system` (shell, logs, clipboard, permissions, files…) |
+| **Platform** | `browser` (navigate, evaluate, tabs, cookies…) · `desktop` (windows, focus, resize…) · `store` (search, details, reviews…) · `intent` (start, broadcast, deeplink…) |
+| **Testing** | `visual` (compare, baseline, diff…) · `accessibility` (audit, check, rules…) · `performance` (snapshot, monitor, crashes, framestats…) · `sandbox` (prefs_read, sqlite_query, file_read…) · `sensor` (location, battery, notifications, thermal) · `network` (traffic, connectivity, proxy, airplane) |
+| **Automation** | `flow` (batch, run, parallel) · `recorder` (start, play, list…) · `sync` (pair, broadcast, status…) · `autopilot` (explore, generate, heal…) |
 
 ## Status / caveats (4.0.0)
 
