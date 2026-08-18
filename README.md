@@ -4,7 +4,9 @@
 > screenshots, taps, app control, and runtime debugging. Slim base; install only
 > the platforms you need.
 
-*Pre-release (npm dist-tag `dev`). Rebranded from `claude-in-mobile` (3.x).*
+*Pre-release (npm dist-tag `dev`). **`mcp-devices` is the continuation of
+`claude-in-mobile`** — same project, new name. The old name keeps working
+([migration below](#coming-from-claude-in-mobile)).*
 
 ---
 
@@ -55,6 +57,32 @@ then restart.
 
 These come as ~20 built-in tool modules plus the on-demand debug plugin —
 [full tool catalog »](./docs/modules/built-in-tools.md).
+
+## Coming from claude-in-mobile?
+
+`claude-in-mobile` (3.x) was **renamed to `mcp-devices` in 4.0**. Same tool — the
+old name is kept alive so nothing breaks:
+
+- **Your `claude-in-mobile` command keeps working.** `mcp-devices` installs both
+  the `mcp-devices` and `claude-in-mobile` binaries, and the `claude-in-mobile`
+  npm package lives on as a thin shim that forwards to `mcp-devices`.
+- **You're not force-migrated.** Stable (`latest`) is still **3.x** — a monolithic
+  `claude-in-mobile`. Opt into 4.0 explicitly via the `dev` tag.
+
+| You had | To move to 4.0 |
+|---------|----------------|
+| `npm i -g claude-in-mobile` | `npm i -g claude-in-mobile@dev` (old name, 4.0 engine) — or install `mcp-devices@dev` directly |
+| `brew install claude-in-mobile` | on the 4.0 stable release, `brew upgrade claude-in-mobile` auto-migrates (Homebrew `oldname`) |
+
+**One real change:** in 3.x every platform was bundled. 4.0 is slim — after
+upgrading, install the platform(s) you used:
+
+```sh
+npm i -g @mcp-devices/plugin-android@dev   # (or plugin-all for everything)
+mcp-devices install android
+```
+
+Everything else — tools, actions, MCP client config — is unchanged.
 
 ## Docs
 
