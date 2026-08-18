@@ -62,7 +62,7 @@ This verifies JDK is installed and accessible.
 ### 1. Install npm package
 
 ```sh
-npm i -g @mcp-devices/plugin-desktop@dev
+npm i -g @mcp-devices/plugin-desktop
 ```
 
 ### 2. Enable the platform

@@ -16,7 +16,7 @@ Extend mcp-devices to support specific device platforms. **By default no platfor
 
 1. **Install npm package:**
    ```sh
-   npm i -g @mcp-devices/plugin-<name>@dev
+   npm i -g @mcp-devices/plugin-<name>
    ```
 
 2. **Enable platform (writes to `~/.mcp-devices/config.json`):**
@@ -89,7 +89,7 @@ Specialized functionality beyond platform support. Currently: runtime debugging 
 
 ```sh
 # Install
-npm i -g @mcp-devices/plugin-debug@dev
+npm i -g @mcp-devices/plugin-debug
 
 # Enable via environment variable
 MCP_DEVICES_TOOL_PLUGINS=debug mcp-devices

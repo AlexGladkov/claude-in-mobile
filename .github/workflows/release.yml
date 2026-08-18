@@ -258,15 +258,16 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_TAG: ${{ needs.setup.outputs.npm_tag }}
-        # Keeps the old `claude-in-mobile` npm name installable and updatable
-        # after the 4.0 rename: a thin package that depends on `mcp-devices` at
-        # the same version and forwards its CLI. Version + dep are synced to the
-        # tag so `npm i -g claude-in-mobile@latest` always pulls the matching
-        # engine. Idempotent (dist-tag move if already published), like above.
+        # `claude-in-mobile` is the all-in-one edition: it depends on both the
+        # `mcp-devices` engine and `@mcp-devices/plugin-all` (every platform), and
+        # its bin enables all platforms by default. Version + both deps are synced
+        # to the tag so `npm i -g claude-in-mobile@latest` always pulls the
+        # matching engine and platform set. Idempotent (dist-tag move if already
+        # published), like above.
         working-directory: compat/claude-in-mobile
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          jq --arg v "$VERSION" '.version=$v | .dependencies["mcp-devices"]=$v' package.json > package.json.tmp
+          jq --arg v "$VERSION" '.version=$v | .dependencies["mcp-devices"]=$v | .dependencies["@mcp-devices/plugin-all"]=$v' package.json > package.json.tmp
           mv package.json.tmp package.json
           if npm view "claude-in-mobile@${VERSION}" version >/dev/null 2>&1; then
             echo "claude-in-mobile@${VERSION} already published — moving dist-tag '${NPM_TAG}'"
@@ -333,7 +334,7 @@ jobs:
 
           version = os.environ["VERSION"]
           sha_map = json.loads(os.environ["SHA_MAP"])
-          path = "Formula/claude-in-mobile.rb"
+          path = "Formula/mcp-devices.rb"
 
           with open(path) as f:
               content = f.read()
@@ -361,9 +362,9 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/claude-in-mobile.rb
+          git add Formula/mcp-devices.rb
           git diff --cached --quiet && exit 0
-          git commit -m "Update claude-in-mobile to ${{ steps.version.outputs.version }}"
+          git commit -m "Update mcp-devices to ${{ steps.version.outputs.version }}"
           git push
 
   verify-checksums:
@@ -388,7 +389,7 @@ jobs:
           FAILED=0
 
           echo "::group::Fetching formula from tap"
-          gh api "repos/${TAP_REPO}/contents/Formula/claude-in-mobile.rb" --jq '.content' | base64 -d > formula.rb
+          gh api "repos/${TAP_REPO}/contents/Formula/mcp-devices.rb" --jq '.content' | base64 -d > formula.rb
           cat formula.rb
           echo "::endgroup::"
 

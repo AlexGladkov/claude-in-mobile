@@ -68,7 +68,7 @@ Not required for Simulator-only automation.
 ### 1. Install npm package
 
 ```sh
-npm i -g @mcp-devices/plugin-ios@dev
+npm i -g @mcp-devices/plugin-ios
 ```
 
 ### 2. Enable the platform

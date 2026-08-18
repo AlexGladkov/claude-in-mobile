@@ -106,8 +106,8 @@ The application **must be built with debug symbols and have `debuggable=true`**:
 ## Install & Enable
 
 ```sh
-# 1. Install the npm package (pre-release)
-npm i -g @mcp-devices/plugin-debug@dev
+# 1. Install the npm package
+npm i -g @mcp-devices/plugin-debug
 
 # 2. Enable the debug plugin via environment variable
 MCP_DEVICES_TOOL_PLUGINS=debug

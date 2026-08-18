@@ -19,13 +19,11 @@
 | Edition | Best for | Install |
 |---------|----------|---------|
 | **`claude-in-mobile`** | Want it all in one, zero setup | `npm i -g claude-in-mobile` |
-| **`mcp-devices`** | Want a slim base + only the platforms you need | `npm i -g mcp-devices@dev` (+ platform plugins, below) |
+| **`mcp-devices`** | Want a slim base + only the platforms you need | `npm i -g mcp-devices` (+ platform plugins, below) |
 
 Both are maintained. `claude-in-mobile` was renamed to `mcp-devices` in 4.0 and
 split into a modular edition; the all-in-one keeps its name and its unchanged
 install. The rest of this README covers the **modular `mcp-devices`** edition.
-
-*mcp-devices is pre-release — npm dist-tag `dev`.*
 
 ---
 
@@ -33,10 +31,10 @@ install. The rest of this README covers the **modular `mcp-devices`** edition.
 
 ```sh
 # 1. base server
-npm i -g mcp-devices@dev
+npm i -g mcp-devices
 
 # 2. add a platform (example: Android)
-npm i -g @mcp-devices/plugin-android@dev
+npm i -g @mcp-devices/plugin-android
 mcp-devices install android
 
 # 3. point your MCP client at it
@@ -55,12 +53,12 @@ each doc:
 
 | Platform | Install | Needs | Guide |
 |----------|---------|-------|-------|
-| Android | `npm i -g @mcp-devices/plugin-android@dev` | `adb` | [android »](./docs/modules/plugin-android.md) |
-| iOS | `npm i -g @mcp-devices/plugin-ios@dev` | `xcrun` (macOS/Xcode) | [ios »](./docs/modules/plugin-ios.md) |
-| Web | `npm i -g @mcp-devices/plugin-web@dev` | Chrome | [web »](./docs/modules/plugin-web.md) |
-| Desktop | `npm i -g @mcp-devices/plugin-desktop@dev` | Java/JDK | [desktop »](./docs/modules/plugin-desktop.md) |
-| Aurora | `npm i -g @mcp-devices/plugin-aurora@dev` | `flutter-aurora` | [aurora »](./docs/modules/plugin-aurora.md) |
-| All | `npm i -g @mcp-devices/plugin-all@dev` | — | — |
+| Android | `npm i -g @mcp-devices/plugin-android` | `adb` | [android »](./docs/modules/plugin-android.md) |
+| iOS | `npm i -g @mcp-devices/plugin-ios` | `xcrun` (macOS/Xcode) | [ios »](./docs/modules/plugin-ios.md) |
+| Web | `npm i -g @mcp-devices/plugin-web` | Chrome | [web »](./docs/modules/plugin-web.md) |
+| Desktop | `npm i -g @mcp-devices/plugin-desktop` | Java/JDK | [desktop »](./docs/modules/plugin-desktop.md) |
+| Aurora | `npm i -g @mcp-devices/plugin-aurora` | `flutter-aurora` | [aurora »](./docs/modules/plugin-aurora.md) |
+| All | `npm i -g @mcp-devices/plugin-all` | — | — |
 
 After installing a package, enable it: `mcp-devices install <name>` (or `all`),
 then restart.
@@ -89,8 +87,8 @@ slim modular edition.
   actually use:
 
 ```sh
-npm i -g mcp-devices@dev
-npm i -g @mcp-devices/plugin-android@dev   # (or plugin-all for everything)
+npm i -g mcp-devices
+npm i -g @mcp-devices/plugin-android   # (or plugin-all for everything)
 mcp-devices install android
 ```
 
@@ -105,8 +103,8 @@ Tools, actions, and MCP client config are identical to the bundled edition.
 
 ## Notes
 
-- Pre-release under npm dist-tag `dev`; nothing loads by default — you enable
-  platforms explicitly.
+- The modular base loads no platforms by default — you enable the ones you need
+  (`mcp-devices install <name>`). The `claude-in-mobile` edition enables them all.
 - The debug plugin isn't yet part of `mcp-devices install` — enable it with
   `MCP_DEVICES_TOOL_PLUGINS=debug` or `~/.mcp-devices/config.json`.
 - Prefer everything in one package? Use the all-in-one **`claude-in-mobile`**

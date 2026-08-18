@@ -68,7 +68,7 @@ This probes for `adb`, lists connected/emulated devices, and detects issues.
 ### 1. Install npm package
 
 ```sh
-npm i -g @mcp-devices/plugin-android@dev
+npm i -g @mcp-devices/plugin-android
 ```
 
 ### 2. Enable the platform

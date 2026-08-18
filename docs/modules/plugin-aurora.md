@@ -68,7 +68,7 @@ This verifies Aurora SDK is installed and lists connected devices/emulators.
 ### 1. Install npm package
 
 ```sh
-npm i -g @mcp-devices/plugin-aurora@dev
+npm i -g @mcp-devices/plugin-aurora
 ```
 
 ### 2. Enable the platform

@@ -63,7 +63,7 @@ brew install --cask google-chrome
 ### 1. Install npm package
 
 ```sh
-npm i -g @mcp-devices/plugin-web@dev
+npm i -g @mcp-devices/plugin-web
 ```
 
 ### 2. Enable the platform
