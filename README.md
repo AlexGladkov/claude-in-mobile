@@ -1,16 +1,35 @@
-# mcp-devices 4.0.0
+# mcp-devices 4.0.0 (ex-`claude-in-mobile`)
 
-> **One MCP server to automate devices.** Android, iOS, Web, Desktop, Aurora OS —
-> screenshots, taps, app control, and runtime debugging. Slim base; install only
-> the platforms you need.
-
-*Pre-release (npm dist-tag `dev`). **`mcp-devices` is the continuation of
-`claude-in-mobile`** — same project, new name. The old name keeps working
-([migration below](#coming-from-claude-in-mobile)).*
+> ## 👉 Want everything in one package? Keep using `claude-in-mobile`.
+>
+> **Nothing changes for you.** Same install, all platforms bundled, still
+> maintained:
+>
+> ```sh
+> npm i -g claude-in-mobile
+> ```
+>
+> That's it — the all-in-one edition. **Read on only if you'd rather install the
+> platforms separately** (that's what `mcp-devices` is for).
 
 ---
 
-## Install in 3 steps
+## Two editions — same tool
+
+| Edition | Best for | Install |
+|---------|----------|---------|
+| **`claude-in-mobile`** | Want it all in one, zero setup | `npm i -g claude-in-mobile` |
+| **`mcp-devices`** | Want a slim base + only the platforms you need | `npm i -g mcp-devices@dev` (+ platform plugins, below) |
+
+Both are maintained. `claude-in-mobile` was renamed to `mcp-devices` in 4.0 and
+split into a modular edition; the all-in-one keeps its name and its unchanged
+install. The rest of this README covers the **modular `mcp-devices`** edition.
+
+*mcp-devices is pre-release — npm dist-tag `dev`.*
+
+---
+
+## Install in 3 steps (modular)
 
 ```sh
 # 1. base server
@@ -58,31 +77,24 @@ then restart.
 These come as ~20 built-in tool modules plus the on-demand debug plugin —
 [full tool catalog »](./docs/modules/built-in-tools.md).
 
-## Coming from claude-in-mobile?
+## Switching from all-in-one to modular?
 
-`claude-in-mobile` (3.x) was **renamed to `mcp-devices` in 4.0**. Same tool — the
-old name is kept alive so nothing breaks:
+Happy with the bundled `claude-in-mobile`? **Do nothing** — it stays maintained
+and installs exactly as before. This section is only if you *want* to move to the
+slim modular edition.
 
-- **Your `claude-in-mobile` command keeps working.** `mcp-devices` installs both
-  the `mcp-devices` and `claude-in-mobile` binaries, and the `claude-in-mobile`
-  npm package lives on as a thin shim that forwards to `mcp-devices`.
-- **You're not force-migrated.** Stable (`latest`) is still **3.x** — a monolithic
-  `claude-in-mobile`. Opt into 4.0 explicitly via the `dev` tag.
-
-| You had | To move to 4.0 |
-|---------|----------------|
-| `npm i -g claude-in-mobile` | `npm i -g claude-in-mobile@dev` (old name, 4.0 engine) — or install `mcp-devices@dev` directly |
-| `brew install claude-in-mobile` | on the 4.0 stable release, `brew upgrade claude-in-mobile` auto-migrates (Homebrew `oldname`) |
-
-**One real change:** in 3.x every platform was bundled. 4.0 is slim — after
-upgrading, install the platform(s) you used:
+- Your `claude-in-mobile` command keeps working either way — `mcp-devices`
+  installs both the `mcp-devices` and `claude-in-mobile` binaries.
+- The only difference is that platforms aren't bundled — install the one(s) you
+  actually use:
 
 ```sh
+npm i -g mcp-devices@dev
 npm i -g @mcp-devices/plugin-android@dev   # (or plugin-all for everything)
 mcp-devices install android
 ```
 
-Everything else — tools, actions, MCP client config — is unchanged.
+Tools, actions, and MCP client config are identical to the bundled edition.
 
 ## Docs
 
@@ -97,4 +109,5 @@ Everything else — tools, actions, MCP client config — is unchanged.
   platforms explicitly.
 - The debug plugin isn't yet part of `mcp-devices install` — enable it with
   `MCP_DEVICES_TOOL_PLUGINS=debug` or `~/.mcp-devices/config.json`.
-- Stable production line is **3.x** as `claude-in-mobile` (`npm i -g claude-in-mobile`).
+- Prefer everything in one package? Use the all-in-one **`claude-in-mobile`**
+  edition (`npm i -g claude-in-mobile`) — still maintained, install unchanged.
