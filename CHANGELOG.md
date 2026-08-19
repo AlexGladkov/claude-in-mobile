@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.1] — 2026-08-19
+
+### Fixed
+- **#58 — Toolchain doctor reported `adb`/`java` (and every other CLI) as
+  `MISSING` on Windows even when they were on `PATH`.** `isBinAvailable` in
+  `src/runtime/platform-cli.ts` probed binaries with
+  `execFileSync("/bin/sh", ["-c", "command -v <bin>"])`. Windows has no
+  `/bin/sh`, so every probe threw `ENOENT`, was silently swallowed by a bare
+  `catch`, and each binary (`adb`, `java`, `xcrun`, `flutter-aurora`) was
+  unconditionally reported `MISSING` regardless of `PATH` / `ANDROID_HOME` /
+  `JAVA_HOME` — only `web` (no external-CLI probe) survived, so Windows users
+  saw only the web MCP. Detection is now routed through a new cross-platform
+  `src/utils/which-bin.ts`: on Windows it walks `PATH × PATHEXT` via
+  `existsSync` (no `/bin/sh`, no `where.exe`, no shell), on POSIX it keeps
+  `command -v` in safe argv form. `ENOENT` is now distinguished from a genuine
+  "not found" instead of masking every failure.
+
+### Security
+- Removed the only shell-interpolation site in the repo: the binary probe no
+  longer string-interpolates the binary name into a `sh -c` script (it is
+  passed as a positional `$1` argument), closing a latent CWE-78 sink.
+
 ## [4.0.0] — 2026-08-18
 
 The **mcp-devices** edition. `claude-in-mobile` is re-architected into a
