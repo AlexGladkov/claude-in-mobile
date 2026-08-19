@@ -10,3 +10,6 @@ cli/claude-in-mobile
 cli/claude-in-mobile-*
 !cli/claude-in-mobile*.rs
 docs/plans/
+.claude/worktrees/
+mcp-devices-*.tgz
+claude-in-mobile-*.tgz
