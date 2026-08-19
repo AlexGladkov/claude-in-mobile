@@ -64,15 +64,36 @@ issue #43 ERR_REQUIRE_ESM пролежал между 3.10.3 и 3.11.2 и сло
    - publish-npm job должен иметь `id-token: write` permission, если
      `npm publish --provenance` используется. См. 3.11.2.
 
-### Стадия 2 — Версии и манифесты (4 файла — обязательно ВСЕ)
+### Стадия 2 — Версии и манифесты (11 полей — обязательно ВСЕ)
 
-`.github/workflows/release.yml` сверяет 4 версии и провалит job
-`verify-plugin-versions` если хоть одна не совпадает:
+`.github/workflows/release.yml` job `verify-plugin-versions` сверяет **11**
+версий с тегом и провалит релиз (→ `publish-npm` **skipped**, npm не выйдет)
+если хоть одна не совпадает. 4 top-level манифеста:
 
 - [ ] `package.json` `"version"`
 - [ ] `cli/Cargo.toml` `version = "..."`
 - [ ] `.claude-plugin/marketplace.json` `plugins[0].version`
 - [ ] `cli/plugin/.claude-plugin/plugin.json` `version`
+
+**+ 7 scoped plugin-пакетов** (mcp-devices edition — их легко забыть, именно так
+сломался 4.0.1: 4 манифеста забампили, 7 плагинов остались на предыдущей версии,
+`verify-plugin-versions` упал, npm publish пропущен, homebrew/GitHub уже ушли на
+новую версию → десинк каналов). Каждый `packages/<p>/package.json` `.version`
+обязан == тег:
+
+- [ ] `packages/plugin-android/package.json`
+- [ ] `packages/plugin-ios/package.json`
+- [ ] `packages/plugin-web/package.json`
+- [ ] `packages/plugin-desktop/package.json`
+- [ ] `packages/plugin-aurora/package.json`
+- [ ] `packages/plugin-debug/package.json`
+- [ ] `packages/plugin-all/package.json`
+
+Одной командой:
+`for p in android ios web desktop aurora debug all; do jq --arg v "X.Y.Z" '.version=$v' packages/plugin-$p/package.json > /tmp/pp && mv /tmp/pp packages/plugin-$p/package.json; done`
+
+(`packages/plugin-api/package.json` — НЕ трогать, версионируется независимо,
+CI его исключает.)
 
 После bump-а: синхронизировать lockfile-ы.
 
