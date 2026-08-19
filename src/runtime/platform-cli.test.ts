@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   applyInstall,
   applyUninstall,
+  formatProbe,
+  probePlatform,
   runPlatformCommand,
 } from "./platform-cli.js";
 
@@ -58,5 +60,41 @@ describe("runPlatformCommand dispatch", () => {
     }) as (c: number) => never;
     runPlatformCommand(["node", "cli.js", "install"], exit);
     expect(codes).toContain(1);
+  });
+});
+
+describe("probePlatform (doctor toolchain check)", () => {
+  // The `present` predicate is injected — no real process spawn — so these
+  // guard the found / MISSING branches on EVERY OS, including Windows where
+  // the old `/bin/sh -c command -v` path reported everything MISSING.
+
+  it("reports ok when the probe binary is present", () => {
+    const r = probePlatform("android", () => true);
+    expect(r.missing).toEqual([]);
+    expect(r.noExternalCli).toBe(false);
+    expect(formatProbe(r)).toContain("ok (adb)");
+  });
+
+  it("reports MISSING when the probe binary is absent (regression: win32 desync)", () => {
+    const r = probePlatform("android", () => false);
+    expect(r.missing).toEqual(["adb"]);
+    expect(formatProbe(r)).toContain("MISSING adb");
+  });
+
+  it("does NOT report false-MISSING when a probe IS on PATH", () => {
+    // Simulates a Windows box with adb on PATH: present=true must yield ok.
+    const found = new Set(["adb", "java", "xcrun", "flutter-aurora"]);
+    for (const p of ["android", "ios", "desktop", "aurora"] as const) {
+      const r = probePlatform(p, (bin) => found.has(bin));
+      expect(r.missing).toEqual([]);
+      expect(formatProbe(r)).toContain("ok (");
+    }
+  });
+
+  it("web needs no external CLI regardless of presence check", () => {
+    const r = probePlatform("web", () => false);
+    expect(r.noExternalCli).toBe(true);
+    expect(r.missing).toEqual([]);
+    expect(formatProbe(r)).toContain("no external CLI required");
   });
 });

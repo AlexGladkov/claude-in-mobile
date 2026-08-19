@@ -10,8 +10,7 @@
  * Pure set math (applyInstall/applyUninstall) is split out for testing.
  */
 
-import { execFileSync } from "node:child_process";
-
+import { isBinAvailable } from "../utils/which-bin.js";
 import {
   ALL_PLATFORMS,
   parsePlatformList,
@@ -52,17 +51,6 @@ export function applyUninstall(
 ): PlatformId[] {
   const remove = new Set(args.flatMap((a) => parsePlatformList(a)));
   return current.filter((p) => !remove.has(p));
-}
-
-function isBinAvailable(bin: string): boolean {
-  try {
-    // `command -v` via /bin/sh — portable, no dependency on `which`.
-    // `bin` is a fixed allowlisted token (see TOOLCHAIN), not user input.
-    execFileSync("/bin/sh", ["-c", `command -v ${bin}`], { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -118,19 +106,50 @@ export function runPlatformCommand(
   return exit(0);
 }
 
+/** One platform's toolchain verdict — pure, so it can be unit-tested. */
+export interface ProbeResult {
+  platform: PlatformId;
+  /** Probes that were not found on PATH (empty = ok). */
+  missing: string[];
+  hint: string;
+  /** True when this platform needs no external CLI (e.g. web). */
+  noExternalCli: boolean;
+}
+
+/**
+ * Evaluate a platform's toolchain against a presence check. `present` is
+ * injectable so tests can exercise the found/missing branches without
+ * spawning real processes (closes the doctor regression test gap).
+ */
+export function probePlatform(
+  platform: PlatformId,
+  present: (bin: string) => boolean = isBinAvailable
+): ProbeResult {
+  const tc = TOOLCHAIN[platform];
+  if (tc.probe.length === 0) {
+    return { platform, missing: [], hint: tc.hint, noExternalCli: true };
+  }
+  return {
+    platform,
+    missing: tc.probe.filter((b) => !present(b)),
+    hint: tc.hint,
+    noExternalCli: false,
+  };
+}
+
+/** Render a single probe result as the doctor prints it. */
+export function formatProbe(r: ProbeResult): string {
+  if (r.noExternalCli) {
+    return `  ${r.platform}: ok (no external CLI required) — ${r.hint}`;
+  }
+  const probes = TOOLCHAIN[r.platform].probe.join(", ");
+  if (r.missing.length === 0) return `  ${r.platform}: ok (${probes})`;
+  return `  ${r.platform}: MISSING ${r.missing.join(", ")} — ${r.hint}`;
+}
+
 function doctorReport(platforms: readonly PlatformId[]): void {
   console.log("\nToolchain check:");
   for (const p of platforms) {
-    const tc = TOOLCHAIN[p];
-    if (tc.probe.length === 0) {
-      console.log(`  ${p}: ok (no external CLI required) — ${tc.hint}`);
-      continue;
-    }
-    const missing = tc.probe.filter((b) => !isBinAvailable(b));
-    if (missing.length === 0) {
-      console.log(`  ${p}: ok (${tc.probe.join(", ")})`);
-    } else {
-      console.log(`  ${p}: MISSING ${missing.join(", ")} — ${tc.hint}`);
-    }
+    console.log(formatProbe(probePlatform(p)));
   }
 }
