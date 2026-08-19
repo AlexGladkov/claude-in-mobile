@@ -1,6 +1,6 @@
 {
   "name": "@mcp-devices/plugin-debug",
-  "version": "4.0.0",
+  "version": "4.0.2",
   "description": "Runtime debug plugin for mcp-devices (Android JDWP + iOS LLDB).",
   "type": "module",
   "main": "dist/index.js",

@@ -1,6 +1,6 @@
 {
   "name": "mcp-devices",
-  "version": "4.0.1",
+  "version": "4.0.2",
   "description": "Mobile device automation CLI for Android, iOS, Aurora OS, and Desktop platforms",
   "author": {
     "name": "defendend",

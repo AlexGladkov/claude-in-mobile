@@ -1,6 +1,6 @@
 {
   "name": "mcp-devices",
-  "version": "4.0.1",
+  "version": "4.0.2",
   "description": "MCP server for mobile, desktop and browser automation - Android (ADB), iOS Simulator (simctl), Desktop (Compose), Browser (CDP)",
   "type": "module",
   "main": "dist/index.js",
