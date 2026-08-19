@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.2] — 2026-08-19
+
+### Fixed
+- **Release hotfix for 4.0.1.** The 4.0.1 tag bumped only the four top-level
+  version manifests; the seven scoped plugin packages
+  (`@mcp-devices/plugin-{android,ios,web,desktop,aurora,debug,all}`) were left
+  on 4.0.0, so `verify-plugin-versions` failed and `publish-npm` was skipped —
+  4.0.1 never reached npm. 4.0.2 bumps all eleven version fields together. The
+  Windows toolchain-detection fix (#58) below ships in this release.
+
 ## [4.0.1] — 2026-08-19
 
 ### Fixed
