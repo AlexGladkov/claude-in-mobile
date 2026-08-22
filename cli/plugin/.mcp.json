@@ -1,0 +1,6 @@
+{
+  "mobile": {
+    "command": "npx",
+    "args": ["-y", "mcp-devices"]
+  }
+}

@@ -100,16 +100,20 @@ jobs:
 
           PKG=$(jq -r '.version' package.json)
           MARKET=$(jq -r '.plugins[0].version' .claude-plugin/marketplace.json)
+          GROK_MARKET=$(jq -r '.plugins[0].version' .grok-plugin/marketplace.json)
           PLUGIN=$(jq -r '.version' cli/plugin/.claude-plugin/plugin.json)
+          GROK_PLUGIN=$(jq -r '.version' cli/plugin/.grok-plugin/plugin.json)
           CARGO=$(grep '^version =' cli/Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
 
           echo "Tag:                                   $TAG"
           echo "package.json:                          $PKG"
           echo "cli/Cargo.toml:                        $CARGO"
           echo ".claude-plugin/marketplace.json:       $MARKET"
+          echo ".grok-plugin/marketplace.json:         $GROK_MARKET"
           echo "cli/plugin/.claude-plugin/plugin.json: $PLUGIN"
+          echo "cli/plugin/.grok-plugin/plugin.json:   $GROK_PLUGIN"
 
-          for KIND in PKG CARGO MARKET PLUGIN; do
+          for KIND in PKG CARGO MARKET GROK_MARKET PLUGIN GROK_PLUGIN; do
             VAL=$(eval echo \$$KIND)
             if [ "$VAL" != "$TAG" ]; then
               echo "::error::$KIND version ($VAL) does not match tag ($TAG)"

@@ -1,5 +1,7 @@
 import { getConfigSnippet, type ClientType } from "../client-adapter.js";
 
+export const INIT_CLIENTS = ["opencode", "cursor", "claude-code", "grok"] as const;
+
 /**
  * Handle short-circuit CLI flags (--help / --version / --init <client>).
  * Returns true if a flag was handled (caller should exit / skip server boot).
@@ -15,7 +17,7 @@ export function runCliIfRequested(argv: readonly string[], version: string): boo
     console.log(`mcp-devices ${version}
 
 MCP server for mobile, desktop and browser automation. Designed to run as a
-stdio child of an MCP-capable client (Claude Code, Cursor, opencode, …) — it
+stdio child of an MCP-capable client (Claude Code, Cursor, opencode, Grok, …) — it
 speaks JSON-RPC on stdin/stdout and is not intended for direct interactive
 use.
 
@@ -30,8 +32,7 @@ Usage
   mcp-devices doctor [p...] check external toolchains for platforms
   mcp-devices --init <client>
                                  print the configuration snippet for a
-                                 supported client (opencode | cursor |
-                                 claude-code) and exit
+                                 supported client (${INIT_CLIENTS.join(" | ")}) and exit
   mcp-devices --version     print version and exit
   mcp-devices --help        print this message and exit
 
@@ -66,7 +67,7 @@ Docs
     const client = argv[initIndex + 1];
     if (!client) {
       console.error("Usage: mcp-devices --init <client>");
-      console.error("Supported clients: opencode, cursor, claude-code");
+      console.error(`Supported clients: ${INIT_CLIENTS.join(", ")}`);
       process.exit(1);
     }
     try {

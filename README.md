@@ -39,6 +39,9 @@ mcp-devices install android
 
 # 3. point your MCP client at it
 #    { "mcpServers": { "mobile": { "command": "mcp-devices" } } }
+# Grok Build:
+#    grok plugin marketplace add AlexGladkov/claude-in-mobile
+#    grok plugin install mcp-devices --trust
 ```
 
 Restart your MCP client. Done — ask Claude *"take a screenshot of my Android
