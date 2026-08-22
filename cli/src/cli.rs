@@ -1541,6 +1541,21 @@ pub enum SetupCommands {
         #[arg(long)]
         force: bool,
     },
+
+    /// Install Grok Build plugin files (manifest, MCP, and skills)
+    Grok {
+        /// Install into the current project (.grok/plugins). This is the default.
+        #[arg(long, conflicts_with = "global")]
+        local: bool,
+
+        /// Install globally for the current user (~/.grok/plugins)
+        #[arg(long, conflicts_with = "local")]
+        global: bool,
+
+        /// Overwrite existing plugin files if they differ
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 // -- Google Play subcommands --------------------------------------------------

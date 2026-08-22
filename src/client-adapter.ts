@@ -1,4 +1,4 @@
-export type ClientType = "claude-code" | "opencode" | "cursor" | "unknown";
+export type ClientType = "claude-code" | "opencode" | "cursor" | "grok" | "unknown";
 
 export interface AliasWithDefaults {
   tool: string;
@@ -23,6 +23,7 @@ const CLIENT_MATCHERS: Array<{ pattern: RegExp; type: ClientType }> = [
   { pattern: /claude/i, type: "claude-code" },
   { pattern: /opencode/i, type: "opencode" },
   { pattern: /cursor/i, type: "cursor" },
+  { pattern: /grok/i, type: "grok" },
 ];
 
 const OPENCODE_ALIASES: Record<string, string> = {
@@ -36,13 +37,15 @@ const OPENCODE_ALIASES_WITH_DEFAULTS: Record<string, AliasWithDefaults> = {
   swipe_down: { tool: "input_swipe", defaults: { direction: "down" } },
 };
 
+const CLAUDE_CODE_INSTRUCTIONS =
+  "Mobile/desktop automation. Use 'screen' for screenshots, 'input' for taps/swipes/text, 'ui' for accessibility tree. device(action:'enable_module', module:'browser') to load browser/desktop/store tools.";
+
 const INSTRUCTIONS: Record<ClientType, string> = {
-  "claude-code":
-    "Mobile/desktop automation. Use 'screen' for screenshots, 'input' for taps/swipes/text, 'ui' for accessibility tree. device(action:'enable_module', module:'browser') to load browser/desktop/store tools.",
+  "claude-code": CLAUDE_CODE_INSTRUCTIONS,
   opencode:
     "Mobile/desktop automation. Use 'screen' for screenshots, 'input' for taps/swipes/text, 'ui' for accessibility tree. device(action:'list') for devices, device(action:'enable_module', module:'browser') to load optional modules.",
-  cursor:
-    "Mobile/desktop automation. Use 'screen' for screenshots, 'input' for taps/swipes/text, 'ui' for accessibility tree. device(action:'enable_module', module:'browser') to load browser/desktop/store tools.",
+  cursor: CLAUDE_CODE_INSTRUCTIONS,
+  grok: CLAUDE_CODE_INSTRUCTIONS,
   unknown:
     "Mobile/desktop automation. Use 'screen' for screenshots, 'input' for taps/swipes/text, 'ui' for accessibility tree. device(action:'list') for devices.",
 };
@@ -86,6 +89,15 @@ function createAdapter(
 
 // ── Config snippet generation ──
 
+const CLAUDE_CODE_CONFIG = {
+  mcpServers: {
+    mobile: {
+      command: "npx",
+      args: ["-y", "mcp-devices"],
+    },
+  },
+};
+
 const CONFIG_TEMPLATES: Record<string, object> = {
   opencode: {
     mcp: {
@@ -96,22 +108,9 @@ const CONFIG_TEMPLATES: Record<string, object> = {
       },
     },
   },
-  cursor: {
-    mcpServers: {
-      mobile: {
-        command: "npx",
-        args: ["-y", "mcp-devices"],
-      },
-    },
-  },
-  "claude-code": {
-    mcpServers: {
-      mobile: {
-        command: "npx",
-        args: ["-y", "mcp-devices"],
-      },
-    },
-  },
+  cursor: CLAUDE_CODE_CONFIG,
+  "claude-code": CLAUDE_CODE_CONFIG,
+  grok: CLAUDE_CODE_CONFIG,
 };
 
 export function getConfigSnippet(client: ClientType): string {

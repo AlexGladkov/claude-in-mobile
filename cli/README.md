@@ -92,6 +92,35 @@ After installing the plugin, Claude Code can:
 
 ---
 
+## Grok Build Plugin Setup
+
+Install from the GitHub marketplace so Grok gets the CLI skill **and** the MCP server `mobile`:
+
+```bash
+grok plugin marketplace add AlexGladkov/claude-in-mobile
+grok plugin install mcp-devices --trust
+```
+
+Or copy the plugin tree into the current project / your home directory (no marketplace):
+
+```bash
+mcp-devices setup grok           # .grok/plugins/mcp-devices
+mcp-devices setup grok --global  # ~/.grok/plugins/mcp-devices
+```
+
+Restart Grok. Project-local installs are not auto-trusted (MCP stays off until trust):
+
+```bash
+grok plugin install ./.grok/plugins/mcp-devices --trust
+grok plugin enable mcp-devices
+```
+
+`--global` writes to `~/.grok/plugins/` (auto-trusted). If `mcp-devices` still does not appear, run `grok plugin enable mcp-devices`. Use `--force` to replace files that already exist and differ.
+
+The slim `mcp-devices` package loads no platforms by default — run `mcp-devices install android` (or `all`) after install. All-in-one users can swap the MCP command to `claude-in-mobile`.
+
+---
+
 ## Agent Skill Setup
 
 OpenCode, Pi, Qwen Code, Gemini CLI, Codex, and Cursor can use the same `SKILL.md` command documentation without the Claude Code plugin manifest. Install the CLI first and make sure `claude-in-mobile` is in `PATH`.
@@ -251,6 +280,22 @@ Add to `.gemini/settings.json` or `~/.gemini/settings.json`:
 ```bash
 codex mcp add mobile -- npx -y claude-in-mobile
 ```
+
+### Grok
+
+```bash
+grok mcp add mobile -- npx -y mcp-devices
+```
+
+Or add to `~/.grok/config.toml` / `.grok/config.toml`:
+
+```toml
+[mcp_servers.mobile]
+command = "npx"
+args = ["-y", "mcp-devices"]
+```
+
+Slim `mcp-devices` needs `mcp-devices install android` (or `all`). All-in-one users may use `claude-in-mobile` instead of `mcp-devices` in `args`.
 
 ### Cursor
 

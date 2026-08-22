@@ -13,6 +13,13 @@ const SKILL_NAME: &str = "mcp-devices";
 const SKILL_MD: &str = include_str!("../../plugin/skills/mcp-devices/SKILL.md");
 const PLATFORM_SUPPORT_MD: &str =
     include_str!("../../plugin/skills/mcp-devices/references/platform-support.md");
+const CORE_MD: &str = include_str!("../../plugin/skills/mcp-devices/references/core.md");
+const ANDROID_ONLY_MD: &str =
+    include_str!("../../plugin/skills/mcp-devices/references/android-only.md");
+const DESKTOP_MD: &str = include_str!("../../plugin/skills/mcp-devices/references/desktop.md");
+const MCP_JSON: &str = include_str!("../../plugin/.mcp.json");
+const GROK_PLUGIN_JSON: &str = include_str!("../../plugin/.grok-plugin/plugin.json");
+const CLAUDE_PLUGIN_JSON: &str = include_str!("../../plugin/.claude-plugin/plugin.json");
 
 pub fn run(command: SetupCommands) -> Result<()> {
     match command {
@@ -46,6 +53,11 @@ pub fn run(command: SetupCommands) -> Result<()> {
             global,
             force,
         } => cursor(local, global, force),
+        SetupCommands::Grok {
+            local,
+            global,
+            force,
+        } => grok(local, global, force),
     }
 }
 
@@ -115,6 +127,57 @@ fn cursor(local: bool, global: bool, force: bool) -> Result<()> {
     )
 }
 
+fn grok(local: bool, global: bool, force: bool) -> Result<()> {
+    let scope = install_scope(local, global);
+    let target_dir = match scope {
+        InstallScope::Local => project_root()?,
+        InstallScope::Global => home_dir()?,
+    }
+    .join(".grok")
+    .join("plugins")
+    .join(SKILL_NAME);
+
+    install_grok_plugin(&target_dir, force)?;
+
+    println!(
+        "Installed Grok plugin ({}) at {}\n{}",
+        scope_label(scope),
+        target_dir.display(),
+        grok_next_steps(scope)
+    );
+    Ok(())
+}
+
+fn install_grok_plugin(target_dir: &Path, force: bool) -> Result<()> {
+    let files: [(&[&str], &str); 8] = [
+        (&[".mcp.json"], MCP_JSON),
+        (&[".grok-plugin", "plugin.json"], GROK_PLUGIN_JSON),
+        (&[".claude-plugin", "plugin.json"], CLAUDE_PLUGIN_JSON),
+        (&["skills", SKILL_NAME, "SKILL.md"], SKILL_MD),
+        (&["skills", SKILL_NAME, "references", "core.md"], CORE_MD),
+        (
+            &["skills", SKILL_NAME, "references", "android-only.md"],
+            ANDROID_ONLY_MD,
+        ),
+        (
+            &["skills", SKILL_NAME, "references", "desktop.md"],
+            DESKTOP_MD,
+        ),
+        (
+            &["skills", SKILL_NAME, "references", "platform-support.md"],
+            PLATFORM_SUPPORT_MD,
+        ),
+    ];
+    for (parts, content) in files {
+        write_file_if_needed(
+            &append_parts(target_dir.to_path_buf(), parts),
+            content,
+            force,
+        )?;
+    }
+    Ok(())
+}
+
 fn install_agent_skill(
     agent_name: &str,
     local_parts: &[&str],
@@ -132,15 +195,10 @@ fn install_agent_skill(
 
     install_skill(&target_dir, force)?;
 
-    let scope_label = match scope {
-        InstallScope::Local => "project-local",
-        InstallScope::Global => "global",
-    };
-
     println!(
         "Installed {} skill ({}) at {}\nRestart {}, then ask it to use the mcp-devices skill.",
         agent_name,
-        scope_label,
+        scope_label(scope),
         target_dir.display(),
         agent_name
     );
@@ -161,6 +219,25 @@ fn install_scope(local: bool, global: bool) -> InstallScope {
         // Default to project-local install. The `local` flag exists for explicitness.
         let _ = local;
         InstallScope::Local
+    }
+}
+
+fn scope_label(scope: InstallScope) -> &'static str {
+    match scope {
+        InstallScope::Local => "project-local",
+        InstallScope::Global => "global",
+    }
+}
+
+fn grok_next_steps(scope: InstallScope) -> &'static str {
+    match scope {
+        // Project plugins are not auto-trusted; MCP stays inactive until trust.
+        InstallScope::Local => {
+            "Restart Grok, then trust and enable the plugin:\n  grok plugin install ./.grok/plugins/mcp-devices --trust\n  grok plugin enable mcp-devices"
+        }
+        InstallScope::Global => {
+            "Restart Grok. If mcp-devices does not appear, run: grok plugin enable mcp-devices"
+        }
     }
 }
 

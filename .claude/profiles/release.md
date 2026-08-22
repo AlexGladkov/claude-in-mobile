@@ -64,16 +64,18 @@ issue #43 ERR_REQUIRE_ESM пролежал между 3.10.3 и 3.11.2 и сло
    - publish-npm job должен иметь `id-token: write` permission, если
      `npm publish --provenance` используется. См. 3.11.2.
 
-### Стадия 2 — Версии и манифесты (11 полей — обязательно ВСЕ)
+### Стадия 2 — Версии и манифесты (13 полей — обязательно ВСЕ)
 
-`.github/workflows/release.yml` job `verify-plugin-versions` сверяет **11**
+`.github/workflows/release.yml` job `verify-plugin-versions` сверяет **13**
 версий с тегом и провалит релиз (→ `publish-npm` **skipped**, npm не выйдет)
-если хоть одна не совпадает. 4 top-level манифеста:
+если хоть одна не совпадает. 6 top-level манифеста:
 
 - [ ] `package.json` `"version"`
 - [ ] `cli/Cargo.toml` `version = "..."`
 - [ ] `.claude-plugin/marketplace.json` `plugins[0].version`
+- [ ] `.grok-plugin/marketplace.json` `plugins[0].version`
 - [ ] `cli/plugin/.claude-plugin/plugin.json` `version`
+- [ ] `cli/plugin/.grok-plugin/plugin.json` `version`
 
 **+ 7 scoped plugin-пакетов** (mcp-devices edition — их легко забыть, именно так
 сломался 4.0.1: 4 манифеста забампили, 7 плагинов остались на предыдущей версии,
@@ -139,7 +141,7 @@ CI его исключает.)
   падения (например, vite-resolve в store-tools) допустимы при условии
   что они уже были на main до релиза. Зафиксировать в report.
 - [ ] `cd cli && cargo build --release` — чисто.
-- [ ] `cd cli && cargo test --lib` — все Rust тесты зелёные.
+- [ ] `cd cli && cargo test --lib && cargo test --test setup_grok` — все Rust тесты зелёные.
 
 ### Стадия 5 — Smoke-тесты бинарей (защита от регрессий типа #43, #44)
 

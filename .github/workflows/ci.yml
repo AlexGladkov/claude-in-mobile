@@ -49,7 +49,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: cli
-      - run: cd cli && cargo test --lib
+      - run: cd cli && cargo test --lib && cargo test --test setup_grok
 
   npm-audit:
     runs-on: ubuntu-latest
