@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [4.4.0] — 2026-09-13
+## [4.4.1] — 2026-09-13
 
 ### Security
 - Hardened local persistence boundaries used by runtime configuration,
@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Published npm tarballs no longer expose the development-only self-link step as
   an install lifecycle script.
 
+### Fixed
+- Restored macOS CLI release builds by routing the iOS simulator doctor probe
+  through the bounded command runner.
+
 ### Changed
 - Browser and desktop automation now reject oversized inputs, screenshots,
   gestures, and session workloads instead of allowing unbounded memory, CPU,
@@ -34,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   handshake, preventing intermittent spawn failures while preserving concurrent
   session execution.
 - CI now runs desktop-companion Gradle tests, compiles the Python debug daemon,
-  and typechecks every shipped Swift helper on macOS.
+  typechecks every shipped Swift helper, and checks the Rust CLI on macOS.
 
 ## [4.3.0] — 2026-09-10
 

@@ -22,7 +22,7 @@ import { AndroidAdapter } from "./android-adapter.js";
 export const ANDROID_PLUGIN_MANIFEST: PluginManifest = {
   id: "android",
   name: "Android",
-  version: "4.4.0",
+  version: "4.4.1",
   apiVersion: "1",
   capabilities: [
     "screen",

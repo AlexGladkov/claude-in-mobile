@@ -16,7 +16,7 @@ import { BrowserAdapter } from "./browser-adapter.js";
 export const WEB_PLUGIN_MANIFEST: PluginManifest = {
   id: "web",
   name: "Web (Chrome)",
-  version: "4.4.0",
+  version: "4.4.1",
   apiVersion: "1",
   capabilities: ["screen", "input", "ui"],
   description: "Browser automation via Chrome DevTools Protocol",

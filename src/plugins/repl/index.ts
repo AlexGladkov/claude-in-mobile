@@ -36,7 +36,7 @@ import { REDACTION_PATTERNS, redactScreen } from "./redaction.js";
 export const REPL_PLUGIN_MANIFEST: PluginManifest = {
   id: "repl",
   name: "REPL",
-  version: "4.4.0",
+  version: "4.4.1",
   // apiVersion MUST stay '1' — kernel-wide constant PLUGIN_API_VERSION='1';
   // bumping causes ApiVersionMismatchError at registration (BLOCKER B).
   apiVersion: "1",
