@@ -5,9 +5,14 @@ import { truncateOutput } from "../utils/truncate.js";
 import { validateUrl } from "../utils/sanitize.js";
 import { BrowserNoSessionError } from "../errors.js";
 import { textResult } from "../utils/tool-result.js";
+import type { ToolResult } from "../utils/tool-result.js";
 
-const sessionField = z
-  .string()
+const browserSessionSchema = z.string().min(1).max(128);
+const browserUrlSchema = z.string().min(1).max(8192);
+const browserRefSchema = z.string().min(1).max(128);
+const browserSelectorSchema = z.string().min(1).max(16 * 1024);
+const browserTextSchema = z.string().max(1024 * 1024);
+const sessionField = browserSessionSchema
   .optional()
   .describe("Session name for persistent state. Default: 'default'");
 
@@ -16,7 +21,7 @@ export const browserTools: ToolDefinition[] = [
     name: "browser_open",
     description: "Open URL in browser session",
     schema: z.object({
-      url: z.string().describe("URL to open (http:// or https:// only)"),
+      url: browserUrlSchema.describe("URL to open (http:// or https:// only)"),
       session: sessionField,
       headless: z
         .boolean()
@@ -40,7 +45,7 @@ export const browserTools: ToolDefinition[] = [
     name: "browser_close",
     description: "Close browser session",
     schema: z.object({
-      session: z.string().optional().describe("Session name. If omitted, closes all sessions."),
+      session: browserSessionSchema.optional().describe("Session name. If omitted, closes all sessions."),
     }),
     handler: async (args, ctx) => {
       await ctx.deviceManager.getBrowserAdapter().closeSession(args.session);
@@ -65,12 +70,12 @@ export const browserTools: ToolDefinition[] = [
     name: "browser_navigate",
     description: "Navigate to URL or go back/forward/reload",
     schema: z.object({
-      url: z.string().optional().describe("URL to navigate to"),
+      url: browserUrlSchema.optional().describe("URL to navigate to"),
       action: z
         .enum(["back", "forward", "reload"])
         .optional()
         .describe("Navigation action"),
-      session: z.string().optional().describe("Session name. Default: 'default'"),
+      session: sessionField,
     }),
     handler: async (args, ctx) => {
       if (args.url) {
@@ -89,13 +94,12 @@ export const browserTools: ToolDefinition[] = [
     name: "browser_click",
     description: "Click element by ref, selector, or text",
     schema: z.object({
-      ref: z
-        .string()
+      ref: browserRefSchema
         .optional()
         .describe("Ref from browser(action:'snapshot') (e.g. 'e1'). Fastest and most reliable."),
-      selector: z.string().optional().describe("CSS selector"),
-      text: z.string().optional().describe("Visible text content of element to click"),
-      session: z.string().optional().describe("Session name. Default: 'default'"),
+      selector: browserSelectorSchema.optional().describe("CSS selector"),
+      text: browserTextSchema.optional().describe("Visible text content of element to click"),
+      session: sessionField,
     }),
     handler: async (args, ctx) => {
       const text = await ctx.deviceManager.getBrowserAdapter().clickElement({
@@ -112,10 +116,10 @@ export const browserTools: ToolDefinition[] = [
     name: "browser_fill",
     description: "Fill input field with value",
     schema: z.object({
-      ref: z.string().optional().describe("Ref from browser(action:'snapshot') (e.g. 'e2')"),
-      selector: z.string().optional().describe("CSS selector of input field"),
-      value: z.string().describe("Value to enter"),
-      session: z.string().optional().describe("Session name. Default: 'default'"),
+      ref: browserRefSchema.optional().describe("Ref from snapshot (e.g. 'e2')"),
+      selector: browserSelectorSchema.optional().describe("CSS selector of input field"),
+      value: browserTextSchema.describe("Value to enter"),
+      session: sessionField,
       clear: z
         .boolean()
         .optional()
@@ -136,7 +140,7 @@ export const browserTools: ToolDefinition[] = [
         clear: args.clear,
         pressEnter: args.pressEnter,
       });
-      return textResult(`Filled field with value: "${args.value}"`);
+      return textResult(`Filled field with ${args.value.length} character(s).`);
     },
   }),
 
@@ -147,17 +151,18 @@ export const browserTools: ToolDefinition[] = [
       fields: z
         .array(
           z.object({
-            ref: z.string().optional().describe("Ref from snapshot"),
-            selector: z.string().optional().describe("CSS selector"),
-            value: z.string().describe("Value to enter"),
+            ref: browserRefSchema.optional().describe("Ref from snapshot"),
+            selector: browserSelectorSchema.optional().describe("CSS selector"),
+            value: browserTextSchema.describe("Value to enter"),
           }),
         )
+        .max(256)
         .describe("Array of fields to fill"),
       submit: z
         .boolean()
         .optional()
         .describe("Press Enter to submit after filling. Default: false"),
-      session: z.string().optional().describe("Session name. Default: 'default'"),
+      session: sessionField,
     }),
     handler: async (args, ctx) => {
       await ctx.deviceManager.getBrowserAdapter().fillForm({
@@ -175,8 +180,8 @@ export const browserTools: ToolDefinition[] = [
     name: "browser_press_key",
     description: "Press keyboard key in browser",
     schema: z.object({
-      key: z.string().describe("Key name (e.g. Enter, Tab, Escape, ArrowDown)"),
-      session: z.string().optional().describe("Session name. Default: 'default'"),
+      key: z.string().min(1).max(64).describe("Key name (e.g. Enter, Tab, Escape, ArrowDown)"),
+      session: sessionField,
     }),
     handler: async (args, ctx) => {
       const adapter = ctx.deviceManager.getBrowserAdapter();
@@ -191,7 +196,7 @@ export const browserTools: ToolDefinition[] = [
     name: "browser_snapshot",
     description: "Get accessibility snapshot with element refs",
     schema: z.object({
-      session: z.string().optional().describe("Session name. Default: 'default'"),
+      session: sessionField,
     }),
     handler: async (args, ctx) => {
       const text = await ctx.deviceManager.getBrowserAdapter().snapshot(args.session);
@@ -203,7 +208,7 @@ export const browserTools: ToolDefinition[] = [
     name: "browser_screenshot",
     description: "Take browser page screenshot",
     schema: z.object({
-      session: z.string().optional().describe("Session name. Default: 'default'"),
+      session: sessionField,
       fullPage: z
         .boolean()
         .optional()
@@ -219,7 +224,7 @@ export const browserTools: ToolDefinition[] = [
         ],
         text: `Screenshot taken${args.fullPage ? " (full page)" : ""}.`,
         image: { data: compressed.data, mimeType: compressed.mimeType },
-      } as unknown as import("../utils/tool-result.js").ToolResult;
+      } as unknown as ToolResult;
     },
   }),
 
@@ -227,8 +232,8 @@ export const browserTools: ToolDefinition[] = [
     name: "browser_evaluate",
     description: "Execute JavaScript in browser page",
     schema: z.object({
-      expression: z.string().describe("JavaScript expression to evaluate"),
-      session: z.string().optional().describe("Session name. Default: 'default'"),
+      expression: browserTextSchema.min(1).describe("JavaScript expression to evaluate"),
+      session: sessionField,
     }),
     handler: async (args, ctx) => {
       const text = await ctx.deviceManager
@@ -242,16 +247,19 @@ export const browserTools: ToolDefinition[] = [
     name: "browser_wait_for_selector",
     description: "Wait for element to appear on page",
     schema: z.object({
-      selector: z.string().describe("CSS selector to wait for"),
+      selector: browserSelectorSchema.describe("CSS selector to wait for"),
       timeout: z
         .number()
+        .int()
+        .min(1)
+        .max(120_000)
         .optional()
         .describe("Maximum wait time in milliseconds. Default: 5000"),
       state: z
         .enum(["attached", "visible"])
         .optional()
         .describe("Wait for element to be 'attached' (in DOM) or 'visible'. Default: 'visible'"),
-      session: z.string().optional().describe("Session name. Default: 'default'"),
+      session: sessionField,
     }),
     handler: async (args, ctx) => {
       await ctx.deviceManager
@@ -265,7 +273,7 @@ export const browserTools: ToolDefinition[] = [
     name: "browser_clear_session",
     description: "Delete all stored data for a session",
     schema: z.object({
-      session: z.string().describe("Session name to clear"),
+      session: browserSessionSchema.describe("Session name to clear"),
     }),
     handler: async (args, ctx) => {
       await ctx.deviceManager.getBrowserAdapter().clearSessionData(args.session);

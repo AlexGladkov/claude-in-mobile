@@ -35,16 +35,14 @@ export const uiFind = defineTool({
           return textResult("No elements found");
         }
 
-        const list = elements.slice(0, 20).map((el: any, i: number) =>
-          `[${i}] <${el.type}> "${el.label}" @ (${el.rect.x}, ${el.rect.y})`,
+        const list = elements.slice(0, 20).map((element, index) =>
+          `[${index}] <${element.type ?? "unknown"}> "${element.label ?? ""}" @ (${element.rect.x}, ${element.rect.y})`,
         ).join("\n");
 
         return textResult(`Found ${elements.length} element(s):\n${list}`);
-      } catch (error: unknown) {
-        const msg = error instanceof Error ? error.message : String(error);
+      } catch {
         return textResult(
-          `Find element failed: ${msg}\n\n` +
-            `Make sure WebDriverAgent is installed (see get_ui error for details)`,
+          "Find element failed. Make sure WebDriverAgent is installed and running.",
         );
       }
     }

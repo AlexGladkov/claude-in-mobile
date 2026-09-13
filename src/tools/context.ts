@@ -70,8 +70,8 @@ export interface ToolContext {
   screenshotScaleMap: Map<string, ScreenshotScale>;
   generateActionHints: (platform?: string) => Promise<string>;
   getElementsForPlatform: (plat: string) => Promise<UiElement[]>;
-  iosTreeToUiElements: (tree: any) => UiElement[];
-  formatIOSUITree: (tree: any, indent?: number) => string;
+  iosTreeToUiElements: (tree: unknown) => UiElement[];
+  formatIOSUITree: (tree: unknown, indent?: number) => string;
   invalidateUiTreeCache: (platform?: string) => void;
   platformParam: typeof platformParam;
   handleTool: (name: string, args: Record<string, unknown>, depth?: number) => Promise<unknown>;

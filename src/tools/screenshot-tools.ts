@@ -3,7 +3,8 @@ import type { Platform } from "../device-manager.js";
 import { defineTool, z } from "./define-tool.js";
 import { platformEnum, deviceIdField } from "./common-schema.js";
 import { parseCommonArgs } from "../utils/parse-common-args.js";
-import { textResult, type ToolResult } from "../utils/tool-result.js";
+import { textResult } from "../utils/tool-result.js";
+import type { ToolResult } from "../utils/tool-result.js";
 import { sleep } from "../utils/sleep.js";
 import { SCREEN } from "../constants/timeouts.js";
 import {

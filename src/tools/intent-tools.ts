@@ -1,12 +1,13 @@
 import type { ToolDefinition } from "./registry.js";
 import { defineTool, z } from "./define-tool.js";
 import { platformEnum, deviceIdField } from "./common-schema.js";
-import { validatePackageName, sanitizeForShell, validateUrl } from "../utils/sanitize.js";
+import { validatePackageName, validateUrl } from "../utils/sanitize.js";
 import { ValidationError } from "../errors.js";
 import { truncateOutput } from "../utils/truncate.js";
 import { parseCommonArgs } from "../utils/parse-common-args.js";
 import { textResult } from "../utils/tool-result.js";
 import { dispatchByPlatform } from "./helpers/dispatch.js";
+import { buildDeviceShellCommand } from "../utils/device-shell.js";
 
 // ─── Validation helpers ───────────────────────────────────────────────────────
 
@@ -15,17 +16,24 @@ const COMPONENT_RE = /^[a-zA-Z][a-zA-Z0-9_.]*\/[a-zA-Z0-9_.]*$/;
 
 function validateIntentAction(action: string): void {
   if (!INTENT_ACTION_RE.test(action)) {
-    throw new ValidationError(
-      `Invalid intent action: "${action}". Only alphanumeric characters, dots, and underscores are allowed. Must start with a letter.`,
-    );
+    throw new ValidationError("Invalid intent action.");
   }
 }
 
 function validateComponent(component: string): void {
   if (!COMPONENT_RE.test(component)) {
-    throw new ValidationError(
-      `Invalid component: "${component}". Expected format: com.example.app/com.example.app.MainActivity`,
-    );
+    throw new ValidationError("Invalid Android component.");
+  }
+}
+
+function validateDeepLink(uri: string): void {
+  if (uri.length > 8192 || /[\u0000-\u001f\u007f]/.test(uri)) {
+    throw new ValidationError("Invalid deep-link URI.");
+  }
+  try {
+    new URL(uri);
+  } catch {
+    throw new ValidationError("Invalid deep-link URI.");
   }
 }
 
@@ -41,11 +49,11 @@ const FLAG_MAP: Record<string, number> = {
 };
 
 function resolveFlag(flag: string): number {
-  if (flag in FLAG_MAP) return FLAG_MAP[flag]!;
+  if (Object.hasOwn(FLAG_MAP, flag)) return FLAG_MAP[flag]!;
   const num = Number(flag);
-  if (!isNaN(num) && num > 0) return num;
+  if (Number.isSafeInteger(num) && num > 0 && num <= 0xffff_ffff) return num;
   throw new ValidationError(
-    `Unknown flag: "${flag}". Valid flags: ${Object.keys(FLAG_MAP).join(", ")}`,
+    `Unknown flag. Valid flags: ${Object.keys(FLAG_MAP).join(", ")}`,
   );
 }
 
@@ -66,31 +74,33 @@ const EXTRA_TYPE_FLAG: Record<string, string> = {
   uri: "--eu",
 };
 
-function buildExtrasArgs(extras: ExtraItem[]): string {
-  return extras
-    .map(({ key, value, type }) => {
-      const safeKey = sanitizeForShell(String(key));
-      if (!safeKey || safeKey.length === 0) {
-        throw new ValidationError(`Extra key must not be empty after sanitization: "${key}"`);
-      }
+function buildExtrasArgs(extras: ExtraItem[]): string[] {
+  return extras.flatMap(({ key, value, type }) => {
+    if (
+      key.length === 0 ||
+      key.length > 256 ||
+      /[\u0000-\u001f\u007f]/.test(key)
+    ) {
+      throw new ValidationError("Invalid extra key.");
+    }
+    if (typeof value === "string" && (value.length > 8192 || value.includes("\0"))) {
+      throw new ValidationError("Invalid extra value.");
+    }
 
-      let flag: string;
-      if (type) {
-        flag = EXTRA_TYPE_FLAG[type]!;
-      } else if (typeof value === "number" && Number.isInteger(value)) {
-        flag = "--ei";
-      } else if (typeof value === "number") {
-        flag = "--ef";
-      } else if (typeof value === "boolean") {
-        flag = "--ez";
-      } else {
-        flag = "--es";
-      }
-
-      const safeValue = sanitizeForShell(String(value));
-      return `${flag} ${safeKey} ${safeValue}`;
-    })
-    .join(" ");
+    let flag: string;
+    if (type) {
+      flag = EXTRA_TYPE_FLAG[type]!;
+    } else if (typeof value === "number" && Number.isInteger(value)) {
+      flag = "--ei";
+    } else if (typeof value === "number") {
+      flag = "--ef";
+    } else if (typeof value === "boolean") {
+      flag = "--ez";
+    } else {
+      flag = "--es";
+    }
+    return [flag, key, String(value)];
+  });
 }
 
 // ─── Schema helpers ───────────────────────────────────────────────────────────
@@ -163,33 +173,30 @@ export const intentTools: ToolDefinition[] = [
           if (component) validateComponent(component);
           if (pkg) validatePackageName(pkg);
 
-          const parts: string[] = ["am start"];
+          const commandArgs: string[] = ["am", "start"];
 
-          if (intentAction) parts.push(`-a ${intentAction}`);
-          if (component) parts.push(`-n ${component}`);
-          if (data) {
-            const safeData = sanitizeForShell(data);
-            parts.push(`-d '${safeData}'`);
-          }
+          if (intentAction) commandArgs.push("-a", intentAction);
+          if (component) commandArgs.push("-n", component);
+          if (data) commandArgs.push("-d", data);
+          if (data) validateDeepLink(data);
           if (category) {
             if (!INTENT_ACTION_RE.test(category)) {
-              throw new ValidationError(
-                `Invalid category: "${category}". Only alphanumeric characters, dots, and underscores are allowed.`,
-              );
+              throw new ValidationError("Invalid intent category.");
             }
-            parts.push(`-c ${category}`);
+            commandArgs.push("-c", category);
           }
-          if (extras.length > 0) {
-            parts.push(buildExtrasArgs(extras));
-          }
+          commandArgs.push(...buildExtrasArgs(extras));
           if (flags.length > 0) {
             const combined = flags.reduce((acc, f) => acc | resolveFlag(f), 0);
-            parts.push(`-f 0x${combined.toString(16)}`);
+            commandArgs.push("-f", `0x${combined.toString(16)}`);
           }
-          if (pkg) parts.push(`-p ${pkg}`);
+          if (pkg) commandArgs.push("-p", pkg);
 
-          const command = parts.join(" ");
-          const result = ctx.deviceManager.shell(command, "android", deviceId);
+          const result = ctx.deviceManager.shell(
+            buildDeviceShellCommand(commandArgs),
+            "android",
+            deviceId,
+          );
           return textResult(truncateOutput(result || "Activity launched."));
         },
         ios: () =>
@@ -240,14 +247,16 @@ export const intentTools: ToolDefinition[] = [
       if (pkg) validatePackageName(pkg);
       if (component) validateComponent(component);
 
-      const parts: string[] = ["am broadcast", `-a ${intentAction}`];
+      const commandArgs: string[] = ["am", "broadcast", "-a", intentAction];
+      if (component) commandArgs.push("-n", component);
+      if (pkg) commandArgs.push("-p", pkg);
+      commandArgs.push(...buildExtrasArgs(extras));
 
-      if (component) parts.push(`-n ${component}`);
-      if (pkg) parts.push(`-p ${pkg}`);
-      if (extras.length > 0) parts.push(buildExtrasArgs(extras));
-
-      const command = parts.join(" ");
-      const result = ctx.deviceManager.shell(command, "android", deviceId);
+      const result = ctx.deviceManager.shell(
+        buildDeviceShellCommand(commandArgs),
+        "android",
+        deviceId,
+      );
       return textResult(truncateOutput(result || "Broadcast sent."));
     },
   }),
@@ -276,32 +285,32 @@ export const intentTools: ToolDefinition[] = [
       const uri = args.uri;
       const pkg = args.package;
 
-      const safeUri = sanitizeForShell(uri);
-      if (!safeUri || safeUri.length === 0) {
-        throw new ValidationError("URI must not be empty or consist solely of blocked characters.");
-      }
+      validateDeepLink(uri);
 
       if (pkg) validatePackageName(pkg);
 
       return dispatchByPlatform(platform, {
         android: () => {
-          const parts: string[] = [
-            "am start",
-            "-a android.intent.action.VIEW",
-            `-d '${safeUri}'`,
+          const commandArgs = [
+            "am",
+            "start",
+            "-a",
+            "android.intent.action.VIEW",
+            "-d",
+            uri,
           ];
-          if (pkg) parts.push(`-p ${pkg}`);
-
-          const command = parts.join(" ");
-          const result = ctx.deviceManager.shell(command, "android", deviceId);
-          return textResult(truncateOutput(result || `Deep link opened: ${uri}`));
+          if (pkg) commandArgs.push("-p", pkg);
+          const result = ctx.deviceManager.shell(
+            buildDeviceShellCommand(commandArgs),
+            "android",
+            deviceId,
+          );
+          return textResult(truncateOutput(result || "Deep link opened."));
         },
         ios: () => {
-          if (uri.startsWith("http://") || uri.startsWith("https://")) {
-            validateUrl(uri);
-          }
+          if (uri.startsWith("http://") || uri.startsWith("https://")) validateUrl(uri);
           ctx.deviceManager.getIosClient(deviceId).openUrl(uri);
-          return textResult(`Deep link opened on iOS: ${uri}`);
+          return textResult("Deep link opened.");
         },
         unsupported: (p) =>
           textResult(

@@ -1,5 +1,6 @@
 import { MobileError } from "../errors.js";
-import { errorResult, type ToolResult } from "./tool-result.js";
+import { errorResult } from "./tool-result.js";
+import type { ToolResult } from "./tool-result.js";
 
 export type ToolHandler<TArgs = Record<string, unknown>, TCtx = unknown> = (
   args: TArgs,

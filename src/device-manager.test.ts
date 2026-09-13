@@ -49,7 +49,7 @@ describe("DeviceManager adapter ownership", () => {
 
     expect(failingDispose).toHaveBeenCalledOnce();
     expect(succeedingDispose).toHaveBeenCalledOnce();
-    expect(log).toHaveBeenCalledWith("Failed to dispose 'android' adapter:", error);
+    expect(log).toHaveBeenCalledWith("Failed to dispose 'android' adapter:", "cleanup failed");
     log.mockRestore();
   });
 

@@ -12,6 +12,8 @@
  *  - I5: JDWP bound to 127.0.0.1 (enforced in JdwpConnection.connect)
  *  - I6: async-mutex (per-session lock) prevents concurrent mutation
  */
+import { z } from "zod";
+
 
 import {
   validatePackageName,
@@ -19,8 +21,8 @@ import {
   validateBundleId,
   makeAdbRunner,
   assertAndroidDebuggable,
-  type AdbRunner,
 } from "./exec.js";
+import type { AdbRunner } from "./exec.js";
 import { attachAndroid, resolvePid } from "./jdwp/session.js";
 import type { JdwpSession } from "./jdwp/session.js";
 import { JdwpDebugger } from "./jdwp/debugger.js";
@@ -28,6 +30,50 @@ import { LldbClient } from "./lldb/client.js";
 
 /** Hard cap on concurrent debug sessions — bounds ports/daemon/socket growth. */
 const MAX_SESSIONS = 16;
+const lldbTextSchema = z.string().max(512);
+const lldbSessionIdSchema = z.string().min(1).max(128).regex(/^[^\u0000-\u001f\u007f]+$/);
+const lldbLocationSchema = z.object({
+  file: lldbTextSchema.nullable().optional(),
+  line: z.number().int().safe().nonnegative().nullable().optional(),
+  function: lldbTextSchema.nullable().optional(),
+});
+const lldbValueSchema = z.object({
+  name: lldbTextSchema.nullable().optional(),
+  type: lldbTextSchema,
+  value: z.union([lldbTextSchema, z.number().finite(), z.boolean(), z.null()]).optional(),
+  objectId: z.string().min(1).max(128).optional(),
+});
+const lldbAttachResultSchema = z.object({
+  sessionId: lldbSessionIdSchema,
+  pid: z.number().int().safe().nonnegative().optional(),
+});
+const lldbBreakpointResultSchema = z.object({
+  breakpointId: z.union([
+    z.string().min(1).max(128).regex(/^[^\u0000-\u001f\u007f]+$/),
+    z.number().int().safe(),
+  ]),
+  verified: z.boolean().optional(),
+});
+const lldbPollResultSchema = z.object({
+  events: z.array(z.object({
+    kind: z.string().min(1).max(64),
+    threadId: z.number().int().safe().nonnegative().nullable().optional(),
+    location: lldbLocationSchema.nullable().optional(),
+  })).max(1024),
+  nextCursor: z.number().int().safe().nonnegative(),
+  alive: z.boolean().optional(),
+});
+const lldbPauseStateSchema = z.object({
+  frames: z.array(z.object({
+    index: z.number().int().safe().nonnegative(),
+    function: lldbTextSchema.nullable().optional(),
+    file: lldbTextSchema.nullable().optional(),
+    line: z.number().int().safe().nonnegative().nullable().optional(),
+    locals: z.array(lldbValueSchema).max(128),
+  })).max(32),
+});
+const lldbEmptyResultSchema = z.object({});
+
 
 export type DebugPlatform = "android" | "ios";
 
@@ -144,10 +190,10 @@ export class DebugController {
     // SECURITY I1: validate bundleId before passing to daemon.
     validateBundleId(opts.app);
     const client = await this.ios();
-    const res = (await client.rpc("attach", {
+    const res = lldbAttachResultSchema.parse(await client.rpc("attach", {
       bundleId: opts.app,
       launch: opts.launch ?? true,
-    })) as { sessionId: string; pid?: number };
+    }));
     const sessionId = this.id();
     this.sessions.set(sessionId, { platform: "ios", iosSessionId: res.sessionId });
     return { sessionId, platform: "ios", pid: res.pid };
@@ -211,18 +257,18 @@ export class DebugController {
       }
       const c = await this.ios();
       if (spec.file && spec.line != null) {
-        const r = (await c.rpc("setBreakpoint", {
+        const r = lldbBreakpointResultSchema.parse(await c.rpc("setBreakpoint", {
           sessionId: e.iosSessionId,
           file: spec.file,
           line: spec.line,
-        })) as { breakpointId: unknown; verified?: boolean };
+        }));
         return { id: String(r.breakpointId), verified: !!r.verified };
       }
       if (spec.method) {
-        const r = (await c.rpc("setFunctionBreakpoint", {
+        const r = lldbBreakpointResultSchema.parse(await c.rpc("setFunctionBreakpoint", {
           sessionId: e.iosSessionId,
           symbol: spec.method,
-        })) as { breakpointId: unknown; verified?: boolean };
+        }));
         return { id: String(r.breakpointId), verified: !!r.verified };
       }
       throw new Error("ios breakpoint needs {file, line} or {method}");
@@ -251,10 +297,9 @@ export class DebugController {
       const e = this.get(sessionId);
       if (e.platform === "android") return e.dbg.poll(cursor);
       const c = await this.ios();
-      return c.rpc("poll", { sessionId: e.iosSessionId, cursor }) as Promise<{
-        events: unknown[];
-        nextCursor: number;
-      }>;
+      return lldbPollResultSchema.parse(
+        await c.rpc("poll", { sessionId: e.iosSessionId, cursor }),
+      );
     });
   }
 
@@ -263,7 +308,9 @@ export class DebugController {
       const e = this.get(sessionId);
       if (e.platform === "android") return e.dbg.pauseState(bigId(threadId, "threadId"));
       const c = await this.ios();
-      return c.rpc("pauseState", { sessionId: e.iosSessionId, threadId });
+      return lldbPauseStateSchema.parse(
+        await c.rpc("pauseState", { sessionId: e.iosSessionId, threadId }),
+      );
     });
   }
 
@@ -272,7 +319,9 @@ export class DebugController {
       const e = this.get(sessionId);
       if (e.platform === "ios") {
         const c = await this.ios();
-        return c.rpc("eval", { sessionId: e.iosSessionId, threadId, expr });
+        return lldbValueSchema.parse(
+          await c.rpc("eval", { sessionId: e.iosSessionId, threadId, expr }),
+        );
       }
       return e.dbg.eval(bigId(threadId, "threadId"), expr);
     });
@@ -283,7 +332,9 @@ export class DebugController {
       const e = this.get(sessionId);
       if (e.platform === "ios") {
         const c = await this.ios();
-        return c.rpc("setVar", { sessionId: e.iosSessionId, threadId, name, value });
+        return lldbEmptyResultSchema.parse(
+          await c.rpc("setVar", { sessionId: e.iosSessionId, threadId, name, value }),
+        );
       }
       await e.dbg.setVar(bigId(threadId, "threadId"), name, value);
       return { ok: true };

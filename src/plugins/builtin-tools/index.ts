@@ -42,15 +42,15 @@ import {
   registerToolsHidden,
   registerAliasesWithDefaults,
   registerAllModuleMetadata,
-  type ToolDefinition,
 } from "../../tools/registry.js";
+import type { ToolDefinition } from "../../tools/registry.js";
 import {
   ALWAYS_VISIBLE,
   PROFILE_VISIBLE,
   VALID_PROFILES,
   MODULE_METADATA,
-  type MobileProfile,
 } from "../../profiles.js";
+import type { MobileProfile } from "../../profiles.js";
 import {
   META_TOOL_DESCRIPTORS,
   META_SHORT_ALIASES,

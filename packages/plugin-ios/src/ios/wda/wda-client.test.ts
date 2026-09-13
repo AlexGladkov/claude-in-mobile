@@ -19,13 +19,10 @@ import { WdaTreeError, unwrapWdaValue } from "./wda-types.js";
  */
 
 function jsonResponse(body: unknown): Response {
-  return {
-    ok: true,
+  return new Response(JSON.stringify(body), {
     status: 200,
-    statusText: "OK",
-    json: async () => body,
-    text: async () => JSON.stringify(body),
-  } as unknown as Response;
+    headers: { "content-type": "application/json" },
+  });
 }
 
 describe("unwrapWdaValue — WDA envelope validation", () => {
@@ -172,7 +169,7 @@ describe("WDAClient — the UI tree must carry element geometry", () => {
 
     expect((tree as { rect?: unknown }).rect).toBeDefined();
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
-      "http://localhost:8100/session/TEST/source?format=json",
+      "http://127.0.0.1:8100/session/TEST/source?format=json",
     );
   });
 });

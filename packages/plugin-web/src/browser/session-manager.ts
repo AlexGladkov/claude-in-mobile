@@ -5,15 +5,21 @@ import { join } from "path";
 import {
   existsSync,
   linkSync,
+  opendirSync,
   mkdirSync,
-  readdirSync,
-  readFileSync,
   rmdirSync,
+  renameSync,
   unlinkSync,
   writeFileSync,
 } from "fs";
+import {
+  ensurePrivateDirectorySync,
+  readPrivateFileSync,
+} from "mcp-devices/utils/private-storage";
+import { sanitizeErrorMessage } from "mcp-devices/utils/sanitize";
 import type { BrowserSession } from "./types.js";
 import { DEFAULT_SESSION } from "./types.js";
+import { z } from "zod";
 
 interface LockRecord {
   pid: number;
@@ -23,6 +29,12 @@ interface LockRecord {
 type PidRecord = LockRecord;
 
 export const MAX_BROWSER_SESSIONS = 8;
+const MAX_LOCK_FILE_BYTES = 64 * 1024;
+const MAX_RECLAIM_ENTRIES = 64;
+const lockRecordSchema = z.object({
+  pid: z.number().int().safe().gt(1),
+  token: z.string().min(1).max(128),
+}).strict();
 
 export class SessionManager {
   private readonly sessions = new Map<string, BrowserSession>();
@@ -43,8 +55,9 @@ export class SessionManager {
   }
 
   getProfileDir(session: string): string {
+    ensurePrivateDirectorySync(this.profileBaseDir);
     const profileDir = this.profilePath(session);
-    if (!existsSync(profileDir)) mkdirSync(profileDir, { recursive: true, mode: 0o700 });
+    ensurePrivateDirectorySync(profileDir);
     return profileDir;
   }
 
@@ -118,26 +131,22 @@ export class SessionManager {
     if (!this.ownsLock(session, token)) {
       throw new Error(`Cannot write Chrome pid for unowned session "${session}"`);
     }
-    writeFileSync(
-      join(this.getProfileDir(session), ".chrome-pid"),
-      JSON.stringify({ pid, token } satisfies PidRecord),
-      { mode: 0o600 },
-    );
+    const pidPath = join(this.getProfileDir(session), ".chrome-pid");
+    const candidatePath = `${pidPath}.${process.pid}.${token}`;
+    try {
+      writeFileSync(
+        candidatePath,
+        JSON.stringify({ pid, token } satisfies PidRecord),
+        { flag: "wx", mode: 0o600 },
+      );
+      renameSync(candidatePath, pidPath);
+    } finally {
+      try { unlinkSync(candidatePath); } catch {}
+    }
   }
 
   readPidFile(session: string): PidRecord | null {
-    const raw = this.readFile(join(this.getProfileDir(session), ".chrome-pid"));
-    if (raw === null) return null;
-    try {
-      const parsed = JSON.parse(raw) as Partial<PidRecord>;
-      if (
-        Number.isSafeInteger(parsed.pid)
-        && (parsed.pid ?? 0) > 1
-        && typeof parsed.token === "string"
-      ) return { pid: parsed.pid!, token: parsed.token };
-    } catch {}
-    const legacyPid = this.parseLegacyPid(raw);
-    return legacyPid === null ? null : { pid: legacyPid, token: "legacy" };
+    return this.parseLock(this.readFile(join(this.getProfileDir(session), ".chrome-pid")));
   }
 
   removePidFile(session: string, token: string): void {
@@ -164,7 +173,9 @@ export class SessionManager {
       );
     }
     process.kill(record.pid, "SIGTERM");
-    console.error(`[browser] Killed orphaned Chrome PID ${record.pid} for session "${session}"`);
+    console.error(
+      `[browser] Killed orphaned Chrome PID ${record.pid} for session "${sanitizeErrorMessage(session)}"`,
+    );
     try { unlinkSync(join(profileDir, ".chrome-pid")); } catch {}
   }
 
@@ -189,7 +200,7 @@ export class SessionManager {
 
   private lockPath(session: string): string {
     const lockDir = join(this.profileBaseDir, ".locks");
-    if (!existsSync(lockDir)) mkdirSync(lockDir, { recursive: true, mode: 0o700 });
+    ensurePrivateDirectorySync(lockDir);
     const lockName = createHash("sha256").update(session).digest("hex");
     return join(lockDir, `${lockName}.lock`);
   }
@@ -276,9 +287,22 @@ export class SessionManager {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       }
 
-      let entries: string[];
+      const entries: string[] = [];
       try {
-        entries = readdirSync(reclaimPath);
+        const directory = opendirSync(reclaimPath);
+        try {
+          let entry;
+          while ((entry = directory.readSync()) !== null) {
+            if (entries.length >= MAX_RECLAIM_ENTRIES) {
+              throw new Error(
+                `Browser profile recovery directory exceeds ${MAX_RECLAIM_ENTRIES} entries`,
+              );
+            }
+            entries.push(entry.name);
+          }
+        } finally {
+          directory.closeSync();
+        }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
         throw error;
@@ -323,7 +347,9 @@ export class SessionManager {
     const shouldClaim = legacyProfile === currentProfile;
     if (!existsSync(legacyProfile)) {
       if (!shouldClaim) return;
-      mkdirSync(legacyProfile, { recursive: true, mode: 0o700 });
+      ensurePrivateDirectorySync(legacyProfile);
+    } else if (shouldClaim) {
+      ensurePrivateDirectorySync(legacyProfile);
     }
     const legacyPath = join(legacyProfile, ".lock");
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -379,11 +405,12 @@ export class SessionManager {
           "-NoProfile",
           "-Command",
           `(Get-CimInstance Win32_Process -Filter \"ProcessId=${pid}\").CommandLine`,
-        ], { encoding: "utf-8", timeout: 2_000 }).trim();
+        ], { encoding: "utf-8", timeout: 2_000, maxBuffer: 64 * 1024 }).trim();
       }
       return execFileSync("ps", ["-p", String(pid), "-o", "command="], {
         encoding: "utf-8",
         timeout: 2_000,
+        maxBuffer: 64 * 1024,
       }).trim();
     } catch {
       return "";
@@ -402,7 +429,8 @@ export class SessionManager {
 
   private readFile(filePath: string): string | null {
     try {
-      return readFileSync(filePath, "utf-8");
+      return readPrivateFileSync(filePath, MAX_LOCK_FILE_BYTES, "browser session lock")
+        .toString("utf8");
     } catch {
       return null;
     }
@@ -411,13 +439,8 @@ export class SessionManager {
   private parseLock(raw: string | null): LockRecord | null {
     if (raw === null) return null;
     try {
-      const parsed = JSON.parse(raw) as Partial<LockRecord>;
-      if (
-        Number.isSafeInteger(parsed.pid)
-        && (parsed.pid ?? 0) > 1
-        && typeof parsed.token === "string"
-        && parsed.token.length > 0
-      ) return { pid: parsed.pid!, token: parsed.token };
+      const result = lockRecordSchema.safeParse(JSON.parse(raw));
+      if (result.success) return result.data;
     } catch {}
     const legacyPid = this.parseLegacyPid(raw);
     return legacyPid === null ? null : { pid: legacyPid, token: "legacy" };

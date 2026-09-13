@@ -1,6 +1,6 @@
 export interface WDASession {
   sessionId: string;
-  capabilities: Record<string, any>;
+  capabilities: Record<string, unknown>;
 }
 
 export interface WDAElement {

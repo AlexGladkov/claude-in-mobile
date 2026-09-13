@@ -2,10 +2,13 @@ import {
   ApiVersionMismatchError,
   PLUGIN_API_VERSION,
   PluginContractError,
-  type Capability,
-  type PluginManifest,
-  type PluginState,
-  type SourcePlugin,
+  isCapability,
+} from "@mcp-devices/plugin-api";
+import type {
+  Capability,
+  PluginManifest,
+  PluginState,
+  SourcePlugin,
 } from "@mcp-devices/plugin-api";
 
 export interface RegistryEntry {
@@ -23,28 +26,68 @@ export interface PluginRegistry {
   isFrozen(): boolean;
 }
 
-function validateManifest(manifest: PluginManifest): void {
-  if (!manifest.id || typeof manifest.id !== "string") {
-    throw new PluginContractError("manifest.id must be a non-empty string", String(manifest.id));
+function validateManifest(value: unknown): asserts value is PluginManifest {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new PluginContractError("manifest must be an object", "<invalid>");
   }
-  if (!/^[a-z0-9][a-z0-9._-]*$/.test(manifest.id)) {
+  const manifest = value as Record<string, unknown>;
+  const id = manifest.id;
+  if (
+    typeof id !== "string"
+    || id.length === 0
+    || id.length > 128
+    || !/^[a-z0-9][a-z0-9._-]*$/.test(id)
+  ) {
     throw new PluginContractError(
-      `manifest.id must match /^[a-z0-9][a-z0-9._-]*$/`,
-      manifest.id
+      "manifest.id must match /^[a-z0-9][a-z0-9._-]*$/ and be at most 128 characters",
+      "<invalid>",
     );
   }
   if (manifest.apiVersion !== PLUGIN_API_VERSION) {
-    throw new ApiVersionMismatchError(manifest.id, String(manifest.apiVersion), PLUGIN_API_VERSION);
+    throw new ApiVersionMismatchError(id, String(manifest.apiVersion), PLUGIN_API_VERSION);
   }
-  if (!Array.isArray(manifest.capabilities) || manifest.capabilities.length === 0) {
-    throw new PluginContractError("manifest.capabilities must be non-empty array", manifest.id);
+  if (
+    !Array.isArray(manifest.capabilities)
+    || manifest.capabilities.length === 0
+    || manifest.capabilities.length > 32
+  ) {
+    throw new PluginContractError("manifest.capabilities must be a bounded non-empty array", id);
   }
-  const seen = new Set<string>();
-  for (const c of manifest.capabilities) {
-    if (seen.has(c)) {
-      throw new PluginContractError(`duplicate capability: ${c}`, manifest.id);
+  const seen = new Set<Capability>();
+  for (const capability of manifest.capabilities) {
+    if (!isCapability(capability)) {
+      throw new PluginContractError("manifest contains an unknown capability", id);
     }
-    seen.add(c);
+    if (seen.has(capability)) {
+      throw new PluginContractError(`duplicate capability: ${capability}`, id);
+    }
+    seen.add(capability);
+  }
+  if (
+    manifest.tools !== undefined
+    && (
+      !Array.isArray(manifest.tools)
+      || manifest.tools.length > 1000
+      || manifest.tools.some(
+        (tool) => typeof tool !== "string" || !/^[A-Za-z0-9._-]{1,128}$/.test(tool),
+      )
+    )
+  ) {
+    throw new PluginContractError("manifest.tools is invalid", id);
+  }
+}
+
+function validatePlugin(value: unknown): asserts value is SourcePlugin {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new PluginContractError("plugin must be an object", "<invalid>");
+  }
+  const plugin = value as Record<string, unknown>;
+  validateManifest(plugin.manifest);
+  if (typeof plugin.init !== "function") {
+    throw new PluginContractError("plugin.init must be a function", plugin.manifest.id);
+  }
+  if (plugin.dispose !== undefined && typeof plugin.dispose !== "function") {
+    throw new PluginContractError("plugin.dispose must be a function", plugin.manifest.id);
   }
 }
 
@@ -53,10 +96,10 @@ export class InMemoryRegistry implements PluginRegistry {
   private frozen = false;
 
   register(plugin: SourcePlugin): void {
+    validatePlugin(plugin);
     if (this.frozen) {
       throw new PluginContractError("registry is frozen", plugin.manifest.id);
     }
-    validateManifest(plugin.manifest);
     if (this.entries.has(plugin.manifest.id)) {
       throw new PluginContractError("plugin id already registered", plugin.manifest.id);
     }

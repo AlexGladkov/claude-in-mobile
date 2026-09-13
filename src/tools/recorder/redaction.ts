@@ -2,31 +2,52 @@ import type { ScenarioStep } from "../../utils/scenario-store.js";
 
 // ── Recording blocklist ──
 
-export const RECORDING_BLOCKLIST = new Set([
+export const RECORDING_BLOCKLIST: Readonly<Record<string, true>> = {
   // Recorder itself — prevent recursion
-  "recorder_start", "recorder_stop", "recorder_status",
-  "recorder_add_step", "recorder_remove_step", "recorder_list",
-  "recorder_show", "recorder_delete", "recorder_play", "recorder_export",
-  "recorder", // meta-tool
+  recorder_start: true,
+  recorder_stop: true,
+  recorder_status: true,
+  recorder_add_step: true,
+  recorder_remove_step: true,
+  recorder_list: true,
+  recorder_show: true,
+  recorder_delete: true,
+  recorder_play: true,
+  recorder_export: true,
+  recorder: true,
   // Flow orchestration — record leaf calls, not wrappers
-  "flow_batch", "flow_run", "flow_parallel",
-  "batch_commands", "run_flow", "parallel",
+  flow_batch: true,
+  flow_run: true,
+  flow_parallel: true,
+  batch_commands: true,
+  run_flow: true,
+  parallel: true,
   // Security-sensitive
-  "system_shell", "shell",
-  "browser_evaluate",
+  system_shell: true,
+  shell: true,
+  browser_evaluate: true,
   // Sync orchestration — record leaf calls, not wrappers
-  "sync_create_group", "sync_run", "sync_assert_cross",
-  "sync_status", "sync_list", "sync_destroy",
-  "sync",
-]);
+  sync_create_group: true,
+  sync_run: true,
+  sync_assert_cross: true,
+  sync_status: true,
+  sync_list: true,
+  sync_destroy: true,
+  sync: true,
+};
 
 // Playback blocklist — superset of recording blocklist
-export const PLAYBACK_BLOCKED_ACTIONS = new Set([
-  "system_shell", "shell",
-  "browser_evaluate",
-  "recorder_start", "recorder_stop", "recorder_play",
-  "recorder", "install_app", "push_file",
-]);
+export const PLAYBACK_BLOCKED_ACTIONS: Readonly<Record<string, true>> = {
+  system_shell: true,
+  shell: true,
+  browser_evaluate: true,
+  recorder_start: true,
+  recorder_stop: true,
+  recorder_play: true,
+  recorder: true,
+  install_app: true,
+  push_file: true,
+};
 
 // ── Step classification ──
 

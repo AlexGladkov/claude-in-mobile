@@ -4,8 +4,9 @@ import {
   parseToolPluginList,
   resolveEnabledToolPlugins,
   writeEnabledToolPlugins,
-  type ToolPluginId,
 } from "./tool-plugin-config.js";
+import type { ToolPluginId } from "./tool-plugin-config.js";
+import { sanitizeErrorMessage } from "../utils/sanitize.js";
 
 export function applyToolPluginEnable(
   current: readonly ToolPluginId[],
@@ -66,7 +67,9 @@ export function runToolPluginCommand(
   }
   const invalid = invalidToolPlugin(requested);
   if (invalid) {
-    console.error(`Unknown tool plugin: ${invalid}. Available: ${ALL_TOOL_PLUGINS.join(", ")}`);
+    console.error(
+      `Unknown tool plugin: ${sanitizeErrorMessage(invalid)}. Available: ${ALL_TOOL_PLUGINS.join(", ")}`,
+    );
     return exit(1);
   }
 

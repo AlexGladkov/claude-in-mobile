@@ -9,10 +9,12 @@
  *   4. xcode         — *.xcworkspace (preferred) or *.xcodeproj in the dir itself
  */
 
-import { readdir, readFile, stat } from "fs/promises";
+import { opendir, stat } from "fs/promises";
 import { join } from "path";
+import { z } from "zod";
 import { MobileError } from "../../errors.js";
 import { validatePath } from "../../utils/sanitize.js";
+import { readJsonOrDefault } from "../../utils/json-file.js";
 import { XCODE } from "../../constants/timeouts.js";
 import { runTool } from "./exec.js";
 import { classifyXcodeError } from "./classify-build-error.js";
@@ -28,6 +30,23 @@ export interface ProjectInfo {
   /** Directory xcodebuild/flutter should run relative to. */
   buildDir: string;
 }
+const xcodeSchemeSchema = z.string().min(1).max(256).refine(
+  (scheme) => !/[\u0000-\u001f\u007f]/.test(scheme),
+  "scheme contains control characters",
+);
+const xcodeListContainerSchema = z.object({
+  schemes: z.array(xcodeSchemeSchema).max(500),
+}).passthrough();
+const xcodeListResponseSchema = z.object({
+  workspace: xcodeListContainerSchema.optional(),
+  project: xcodeListContainerSchema.optional(),
+}).passthrough();
+const packageDependenciesSchema = z.record(z.string(), z.unknown());
+const packageManifestSchema = z.object({
+  dependencies: packageDependenciesSchema.optional(),
+  devDependencies: packageDependenciesSchema.optional(),
+}).passthrough();
+
 
 async function isDirectory(path: string): Promise<boolean> {
   try {
@@ -49,21 +68,40 @@ async function exists(path: string): Promise<boolean> {
 /** Bundles (.xcworkspace/.xcodeproj) are directories; sorted for determinism. */
 async function findByExtension(dir: string, extension: string): Promise<string[]> {
   try {
-    const entries = await readdir(dir);
-    return entries.filter((name) => name.endsWith(extension)).sort();
-  } catch {
+    const directory = await opendir(dir);
+    const entries: string[] = [];
+    let scanned = 0;
+    for await (const entry of directory) {
+      scanned += 1;
+      if (scanned > 1000) {
+        throw new MobileError("iOS project directory contains too many entries.", "IOS_PROJECT_SCAN_LIMIT");
+      }
+      if (
+        entry.isDirectory()
+        && entry.name.length <= 255
+        && !/[\u0000-\u001f\u007f]/.test(entry.name)
+        && entry.name.endsWith(extension)
+      ) {
+        entries.push(entry.name);
+      }
+    }
+    return entries.sort();
+  } catch (error) {
+    if (error instanceof MobileError) throw error;
     return [];
   }
 }
 
 async function hasReactNativeDep(packageJsonPath: string): Promise<boolean> {
   try {
-    const raw = await readFile(packageJsonPath, "utf-8");
-    const pkg = JSON.parse(raw) as {
-      dependencies?: Record<string, string>;
-      devDependencies?: Record<string, string>;
-    };
-    return Boolean(pkg.dependencies?.["react-native"] ?? pkg.devDependencies?.["react-native"]);
+    const result = packageManifestSchema.safeParse(
+      await readJsonOrDefault(packageJsonPath, () => ({}), "package.json"),
+    );
+    if (!result.success) return false;
+    return (
+      typeof result.data.dependencies?.["react-native"] === "string"
+      || typeof result.data.devDependencies?.["react-native"] === "string"
+    );
   } catch {
     return false;
   }
@@ -132,6 +170,8 @@ export async function detectIosProject(dir: string): Promise<ProjectInfo> {
 
 /** `-workspace <ws>` or `-project <proj>` argv slice for xcodebuild. */
 export function xcodeTargetArgs(info: ProjectInfo): string[] {
+  if (info.workspacePath) validatePath(info.workspacePath, "Xcode workspace path");
+  if (info.projectPath) validatePath(info.projectPath, "Xcode project path");
   if (info.workspacePath) return ["-workspace", info.workspacePath];
   if (info.projectPath) return ["-project", info.projectPath];
   throw new MobileError(
@@ -153,16 +193,20 @@ export async function listSchemes(info: ProjectInfo): Promise<string[]> {
     throw classifyXcodeError(result.stderr, "xcodebuild -list");
   }
 
-  let parsed: { workspace?: { schemes?: string[] }; project?: { schemes?: string[] } };
+  let parsed: unknown;
   try {
-    parsed = JSON.parse(result.stdout) as typeof parsed;
+    parsed = JSON.parse(result.stdout);
   } catch {
     throw new MobileError(
-      `xcodebuild -list returned invalid JSON: ${result.stdout.trim().slice(0, 200)}`,
+      "xcodebuild -list returned invalid JSON.",
       "XCODE_LIST_PARSE_ERROR",
     );
   }
-  return parsed.workspace?.schemes ?? parsed.project?.schemes ?? [];
+  const response = xcodeListResponseSchema.safeParse(parsed);
+  if (!response.success) {
+    throw new MobileError("xcodebuild -list returned invalid data.", "XCODE_LIST_PARSE_ERROR");
+  }
+  return response.data.workspace?.schemes ?? response.data.project?.schemes ?? [];
 }
 
 /**

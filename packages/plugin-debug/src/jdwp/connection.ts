@@ -9,10 +9,12 @@ import { EventEmitter } from "node:events";
 import {
   HEADER_LEN,
   encodeCommand,
-  type ReplyPacket,
-  type CommandPacket,
 } from "./packet.js";
+import type { CommandPacket, ReplyPacket } from "./packet.js";
 import { JDWP_HANDSHAKE, FLAG_REPLY, CommandSet, JdwpError } from "./constants.js";
+
+const MAX_PACKET_BYTES = 16 * 1024 * 1024;
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 
 export class JdwpProtocolError extends Error {
   constructor(public readonly errorCode: number, context: string) {
@@ -59,6 +61,12 @@ export class JdwpConnection extends EventEmitter {
 
       // The very first 14 bytes back must echo the handshake, before any packets.
       const onHandshake = (chunk: Buffer) => {
+        if (this.inbound.length + chunk.length > MAX_PACKET_BYTES) {
+          clearTimeout(timer);
+          sock.destroy();
+          reject(new Error("JDWP handshake buffer exceeded the packet limit"));
+          return;
+        }
         this.inbound = Buffer.concat([this.inbound, chunk]);
         if (this.inbound.length < JDWP_HANDSHAKE.length) return;
         const echo = this.inbound.subarray(0, JDWP_HANDSHAKE.length).toString("ascii");
@@ -94,24 +102,50 @@ export class JdwpConnection extends EventEmitter {
   }
 
   /** Send a command and resolve with the reply payload (throws on JDWP error code). */
-  request(commandSet: number, command: number, data: Buffer = Buffer.alloc(0)): Promise<Buffer> {
+  request(
+    commandSet: number,
+    command: number,
+    data: Buffer = Buffer.alloc(0),
+    timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+  ): Promise<Buffer> {
     if (!this.socket || !this.handshaken) {
       return Promise.reject(new Error("JDWP not connected"));
+    }
+    if (data.length + HEADER_LEN > MAX_PACKET_BYTES) {
+      return Promise.reject(new Error("JDWP outbound packet exceeded the packet limit"));
     }
     const id = this.nextId++;
     const context = `cmd ${commandSet}/${command}`;
     return new Promise<Buffer>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, context });
-      this.socket!.write(encodeCommand(id, commandSet, command, data), (err) => {
-        if (err) {
-          this.pending.delete(id);
-          reject(err);
+      const timer = setTimeout(() => {
+        if (this.pending.delete(id)) {
+          reject(new Error(`JDWP ${context} timed out after ${timeoutMs}ms`));
         }
+      }, timeoutMs);
+      const settle: Pending = {
+        context,
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      };
+      this.pending.set(id, settle);
+      this.socket!.write(encodeCommand(id, commandSet, command, data), (error) => {
+        if (error && this.pending.delete(id)) settle.reject(error);
       });
     });
   }
 
   private onData(chunk: Buffer): void {
+    if (this.inbound.length + chunk.length > MAX_PACKET_BYTES) {
+      this.emit("error", new Error("JDWP inbound buffer exceeded the packet limit"));
+      this.socket?.destroy();
+      return;
+    }
     this.inbound = Buffer.concat([this.inbound, chunk]);
     this.drainPackets();
   }
@@ -122,6 +156,11 @@ export class JdwpConnection extends EventEmitter {
       if (length < HEADER_LEN) {
         // Corrupt stream — drop the connection rather than spin.
         this.emit("error", new Error(`Invalid JDWP packet length ${length}`));
+        this.socket?.destroy();
+        return;
+      }
+      if (length > MAX_PACKET_BYTES) {
+        this.emit("error", new Error(`JDWP packet exceeds ${MAX_PACKET_BYTES} bytes`));
         this.socket?.destroy();
         return;
       }

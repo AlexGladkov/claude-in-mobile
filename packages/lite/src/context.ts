@@ -1,40 +1,42 @@
 /**
- * Lite DeviceManager factory — 3 adapters only (Android, iOS, Desktop).
- * No Aurora, no Browser. Minimal memory footprint.
+ * Lite kernel factory — Android, iOS, and Desktop only.
+ * No Aurora or Browser plugins.
  */
 
+import type { SourcePlugin } from "@mcp-devices/plugin-api";
 import { DeviceManager } from "mcp-devices/device-manager";
-import { AndroidAdapter } from "mcp-devices/adapters/android-adapter";
-import { IosAdapter } from "mcp-devices/adapters/ios-adapter";
-import { DesktopAdapter } from "mcp-devices/adapters/desktop-adapter";
-import { AdbClient } from "mcp-devices/adb/client";
-import { IosClient } from "mcp-devices/ios/client";
 import type { Platform } from "mcp-devices/device-manager";
 import type { CorePlatformAdapter } from "mcp-devices/adapters/platform-adapter";
+import { bootstrapKernelAsync } from "mcp-devices/runtime/bootstrap";
+import type { KernelHandle } from "mcp-devices/runtime/bootstrap";
 
-export function createLiteDeviceManager(): DeviceManager {
-  const androidDeviceId = process.env.DEVICE_ID ?? process.env.ANDROID_SERIAL ?? undefined;
-  const iosDeviceId = process.env.IOS_DEVICE_ID ?? undefined;
+type AdapterPlugin = SourcePlugin & {
+  readonly adapter: CorePlatformAdapter;
+};
 
-  const androidAdapter = androidDeviceId
-    ? new AndroidAdapter(new AdbClient(androidDeviceId))
-    : new AndroidAdapter();
+export interface LiteDeviceContext {
+  readonly deviceManager: DeviceManager;
+  dispose(): Promise<void>;
+}
 
-  const iosAdapter = iosDeviceId
-    ? new IosAdapter(new IosClient(iosDeviceId))
-    : new IosAdapter();
+export async function createLiteDeviceContext(): Promise<LiteDeviceContext> {
+  const androidDeviceId = process.env.DEVICE_ID ?? process.env.ANDROID_SERIAL;
+  const iosDeviceId = process.env.IOS_DEVICE_ID;
+  const activeTarget: Platform = iosDeviceId && !androidDeviceId ? "ios" : "android";
+  const kernel: KernelHandle = await bootstrapKernelAsync({
+    platforms: ["android", "ios", "desktop"],
+  });
 
-  const desktopAdapter = new DesktopAdapter();
+  await kernel.initAll();
+  if (androidDeviceId) {
+    kernel.getPlugin<AdapterPlugin>("android")?.adapter.selectDevice(androidDeviceId);
+  }
+  if (iosDeviceId) {
+    kernel.getPlugin<AdapterPlugin>("ios")?.adapter.selectDevice(iosDeviceId);
+  }
 
-  const adapters = new Map<Platform, CorePlatformAdapter>([
-    ["android", androidAdapter],
-    ["ios", iosAdapter],
-    ["desktop", desktopAdapter],
-  ]);
-
-  let activeTarget: Platform = "android";
-  if (androidDeviceId) activeTarget = "android";
-  else if (iosDeviceId) activeTarget = "ios";
-
-  return new DeviceManager({ adapters, activeTarget, ownsAdapters: true });
+  return {
+    deviceManager: DeviceManager.fromKernel(kernel, activeTarget),
+    dispose: () => kernel.disposeAll(),
+  };
 }

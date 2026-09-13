@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import {
   validateShellCommand,
   validateUrl,
-  sanitizeForShell,
   validatePackageName,
   validatePermission,
   validatePath,
@@ -287,83 +286,8 @@ describe("validateUrl", () => {
     }
   });
 
-  it("error message includes the blocked protocol", () => {
-    try {
-      validateUrl("ftp://example.com");
-      expect.unreachable("Should have thrown");
-    } catch (e) {
-      expect((e as MobileError).message).toContain("ftp:");
-    }
-  });
 });
 
-// ──────────────────────────────────────────────
-// sanitizeForShell
-// ──────────────────────────────────────────────
-
-describe("sanitizeForShell", () => {
-  it("returns clean strings unchanged", () => {
-    expect(sanitizeForShell("hello world")).toBe("hello world");
-    expect(sanitizeForShell("com.example.app")).toBe("com.example.app");
-    expect(sanitizeForShell("simple-text_123")).toBe("simple-text_123");
-  });
-
-  it("removes backticks", () => {
-    expect(sanitizeForShell("echo `whoami`")).toBe("echo whoami");
-  });
-
-  it("removes dollar signs", () => {
-    expect(sanitizeForShell("$HOME")).toBe("HOME");
-    expect(sanitizeForShell("$(command)")).toBe("command"); // both $ and () are stripped
-  });
-
-  it("removes backslashes", () => {
-    expect(sanitizeForShell("path\\to\\file")).toBe("pathtofile");
-  });
-
-  it("removes exclamation marks", () => {
-    expect(sanitizeForShell("hello!")).toBe("hello");
-  });
-
-  it("removes hash symbols", () => {
-    expect(sanitizeForShell("#comment")).toBe("comment");
-  });
-
-  it("removes ampersands", () => {
-    expect(sanitizeForShell("cmd1 & cmd2")).toBe("cmd1  cmd2");
-  });
-
-  it("removes pipe characters", () => {
-    expect(sanitizeForShell("cmd1 | cmd2")).toBe("cmd1  cmd2");
-  });
-
-  it("removes semicolons", () => {
-    expect(sanitizeForShell("cmd1; cmd2")).toBe("cmd1 cmd2");
-  });
-
-  it("removes parentheses", () => {
-    expect(sanitizeForShell("$(subshell)")).toBe("subshell");
-  });
-
-  it("removes curly braces", () => {
-    expect(sanitizeForShell("{expansion}")).toBe("expansion");
-  });
-
-  it("removes angle brackets", () => {
-    expect(sanitizeForShell("redirect > file < input")).toBe("redirect  file  input");
-  });
-
-  it("removes multiple dangerous chars at once", () => {
-    expect(sanitizeForShell("`$\\!#&|;(){}<>")).toBe("");
-  });
-
-  it("preserves non-dangerous special chars", () => {
-    expect(sanitizeForShell("file.txt")).toBe("file.txt");
-    expect(sanitizeForShell("path/to/dir")).toBe("path/to/dir");
-    expect(sanitizeForShell("key=value")).toBe("key=value");
-    expect(sanitizeForShell("name@host")).toBe("name@host");
-  });
-});
 
 // ──────────────────────────────────────────────
 // validatePackageName
@@ -414,14 +338,6 @@ describe("validatePackageName", () => {
     }
   });
 
-  it("error message includes the invalid name", () => {
-    try {
-      validatePackageName("bad name!");
-      expect.unreachable("Should have thrown");
-    } catch (e) {
-      expect((e as MobileError).message).toContain("bad name!");
-    }
-  });
 });
 
 // ──────────────────────────────────────────────
@@ -466,14 +382,6 @@ describe("validatePermission", () => {
     }
   });
 
-  it("error message includes the invalid permission", () => {
-    try {
-      validatePermission("bad perm!");
-      expect.unreachable("Should have thrown");
-    } catch (e) {
-      expect((e as MobileError).message).toContain("bad perm!");
-    }
-  });
 });
 
 // ──────────────────────────────────────────────

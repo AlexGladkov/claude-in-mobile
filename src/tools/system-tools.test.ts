@@ -80,15 +80,12 @@ describe("generic system capabilities", () => {
       } as any,
     });
 
-    const result = await findHandler("system_open_url")({
+    await findHandler("system_open_url")({
       url: "https://example.com/path?a=1&b=2",
       platform: "harmony",
       deviceId: "phone",
     }, ctx);
 
-    expect((result as { text: string }).text).toBe(
-      "Opened URL: https://example.com/path?a=1&b=2",
-    );
     expect(openUrl).toHaveBeenCalledWith(
       "https://example.com/path?a=1&b=2",
       "phone",

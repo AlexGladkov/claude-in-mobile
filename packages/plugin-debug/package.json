@@ -35,7 +35,8 @@
   ],
   "dependencies": {
     "@mcp-devices/plugin-api": "1.0.0",
-    "mcp-devices": "*"
+    "mcp-devices": "*",
+    "zod": "^4.1.13"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

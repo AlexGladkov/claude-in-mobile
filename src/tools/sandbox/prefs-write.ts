@@ -1,25 +1,33 @@
-import { validatePackageName, validatePath, sanitizeForShell } from "../../utils/sanitize.js";
+import { validatePackageName } from "../../utils/sanitize.js";
+import { buildDeviceShellCommand } from "../../utils/device-shell.js";
 import { defineTool, z } from "../define-tool.js";
 import { deviceIdField } from "../common-schema.js";
 import { parseCommonArgs } from "../../utils/parse-common-args.js";
 import { textResult, errorResult } from "../../utils/tool-result.js";
-import { androidPlatformEnum, isRunAsFailure, runAsUnavailableHint } from "./helpers.js";
+import {
+  androidPlatformEnum,
+  isRunAsFailure,
+  runAsUnavailableHint,
+  validatePreferenceKey,
+  validatePreferenceName,
+  validatePreferenceValue,
+} from "./helpers.js";
 
-/**
- * Escape a value for safe interpolation into a device-side single-quoted
- * `sed 's|...|...|'` program run via `adb shell run-as`.
- *
- * `sanitizeForShell` strips host-side shell metacharacters but intentionally
- * leaves the single-quote `'` and double-quote `"` untouched (it is shared by
- * read/list/intent tools where stripping quotes would change behaviour). Here
- * the sanitized value lands inside a POSIX single-quoted sed program on the
- * device, so a literal `'` would terminate that quote and break the command
- * (correctness + run-as-scoped injection). We close/escape/reopen the single
- * quote (`'\''`) and escape `"`, which is part of the XML attribute pattern,
- * so it cannot disturb sed's `s|...|...|` delimiters or the surrounding XML.
- */
-function escapeForSedSingleQuote(value: string): string {
-  return value.replace(/'/g, "'\\''").replace(/"/g, '\\"');
+function escapeXml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
+function escapeSedRegex(value: string): string {
+  return value.replace(/[\\.^$*+?()[\]{}|]/g, "\\$&");
+}
+
+function escapeSedReplacement(value: string): string {
+  return value.replace(/[\\&|]/g, "\\$&");
 }
 
 export const sandboxPrefsWriteTool = defineTool({
@@ -52,69 +60,55 @@ export const sandboxPrefsWriteTool = defineTool({
     const pkg = args.package;
     validatePackageName(pkg);
 
-    const rawFile = args.file;
-    validatePath(rawFile, "file");
-    const safeFile = sanitizeForShell(rawFile);
-    if (safeFile.length === 0) {
-      return errorResult("Invalid file name after sanitization.");
-    }
+    const file = args.file;
+    validatePreferenceName(file);
 
-    const rawKey = args.key;
-    const safeKey = sanitizeForShell(rawKey);
-    if (safeKey.length === 0) {
-      return errorResult("Invalid key after sanitization.");
-    }
+    const key = args.key;
+    validatePreferenceKey(key);
 
-    const rawValue = args.value;
-    const safeValue = sanitizeForShell(rawValue);
-
-    // safeKey/safeValue are interpolated into a device-side single-quoted
-    // sed program (`sed 's|...|...|'`). sanitizeForShell leaves `'` and `"`
-    // in place, so escape them for that single-quoted context to prevent the
-    // value from breaking out of the quotes or disturbing sed delimiters.
-    const sedKey = escapeForSedSingleQuote(safeKey);
-    const sedValue = escapeForSedSingleQuote(safeValue);
-
+    const value = args.value;
     const type = args.type ?? "string";
+    validatePreferenceValue(value, type);
 
-    const xmlPath = `shared_prefs/${safeFile}.xml`;
+    const sedKey = escapeSedRegex(key);
+    const sedValue = escapeSedReplacement(escapeXml(value));
+    const xmlPath = `shared_prefs/${file}.xml`;
 
     // Build sed replacement pattern based on type.
     // <string name="key">value</string>  — string type (value in inner text)
     // <int name="key" value="123" />     — numeric/bool types (value in attribute)
-    let sedCmd: string;
+    let sedProgram: string;
     if (type === "string") {
-      sedCmd =
-        `run-as ${pkg} sed -i ` +
-        `'s|<string name="${sedKey}">[^<]*</string>|<string name="${sedKey}">${sedValue}</string>|' ` +
-        xmlPath;
+      sedProgram =
+        `s|<string name="${sedKey}">[^<]*</string>|` +
+        `<string name="${key}">${sedValue}</string>|`;
     } else {
-      // int / long / float / bool all use value="..." attribute form
       const xmlTag = type === "bool" ? "boolean" : type;
-      sedCmd =
-        `run-as ${pkg} sed -i ` +
-        `'s|<${xmlTag} name="${sedKey}" value="[^"]*" />|<${xmlTag} name="${sedKey}" value="${sedValue}" />|' ` +
-        xmlPath;
+      sedProgram =
+        `s|<${xmlTag} name="${sedKey}" value="[^"]*" />|` +
+        `<${xmlTag} name="${key}" value="${sedValue}" />|`;
     }
 
     let output: string;
     try {
-      output = ctx.deviceManager.shell(sedCmd, "android", deviceId);
+      output = ctx.deviceManager.shell(
+        buildDeviceShellCommand(["run-as", pkg, "sed", "-i", sedProgram, xmlPath]),
+        "android",
+        deviceId,
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (isRunAsFailure(msg)) return errorResult(runAsUnavailableHint(pkg));
-      return errorResult(`Failed to write preference: ${msg}`);
+      return errorResult("Failed to write SharedPreferences.");
     }
 
     if (isRunAsFailure(output)) return errorResult(runAsUnavailableHint(pkg));
 
     return textResult(
-      `Preference updated in "${pkg}" / "${safeFile}.xml":\n` +
-        `  key   = ${safeKey}\n` +
-        `  value = ${safeValue}\n` +
-        `  type  = ${type}\n\n` +
-        "NOTE: The app must be restarted for the change to take effect. " +
-        "Use app(action:'restart', package:'<pkg>') or force-stop and relaunch.",
+      `Preference updated in "${pkg}" / "${file}.xml".\n` +
+        `  key  = ${key}\n` +
+        `  type = ${type}\n\n` +
+        "NOTE: The app must be restarted for changes to take effect.",
     );
   },
 });

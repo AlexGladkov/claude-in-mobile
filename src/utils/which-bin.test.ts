@@ -54,16 +54,17 @@ describe("whichBin (injected env — Windows-style PATH walk)", () => {
 });
 
 describe("whichBin (POSIX branch)", () => {
-  it("uses argv-form invocation — no shell string interpolation", () => {
+  it("rejects shell metacharacters before process invocation", () => {
     if (IS_WINDOWS) {
       expect(true).toBe(true);
       return;
     }
-    // A name containing shell metacharacters must NOT be interpreted: passing
-    // it positionally means `command -v -- "$1"` sees it literally and reports
-    // "not found" rather than executing anything.
-    expect(whichBin("foo; echo pwned")).toBeNull();
-    expect(whichBin("$(echo node)")).toBeNull();
+    expect(() => whichBin("foo; echo pwned")).toThrow(
+      "Binary name must be a safe bare executable name",
+    );
+    expect(() => whichBin("$(echo node)")).toThrow(
+      "Binary name must be a safe bare executable name",
+    );
   });
 
   it("finds an executable placed on a scoped PATH", () => {

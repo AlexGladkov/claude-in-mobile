@@ -54,9 +54,11 @@ describe("Desktop process lifecycle", () => {
     const client = new DesktopClient();
     const invalid = { mode: "teleport" } as unknown as RawLaunchOptions;
 
-    await expect(client.launch(invalid)).rejects.toThrow("teleport");
+    const firstError = await client.launch(invalid).catch((error: unknown) => error);
+    expect(firstError).toBeInstanceOf(Error);
     expect(client.getState().status).toBe("stopped");
-    await expect(client.launch(invalid)).rejects.toThrow("teleport");
+    const retryError = await client.launch(invalid).catch((error: unknown) => error);
+    expect(retryError).toBeInstanceOf(Error);
   });
 
   it("stops the active strategy when the companion exits cleanly", async () => {
@@ -158,9 +160,8 @@ describe("Desktop process lifecycle", () => {
     launcherHarness.getExecutablePath = () =>
       join(tmpdir(), `missing-mcp-devices-app-${process.pid}`);
 
-    await expect(launcher.launch()).rejects.toThrow(
-      'Failed to launch app "com.example.missing"',
-    );
+    const launchError = await launcher.launch().catch((error: unknown) => error);
+    expect(launchError).toBeInstanceOf(Error);
     await expect(launcher.stop()).resolves.toBeUndefined();
   });
 

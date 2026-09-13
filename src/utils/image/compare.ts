@@ -1,4 +1,5 @@
 import { Jimp } from "jimp";
+import { validatePngForDecode } from "./input.js";
 import type { DiffRegion, ScreenDiffResult } from "./types.js";
 
 /**
@@ -11,6 +12,8 @@ export async function compareScreenshots(
   next: Buffer,
   threshold = 30,
 ): Promise<ScreenDiffResult> {
+  validatePngForDecode(prev);
+  validatePngForDecode(next);
   const prevImg = await Jimp.read(prev);
   const nextImg = await Jimp.read(next);
 
@@ -76,6 +79,7 @@ export async function cropRegion(
   region: DiffRegion,
   padding = 20,
 ): Promise<Buffer> {
+  validatePngForDecode(pngBuffer);
   const image = await Jimp.read(pngBuffer);
   const x = Math.max(0, region.x - padding);
   const y = Math.max(0, region.y - padding);

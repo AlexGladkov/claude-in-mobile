@@ -7,8 +7,8 @@ import {
 import {
   diffUiElements,
   suggestNextActions,
-  type UiElement,
 } from "../../ui-tree/ui-parser.js";
+import type { UiElement } from "../../ui-tree/ui-parser.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures modelled on the REAL `/wda/accessibleSource` payload, not the

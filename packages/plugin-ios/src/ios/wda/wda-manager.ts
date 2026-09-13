@@ -1,4 +1,5 @@
-import { execFileSync, execSync, spawn, type ChildProcess } from "child_process";
+import { execFileSync, spawn } from "child_process";
+import type { ChildProcess } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -9,6 +10,7 @@ import { execSimctl } from "../simctl-exec.js";
 import { parseDevicesJson } from "../simctl-parsers.js";
 import type { WDAInstanceInfo } from "./wda-types.js";
 import type { IosDevice } from "../types.js";
+import { sanitizeErrorMessage } from "mcp-devices/utils/sanitize";
 
 const DEVICE_WDA_PORT = 8100;
 const GO_IOS_BIN = process.env.GO_IOS_BIN ?? "ios";
@@ -56,8 +58,10 @@ export class WDAManager {
         await existingClient.ensureSession(deviceId);
         return existingClient;
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error("WDA client failed, relaunching:", message);
+        console.error(
+          "WDA client failed, relaunching:",
+          sanitizeErrorMessage(error instanceof Error ? error.message : String(error)).slice(0, 1000),
+        );
         await existingClient.deleteSession();
         await this.stopDevice(deviceId);
       }
@@ -151,7 +155,9 @@ export class WDAManager {
       "  npm install -g appium\n" +
       "  appium driver install xcuitest\n\n" +
       "Or set WDA_PATH environment variable.\n\n" +
-      `Search paths checked:\n${searchPaths.map((entry) => `  - ${entry}`).join("\n")}`,
+      `Search paths checked:\n${searchPaths.map((entry) =>
+        `  - ${sanitizeErrorMessage(entry).slice(0, 1000)}`
+      ).join("\n")}`,
     );
   }
 
@@ -190,7 +196,9 @@ export class WDAManager {
     } catch (error) {
       const details = error as { stderr?: Buffer | string; stdout?: Buffer | string; message?: string };
       const message = details.stderr?.toString() || details.stdout?.toString() || details.message || String(error);
-      throw new Error(`Failed to build WebDriverAgent.\n\n${message}`);
+      throw new Error(
+        `Failed to build WebDriverAgent.\n\n${sanitizeErrorMessage(message).slice(0, 4096)}`,
+      );
     }
   }
 
@@ -219,7 +227,7 @@ export class WDAManager {
     );
     if (!healthy) {
       throw new Error(
-        `WebDriverAgent failed to start within 30s.\n\nLast output:\n${output().slice(-500)}`,
+        `WebDriverAgent failed to start within 30s.\n\nLast output:\n${sanitizeErrorMessage(output()).slice(-500)}`,
       );
     }
     return instance;
@@ -262,7 +270,7 @@ export class WDAManager {
     );
     if (!healthy) {
       throw new Error(
-        `Failed to start WebDriverAgent on the physical device.\n\nLast output:\n${output().slice(-800)}`,
+        `Failed to start WebDriverAgent on the physical device.\n\nLast output:\n${sanitizeErrorMessage(output()).slice(-800)}`,
       );
     }
     return instance;
@@ -346,9 +354,10 @@ export class WDAManager {
     if (process.env.IOS_TEAM_ID) return process.env.IOS_TEAM_ID;
     if (process.env.WDA_TEAM_ID) return process.env.WDA_TEAM_ID;
     try {
-      const output = execSync("security find-identity -v -p codesigning", {
+      const output = execFileSync("security", ["find-identity", "-v", "-p", "codesigning"], {
         encoding: "utf-8",
         timeout: 5_000,
+        maxBuffer: 1024 * 1024,
       });
       return output.match(/\(([A-Z0-9]{10})\)/)?.[1];
     } catch {
@@ -360,9 +369,11 @@ export class WDAManager {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 2_000);
     try {
-      const response = await fetch(`http://localhost:${port}/status`, {
+      const response = await fetch(`http://127.0.0.1:${port}/status`, {
+        redirect: "error",
         signal: controller.signal,
       });
+      await response.body?.cancel().catch(() => {});
       return response.ok;
     } catch {
       return false;

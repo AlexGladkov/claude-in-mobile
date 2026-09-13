@@ -207,12 +207,4 @@ describe("normalizeLaunchOptions — unknown mode", () => {
     ).toThrow(MobileError);
   });
 
-  it("error message mentions the bad mode value", () => {
-    try {
-      normalizeLaunchOptions({ mode: "teleport" as any });
-      expect.unreachable("Should have thrown");
-    } catch (e) {
-      expect((e as MobileError).message).toContain("teleport");
-    }
-  });
 });

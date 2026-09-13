@@ -1,10 +1,13 @@
 import { execFileSync } from "child_process";
-import { tmpdir } from "os";
+import { rmSync } from "fs";
 import { join } from "path";
-import { readFileSync, unlinkSync } from "fs";
 import { WDAManager, WDAClient, WDAElement, WDARect } from "./wda/index.js";
 import { classifySimctlError } from "mcp-devices/errors";
 import { validateDeviceId, validateBundleId } from "mcp-devices/utils/sanitize";
+import {
+  makePrivateTempDir,
+  readPrivateFileSync,
+} from "mcp-devices/utils/private-storage";
 import { execSimctl, execSimctlQuiet, SIMCTL_EXEC_TIMEOUT_MS } from "./simctl-exec.js";
 import type { IosDevice } from "./types.js";
 import {
@@ -25,8 +28,9 @@ import {
 import {
   buildFindElementsSelectors,
   buildSwipeCoords,
-  type FindElementsCriteria,
 } from "./wda-payloads.js";
+import type { FindElementsCriteria } from "./wda-payloads.js";
+const MAX_SCREENSHOT_BYTES = 50 * 1024 * 1024;
 
 export type { IosDevice } from "./types.js";
 
@@ -217,13 +221,13 @@ export class IosClient {
    */
   screenshotRaw(deviceIdOverride?: string): Buffer {
     const target = this.targetDeviceFor(deviceIdOverride);
-    const tmpFile = join(tmpdir(), `ios-screenshot-${Date.now()}.png`);
+    const tempDir = makePrivateTempDir("ios-screenshot");
+    const tmpFile = join(tempDir, "screenshot.png");
     try {
-      // Path passed as distinct argv slot — spaces in tmpdir are safe.
       this.execArgs(["io", target, "screenshot", tmpFile]);
-      return readFileSync(tmpFile);
+      return readPrivateFileSync(tmpFile, MAX_SCREENSHOT_BYTES, "iOS screenshot");
     } finally {
-      try { unlinkSync(tmpFile); } catch {}
+      rmSync(tempDir, { recursive: true, force: true });
     }
   }
 
@@ -352,14 +356,14 @@ export class IosClient {
       execFileSync(
         "osascript",
         [...HOME_KEY_OSASCRIPT_ARGS],
-        { encoding: "utf-8", timeout: SIMCTL_EXEC_TIMEOUT_MS }
+        { encoding: "utf-8", timeout: SIMCTL_EXEC_TIMEOUT_MS, maxBuffer: 64 * 1024 }
       );
     } else {
       // Try generic approach
       execFileSync(
         "osascript",
         [...ACTIVATE_SIMULATOR_OSASCRIPT_ARGS],
-        { encoding: "utf-8", timeout: SIMCTL_EXEC_TIMEOUT_MS }
+        { encoding: "utf-8", timeout: SIMCTL_EXEC_TIMEOUT_MS, maxBuffer: 64 * 1024 }
       );
     }
   }

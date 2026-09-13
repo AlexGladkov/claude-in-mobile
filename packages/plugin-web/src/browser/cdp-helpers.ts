@@ -1,4 +1,36 @@
+import { z } from "zod";
 import type { CDPClientInterface } from "./cdp-types.js";
+
+const cdpNodeIdSchema = z.number().int().nonnegative();
+const boxModelResultSchema = z.object({
+  model: z.object({
+    content: z.array(z.number().finite()).length(8),
+  }).passthrough(),
+}).passthrough();
+const documentResultSchema = z.object({
+  root: z.object({ nodeId: cdpNodeIdSchema }).passthrough(),
+}).passthrough();
+const querySelectorResultSchema = z.object({
+  nodeId: cdpNodeIdSchema,
+}).passthrough();
+const textCoordinatesResultSchema = z.object({
+  result: z.object({
+    value: z.object({
+      x: z.number().finite(),
+      y: z.number().finite(),
+    }).strict().nullable(),
+  }).passthrough(),
+}).passthrough();
+const resolvedNodeResultSchema = z.object({
+  object: z.object({
+    objectId: z.string().min(1).max(1024),
+  }).passthrough(),
+}).passthrough();
+const selectorResultSchema = z.object({
+  result: z.object({
+    value: z.string().max(16 * 1024),
+  }).passthrough(),
+}).passthrough();
 
 /**
  * Pure CDP helpers — no session state, no retries. Lifted out of BrowserClient
@@ -10,8 +42,9 @@ export async function getCoordinates(
   cdp: CDPClientInterface,
   nodeId: number
 ): Promise<{ x: number; y: number }> {
-  const { model } = await cdp.DOM.getBoxModel({ nodeId });
-  if (!model) throw new Error("Could not get element bounding box");
+  const { model } = boxModelResultSchema.parse(
+    await cdp.DOM.getBoxModel({ nodeId }),
+  );
   const [x1, y1, x2, , , , , y4] = model.content;
   return {
     x: Math.round((x1 + x2) / 2),
@@ -24,8 +57,12 @@ export async function findNodeBySelector(
   selector: string
 ): Promise<number | null> {
   try {
-    const { root } = await cdp.DOM.getDocument({ depth: 0 });
-    const { nodeId } = await cdp.DOM.querySelector({ nodeId: root.nodeId, selector });
+    const { root } = documentResultSchema.parse(
+      await cdp.DOM.getDocument({ depth: 0 }),
+    );
+    const { nodeId } = querySelectorResultSchema.parse(
+      await cdp.DOM.querySelector({ nodeId: root.nodeId, selector }),
+    );
     return nodeId !== 0 ? nodeId : null;
   } catch {
     return null;
@@ -37,22 +74,20 @@ export async function findNodeByText(
   text: string
 ): Promise<{ x: number; y: number } | null> {
   try {
-    const { result } = await cdp.Runtime.evaluate({
+    const parsed = textCoordinatesResultSchema.parse(await cdp.Runtime.evaluate({
       expression: `(function() {
         const all = document.querySelectorAll('a, button, [role="button"], [role="link"], input[type="submit"], input[type="button"]');
         const t = ${JSON.stringify(text.toLowerCase())};
         for (const el of all) {
           if (el.textContent?.toLowerCase().includes(t) || el.value?.toLowerCase()?.includes(t)) {
-            return JSON.stringify({x: el.getBoundingClientRect().left + el.offsetWidth/2, y: el.getBoundingClientRect().top + el.offsetHeight/2});
+            return {x: el.getBoundingClientRect().left + el.offsetWidth/2, y: el.getBoundingClientRect().top + el.offsetHeight/2};
           }
         }
         return null;
       })()`,
       returnByValue: true,
-    });
-    if (result.value) {
-      return JSON.parse(result.value as string);
-    }
+    }));
+    return parsed.result.value;
   } catch {}
   return null;
 }
@@ -62,8 +97,10 @@ export async function buildSelector(
   nodeId: number
 ): Promise<string> {
   try {
-    const { object } = await cdp.DOM.resolveNode({ nodeId });
-    const { result } = await cdp.Runtime.callFunctionOn({
+    const { object } = resolvedNodeResultSchema.parse(
+      await cdp.DOM.resolveNode({ nodeId }),
+    );
+    const parsed = selectorResultSchema.parse(await cdp.Runtime.callFunctionOn({
       objectId: object.objectId,
       functionDeclaration: `function() {
         if (this.id) return '#' + CSS.escape(this.id);
@@ -84,8 +121,8 @@ export async function buildSelector(
         return parts.join(' > ');
       }`,
       returnByValue: true,
-    });
-    return (result.value as string) ?? "";
+    }));
+    return parsed.result.value;
   } catch {
     return "";
   }

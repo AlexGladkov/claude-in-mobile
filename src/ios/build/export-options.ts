@@ -59,6 +59,10 @@ export async function writeExportOptionsPlist(
   const fileName = `ExportOptions-${randomBytes(4).toString("hex")}.plist`;
   const filePath = join(dir, fileName);
   validatePathContainment(filePath, dir);
-  await writeFile(filePath, renderExportOptionsPlist(config), "utf-8");
+  await writeFile(filePath, renderExportOptionsPlist(config), {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600,
+  });
   return filePath;
 }

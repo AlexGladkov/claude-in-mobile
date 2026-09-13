@@ -1,6 +1,7 @@
-import { execFile, spawn, type ChildProcessWithoutNullStreams } from "child_process";
+import { execFile, spawn } from "child_process";
+import type { ChildProcessWithoutNullStreams } from "child_process";
 import { randomUUID } from "crypto";
-import { mkdtemp, readFile, rm, stat } from "fs/promises";
+import { mkdtemp, rm, stat } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { promisify } from "util";
@@ -11,7 +12,7 @@ import type {
   PerformanceTracePreset,
 } from "mcp-devices/adapters/platform-adapter";
 import { MobileError } from "mcp-devices/errors";
-import { sanitizeErrorMessage } from "mcp-devices/utils/sanitize";
+import { readPrivateFile } from "mcp-devices/utils/private-storage";
 
 const execFileAsync = promisify(execFile);
 const START_TIMEOUT_MS = 15_000;
@@ -135,12 +136,9 @@ export class XctraceRecording {
         maxBuffer: XCTRACE_COMMAND_OUTPUT_LIMIT,
         env: xctraceEnvironment(),
       });
-      const details = await stat(zipPath);
-      if (details.size === 0 || details.size > MAX_TRACE_SIZE) {
-        throw new MobileError(
-          `xctrace artifact is ${(details.size / 1024 / 1024).toFixed(1)}MB; maximum is ${MAX_TRACE_SIZE / 1024 / 1024}MB.`,
-          "PERF_TRACE_TOO_LARGE",
-        );
+      const data = await readPrivateFile(zipPath, MAX_TRACE_SIZE, "xctrace artifact");
+      if (data.length === 0) {
+        throw new MobileError("xctrace artifact is empty.", "PERF_TRACE_TOO_LARGE");
       }
       const endedAt = new Date().toISOString();
       return {
@@ -158,22 +156,34 @@ export class XctraceRecording {
             ...(toc.schemas.length === 0 ? ["xctrace TOC contained no instrument data tables."] : []),
           ],
         },
-        data: await readFile(zipPath),
+        data,
         session: options.session ?? options.bundleId,
       };
     } finally {
+      await this.terminate();
       await rm(this.rootDir, { recursive: true, force: true });
     }
   }
 
   async discard(): Promise<void> {
-    if (this.process.exitCode === null && this.process.signalCode === null) this.process.kill("SIGINT");
+    await this.terminate();
+    await rm(this.rootDir, { recursive: true, force: true });
+  }
+
+  private async terminate(): Promise<void> {
+    if (this.process.exitCode !== null || this.process.signalCode !== null) return;
+    this.process.kill("SIGINT");
     await Promise.race([
       this.exitPromise.catch(() => ({ code: null, signal: null })),
       new Promise((resolve) => setTimeout(resolve, 2_000)),
     ]);
-    if (this.process.exitCode === null && this.process.signalCode === null) this.process.kill("SIGKILL");
-    await rm(this.rootDir, { recursive: true, force: true });
+    if (this.process.exitCode === null && this.process.signalCode === null) {
+      this.process.kill("SIGKILL");
+      await Promise.race([
+        this.exitPromise.catch(() => ({ code: null, signal: null })),
+        new Promise((resolve) => setTimeout(resolve, 2_000)),
+      ]);
+    }
   }
 
   private async waitUntilStarted(): Promise<void> {
@@ -205,15 +215,13 @@ export class XctraceRecording {
         env: xctraceEnvironment(),
       });
       return parseXctraceToc(stdout);
-    } catch (error) {
-      this.output += `\nTOC export failed: ${error instanceof Error ? error.message : String(error)}`;
+    } catch {
       return { schemas: [] };
     }
   }
 
   private failure(message: string): MobileError {
-    const details = sanitizeErrorMessage(this.output.trim()).slice(-800);
-    return new MobileError(details ? `${message} ${details}` : message, "IOS_XCTRACE_FAILED");
+    return new MobileError(message, "IOS_XCTRACE_FAILED");
   }
 }
 

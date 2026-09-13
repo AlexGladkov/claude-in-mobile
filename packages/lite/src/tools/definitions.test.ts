@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { createLiteTools, type LiteToolDefinition } from "./definitions.js";
+import { createLiteTools } from "./definitions.js";
+import type { LiteToolDefinition } from "./definitions.js";
 
 // Mock DeviceManager
 function createMockDM() {

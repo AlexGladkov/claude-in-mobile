@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "crypto";
 import { createReadStream } from "fs";
-import { chmod, lstat, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "fs/promises";
-import { tmpdir } from "os";
+import { chmod, lstat, mkdir, rename, stat, unlink } from "fs/promises";
 import { join, resolve } from "path";
+import { z } from "zod";
 
 import type {
   HeapSnapshotAdapter,
@@ -11,9 +11,11 @@ import type {
 } from "../adapters/platform-adapter.js";
 import { MobileError, ValidationError } from "../errors.js";
 import { validatePathContainment } from "../utils/sanitize.js";
+import { readJsonOrDefault, writeJsonAtomic } from "../utils/json-file.js";
+import { privateRuntimeDir, readPrivateDirectory } from "../utils/private-storage.js";
 import type { HeapSnapshotArtifact } from "./types.js";
 
-const DEFAULT_DIR = join(tmpdir(), "mcp-devices-heap-snapshots");
+const HEAP_NAMESPACE = "heap-snapshots";
 const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
 const MAX_ARTIFACT_SIZE = 128 * 1024 * 1024;
@@ -21,17 +23,73 @@ const MAX_TOTAL_SIZE = 512 * 1024 * 1024;
 const MAX_ARTIFACTS = 16;
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 const ARTIFACT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const MAX_DIRECTORY_ENTRIES = 1024;
+const SAFE_TEXT = /^[^\u0000-\u001f\u007f]+$/;
+const SHA256 = /^[0-9a-f]{64}$/;
+const HEAP_EXTENSION_BY_FORMAT: Record<HeapSnapshotCapture["format"], string> = {
+  "android-hprof": "hprof",
+  "chrome-heapsnapshot": "heapsnapshot",
+  "xctrace-allocations": "allocations.trace.zip",
+};
 
 interface StoredHeapMetadata extends Omit<HeapSnapshotArtifact, "path"> {
   fileName: string;
 }
 
-function extensionFor(format: HeapSnapshotCapture["format"]): string {
-  switch (format) {
-    case "android-hprof": return "hprof";
-    case "chrome-heapsnapshot": return "heapsnapshot";
-    case "xctrace-allocations": return "allocations.trace.zip";
+const SafeTextSchema = z.string().min(1).max(4096).regex(SAFE_TEXT);
+const TimestampSchema = SafeTextSchema.max(64).refine(
+  (value) => Number.isFinite(Date.parse(value)),
+  "invalid timestamp",
+);
+const NonNegativeNumberSchema = z.number().finite().nonnegative();
+const HeapSummarySchema = z.object({
+  sizeBytes: NonNegativeNumberSchema,
+  nodeCount: NonNegativeNumberSchema.optional(),
+  edgeCount: NonNegativeNumberSchema.optional(),
+  traceFunctionCount: NonNegativeNumberSchema.optional(),
+  totalPssMb: NonNegativeNumberSchema.optional(),
+  nativeHeapMb: NonNegativeNumberSchema.optional(),
+  dalvikHeapMb: NonNegativeNumberSchema.optional(),
+  instrumentCount: NonNegativeNumberSchema.optional(),
+  warnings: z.array(SafeTextSchema).max(256),
+}).strict();
+const StoredHeapMetadataSchema = z.object({
+  artifactId: z.string().regex(ARTIFACT_ID),
+  platform: z.enum(["android", "ios", "web", "desktop", "aurora", "harmony"]),
+  capturedAt: TimestampSchema,
+  format: z.enum(["android-hprof", "chrome-heapsnapshot", "xctrace-allocations"]),
+  mimeType: SafeTextSchema,
+  producer: SafeTextSchema,
+  packageName: SafeTextSchema.optional(),
+  session: SafeTextSchema.optional(),
+  summary: HeapSummarySchema,
+  fileName: SafeTextSchema,
+  sizeBytes: NonNegativeNumberSchema.max(MAX_ARTIFACT_SIZE),
+  sha256: z.string().regex(SHA256),
+  createdAt: TimestampSchema,
+  expiresAt: TimestampSchema,
+  sensitivity: z.literal("secret"),
+}).strict();
+
+function parseStoredHeapMetadata(
+  value: unknown,
+  artifactId: string,
+): StoredHeapMetadata {
+  const parsed = StoredHeapMetadataSchema.safeParse(value);
+  if (
+    !parsed.success
+    || parsed.data.artifactId !== artifactId
+    || parsed.data.fileName
+      !== `${artifactId}.${HEAP_EXTENSION_BY_FORMAT[parsed.data.format]}`
+    || parsed.data.summary.sizeBytes !== parsed.data.sizeBytes
+    || Date.parse(parsed.data.expiresAt) < Date.parse(parsed.data.createdAt)
+  ) {
+    throw new MobileError(
+      `Heap artifact "${artifactId}" has invalid metadata.`,
+      "HEAP_ARTIFACT_CORRUPTED",
+    );
   }
+  return parsed.data;
 }
 
 export class HeapArtifactStore {
@@ -40,7 +98,9 @@ export class HeapArtifactStore {
   private finalizeTail = Promise.resolve();
 
   constructor(rootDir?: string, ttlMs = DEFAULT_TTL_MS) {
-    this.rootDir = resolve(rootDir ?? process.env.MCP_DEVICES_HEAP_DIR ?? DEFAULT_DIR);
+    this.rootDir = resolve(
+      rootDir ?? process.env.MCP_DEVICES_HEAP_DIR ?? privateRuntimeDir(HEAP_NAMESPACE),
+    );
     this.ttlMs = ttlMs;
   }
 
@@ -103,13 +163,17 @@ export class HeapArtifactStore {
     await this.ensureRoot();
     await this.purgeExpired();
     const metadataPath = this.childPath(`${artifactId}.metadata.json`);
-    let metadata: StoredHeapMetadata;
-    try {
-      metadata = JSON.parse(await readFile(metadataPath, "utf8")) as StoredHeapMetadata;
-    } catch {
-      throw new MobileError(`Heap artifact "${artifactId}" was not found.`, "HEAP_ARTIFACT_NOT_FOUND");
-    }
-    this.validateMetadata(artifactId, metadata);
+    const stored = await readJsonOrDefault(
+      metadataPath,
+      () => {
+        throw new MobileError(
+          `Heap artifact "${artifactId}" was not found.`,
+          "HEAP_ARTIFACT_NOT_FOUND",
+        );
+      },
+      "heap artifact metadata",
+    );
+    const metadata = parseStoredHeapMetadata(stored, artifactId);
     const path = this.childPath(metadata.fileName);
     const details = await lstat(path).catch(() => null);
     if (!details?.isFile() || details.isSymbolicLink()) {
@@ -133,8 +197,7 @@ export class HeapArtifactStore {
     sizeBytes: number,
     sha256: string,
   ): Promise<HeapSnapshotArtifact> {
-    const extension = extensionFor(capture.format);
-    const fileName = `${artifactId}.${extension}`;
+    const fileName = `${artifactId}.${HEAP_EXTENSION_BY_FORMAT[capture.format]}`;
     const path = this.childPath(fileName);
     const metadataPath = this.childPath(`${artifactId}.metadata.json`);
     const partialMetadataPath = this.childPath(`${artifactId}.${randomUUID()}.metadata.partial`);
@@ -159,7 +222,7 @@ export class HeapArtifactStore {
     const { path: _path, ...metadataFields } = artifact;
     const metadata: StoredHeapMetadata = { ...metadataFields, fileName };
     try {
-      await writeFile(partialMetadataPath, JSON.stringify(metadata, null, 2), { flag: "wx", mode: FILE_MODE });
+      await writeJsonAtomic(partialMetadataPath, metadata, FILE_MODE);
       await rename(partialPath, path);
       await rename(partialMetadataPath, metadataPath);
       return artifact;
@@ -171,6 +234,10 @@ export class HeapArtifactStore {
 
   private async ensureRoot(): Promise<void> {
     await mkdir(this.rootDir, { recursive: true, mode: DIR_MODE });
+    const details = await lstat(this.rootDir);
+    if (!details.isDirectory() || details.isSymbolicLink()) {
+      throw new MobileError("Heap artifact root must be a regular directory.", "HEAP_STORAGE_INVALID");
+    }
     await chmod(this.rootDir, DIR_MODE);
   }
 
@@ -186,14 +253,9 @@ export class HeapArtifactStore {
     }
   }
 
-  private validateMetadata(artifactId: string, metadata: StoredHeapMetadata): void {
-    if (metadata.artifactId !== artifactId || !metadata.fileName.startsWith(`${artifactId}.`)) {
-      throw new MobileError(`Heap artifact "${artifactId}" has invalid metadata.`, "HEAP_ARTIFACT_CORRUPTED");
-    }
-  }
 
   private async purgeExpired(): Promise<void> {
-    const entries = await readdir(this.rootDir, { withFileTypes: true });
+    const entries = await readPrivateDirectory(this.rootDir, MAX_DIRECTORY_ENTRIES);
     const now = Date.now();
     await Promise.all(entries.map(async (entry) => {
       if (!entry.isFile()) return;
@@ -205,7 +267,15 @@ export class HeapArtifactStore {
       }
       if (!entry.name.endsWith(".metadata.json")) return;
       try {
-        const metadata = JSON.parse(await readFile(path, "utf8")) as StoredHeapMetadata;
+        const stored = await readJsonOrDefault(
+          path,
+          () => null,
+          "heap artifact metadata",
+        );
+        const metadata = parseStoredHeapMetadata(
+          stored,
+          entry.name.slice(0, -".metadata.json".length),
+        );
         if (Date.parse(metadata.expiresAt) > now) return;
         await Promise.allSettled([unlink(this.childPath(metadata.fileName)), unlink(path)]);
       } catch {
@@ -216,7 +286,7 @@ export class HeapArtifactStore {
   }
 
   private async storageUsage(): Promise<{ count: number; bytes: number }> {
-    const entries = await readdir(this.rootDir, { withFileTypes: true });
+    const entries = await readPrivateDirectory(this.rootDir, MAX_DIRECTORY_ENTRIES);
     let count = 0;
     let bytes = 0;
     for (const entry of entries) {

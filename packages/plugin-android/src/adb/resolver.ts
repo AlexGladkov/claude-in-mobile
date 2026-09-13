@@ -16,8 +16,8 @@
 import { existsSync } from "fs";
 import { homedir, platform } from "os";
 import { join } from "path";
-import { execSync } from "child_process";
 import { AdbNotInstalledError } from "mcp-devices/errors";
+import { whichBin } from "mcp-devices/utils/which-bin";
 
 let cachedPath: string | null = null;
 let resolved = false;
@@ -82,16 +82,9 @@ function buildCandidates(): { path: string; source: string }[] {
   return candidates;
 }
 
-/** Check if `adb` is on PATH by asking the shell to locate it. */
-function adbOnPath(): boolean {
-  try {
-    // `where` on Windows, `command -v` on Unix — both exit 0 only on success.
-    const cmd = isWin ? "where adb" : "command -v adb";
-    execSync(cmd, { stdio: "pipe", timeout: 3000 });
-    return true;
-  } catch {
-    return false;
-  }
+/** Resolve `adb` on PATH through the shared cross-platform resolver. */
+function adbOnPath(): string | null {
+  return whichBin(adbBinary);
 }
 
 /**
@@ -115,10 +108,11 @@ export function resolveAdbPath(): string {
 
   // Last resort: bare `adb` on PATH
   tried.push("  - PATH: adb");
-  if (adbOnPath()) {
-    cachedPath = "adb";
+  const pathAdb = adbOnPath();
+  if (pathAdb) {
+    cachedPath = pathAdb;
     resolved = true;
-    return "adb";
+    return pathAdb;
   }
 
   throw new AdbNotInstalledError(tried);

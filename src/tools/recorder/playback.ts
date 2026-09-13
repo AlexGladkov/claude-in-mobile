@@ -63,7 +63,7 @@ export async function executePlayback(
 
   // Pre-validate all actions
   for (const step of scenario.steps) {
-    if (PLAYBACK_BLOCKED_ACTIONS.has(step.action)) {
+    if (Object.hasOwn(PLAYBACK_BLOCKED_ACTIONS, step.action)) {
       throw new MobileError(
         `Action "${step.action}" is blocked in scenario playback for security`,
         "SCENARIO_ACTION_BLOCKED"

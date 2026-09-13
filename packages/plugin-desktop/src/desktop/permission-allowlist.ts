@@ -14,7 +14,7 @@ import * as path from "path";
 import * as os from "os";
 import * as fs from "fs";
 import { fileURLToPath } from "url";
-import { validatePath } from "mcp-devices/utils/sanitize";
+import { validateBundleId, validatePath } from "mcp-devices/utils/sanitize";
 import { MobileError } from "mcp-devices/errors";
 
 const execFileAsync = promisify(execFile);
@@ -35,24 +35,30 @@ export const APP_PATH_ALLOWLIST = [
 ];
 
 /** System processes that must not be attached to. */
-export const BLOCKED_COMMS = new Set(["launchd", "kernel_task", "securityd", "loginwindow"]);
+export const BLOCKED_COMMS: Readonly<Record<string, true>> = {
+  launchd: true,
+  kernel_task: true,
+  securityd: true,
+  loginwindow: true,
+};
 
 /**
  * Resolve bundleId from an .app path by reading Info.plist via `defaults read`.
  * All calls use execFileSync (no shell).
  */
 export function getBundleIdFromAppPath(appPath: string): string {
+  const resolved = validateAndResolveAppPath(appPath);
   try {
     const result = execFileSync(
-      "defaults",
-      ["read", `${appPath}/Contents/Info`, "CFBundleIdentifier"],
-      { encoding: "utf-8", timeout: 5000 }
+      "/usr/bin/defaults",
+      ["read", `${resolved}/Contents/Info`, "CFBundleIdentifier"],
+      { encoding: "utf-8", timeout: 5000, maxBuffer: 1024 * 1024 }
     ).trim();
-    if (!result) throw new Error("empty result");
+    validateBundleId(result);
     return result;
-  } catch (e: any) {
+  } catch {
     throw new MobileError(
-      `Could not read bundle ID from ${appPath}/Contents/Info.plist: ${e.message}`,
+      "Could not read a valid bundle ID from the application.",
       "BUNDLE_ID_READ_FAILED"
     );
   }
@@ -63,18 +69,25 @@ export function getBundleIdFromAppPath(appPath: string): string {
  * Returns the canonicalized path to use when calling `open`.
  */
 export function validateAndResolveAppPath(appPath: string): string {
+  if (appPath.length === 0 || appPath.length > 4096 || appPath.includes("\0")) {
+    throw new MobileError("Invalid appPath.", "INVALID_APP_PATH");
+  }
   validatePath(appPath, "appPath");
-  if (!path.isAbsolute(appPath)) {
-    throw new MobileError(`appPath must be an absolute path: ${appPath}`, "INVALID_APP_PATH");
+  if (!path.isAbsolute(appPath) || !appPath.endsWith(".app")) {
+    throw new MobileError("appPath must be an absolute .app path.", "INVALID_APP_PATH");
   }
-  if (!appPath.endsWith(".app")) {
-    throw new MobileError(`appPath must end with .app: ${appPath}`, "INVALID_APP_PATH");
+  let resolved: string;
+  try {
+    resolved = fs.realpathSync(appPath);
+  } catch {
+    throw new MobileError("Application path does not exist.", "INVALID_APP_PATH");
   }
-  const resolved = fs.realpathSync(appPath);
-  const allowed = APP_PATH_ALLOWLIST.some(prefix => resolved.startsWith(prefix + "/") || resolved === prefix);
+  const allowed = APP_PATH_ALLOWLIST.some(
+    (prefix) => resolved === prefix || !path.relative(prefix, resolved).startsWith(".."),
+  );
   if (!allowed) {
     throw new MobileError(
-      `appPath "${resolved}" is outside allowed directories (${APP_PATH_ALLOWLIST.join(", ")})`,
+      "appPath is outside allowed application directories.",
       "APP_PATH_NOT_ALLOWED"
     );
   }
@@ -88,22 +101,24 @@ export function validateAndResolveAppPath(appPath: string): string {
  * AppleScript injection prevention relies on this regex — do not relax without re-auditing.
  */
 export async function resolvePidByBundleId(bundleId: string): Promise<number> {
+  validateBundleId(bundleId);
   const deadline = Date.now() + BUNDLE_LAUNCH_TIMEOUT_MS;
   while (Date.now() < deadline) {
     try {
       const { stdout } = await execFileAsync(
-        "osascript",
+        "/usr/bin/osascript",
         ["-e", `tell application "System Events" to unix id of first application process whose bundle identifier is "${bundleId}"`],
-        { timeout: 3000 }
+        { timeout: 3000, maxBuffer: 64 * 1024 },
       );
-      const pid = parseInt(stdout.trim(), 10);
-      if (pid > 0) return pid;
-    } catch (e: any) {
-      const stderr: string = e.stderr ?? "";
-      // Non-transient: permission denial from System Events will never self-resolve
+      const pid = Number.parseInt(stdout.trim(), 10);
+      if (Number.isSafeInteger(pid) && pid > 0) return pid;
+    } catch (error: unknown) {
+      const stderr = typeof error === "object" && error !== null && "stderr" in error
+        ? String(Reflect.get(error, "stderr") ?? "")
+        : "";
       if (stderr.includes("Not authorized") || stderr.includes("-1743")) {
         throw new MobileError(
-          `Accessibility permission denied. Grant access in System Settings → Privacy → Automation.`,
+          "Accessibility permission denied. Grant access in System Settings → Privacy → Automation.",
           "AUTOMATION_PERMISSION_DENIED"
         );
       }
@@ -112,7 +127,7 @@ export async function resolvePidByBundleId(bundleId: string): Promise<number> {
     await new Promise(resolve => setTimeout(resolve, BUNDLE_LAUNCH_POLL_INTERVAL_MS));
   }
   throw new MobileError(
-    `App with bundle ID "${bundleId}" did not start within ${BUNDLE_LAUNCH_TIMEOUT_MS}ms`,
+    "Application did not start before the launch deadline.",
     "BUNDLE_LAUNCH_TIMEOUT"
   );
 }
@@ -123,33 +138,41 @@ export async function resolvePidByBundleId(bundleId: string): Promise<number> {
  */
 export function validateAttachPid(pid: number): void {
   if (!Number.isInteger(pid) || pid <= 0) {
-    throw new MobileError(`Invalid pid: ${pid}. Must be a positive integer`, "INVALID_PID");
+    throw new MobileError("Invalid pid.", "INVALID_PID");
   }
 
   let psOut: string;
   try {
-    psOut = execFileSync("ps", ["-o", "uid=,comm=", "-p", String(pid)], { encoding: "utf-8" }).trim();
-  } catch (e: any) {
-    if (e.status === 1) {
-      throw new MobileError(`Process with pid ${pid} does not exist`, "PROCESS_NOT_FOUND");
+    psOut = execFileSync(
+      "/bin/ps",
+      ["-o", "uid=,comm=", "-p", String(pid)],
+      { encoding: "utf-8", timeout: 3000, maxBuffer: 64 * 1024 },
+    ).trim();
+  } catch (error: unknown) {
+    const status = typeof error === "object" && error !== null && "status" in error
+      ? Reflect.get(error, "status")
+      : undefined;
+    if (status === 1) {
+      throw new MobileError("Process does not exist.", "PROCESS_NOT_FOUND");
     }
-    throw new MobileError(`Failed to inspect pid ${pid}: ${e.message}`, "PS_EXEC_FAILED");
+    throw new MobileError("Failed to inspect process.", "PS_EXEC_FAILED");
   }
 
-  // uid= and comm= are separated by whitespace; comm= may contain spaces — split on first whitespace only
   const spaceIdx = psOut.search(/\s/);
   const uidStr = spaceIdx >= 0 ? psOut.slice(0, spaceIdx) : psOut;
   const comm = spaceIdx >= 0 ? psOut.slice(spaceIdx + 1).trim() : "";
-
-  const uid = parseInt(uidStr, 10);
-  const currentUid = process.getuid ? process.getuid() : -1;
-  if (currentUid >= 0 && uid !== currentUid) {
-    throw new MobileError(`Cannot attach to pid ${pid}: process belongs to another user`, "PID_FOREIGN_USER");
+  const uid = Number.parseInt(uidStr, 10);
+  const currentUid = process.getuid?.();
+  if (currentUid === undefined || !Number.isSafeInteger(uid) || uid < 0 || !comm) {
+    throw new MobileError("Process identity could not be verified.", "PS_EXEC_FAILED");
+  }
+  if (uid !== currentUid) {
+    throw new MobileError("Cannot attach to a process owned by another user.", "PID_FOREIGN_USER");
   }
 
   const basename = path.basename(comm);
-  if (BLOCKED_COMMS.has(basename)) {
-    throw new MobileError(`Cannot attach to system process: ${basename} (pid ${pid})`, "PID_SYSTEM_PROCESS");
+  if (Object.hasOwn(BLOCKED_COMMS, basename)) {
+    throw new MobileError("Cannot attach to a protected system process.", "PID_SYSTEM_PROCESS");
   }
 }
 

@@ -35,7 +35,7 @@ const PACKAGE_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_.]*$/;
 export function validatePackageName(name: string): void {
   if (!PACKAGE_NAME_RE.test(name)) {
     throw new DebugValidationError(
-      `Invalid package name: "${name}". Expected format: com.example.app`,
+      "Invalid package name. Expected reverse-domain identifier.",
       "INVALID_PACKAGE_NAME",
     );
   }
@@ -44,7 +44,7 @@ export function validatePackageName(name: string): void {
 // C4: device serial — alphanumeric, dots, colons, hyphens, underscores, @
 export function validateDeviceId(id: string): void {
   if (!/^[a-zA-Z0-9._:@\-]+$/.test(id)) {
-    throw new DebugValidationError(`Invalid device ID format: ${id}`, "INVALID_DEVICE_ID");
+    throw new DebugValidationError("Invalid device ID format.", "INVALID_DEVICE_ID");
   }
 }
 
@@ -60,7 +60,7 @@ export function validateBundleId(id: string): void {
   }
   if (!BUNDLE_ID_RE.test(id)) {
     throw new DebugValidationError(
-      `Invalid bundleId: "${id}". Expected reverse-DNS format (e.g. com.apple.TextEdit)`,
+      "Invalid bundleId. Expected reverse-DNS format.",
       "INVALID_BUNDLE_ID",
     );
   }
@@ -80,7 +80,10 @@ export function makeAdbRunner(deviceId?: string): AdbRunner {
   const adbBin = process.env["ADB_PATH"] ?? "adb";
   return async (args: string[]) => {
     const full = deviceId ? ["-s", deviceId, ...args] : args;
-    const { stdout } = await pexec(adbBin, full, { maxBuffer: 16 * 1024 * 1024 });
+    const { stdout } = await pexec(adbBin, full, {
+      maxBuffer: 16 * 1024 * 1024,
+      timeout: 30_000,
+    });
     return stdout;
   };
 }
@@ -91,6 +94,7 @@ export function makeAdbRunner(deviceId?: string): AdbRunner {
 export async function simctlExec(args: string[]): Promise<string> {
   const { stdout } = await pexec("xcrun", ["simctl", ...args], {
     maxBuffer: 4 * 1024 * 1024,
+    timeout: 30_000,
   });
   return stdout;
 }
@@ -106,35 +110,31 @@ export async function simctlExec(args: string[]): Promise<string> {
  * pkgFlags that include the 0x2 (FLAG_DEBUGGABLE) bit.
  */
 export async function assertAndroidDebuggable(adb: AdbRunner, packageName: string): Promise<void> {
-  let output = "";
+  let output: string;
   try {
     output = await adb(["shell", "dumpsys", "package", packageName]);
   } catch {
-    // If dumpsys fails (very old Android / permission denied), don't block —
-    // the JDWP handshake itself will reject non-debuggable apps.
-    return;
+    throw new DebugValidationError(
+      "Unable to verify that the Android package is debuggable.",
+      "DEBUGGABLE_CHECK_FAILED",
+    );
   }
-  // Look for the DEBUGGABLE flag in the package flags line:
-  //   pkgFlags=[ SYSTEM HAS_CODE ALLOW_CLEAR_USER_DATA ]   (no DEBUGGABLE → not debuggable)
-  //   pkgFlags=[ DEBUGGABLE HAS_CODE ... ]
-  // Also check for an explicit "debuggable=true" line (some Android versions).
+  if (output.includes("Unable to find package") || output.trim() === "") {
+    throw new DebugValidationError(
+      "Android package was not found on the selected device.",
+      "PACKAGE_NOT_FOUND",
+    );
+  }
+
   const hasDebuggableFlag =
     /pkgFlags=\[[^\]]*DEBUGGABLE/i.test(output) ||
     /debuggable=true/i.test(output) ||
     /flags=.*\bDEBUGGABLE\b/i.test(output);
 
-  if (output.includes("Unable to find package") || output.trim() === "") {
-    throw new Error(
-      `Package "${packageName}" not found on device — is it installed?`,
-    );
-  }
-
-  // Only block if dumpsys returned package info (non-empty) and the flag is absent.
-  if (output.length > 200 && !hasDebuggableFlag) {
-    throw new Error(
-      `Package "${packageName}" is NOT debuggable (android:debuggable=true missing). ` +
-        `Only debug builds are attachable. If this IS a debug build, ensure it is ` +
-        `not a release/store variant and rebuild with debuggable=true.`,
+  if (!hasDebuggableFlag) {
+    throw new DebugValidationError(
+      "Android package is not debuggable. Install a debug build before attaching.",
+      "PACKAGE_NOT_DEBUGGABLE",
     );
   }
 }

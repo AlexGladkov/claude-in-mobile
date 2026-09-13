@@ -18,7 +18,8 @@ import type {
 } from "mcp-devices/adapters/platform-adapter";
 import type { Device } from "mcp-devices/device-manager";
 import { auroraClient as defaultAuroraClient, AuroraClient } from "./client.js";
-import { compressScreenshot, type CompressOptions } from "mcp-devices/utils/image";
+import { compressScreenshot } from "mcp-devices/utils/image";
+import type { CompressOptions } from "mcp-devices/utils/image";
 
 export class AuroraAdapter
   implements
@@ -51,9 +52,8 @@ export class AuroraAdapter
     }
   }
 
-  selectDevice(_deviceId: string): void {
-    // Aurora device selection is managed by audb config, not by the client.
-    // No-op here.
+  selectDevice(deviceId: string): void {
+    this.client.selectDevice(deviceId);
   }
 
   getSelectedDeviceId(): string | undefined {

@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,6 +15,7 @@ import {
   resolveEnabledPlatforms,
   writeEnabledPlatforms,
 } from "./platform-config.js";
+import { readRuntimeConfig, updateRuntimeConfig } from "./config-file.js";
 
 describe("parsePlatformList", () => {
   it("handles none / empty", () => {
@@ -59,4 +67,38 @@ describe("writeEnabledPlatforms / read roundtrip", () => {
     const json = JSON.parse(readFileSync(path, "utf-8"));
     expect(json.platforms).toEqual(["ios", "android"]);
   });
+});
+
+describe("runtime config hardening", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "cim-runtime-cfg-"));
+  });
+
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("rejects oversized config before parsing", () => {
+    const path = join(dir, "config.json");
+    writeFileSync(path, JSON.stringify({ custom: "x".repeat(1024 * 1024) }));
+
+    expect(readRuntimeConfig(path)).toEqual({});
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "does not follow config symlinks on read or update",
+    () => {
+      const target = join(dir, "target.json");
+      const path = join(dir, "config.json");
+      writeFileSync(target, JSON.stringify({ platforms: ["ios"] }));
+      symlinkSync(target, path);
+
+      expect(readRuntimeConfig(path)).toEqual({});
+      updateRuntimeConfig({ platforms: ["android"] }, path);
+
+      expect(JSON.parse(readFileSync(target, "utf8"))).toEqual({ platforms: ["ios"] });
+      expect(lstatSync(path).isSymbolicLink()).toBe(false);
+      expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ platforms: ["android"] });
+    },
+  );
 });

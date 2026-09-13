@@ -1,7 +1,10 @@
-import { mkdir, readFile, writeFile, unlink, stat, chmod } from "fs/promises";
+import { unlink } from "fs/promises";
 import { join, resolve } from "path";
 import { createHash } from "crypto";
+import { z } from "zod";
 import { validateBaselineName, validatePathContainment } from "./sanitize.js";
+import { readJsonOrDefault, writeFileAtomic, writeJsonAtomic } from "./json-file.js";
+import { ensurePrivateDirectory, readPrivateFile } from "./private-storage.js";
 import {
   BaselineNotFoundError,
   BaselineExistsError,
@@ -39,6 +42,22 @@ const MAX_BASELINES = 200;
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
 const MAX_TOTAL_SIZE = 500 * 1024 * 1024; // 500MB
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const MAX_MANIFEST_FILE_SIZE = 1024 * 1024;
+const baselineEntrySchema = z.object({
+  name: z.string().min(1).max(128),
+  platform: z.string().min(1).max(128),
+  tags: z.array(z.string().max(256)).max(64),
+  checksum: z.string().regex(/^[0-9a-f]{64}$/),
+  width: z.number().int().nonnegative(),
+  height: z.number().int().nonnegative(),
+  fileSize: z.number().int().nonnegative().max(MAX_FILE_SIZE),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict();
+const baselineManifestSchema = z.object({
+  version: z.literal(1),
+  baselines: z.array(baselineEntrySchema).max(MAX_BASELINES),
+}).strict();
 
 // ── BaselineStore ──
 
@@ -67,24 +86,31 @@ export class BaselineStore {
   }
 
   private async readManifest(): Promise<Manifest> {
-    try {
-      const data = await readFile(this.manifestPath, "utf-8");
-      return JSON.parse(data) as Manifest;
-    } catch {
-      return { version: 1, baselines: [] };
+    await ensurePrivateDirectory(this.baselinesDir);
+    const manifest = await readJsonOrDefault(
+      this.manifestPath,
+      (): Manifest => ({ version: 1, baselines: [] }),
+      "visual baseline manifest",
+      MAX_MANIFEST_FILE_SIZE,
+    );
+    const result = baselineManifestSchema.safeParse(manifest);
+    if (!result.success) {
+      throw new BaselineCorruptedError("manifest", "invalid structure or unsupported version");
     }
+    return result.data;
   }
 
   private async writeManifest(manifest: Manifest): Promise<void> {
     await this.ensureDir();
-    const data = JSON.stringify(manifest, null, 2);
-    await writeFile(this.manifestPath, data, { mode: FILE_MODE });
+    await writeJsonAtomic(this.manifestPath, manifest, FILE_MODE);
   }
-
   private async ensureDir(platform?: string): Promise<void> {
-    const dir = platform ? join(this.baselinesDir, platform) : this.baselinesDir;
-    validatePathContainment(dir, this.baselinesDir);
-    await mkdir(dir, { recursive: true, mode: DIR_MODE });
+    await ensurePrivateDirectory(this.baselinesDir);
+    if (platform) {
+      const dir = join(this.baselinesDir, platform);
+      validatePathContainment(dir, this.baselinesDir);
+      await ensurePrivateDirectory(dir);
+    }
   }
 
   private computeChecksum(buffer: Buffer): string {
@@ -139,10 +165,10 @@ export class BaselineStore {
 
     await this.ensureDir(platform);
     const filePath = this.getBaselinePath(platform, name);
-    await writeFile(filePath, pngBuffer, { mode: FILE_MODE });
+    await writeFileAtomic(filePath, pngBuffer, FILE_MODE);
 
     const now = new Date().toISOString();
-    const entry: BaselineEntry = {
+    const entry: BaselineEntry = baselineEntrySchema.parse({
       name,
       platform,
       tags: options?.tags ?? [],
@@ -152,7 +178,7 @@ export class BaselineStore {
       fileSize: pngBuffer.length,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
-    };
+    });
 
     if (existing) {
       const idx = manifest.baselines.indexOf(existing);
@@ -167,6 +193,7 @@ export class BaselineStore {
 
   async get(name: string, platform: string): Promise<Buffer> {
     validateBaselineName(name, "screen_name");
+    validateBaselineName(platform, "platform");
     const manifest = await this.readManifest();
     const entry = this.findEntry(manifest, name, platform);
     if (!entry) throw new BaselineNotFoundError(name, platform);
@@ -174,8 +201,11 @@ export class BaselineStore {
     const filePath = this.getBaselinePath(platform, name);
     let buffer: Buffer;
     try {
-      buffer = await readFile(filePath);
-    } catch {
+      buffer = await readPrivateFile(filePath, MAX_FILE_SIZE, `visual baseline "${name}"`);
+    } catch (error) {
+      if (error instanceof MobileError && error.code === "STORAGE_CORRUPTED") {
+        throw new BaselineCorruptedError(name, "file is invalid or exceeds the size limit");
+      }
       throw new BaselineNotFoundError(name, platform);
     }
 
@@ -195,6 +225,7 @@ export class BaselineStore {
 
   async update(name: string, platform: string, pngBuffer: Buffer, reason?: string): Promise<BaselineEntry> {
     validateBaselineName(name, "screen_name");
+    validateBaselineName(platform, "platform");
     const manifest = await this.readManifest();
     const entry = this.findEntry(manifest, name, platform);
     if (!entry) throw new BaselineNotFoundError(name, platform);
@@ -210,6 +241,7 @@ export class BaselineStore {
 
   async delete(name: string, platform: string): Promise<void> {
     validateBaselineName(name, "screen_name");
+    validateBaselineName(platform, "platform");
     const manifest = await this.readManifest();
     const entry = this.findEntry(manifest, name, platform);
     if (!entry) throw new BaselineNotFoundError(name, platform);

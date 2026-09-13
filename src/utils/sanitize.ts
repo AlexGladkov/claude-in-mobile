@@ -61,45 +61,51 @@ export function validateShellCommand(command: string): void {
 }
 
 // C2: Validate URL scheme
-const ALLOWED_URL_SCHEMES = new Set(["http:", "https:", "market:", "tel:", "mailto:"]);
+const ALLOWED_URL_SCHEMES: Readonly<Record<string, true>> = {
+  "http:": true,
+  "https:": true,
+  "market:": true,
+  "tel:": true,
+  "mailto:": true,
+};
 
 export function validateUrl(url: string): URL {
+  if (url.length > 8192 || /[\u0000-\u001f\u007f]/.test(url)) {
+    throw new MobileError("Invalid URL.", "INVALID_URL");
+  }
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
-    throw new MobileError(`Invalid URL: ${url}`, "INVALID_URL");
+    throw new MobileError("Invalid URL.", "INVALID_URL");
   }
-  if (!ALLOWED_URL_SCHEMES.has(parsed.protocol)) {
+  if (!Object.hasOwn(ALLOWED_URL_SCHEMES, parsed.protocol)) {
     throw new MobileError(
-      `URL scheme "${parsed.protocol}" not allowed. Use http:// or https://.`,
+      "URL scheme not allowed. Use http:// or https://.",
       "URL_SCHEME_BLOCKED"
     );
   }
   return parsed;
 }
 
-export function sanitizeForShell(value: string): string {
-  return value.replace(/[`$\\!#&|;(){}<>]/g, "");
-}
 
 // C3: Validate package name and permission format
 const PACKAGE_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_.]*$/;
 const PERMISSION_RE = /^[a-zA-Z][a-zA-Z0-9_.]*$/;
 
 export function validatePackageName(name: string): void {
-  if (!PACKAGE_NAME_RE.test(name)) {
+  if (name.length > 255 || !PACKAGE_NAME_RE.test(name)) {
     throw new MobileError(
-      `Invalid package name: "${name}". Expected format: com.example.app`,
+      "Invalid package name. Expected reverse-domain format.",
       "INVALID_PACKAGE_NAME"
     );
   }
 }
 
 export function validatePermission(perm: string): void {
-  if (!PERMISSION_RE.test(perm)) {
+  if (perm.length > 256 || !PERMISSION_RE.test(perm)) {
     throw new MobileError(
-      `Invalid permission: "${perm}". Expected format: android.permission.CAMERA`,
+      "Invalid permission name.",
       "INVALID_PERMISSION"
     );
   }
@@ -107,9 +113,9 @@ export function validatePermission(perm: string): void {
 
 // C4: Validate device ID format (alphanumeric, dots, colons, hyphens, underscores, @)
 export function validateDeviceId(id: string): void {
-  if (!/^[a-zA-Z0-9._:@\-]+$/.test(id)) {
+  if (id.length > 255 || !/^[a-zA-Z0-9._:@\-]+$/.test(id) || id.startsWith("-")) {
     throw new MobileError(
-      `Invalid device ID format: ${id}`,
+      "Invalid device ID format.",
       "INVALID_DEVICE_ID"
     );
   }
@@ -117,9 +123,9 @@ export function validateDeviceId(id: string): void {
 
 // C5: Validate logcat tag format
 export function validateLogTag(tag: string): void {
-  if (!/^[a-zA-Z0-9_.:*\-]+$/.test(tag)) {
+  if (tag.length > 128 || !/^[a-zA-Z0-9_.:*\-]+$/.test(tag)) {
     throw new MobileError(
-      `Invalid log tag format: ${tag}`,
+      "Invalid log tag format.",
       "INVALID_LOG_TAG"
     );
   }
@@ -127,9 +133,9 @@ export function validateLogTag(tag: string): void {
 
 // C6: Validate logcat timestamp format
 export function validateLogTimestamp(since: string): void {
-  if (!/^[\d\-:\s.]+$/.test(since)) {
+  if (since.length > 64 || !/^[\d\-:\s.]+$/.test(since)) {
     throw new MobileError(
-      `Invalid log timestamp format: ${since}`,
+      "Invalid log timestamp format.",
       "INVALID_LOG_TIMESTAMP"
     );
   }
@@ -137,9 +143,9 @@ export function validateLogTimestamp(since: string): void {
 
 // C7: Validate JVM argument — block shell injection characters
 export function validateJvmArg(arg: string): void {
-  if (/[;|`\n\r]|&&|\|\||\$\(/.test(arg)) {
+  if (arg.length > 4096 || /[;|`\u0000\n\r]|&&|\|\||\$\(/.test(arg)) {
     throw new MobileError(
-      `JVM argument contains dangerous characters: ${arg}`,
+      "JVM argument contains dangerous characters.",
       "INVALID_JVM_ARG"
     );
   }
@@ -162,15 +168,9 @@ export function validatePath(path: string, label: string): void {
 const BUNDLE_ID_RE = /^[a-zA-Z][a-zA-Z0-9\-]*(\.[a-zA-Z][a-zA-Z0-9\-]*){1,}$/;
 
 export function validateBundleId(id: string): void {
-  if (!id || id.length > 255) {
+  if (!id || id.length > 255 || !BUNDLE_ID_RE.test(id)) {
     throw new MobileError(
-      `Invalid bundleId length: must be 1-255 characters`,
-      "INVALID_BUNDLE_ID"
-    );
-  }
-  if (!BUNDLE_ID_RE.test(id)) {
-    throw new MobileError(
-      `Invalid bundleId: "${id}". Expected reverse-DNS format (e.g. com.apple.TextEdit)`,
+      "Invalid bundleId. Expected reverse-DNS format.",
       "INVALID_BUNDLE_ID"
     );
   }
@@ -182,7 +182,7 @@ const ASC_KEY_ID_RE = /^[A-Z0-9]{10}$/;
 export function validateAscKeyId(v: string): void {
   if (!ASC_KEY_ID_RE.test(v)) {
     throw new MobileError(
-      `Invalid ASC key ID: "${v}". Expected 10 uppercase alphanumeric characters (e.g. 2X9R4HXF34)`,
+      "Invalid App Store Connect key ID.",
       "INVALID_ASC_KEY_ID"
     );
   }
@@ -194,7 +194,7 @@ const ASC_ISSUER_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
 export function validateAscIssuerId(v: string): void {
   if (!ASC_ISSUER_ID_RE.test(v)) {
     throw new MobileError(
-      `Invalid ASC issuer ID: "${v}". Expected UUID format (e.g. 69a6de70-03db-47e3-e053-5b8c7c11a4d1)`,
+      "Invalid App Store Connect issuer ID.",
       "INVALID_ASC_ISSUER_ID"
     );
   }
@@ -206,7 +206,7 @@ const XCODE_SCHEME_RE = /^[A-Za-z0-9 _.\-]{1,128}$/;
 export function validateXcodeScheme(v: string): void {
   if (!XCODE_SCHEME_RE.test(v)) {
     throw new MobileError(
-      `Invalid Xcode scheme: "${v}". Use letters, digits, spaces, underscores, dots, hyphens. 1-128 chars.`,
+      "Invalid Xcode scheme or configuration.",
       "INVALID_XCODE_SCHEME"
     );
   }
@@ -218,7 +218,7 @@ const VERSION_STRING_RE = /^[0-9]+(\.[0-9]+){0,2}$/;
 export function validateVersionString(v: string): void {
   if (!VERSION_STRING_RE.test(v)) {
     throw new MobileError(
-      `Invalid version string: "${v}". Expected 1-3 numeric components (e.g. 1.2.3)`,
+      "Invalid version string. Expected 1-3 numeric components.",
       "INVALID_VERSION_STRING"
     );
   }
@@ -226,21 +226,50 @@ export function validateVersionString(v: string): void {
 
 // V1: Validate baseline/screen name — whitelist regex
 const BASELINE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.\-]{0,127}$/;
-const WINDOWS_RESERVED = new Set(["CON","PRN","AUX","NUL","COM1","COM2","COM3","COM4","COM5","COM6","COM7","COM8","COM9","LPT1","LPT2","LPT3","LPT4","LPT5","LPT6","LPT7","LPT8","LPT9"]);
+const WINDOWS_RESERVED: Readonly<Record<string, true>> = {
+  CON: true,
+  PRN: true,
+  AUX: true,
+  NUL: true,
+  COM1: true,
+  COM2: true,
+  COM3: true,
+  COM4: true,
+  COM5: true,
+  COM6: true,
+  COM7: true,
+  COM8: true,
+  COM9: true,
+  LPT1: true,
+  LPT2: true,
+  LPT3: true,
+  LPT4: true,
+  LPT5: true,
+  LPT6: true,
+  LPT7: true,
+  LPT8: true,
+  LPT9: true,
+};
 
 export function validateBaselineName(name: string, label = "name"): void {
-  if (!name || name.trim().length === 0) {
-    throw new MobileError(`Baseline ${label} must not be empty`, "INVALID_BASELINE_NAME");
-  }
-  if (!BASELINE_NAME_RE.test(name)) {
-    throw new MobileError(
-      `Invalid baseline ${label}: "${name}". Use alphanumeric, hyphens, underscores, dots. 1-128 chars, start with alphanumeric.`,
-      "INVALID_BASELINE_NAME"
-    );
+  if (!name || name.trim().length === 0 || !BASELINE_NAME_RE.test(name)) {
+    throw new MobileError(`Invalid baseline ${label}.`, "INVALID_BASELINE_NAME");
   }
   const upper = name.toUpperCase().replace(/\.[^.]*$/, "");
-  if (WINDOWS_RESERVED.has(upper)) {
-    throw new MobileError(`Baseline ${label} "${name}" is a reserved name`, "INVALID_BASELINE_NAME");
+  if (Object.hasOwn(WINDOWS_RESERVED, upper)) {
+    throw new MobileError(`Invalid baseline ${label}.`, "INVALID_BASELINE_NAME");
+  }
+}
+
+export function validateSandboxPath(path: string, label = "path"): void {
+  if (
+    !path ||
+    path.length > 1024 ||
+    path.startsWith("/") ||
+    path.split("/").some((segment) => segment === "..") ||
+    !/^[A-Za-z0-9_./-]+$/.test(path)
+  ) {
+    throw new MobileError(`Invalid sandbox ${label}.`, "INVALID_SANDBOX_PATH");
   }
 }
 
@@ -259,11 +288,19 @@ export function validatePathContainment(filePath: string, baseDir: string): void
 }
 
 // S1: Sanitize error messages — strip tokens, keys, and secrets
-export function sanitizeErrorMessage(msg: string): string {
-  return msg
-    .replace(/Bearer\s+[A-Za-z0-9\-._~+/]+=*/g, "Bearer [REDACTED]")
-    .replace(/token[=:]\s*[A-Za-z0-9\-._~+/]+=*/gi, "token=[REDACTED]")
-    .replace(/key[=:]\s*[A-Za-z0-9\-._~+/]+=*/gi, "key=[REDACTED]")
-    // Standalone JWTs (header always base64url-encodes '{"' as "eyJ")
-    .replace(/eyJ[A-Za-z0-9._-]+/g, "[REDACTED_JWT]");
+export function sanitizeErrorMessage(value: unknown): string {
+  const message = value instanceof Error
+    ? value.message
+    : typeof value === "string"
+      ? value
+      : "Unknown error";
+  return message
+    .slice(0, 64 * 1024)
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, "")
+    .replace(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/g, "[REDACTED_KEY]")
+    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9\-._~+/]+=*/gi, "$1 [REDACTED]")
+    .replace(/\b(access[_-]?token|refresh[_-]?token|jwtToken|api[_-]?key|client[_-]?secret|password|token|key)\s*[=:]\s*['"]?[^\s,'"}]+/gi, "$1=[REDACTED]")
+    .replace(/eyJ[A-Za-z0-9._-]+/g, "[REDACTED_JWT]")
+    .slice(0, 4096);
 }

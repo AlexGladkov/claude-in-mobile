@@ -2,7 +2,8 @@ import type { ToolDefinition } from "../registry.js";
 import { unhideTools, hideTools, getModuleStatus, unhideByCategory, hideByCategory } from "../registry.js";
 import { deviceTools } from "../device-tools.js";
 import { UnknownActionError } from "../../errors.js";
-import { ALL_HIDEABLE_MODULES, ALWAYS_VISIBLE, type ModuleCategory } from "../../profiles.js";
+import { ALL_HIDEABLE_MODULES, ALWAYS_VISIBLE } from "../../profiles.js";
+import type { ModuleCategory } from "../../profiles.js";
 
 const handlers = new Map<string, ToolDefinition["handler"]>();
 for (const t of deviceTools) {

@@ -8,7 +8,8 @@
  */
 
 import { JdwpConnection } from "./connection.js";
-import { JdwpReader, JdwpWriter, type IdSizes } from "./packet.js";
+import { JdwpReader, JdwpWriter } from "./packet.js";
+import type { IdSizes } from "./packet.js";
 import { CommandSet, VirtualMachineCmd, ThreadReferenceCmd } from "./constants.js";
 
 export interface VmVersion {

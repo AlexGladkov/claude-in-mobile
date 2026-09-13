@@ -15,8 +15,8 @@ import { defineTool, z } from "./define-tool.js";
 import {
   AppStoreConnectClient,
   getAscAuthFromEnv,
-  type AscBuild,
 } from "../store/app-store-connect.js";
+import type { AscBuild } from "../store/app-store-connect.js";
 import {
   detectIosProject,
   listSchemes,
@@ -27,8 +27,8 @@ import {
   buildFlutterIpa,
   uploadIpa,
   validateIpa,
-  type AscApiAuth,
 } from "../ios/build/index.js";
+import type { AscApiAuth } from "../ios/build/index.js";
 import {
   validateBundleId,
   validatePath,
