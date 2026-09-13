@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.4.0] — 2026-09-13
+
 ### Security
 - Hardened local persistence boundaries used by runtime configuration,
   recordings, browser profiles, performance artifacts, screenshots, and native
@@ -31,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Concurrent REPL sessions now serialize only the PTY process-creation
   handshake, preventing intermittent spawn failures while preserving concurrent
   session execution.
+- CI now runs desktop-companion Gradle tests, compiles the Python debug daemon,
+  and typechecks every shipped Swift helper on macOS.
 
 ## [4.3.0] — 2026-09-10
 

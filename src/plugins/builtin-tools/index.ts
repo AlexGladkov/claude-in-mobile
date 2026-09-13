@@ -60,7 +60,7 @@ import {
 export const BUILTIN_TOOLS_PLUGIN_MANIFEST: PluginManifest = {
   id: "builtin-tools",
   name: "Built-in tools",
-  version: "4.3.0",
+  version: "4.4.0",
   apiVersion: "1",
   // Marker-only capability — meta-tools fan out to platform plugins, so we
   // must not show up in `findByCapability("screen")` etc.
