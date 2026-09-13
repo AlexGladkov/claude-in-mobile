@@ -1,13 +1,15 @@
 package com.anthropic.desktop.accessibility
 
 import com.anthropic.desktop.*
-import java.util.concurrent.TimeUnit
+import java.time.Duration
 
 /**
  * macOS Accessibility implementation
  * Uses AppleScript as a simpler alternative to JNA AXUIElement bindings
  */
 class MacOSAccessibility : BaseAccessibilityService() {
+    private val processRunner = SecureProcessRunner()
+
 
     // Cache UI hierarchy to avoid repeated expensive AppleScript calls
     @Volatile
@@ -29,10 +31,12 @@ class MacOSAccessibility : BaseAccessibilityService() {
                 end tell
             """.trimIndent()
 
-            val process = ProcessBuilder("osascript", "-e", script).start()
-            val exitCode = process.waitFor()
+            val result = processRunner.run(
+                listOf("osascript", "-e", script),
+                Duration.ofSeconds(5)
+            )
 
-            if (exitCode == 0) {
+            if (result.succeeded) {
                 PermissionStatus(granted = true)
             } else {
                 openAccessibilityPreferences()
@@ -46,7 +50,7 @@ class MacOSAccessibility : BaseAccessibilityService() {
                     )
                 )
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             openAccessibilityPreferences()
             PermissionStatus(
                 granted = false,
@@ -54,7 +58,7 @@ class MacOSAccessibility : BaseAccessibilityService() {
                     "1. Open System Settings > Privacy & Security > Accessibility",
                     "2. Enable access for Terminal or your IDE",
                     "3. Restart the MCP server",
-                    "Error: ${e.message}"
+                    "Accessibility permission check failed"
                 )
             )
         }
@@ -62,12 +66,15 @@ class MacOSAccessibility : BaseAccessibilityService() {
 
     private fun openAccessibilityPreferences() {
         try {
-            ProcessBuilder(
-                "open",
-                "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-            ).start()
-        } catch (e: Exception) {
-            System.err.println("Failed to open accessibility preferences: ${e.message}")
+            processRunner.run(
+                listOf(
+                    "open",
+                    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+                ),
+                Duration.ofSeconds(5)
+            )
+        } catch (_: Exception) {
+            System.err.println("Failed to open accessibility preferences")
         }
     }
 
@@ -88,8 +95,8 @@ class MacOSAccessibility : BaseAccessibilityService() {
         // Try to get UI elements from frontmost app (with timeout)
         val elements = try {
             getUIElementsFromFrontmostApp()
-        } catch (e: Exception) {
-            System.err.println("Failed to get UI elements: ${e.message}")
+        } catch (_: Exception) {
+            System.err.println("Failed to get UI elements")
             // Fallback: return simplified elements from windows
             getSimplifiedElements(windows)
         }
@@ -229,29 +236,21 @@ class MacOSAccessibility : BaseAccessibilityService() {
                 end tell
             """.trimIndent()
 
-            val process = ProcessBuilder("osascript", "-e", script).start()
-
-            // FIXED: Add timeout to prevent hanging (was causing 45s timeouts)
-            val completed = process.waitFor(APPLESCRIPT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-
-            if (!completed) {
-                process.destroyForcibly()
-                System.err.println("AppleScript UI hierarchy timeout (>${APPLESCRIPT_TIMEOUT_SECONDS}s) - killing process")
-                // Return empty list, caller will use fallback
+            val result = processRunner.run(
+                listOf("osascript", "-e", script),
+                Duration.ofSeconds(APPLESCRIPT_TIMEOUT_SECONDS)
+            )
+            if (result.timedOut) {
+                System.err.println("AppleScript UI hierarchy timeout")
                 return elements
             }
-
-            val output = process.inputStream.bufferedReader().readText()
-            val stderr = process.errorStream.bufferedReader().readText()
-            val exitCode = process.exitValue()
-
-            if (exitCode != 0) {
-                System.err.println("AppleScript UI elements failed (exit $exitCode): $stderr")
-            } else if (output.isNotBlank()) {
-                parseAppleScriptElements(output, elements)
+            if (!result.succeeded) {
+                System.err.println("AppleScript UI elements failed")
+            } else if (result.stdout.isNotBlank()) {
+                parseAppleScriptElements(result.stdout, elements)
             }
-        } catch (e: Exception) {
-            System.err.println("Error getting UI elements: ${e.message}")
+        } catch (_: Exception) {
+            System.err.println("Error getting UI elements")
         }
 
         // If no elements found, provide at least screen bounds
@@ -282,7 +281,6 @@ class MacOSAccessibility : BaseAccessibilityService() {
             val groups = match.groupValues
             val role = groups[1].trim()
             val title = groups[2].trim()
-            val desc = groups[3].trim()
             val x = groups[4].toIntOrNull() ?: 0
             val y = groups[5].toIntOrNull() ?: 0
             val w = groups[6].toIntOrNull() ?: 0
