@@ -3,18 +3,18 @@
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rsa::pkcs1::DecodeRsaPrivateKey;
-use rsa::pkcs8::DecodePrivateKey;
 use rsa::pkcs1v15::SigningKey;
+use rsa::pkcs8::DecodePrivateKey;
 use rsa::sha2::Sha256;
-use rsa::signature::{Signer, SignatureEncoding};
+use rsa::signature::{SignatureEncoding, Signer};
 use rsa::RsaPrivateKey;
 
 /// Create a signed RS256 JWT.
 /// Returns `<header>.<payload>.<signature>` (all base64url, no padding).
 pub fn create_rs256(key_pem: &str, payload: &serde_json::Value) -> Result<String> {
     let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"RS256","typ":"JWT"}"#);
-    let payload_b64 =
-        URL_SAFE_NO_PAD.encode(serde_json::to_string(payload).context("Failed to serialize JWT payload")?);
+    let payload_b64 = URL_SAFE_NO_PAD
+        .encode(serde_json::to_string(payload).context("Failed to serialize JWT payload")?);
 
     let signing_input = format!("{}.{}", header, payload_b64);
 

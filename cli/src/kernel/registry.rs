@@ -95,7 +95,8 @@ mod tests {
     #[test]
     fn registers_valid_plugin() {
         let mut r = Registry::new();
-        r.register(make("android", vec![Capability::Screen])).unwrap();
+        r.register(make("android", vec![Capability::Screen]))
+            .unwrap();
         assert!(r.get("android").is_some());
     }
 

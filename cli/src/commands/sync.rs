@@ -2,18 +2,29 @@
 //!
 //! A sync group defines named roles (each mapped to a device ID).
 //! Steps are tagged by role and executed sequentially across the active group.
-//!
-//! Group state is stored in `/tmp/claude-mobile-sync-<name>.json`.
+//! Group state is stored in a private per-user state directory.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::SyncCommands;
+use crate::utils::private_state::{
+    atomic_write, read_bounded_file, read_json_file, state_dir, state_file, validate_identifier,
+};
+use crate::utils::process::terminal_safe;
 
+const MAX_GROUP_BYTES: u64 = 1024 * 1024;
+const MAX_GROUPS: usize = 128;
+const MAX_ROLES: usize = 64;
+
+const MAX_STEPS_BYTES: u64 = 1024 * 1024;
+const MAX_STEPS: usize = 1_000;
+const MAX_STEP_ARGS: usize = 64;
+const MAX_STEP_ARG_BYTES: usize = 4_096;
 // ---------------------------------------------------------------------------
 // Data types
 // ---------------------------------------------------------------------------
@@ -57,12 +68,28 @@ pub struct SyncRunSummary {
     pub total_ms: u128,
 }
 
+fn validate_group(group: &SyncGroup) -> Result<()> {
+    validate_identifier(&group.name, "sync group name")?;
+    if group.roles.is_empty() || group.roles.len() > MAX_ROLES {
+        bail!("Sync group must contain between 1 and {MAX_ROLES} roles");
+    }
+    let mut seen = std::collections::HashSet::new();
+    for role in &group.roles {
+        validate_identifier(&role.name, "role name")?;
+        validate_identifier(&role.device_id, "device id")?;
+        if !seen.insert(&role.name) {
+            bail!("Duplicate role name '{}'.", role.name);
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Path helpers
 // ---------------------------------------------------------------------------
 
-fn group_path(name: &str) -> PathBuf {
-    PathBuf::from(format!("/tmp/claude-mobile-sync-{}.json", name))
+fn group_path(name: &str) -> Result<PathBuf> {
+    state_file("sync-groups", name, "json")
 }
 
 // ---------------------------------------------------------------------------
@@ -122,34 +149,36 @@ fn is_leap(y: u64) -> bool {
 // ---------------------------------------------------------------------------
 
 fn read_group(name: &str) -> Result<SyncGroup> {
-    let path = group_path(name);
-    let text = fs::read_to_string(&path)
-        .with_context(|| format!("No sync group '{}' found (expected {})", name, path.display()))?;
-    serde_json::from_str(&text).context("Corrupt sync group state")
+    let path = group_path(name)?;
+    let group = read_json_file(&path, MAX_GROUP_BYTES, "sync group state")
+        .with_context(|| format!("No valid sync group '{name}' found"))?;
+    validate_group(&group)?;
+    Ok(group)
 }
 
 fn write_group(group: &SyncGroup) -> Result<()> {
-    let path = group_path(&group.name);
-    let text = serde_json::to_string_pretty(group)?;
-    fs::write(&path, text)
+    validate_group(group)?;
+    let path = group_path(&group.name)?;
+    let text = serde_json::to_vec_pretty(group)?;
+    if text.len() as u64 > MAX_GROUP_BYTES {
+        bail!("Sync group state exceeds {MAX_GROUP_BYTES} bytes");
+    }
+    atomic_write(&path, &text)
         .with_context(|| format!("Cannot write sync group to {}", path.display()))
 }
 
-fn all_group_paths() -> Vec<PathBuf> {
-    let dir = std::path::Path::new("/tmp");
-    if let Ok(entries) = fs::read_dir(dir) {
-        entries
-            .flatten()
-            .filter(|e| {
-                let name = e.file_name();
-                let s = name.to_string_lossy();
-                s.starts_with("claude-mobile-sync-") && s.ends_with(".json")
-            })
-            .map(|e| e.path())
-            .collect()
-    } else {
-        vec![]
+fn all_group_paths() -> Result<Vec<PathBuf>> {
+    let dir = state_dir("sync-groups")?;
+    let paths = fs::read_dir(dir)?
+        .take(MAX_GROUPS + 1)
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("json"))
+        .collect::<Vec<_>>();
+    if paths.len() > MAX_GROUPS {
+        bail!("Sync group directory exceeds {MAX_GROUPS} entries");
     }
+    Ok(paths)
 }
 
 // ---------------------------------------------------------------------------
@@ -160,9 +189,11 @@ fn all_group_paths() -> Vec<PathBuf> {
 pub fn run(command: SyncCommands) -> Result<()> {
     match command {
         SyncCommands::CreateGroup { name, roles } => cmd_create_group(&name, &roles),
-        SyncCommands::Run { group_name, file, max_duration } => {
-            cmd_run(&group_name, &file, max_duration)
-        }
+        SyncCommands::Run {
+            group_name,
+            file,
+            max_duration,
+        } => cmd_run(&group_name, &file, max_duration),
         SyncCommands::AssertCross {
             group_name,
             source_role,
@@ -195,7 +226,7 @@ pub fn run(command: SyncCommands) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_create_group(name: &str, roles_json: &str) -> Result<()> {
-    let path = group_path(name);
+    let path = group_path(name)?;
     if path.exists() {
         bail!(
             "Sync group '{}' already exists. Destroy it first with `sync destroy {}`.",
@@ -204,21 +235,19 @@ fn cmd_create_group(name: &str, roles_json: &str) -> Result<()> {
         );
     }
 
-    let roles: Vec<DeviceRole> = serde_json::from_str(roles_json)
-        .context("--roles must be a JSON array, e.g. '[{\"name\":\"sender\",\"deviceId\":\"abc\"}]'")?;
+    let roles: Vec<DeviceRole> = serde_json::from_str(roles_json).context(
+        "--roles must be a JSON array, e.g. '[{\"name\":\"sender\",\"deviceId\":\"abc\"}]'",
+    )?;
 
-    if roles.is_empty() {
-        bail!("At least one role is required.");
+    if roles.is_empty() || roles.len() > MAX_ROLES {
+        bail!("Sync group must contain between 1 and {MAX_ROLES} roles");
     }
-
-    // Validate: role names must be unique.
     let mut seen = std::collections::HashSet::new();
-    for r in &roles {
-        if r.name.is_empty() {
-            bail!("Role name must not be empty.");
-        }
-        if !seen.insert(&r.name) {
-            bail!("Duplicate role name '{}'.", r.name);
+    for role in &roles {
+        validate_identifier(&role.name, "role name")?;
+        validate_identifier(&role.device_id, "device id")?;
+        if !seen.insert(&role.name) {
+            bail!("Duplicate role name '{}'.", role.name);
         }
     }
 
@@ -231,7 +260,11 @@ fn cmd_create_group(name: &str, roles_json: &str) -> Result<()> {
 
     write_group(&group)?;
 
-    println!("Sync group '{}' created ({} roles).", name, group.roles.len());
+    println!(
+        "Sync group '{}' created ({} roles).",
+        name,
+        group.roles.len()
+    );
     for r in &group.roles {
         println!("  {} -> device '{}'", r.name, r.device_id);
     }
@@ -245,13 +278,32 @@ fn cmd_create_group(name: &str, roles_json: &str) -> Result<()> {
 fn cmd_run(group_name: &str, file: &str, max_duration: Option<u64>) -> Result<()> {
     let mut group = read_group(group_name)?;
 
-    let steps_text = fs::read_to_string(file)
-        .with_context(|| format!("Cannot read steps file '{}'", file))?;
-    let steps: Vec<SyncStep> = serde_json::from_str(&steps_text)
+    let steps_data = read_bounded_file(Path::new(file), MAX_STEPS_BYTES, "sync steps file")
+        .with_context(|| {
+            format!(
+                "Cannot read steps file '{}'",
+                terminal_safe(file.as_bytes())
+            )
+        })?;
+    let steps: Vec<SyncStep> = serde_json::from_slice(&steps_data)
         .context("Steps file must be a JSON array of sync steps")?;
 
-    if steps.is_empty() {
-        bail!("Steps file contains zero steps.");
+    if steps.is_empty() || steps.len() > MAX_STEPS {
+        bail!("Steps file must contain between 1 and {MAX_STEPS} steps.");
+    }
+    for step in &steps {
+        validate_identifier(&step.role, "step role")?;
+        validate_identifier(&step.action, "step action")?;
+        if step.args.len() > MAX_STEP_ARGS
+            || step
+                .args
+                .iter()
+                .any(|argument| argument.len() > MAX_STEP_ARG_BYTES)
+        {
+            bail!(
+                "Each sync step accepts at most {MAX_STEP_ARGS} arguments of {MAX_STEP_ARG_BYTES} bytes"
+            );
+        }
     }
 
     let max_dur_ms = max_duration.unwrap_or(u64::MAX);
@@ -288,22 +340,21 @@ fn cmd_run(group_name: &str, file: &str, max_duration: Option<u64>) -> Result<()
         let device_id = role_entry.device_id.clone();
 
         print!(
-            "  [{}] {}/{}: {} {:?} … ",
-            step.role,
+            "  [{}] {}/{}: {} … ",
+            terminal_safe(step.role.as_bytes()),
             i + 1,
             steps.len(),
-            step.action,
-            step.args
+            terminal_safe(step.action.as_bytes()),
         );
 
         let result = execute_sync_step(&step.action, &step.args, &device_id);
         match result {
             Ok(msg) => {
-                println!("OK  {}", msg);
+                println!("OK  {}", terminal_safe(msg.as_bytes()));
                 passed += 1;
             }
             Err(e) => {
-                println!("FAIL  {}", e);
+                println!("FAIL  {}", terminal_safe(e.to_string().as_bytes()));
                 failed += 1;
             }
         }
@@ -373,7 +424,15 @@ fn execute_sync_step(action: &str, args: &[String], device_id: &str) -> Result<S
             let y1: i32 = args[1].parse()?;
             let x2: i32 = args[2].parse()?;
             let y2: i32 = args[3].parse()?;
-            let dur: u32 = args.get(4).and_then(|s| s.parse().ok()).unwrap_or(300);
+            let dur: u32 = match args.get(4) {
+                Some(value) => value
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("Invalid swipe duration"))?,
+                None => 300,
+            };
+            if !(1..=60_000).contains(&dur) {
+                bail!("Swipe duration must be between 1 and 60000 ms");
+            }
             android::swipe(x1, y1, x2, y2, dur, dev)?;
             Ok(format!("Swiped ({},{}) -> ({},{})", x1, y1, x2, y2))
         }
@@ -389,6 +448,9 @@ fn execute_sync_step(action: &str, args: &[String], device_id: &str) -> Result<S
                 bail!("wait requires 1 arg");
             }
             let ms: u64 = args[0].parse()?;
+            if ms > 60_000 {
+                bail!("Wait duration must not exceed 60000 ms");
+            }
             std::thread::sleep(std::time::Duration::from_millis(ms));
             Ok(format!("Waited {}ms", ms))
         }
@@ -444,8 +506,12 @@ fn cmd_assert_cross(
     );
 
     // Execute source action.
-    execute_sync_step(source_action, &src_args, &src_device)
-        .with_context(|| format!("Source action '{}' on role '{}' failed", source_action, source_role))?;
+    execute_sync_step(source_action, &src_args, &src_device).with_context(|| {
+        format!(
+            "Source action '{}' on role '{}' failed",
+            source_action, source_role
+        )
+    })?;
     println!("  Source [{}] OK", source_role);
 
     // Optional delay between source and target.
@@ -461,7 +527,12 @@ fn cmd_assert_cross(
     for attempt in 0..attempt_count {
         match execute_sync_step(target_action, &tgt_args, &tgt_device) {
             Ok(msg) => {
-                println!("  Target [{}] OK  {} (attempt {})", target_role, msg, attempt + 1);
+                println!(
+                    "  Target [{}] OK  {} (attempt {})",
+                    target_role,
+                    msg,
+                    attempt + 1
+                );
                 return Ok(());
             }
             Err(e) => {
@@ -500,8 +571,9 @@ fn role_device(group: &SyncGroup, role_name: &str) -> Result<String> {
 fn parse_args_opt(raw: Option<&str>) -> Result<Vec<String>> {
     match raw {
         None | Some("") => Ok(vec![]),
-        Some(s) => serde_json::from_str(s)
-            .context("--source-args / --target-args must be a JSON array, e.g. '[\"100\",\"200\"]'"),
+        Some(s) => serde_json::from_str(s).context(
+            "--source-args / --target-args must be a JSON array, e.g. '[\"100\",\"200\"]'",
+        ),
     }
 }
 
@@ -512,15 +584,15 @@ fn parse_args_opt(raw: Option<&str>) -> Result<Vec<String>> {
 fn cmd_status(group_name: &str) -> Result<()> {
     let group = read_group(group_name)?;
 
-    println!("Sync group: '{}'", group.name);
-    println!("  Created : {}", group.created_at);
+    println!("Sync group: '{}'", terminal_safe(group.name.as_bytes()));
+    println!("  Created : {}", terminal_safe(group.created_at.as_bytes()));
     println!("  Roles   : {}", group.roles.len());
-    for r in &group.roles {
-        println!("    {} -> device '{}'", r.name, r.device_id);
+    for role in &group.roles {
+        println!("    {} -> device '{}'", role.name, role.device_id);
     }
 
     if let Some(run) = &group.last_run {
-        println!("  Last run: {}", run.timestamp);
+        println!("  Last run: {}", terminal_safe(run.timestamp.as_bytes()));
         println!(
             "    passed={}, failed={}, total={}ms",
             run.passed, run.failed, run.total_ms
@@ -537,16 +609,16 @@ fn cmd_status(group_name: &str) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_list() -> Result<()> {
-    let paths = all_group_paths();
+    let paths = all_group_paths()?;
     if paths.is_empty() {
         println!("No active sync groups.");
         return Ok(());
     }
 
     for path in &paths {
-        if let Ok(text) = fs::read_to_string(path) {
-            if let Ok(group) = serde_json::from_str::<SyncGroup>(&text) {
-                let roles: Vec<&str> = group.roles.iter().map(|r| r.name.as_str()).collect();
+        if let Ok(group) = read_json_file::<SyncGroup>(path, MAX_GROUP_BYTES, "sync group state") {
+            if validate_group(&group).is_ok() {
+                let roles: Vec<&str> = group.roles.iter().map(|role| role.name.as_str()).collect();
                 println!("{} — roles: [{}]", group.name, roles.join(", "));
             }
         }
@@ -559,12 +631,11 @@ fn cmd_list() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_destroy(group_name: &str) -> Result<()> {
-    let path = group_path(group_name);
+    let path = group_path(group_name)?;
     if !path.exists() {
         bail!("No sync group '{}' found.", group_name);
     }
-    fs::remove_file(&path)
-        .with_context(|| format!("Cannot delete {}", path.display()))?;
+    fs::remove_file(&path).with_context(|| format!("Cannot delete {}", path.display()))?;
     println!("Sync group '{}' destroyed.", group_name);
     Ok(())
 }
@@ -582,8 +653,14 @@ mod tests {
         let group = SyncGroup {
             name: "chat-test".into(),
             roles: vec![
-                DeviceRole { name: "sender".into(), device_id: "emulator-5554".into() },
-                DeviceRole { name: "receiver".into(), device_id: "emulator-5556".into() },
+                DeviceRole {
+                    name: "sender".into(),
+                    device_id: "emulator-5554".into(),
+                },
+                DeviceRole {
+                    name: "receiver".into(),
+                    device_id: "emulator-5556".into(),
+                },
             ],
             created_at: "2026-05-27T12:00:00Z".into(),
             last_run: None,
@@ -624,8 +701,14 @@ mod tests {
     #[test]
     fn test_duplicate_role_names_detected() {
         let roles = vec![
-            DeviceRole { name: "sender".into(), device_id: "aaa".into() },
-            DeviceRole { name: "sender".into(), device_id: "bbb".into() },
+            DeviceRole {
+                name: "sender".into(),
+                device_id: "aaa".into(),
+            },
+            DeviceRole {
+                name: "sender".into(),
+                device_id: "bbb".into(),
+            },
         ];
 
         let mut seen = std::collections::HashSet::new();
@@ -637,9 +720,10 @@ mod tests {
     fn test_role_device_lookup_found() {
         let group = SyncGroup {
             name: "g".into(),
-            roles: vec![
-                DeviceRole { name: "sender".into(), device_id: "dev-1".into() },
-            ],
+            roles: vec![DeviceRole {
+                name: "sender".into(),
+                device_id: "dev-1".into(),
+            }],
             created_at: "".into(),
             last_run: None,
         };
@@ -682,9 +766,9 @@ mod tests {
     }
 
     #[test]
-    fn test_group_path() {
-        let p = group_path("my-group");
-        assert_eq!(p, PathBuf::from("/tmp/claude-mobile-sync-my-group.json"));
+    fn group_path_rejects_traversal() {
+        assert!(group_path("../escape").is_err());
+        assert!(group_path("valid-group").is_ok());
     }
 
     #[test]

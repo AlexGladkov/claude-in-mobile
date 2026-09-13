@@ -11,8 +11,8 @@ clap = { version = "4.5", features = ["derive"] }
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-image = "0.25"
-imageproc = "0.25"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+imageproc = { version = "0.26", default-features = false, features = ["text"] }
 ab_glyph = "0.2"
 base64 = "0.22"
 colored = "2.0"
@@ -21,9 +21,9 @@ reqwest = { version = "0.12", features = ["blocking", "json", "multipart", "rust
 rsa = { version = "0.9", features = ["pem", "sha2"] }
 portable-pty = "0.9"
 vt100 = "0.15"
-
-[dev-dependencies]
 tempfile = "3"
+wait-timeout = "0.2"
+libc = "0.2"
 
 [profile.release]
 opt-level = 3

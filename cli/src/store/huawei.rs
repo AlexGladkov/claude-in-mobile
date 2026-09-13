@@ -2,11 +2,14 @@
 //! Auth: OAuth2 client credentials (no JWT needed).
 //! Env: HUAWEI_CLIENT_ID, HUAWEI_CLIENT_SECRET
 
+use super::{
+    draft,
+    http::{client, parse_json_response},
+};
+use crate::utils::process::terminal_safe;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-
-use super::draft;
 
 const OAUTH_URL: &str = "https://connect-api.cloud.huawei.com/api/oauth2/v1/token";
 const BASE: &str = "https://connect-api.cloud.huawei.com/api/publish/v2";
@@ -41,7 +44,7 @@ fn load_creds() -> Result<(String, String)> {
 
 fn get_token() -> Result<String> {
     let (client_id, client_secret) = load_creds()?;
-    let resp: serde_json::Value = client()
+    let response = client()
         .post(OAUTH_URL)
         .form(&[
             ("grant_type", "client_credentials"),
@@ -51,9 +54,8 @@ fn get_token() -> Result<String> {
         .send()
         .context("Failed to connect to Huawei OAuth endpoint")?
         .error_for_status()
-        .context("Huawei OAuth returned error")?
-        .json()
-        .context("Failed to parse Huawei OAuth response")?;
+        .context("Huawei OAuth returned error")?;
+    let resp: serde_json::Value = parse_json_response(response, "Huawei OAuth response")?;
 
     resp["access_token"]
         .as_str()
@@ -61,22 +63,15 @@ fn get_token() -> Result<String> {
         .context("Huawei OAuth: no access_token in response")
 }
 
-// ── HTTP helpers ─────────────────────────────────────────────────────────────
-
-fn client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::new()
-}
-
 fn get(url: &str, token: &str) -> Result<serde_json::Value> {
-    client()
+    let response = client()
         .get(url)
         .bearer_auth(token)
         .send()
         .with_context(|| format!("GET {}", url))?
         .error_for_status()
-        .with_context(|| format!("GET {} failed", url))?
-        .json()
-        .context("Failed to parse JSON response")
+        .with_context(|| format!("GET {} failed", url))?;
+    parse_json_response(response, "Huawei API response")
 }
 
 fn post(url: &str, token: &str, body: Option<&serde_json::Value>) -> Result<serde_json::Value> {
@@ -91,36 +86,30 @@ fn post(url: &str, token: &str, body: Option<&serde_json::Value>) -> Result<serd
     if resp.status().as_u16() == 204 {
         return Ok(json!({}));
     }
-    resp.error_for_status()
-        .with_context(|| format!("POST {} failed", url))?
-        .json()
-        .context("Failed to parse JSON response")
+    let response = resp
+        .error_for_status()
+        .with_context(|| format!("POST {} failed", url))?;
+    parse_json_response(response, "Huawei API response")
 }
 
 fn put(url: &str, token: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
-    client()
+    let response = client()
         .put(url)
         .bearer_auth(token)
         .json(body)
         .send()
         .with_context(|| format!("PUT {}", url))?
         .error_for_status()
-        .with_context(|| format!("PUT {} failed", url))?
-        .json()
-        .context("Failed to parse JSON response")
+        .with_context(|| format!("PUT {} failed", url))?;
+    parse_json_response(response, "Huawei API response")
 }
 
 fn get_app_id(package: &str, token: &str) -> Result<String> {
-    let url = format!(
-        "{}/app-id-list?packageName={}",
-        BASE,
-        urlenc(package)
-    );
+    let url = format!("{}/app-id-list?packageName={}", BASE, urlenc(package));
     let data = get(&url, token)?;
     let code = data["ret"]["code"].as_i64().unwrap_or(-1);
     if code != 0 {
-        let msg = data["ret"]["msg"].as_str().unwrap_or("unknown");
-        anyhow::bail!("Huawei: failed to get appId for '{}': {}", package, msg);
+        anyhow::bail!("Huawei failed to resolve the application (code {code})");
     }
     data["appIds"][0]["appId"]
         .as_str()
@@ -133,6 +122,26 @@ fn urlenc(s: &str) -> String {
     s.replace('/', "%2F")
 }
 
+fn validate_upload_url(value: &str) -> Result<()> {
+    let url = reqwest::Url::parse(value).context("Huawei returned an invalid upload URL")?;
+    let host = url
+        .host_str()
+        .context("Huawei upload URL has no host")?
+        .to_ascii_lowercase();
+    let trusted = ["huawei.com", "huaweicloud.com", "hicloud.com"]
+        .iter()
+        .any(|domain| {
+            host == *domain
+                || host
+                    .strip_suffix(domain)
+                    .is_some_and(|prefix| prefix.ends_with('.'))
+        });
+    if url.scheme() != "https" || !trusted {
+        anyhow::bail!("Huawei upload URL is outside trusted Huawei domains");
+    }
+    Ok(())
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 pub fn upload(package: &str, file_path: &str) -> Result<()> {
@@ -143,7 +152,11 @@ pub fn upload(package: &str, file_path: &str) -> Result<()> {
     let token = get_token()?;
     let app_id = get_app_id(package, &token)?;
 
-    let ext = if file_path.to_lowercase().ends_with(".aab") { "AAB" } else { "APK" };
+    let ext = if file_path.to_lowercase().ends_with(".aab") {
+        "AAB"
+    } else {
+        "APK"
+    };
     let file_name = std::path::Path::new(file_path)
         .file_name()
         .unwrap_or_default()
@@ -161,8 +174,7 @@ pub fn upload(package: &str, file_path: &str) -> Result<()> {
     )?;
     let code = url_data["ret"]["code"].as_i64().unwrap_or(-1);
     if code != 0 {
-        let msg = url_data["ret"]["msg"].as_str().unwrap_or("unknown");
-        anyhow::bail!("Huawei: failed to get upload URL: {}", msg);
+        anyhow::bail!("Huawei failed to create an upload session (code {code})");
     }
     let upload_url = url_data["uploadUrl"]
         .as_str()
@@ -172,6 +184,7 @@ pub fn upload(package: &str, file_path: &str) -> Result<()> {
         .as_str()
         .context("Huawei: upload URL response missing authCode")?
         .to_string();
+    validate_upload_url(&upload_url)?;
 
     // Step 2: multipart upload — fields: file + token (authCode)
     let file_part = reqwest::blocking::multipart::Part::file(file_path)
@@ -189,18 +202,17 @@ pub fn upload(package: &str, file_path: &str) -> Result<()> {
         .context("Failed to upload file to Huawei")?;
 
     if !upload_resp.status().is_success() {
-        let status = upload_resp.status();
-        let text = upload_resp.text().unwrap_or_default();
-        anyhow::bail!("Huawei: file upload failed {}: {}", status, text);
+        anyhow::bail!(
+            "Huawei file upload failed with HTTP {}",
+            upload_resp.status()
+        );
     }
 
-    let upload_data: serde_json::Value = upload_resp
-        .json()
-        .context("Failed to parse Huawei upload response")?;
+    let upload_data: serde_json::Value =
+        parse_json_response(upload_resp, "Huawei upload response")?;
     let result_code = upload_data["result"]["resultCode"].as_i64().unwrap_or(-1);
     if result_code != 0 {
-        let msg = upload_data["result"]["resultMsg"].as_str().unwrap_or("unknown");
-        anyhow::bail!("Huawei: file upload error: {}", msg);
+        anyhow::bail!("Huawei rejected the uploaded file (code {result_code})");
     }
 
     let file_id = upload_data["fileInfoList"][0]["fileId"]
@@ -237,7 +249,7 @@ pub fn upload(package: &str, file_path: &str) -> Result<()> {
 
     println!(
         "Uploaded to Huawei AppGallery. File ID: {}\nDraft open — call 'huawei set-notes' and 'huawei submit' to publish.",
-        file_id
+        terminal_safe(file_id.as_bytes())
     );
     Ok(())
 }
@@ -249,7 +261,11 @@ pub fn set_notes(package: &str, language: &str, text: &str) -> Result<()> {
     let mut state: DraftState = draft::load("huawei", package)?;
     upsert_note(&mut state.release_notes, language, text);
     draft::save("huawei", package, &state)?;
-    println!("Huawei release notes set for {} ({}/500 chars)", language, text.len());
+    println!(
+        "Huawei release notes set for {} ({}/500 chars)",
+        language,
+        text.len()
+    );
     Ok(())
 }
 
@@ -258,14 +274,17 @@ pub fn submit(package: &str) -> Result<()> {
     let token = get_token()?;
     let app_id = state.app_id;
 
-    let data = post(&format!("{}/app-submit?appId={}", BASE, app_id), &token, None)?;
+    let data = post(
+        &format!("{}/app-submit?appId={}", BASE, app_id),
+        &token,
+        None,
+    )?;
     let code = data["ret"]["code"].as_i64().unwrap_or(-1);
     if code != 0 {
-        let msg = data["ret"]["msg"].as_str().unwrap_or("unknown");
-        anyhow::bail!("Huawei: submit failed: {}", msg);
+        anyhow::bail!("Huawei submission failed (code {code})");
     }
 
-    draft::delete("huawei", package);
+    draft::delete("huawei", package)?;
     println!("Submitted to Huawei AppGallery for review: {}", package);
     Ok(())
 }
@@ -276,8 +295,7 @@ pub fn get_releases(package: &str) -> Result<()> {
     let data = get(&format!("{}/app-info?appId={}", BASE, app_id), &token)?;
     let code = data["ret"]["code"].as_i64().unwrap_or(-1);
     if code != 0 {
-        let msg = data["ret"]["msg"].as_str().unwrap_or("unknown");
-        anyhow::bail!("Huawei: get_releases failed: {}", msg);
+        anyhow::bail!("Huawei release lookup failed (code {code})");
     }
     if data["appInfo"].is_null() {
         println!("{}: no release info available", package);
@@ -285,7 +303,12 @@ pub fn get_releases(package: &str) -> Result<()> {
     }
     let version_code = data["appInfo"]["versionCode"].as_i64().unwrap_or(0);
     let release_state = data["appInfo"]["releaseState"].as_i64().unwrap_or(0);
-    println!("{}: v{} — {}", package, version_code, format_state(release_state));
+    println!(
+        "{}: v{} — {}",
+        package,
+        version_code,
+        format_state(release_state)
+    );
     Ok(())
 }
 
@@ -295,7 +318,10 @@ fn upsert_note(notes: &mut Vec<Note>, language: &str, text: &str) {
     if let Some(idx) = notes.iter().position(|n| n.language == language) {
         notes[idx].text = text.to_string();
     } else {
-        notes.push(Note { language: language.to_string(), text: text.to_string() });
+        notes.push(Note {
+            language: language.to_string(),
+            text: text.to_string(),
+        });
     }
 }
 
@@ -309,5 +335,18 @@ fn format_state(state: i64) -> &'static str {
         6 => "Update in review",
         7 => "Update published",
         _ => "Unknown",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_only_huawei_upload_hosts() {
+        assert!(validate_upload_url("https://obs.eu.huaweicloud.com/upload").is_ok());
+        assert!(validate_upload_url("https://upload.huawei.com/session").is_ok());
+        assert!(validate_upload_url("http://localhost/upload").is_err());
+        assert!(validate_upload_url("https://huawei.com.attacker.example/upload").is_err());
     }
 }

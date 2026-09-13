@@ -5,14 +5,21 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::path::Path;
 
-use super::{draft, jwt};
+use super::{
+    draft,
+    http::{client, parse_json_response},
+    jwt,
+};
+use crate::utils::private_state::read_bounded_file;
+use crate::utils::process::terminal_safe;
 
 const BASE: &str = "https://androidpublisher.googleapis.com/androidpublisher/v3";
-const UPLOAD_BASE: &str =
-    "https://androidpublisher.googleapis.com/upload/androidpublisher/v3";
+const UPLOAD_BASE: &str = "https://androidpublisher.googleapis.com/upload/androidpublisher/v3";
 const GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
 const SCOPE: &str = "https://www.googleapis.com/auth/androidpublisher";
+const TOKEN_URI: &str = "https://oauth2.googleapis.com/token";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -25,7 +32,7 @@ struct ServiceAccount {
 }
 
 fn default_token_uri() -> String {
-    "https://oauth2.googleapis.com/token".to_string()
+    TOKEN_URI.to_owned()
 }
 
 #[derive(Serialize, Deserialize)]
@@ -48,12 +55,14 @@ fn load_service_account() -> Result<ServiceAccount> {
     let key_json = std::env::var("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON").ok();
 
     let content = if let Some(path) = key_file {
-        if std::path::Path::new(&path).exists() {
-            std::fs::read_to_string(&path)
-                .with_context(|| format!("Failed to read key file: {}", path))?
-        } else {
-            anyhow::bail!("GOOGLE_PLAY_KEY_FILE not found: {}", path);
-        }
+        let bytes = read_bounded_file(Path::new(&path), 1024 * 1024, "Google Play key file")
+            .with_context(|| {
+                format!(
+                    "Failed to read key file: {}",
+                    terminal_safe(path.as_bytes())
+                )
+            })?;
+        String::from_utf8(bytes).context("Google Play key file is not valid UTF-8")?
     } else if let Some(json) = key_json {
         json
     } else {
@@ -64,15 +73,30 @@ fn load_service_account() -> Result<ServiceAccount> {
         );
     };
 
-    serde_json::from_str(&content).context("Failed to parse service account JSON")
+    parse_service_account(&content)
 }
 
+fn parse_service_account(content: &str) -> Result<ServiceAccount> {
+    let account: ServiceAccount =
+        serde_json::from_str(content).context("Failed to parse service account JSON")?;
+    if account.token_uri != TOKEN_URI {
+        anyhow::bail!("Google service-account token_uri must use the official OAuth endpoint");
+    }
+    if account.client_email.is_empty()
+        || account.client_email.len() > 512
+        || account.private_key.is_empty()
+        || account.private_key.len() > 256 * 1024
+    {
+        anyhow::bail!("Google service-account credentials contain invalid field lengths");
+    }
+    Ok(account)
+}
 fn get_token(sa: &ServiceAccount) -> Result<String> {
     let now = jwt::now_secs();
     let payload = json!({
         "iss": sa.client_email,
         "sub": sa.client_email,
-        "aud": sa.token_uri,
+        "aud": TOKEN_URI,
         "scope": SCOPE,
         "iat": now,
         "exp": now + 3600,
@@ -80,15 +104,14 @@ fn get_token(sa: &ServiceAccount) -> Result<String> {
 
     let assertion = jwt::create_rs256(&sa.private_key, &payload)?;
 
-    let resp: serde_json::Value = client()
-        .post(&sa.token_uri)
+    let response = client()
+        .post(TOKEN_URI)
         .form(&[("grant_type", GRANT_TYPE), ("assertion", &assertion)])
         .send()
         .context("Failed to request Google access token")?
         .error_for_status()
-        .context("Google token endpoint returned error")?
-        .json()
-        .context("Failed to parse access token response")?;
+        .context("Google token endpoint returned error")?;
+    let resp: serde_json::Value = parse_json_response(response, "Google access token response")?;
 
     resp["access_token"]
         .as_str()
@@ -96,22 +119,15 @@ fn get_token(sa: &ServiceAccount) -> Result<String> {
         .context("Google Play: no access_token in response")
 }
 
-// ── HTTP helpers ─────────────────────────────────────────────────────────────
-
-fn client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::new()
-}
-
 fn get(url: &str, token: &str) -> Result<serde_json::Value> {
-    client()
+    let response = client()
         .get(url)
         .bearer_auth(token)
         .send()
         .with_context(|| format!("GET {}", url))?
         .error_for_status()
-        .with_context(|| format!("GET {} failed", url))?
-        .json()
-        .context("Failed to parse JSON response")
+        .with_context(|| format!("GET {} failed", url))?;
+    parse_json_response(response, "Google Play API response")
 }
 
 fn post(url: &str, token: &str, body: Option<&serde_json::Value>) -> Result<serde_json::Value> {
@@ -126,23 +142,22 @@ fn post(url: &str, token: &str, body: Option<&serde_json::Value>) -> Result<serd
     if resp.status().as_u16() == 204 {
         return Ok(json!({}));
     }
-    resp.error_for_status()
-        .with_context(|| format!("POST {} failed", url))?
-        .json()
-        .context("Failed to parse JSON response")
+    let response = resp
+        .error_for_status()
+        .with_context(|| format!("POST {} failed", url))?;
+    parse_json_response(response, "Google Play API response")
 }
 
 fn put(url: &str, token: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
-    client()
+    let response = client()
         .put(url)
         .bearer_auth(token)
         .json(body)
         .send()
         .with_context(|| format!("PUT {}", url))?
         .error_for_status()
-        .with_context(|| format!("PUT {} failed", url))?
-        .json()
-        .context("Failed to parse JSON response")
+        .with_context(|| format!("PUT {} failed", url))?;
+    parse_json_response(response, "Google Play API response")
 }
 
 fn delete(url: &str, token: &str) -> Result<()> {
@@ -166,6 +181,18 @@ fn create_edit(package: &str, token: &str) -> Result<String> {
         .as_str()
         .map(|s| s.to_string())
         .context("Edit response missing 'id'")
+}
+
+fn validate_upload_session_url(value: &str) -> Result<()> {
+    let url = reqwest::Url::parse(value).context("Upload session returned an invalid URL")?;
+    let host = url
+        .host_str()
+        .context("Upload session URL has no host")?
+        .to_ascii_lowercase();
+    if url.scheme() != "https" || !(host == "googleapis.com" || host.ends_with(".googleapis.com")) {
+        anyhow::bail!("Upload session URL is outside the trusted Google API domain");
+    }
+    Ok(())
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -202,9 +229,7 @@ pub fn upload(package: &str, file_path: &str) -> Result<()> {
         .context("Failed to initiate resumable upload")?;
 
     if !init_resp.status().is_success() {
-        let status = init_resp.status();
-        let text = init_resp.text().unwrap_or_default();
-        anyhow::bail!("Upload initiation failed {}: {}", status, text);
+        anyhow::bail!("Upload initiation failed with HTTP {}", init_resp.status());
     }
 
     let session_uri = init_resp
@@ -214,30 +239,28 @@ pub fn upload(package: &str, file_path: &str) -> Result<()> {
         .to_str()
         .context("Location header is not valid UTF-8")?
         .to_string();
+    validate_upload_session_url(&session_uri)?;
 
     // Step 2: upload file content
-    let file_bytes = std::fs::read(file_path).context("Failed to read file")?;
+    let file = std::fs::File::open(file_path).context("Failed to open file for upload")?;
     let upload_resp = client()
         .put(&session_uri)
         .header("Content-Type", "application/octet-stream")
         .header("Content-Length", file_size.to_string())
-        .body(file_bytes)
+        .body(file)
         .send()
         .context("Failed to upload file")?;
 
     if !upload_resp.status().is_success() {
         let status = upload_resp.status();
-        let text = upload_resp.text().unwrap_or_default();
         let _ = delete(
             &format!("{}/applications/{}/edits/{}", BASE, package, edit_id),
             &token,
         );
-        anyhow::bail!("Upload failed {}: {}", status, text);
+        anyhow::bail!("Upload failed with HTTP {}", status);
     }
 
-    let data: serde_json::Value = upload_resp
-        .json()
-        .context("Failed to parse upload response")?;
+    let data: serde_json::Value = parse_json_response(upload_resp, "Google Play upload response")?;
     let version_code = data["versionCode"].as_i64();
 
     draft::save(
@@ -264,7 +287,11 @@ pub fn set_notes(package: &str, language: &str, text: &str) -> Result<()> {
     let mut state: DraftState = draft::load("google-play", package)?;
     upsert_note(&mut state.release_notes, language, text);
     draft::save("google-play", package, &state)?;
-    println!("Release notes set for {} ({}/500 chars)", language, text.len());
+    println!(
+        "Release notes set for {} ({}/500 chars)",
+        language,
+        text.len()
+    );
     Ok(())
 }
 
@@ -307,7 +334,7 @@ pub fn submit(package: &str, track: &str, rollout: f64) -> Result<()> {
         None,
     )?;
 
-    draft::delete("google-play", package);
+    draft::delete("google-play", package)?;
     let pct = if rollout >= 1.0 {
         "100%".to_string()
     } else {
@@ -360,10 +387,7 @@ pub fn promote(package: &str, from_track: &str, to_track: &str) -> Result<()> {
         )?;
 
         post(
-            &format!(
-                "{}/applications/{}/edits/{}:commit",
-                BASE, package, edit_id
-            ),
+            &format!("{}/applications/{}/edits/{}:commit", BASE, package, edit_id),
             &token,
             None,
         )?;
@@ -429,7 +453,7 @@ pub fn get_releases(package: &str, track: Option<&str>) -> Result<()> {
         if lines.is_empty() {
             println!("No releases found");
         } else {
-            println!("{}", lines.join("\n"));
+            println!("{}", terminal_safe(lines.join("\n").as_bytes()));
         }
         Ok(())
     })();
@@ -482,10 +506,7 @@ pub fn halt_rollout(package: &str, track: &str) -> Result<()> {
         )?;
 
         post(
-            &format!(
-                "{}/applications/{}/edits/{}:commit",
-                BASE, package, edit_id
-            ),
+            &format!("{}/applications/{}/edits/{}:commit", BASE, package, edit_id),
             &token,
             None,
         )?;
@@ -511,7 +532,7 @@ pub fn discard(package: &str) -> Result<()> {
         &format!("{}/applications/{}/edits/{}", BASE, package, state.edit_id),
         &token,
     );
-    draft::delete("google-play", package);
+    draft::delete("google-play", package)?;
     println!("Release draft discarded for {}", package);
     Ok(())
 }
@@ -526,5 +547,37 @@ fn upsert_note(notes: &mut Vec<Note>, language: &str, text: &str) {
             language: language.to_string(),
             text: text.to_string(),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_untrusted_service_account_token_endpoint() {
+        let malicious = r#"{
+            "client_email":"service@example.com",
+            "private_key":"unused",
+            "token_uri":"https://attacker.example/token"
+        }"#;
+        assert!(parse_service_account(malicious).is_err());
+
+        let official = format!(
+            r#"{{"client_email":"service@example.com","private_key":"unused","token_uri":"{TOKEN_URI}"}}"#,
+        );
+        assert!(parse_service_account(&official).is_ok());
+    }
+
+    #[test]
+    fn accepts_only_google_api_upload_sessions() {
+        assert!(validate_upload_session_url(
+            "https://androidpublisher.googleapis.com/upload/session"
+        )
+        .is_ok());
+        assert!(validate_upload_session_url("http://localhost/upload").is_err());
+        assert!(
+            validate_upload_session_url("https://googleapis.com.attacker.example/upload").is_err()
+        );
     }
 }

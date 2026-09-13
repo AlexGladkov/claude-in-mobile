@@ -171,12 +171,14 @@ fn cast_file_bytes_redacted_before_kill() {
 
     // Verify header is valid asciicast v2.
     let first_line = content.lines().next().expect("header line");
-    let header: serde_json::Value =
-        serde_json::from_str(first_line).expect("header is valid JSON");
+    let header: serde_json::Value = serde_json::from_str(first_line).expect("header is valid JSON");
     assert_eq!(header["version"], 2, "asciicast version must be 2");
     assert!(header.get("width").is_some(), "header must have width");
     assert!(header.get("height").is_some(), "header must have height");
-    assert!(header.get("env").is_none(), "header must NOT have env field");
+    assert!(
+        header.get("env").is_none(),
+        "header must NOT have env field"
+    );
 
     // If secret was output, it must be redacted.
     if content.contains("LIVETEST") || content.contains(secret) {
@@ -350,7 +352,9 @@ fn cast_path_traversal_rejected() {
     assert!(err.is_err(), "relative traversal must fail");
     let err_msg = err.unwrap_err().to_string();
     assert!(
-        err_msg.contains("outside") || err_msg.contains("canonicalize") || err_msg.contains("No such"),
+        err_msg.contains("outside")
+            || err_msg.contains("canonicalize")
+            || err_msg.contains("No such"),
         "unexpected error: {err_msg}"
     );
 }
@@ -374,7 +378,9 @@ fn cast_path_absolute_outside_tempdir_rejected() {
     assert!(err.is_err(), "/etc/passwd must fail path-safety check");
     let err_msg = err.unwrap_err().to_string();
     assert!(
-        err_msg.contains("outside") || err_msg.contains("Permission") || err_msg.contains("Read-only"),
+        err_msg.contains("outside")
+            || err_msg.contains("Permission")
+            || err_msg.contains("Read-only"),
         "unexpected error: {err_msg}"
     );
 }
@@ -401,7 +407,12 @@ fn filmstrip_capped_at_50() {
     sleep(Duration::from_millis(300));
 
     let snap = sup
-        .snapshot("filmcap", SnapshotMode::Grid, Some(FILMSTRIP_CAP + 10), None)
+        .snapshot(
+            "filmcap",
+            SnapshotMode::Grid,
+            Some(FILMSTRIP_CAP + 10),
+            None,
+        )
         .expect("snapshot");
 
     let frames = snap.frames.expect("history must return frames");
@@ -446,7 +457,8 @@ fn resize_unknown_session_returns_no_session_error() {
     let sup = make_supervisor();
     let err = sup.resize("nonexistent_session_xyz", 80, 24).unwrap_err();
     assert!(
-        err.to_string().contains("no session: nonexistent_session_xyz"),
+        err.to_string()
+            .contains("no session: nonexistent_session_xyz"),
         "expected 'no session: <id>' error, got: {err}"
     );
 }

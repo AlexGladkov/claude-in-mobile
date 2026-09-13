@@ -3,12 +3,70 @@
 use ab_glyph::{FontArc, PxScale};
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use image::{DynamicImage, GenericImageView, Rgba, RgbaImage};
+use image::{DynamicImage, GenericImageView, ImageReader, Limits, Rgba, RgbaImage};
 use imageproc::drawing::{draw_hollow_rect_mut, draw_text_mut};
 use imageproc::rect::Rect;
-use std::io::Cursor;
+use std::fs::OpenOptions;
+use std::io::{Cursor, Write as _};
 
+use crate::utils::process::terminal_safe;
 use crate::{android, harmony, ios};
+
+const MAX_ENCODED_IMAGE_BYTES: usize = 50 * 1024 * 1024;
+const MAX_IMAGE_DIMENSION: u32 = 32_768;
+const MAX_IMAGE_PIXELS: u64 = 40_000_000;
+
+fn write_screenshot_file(path: &str, data: &[u8]) -> Result<()> {
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW).mode(0o600);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        options.custom_flags(0x0020_0000);
+    }
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("Cannot safely open screenshot output {path}"))?;
+    file.write_all(data)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn decode_image(data: &[u8]) -> Result<DynamicImage> {
+    if data.is_empty() || data.len() > MAX_ENCODED_IMAGE_BYTES {
+        anyhow::bail!(
+            "Image input must be between 1 and {} bytes",
+            MAX_ENCODED_IMAGE_BYTES
+        );
+    }
+
+    let reader = ImageReader::new(Cursor::new(data)).with_guessed_format()?;
+    let (width, height) = reader.into_dimensions()?;
+    if width == 0
+        || height == 0
+        || width > MAX_IMAGE_DIMENSION
+        || height > MAX_IMAGE_DIMENSION
+        || u64::from(width) * u64::from(height) > MAX_IMAGE_PIXELS
+    {
+        anyhow::bail!(
+            "Image dimensions exceed the {}-pixel decode limit",
+            MAX_IMAGE_PIXELS
+        );
+    }
+
+    let mut reader = ImageReader::new(Cursor::new(data)).with_guessed_format()?;
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
+    limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
+    limits.max_alloc = Some(192 * 1024 * 1024);
+    reader.limits(limits);
+    Ok(reader.decode()?)
+}
 
 /// Take screenshot with optional compression
 pub fn take_screenshot(
@@ -16,30 +74,41 @@ pub fn take_screenshot(
     output: Option<&str>,
     compress: bool,
     max_width: u32,
+    max_height: u32,
     quality: u8,
     simulator: Option<&str>,
     device: Option<&str>,
 ) -> Result<()> {
-    // Capture screenshot
     let png_data = if platform == "android" {
         android::screenshot(device)?
     } else {
         ios::screenshot(simulator)?
     };
+    write_screenshot_output(png_data, output, compress, max_width, max_height, quality)
+}
 
-    // Process image
+pub(crate) fn write_screenshot_output(
+    png_data: Vec<u8>,
+    output: Option<&str>,
+    compress: bool,
+    max_width: u32,
+    max_height: u32,
+    quality: u8,
+) -> Result<()> {
     let final_data = if compress {
-        compress_image(&png_data, max_width, quality)?
+        compress_image(&png_data, max_width, max_height, quality)?
     } else {
         png_data
     };
 
-    // Output
     if let Some(path) = output {
-        std::fs::write(path, &final_data)?;
-        eprintln!("Screenshot saved to: {} ({} bytes)", path, final_data.len());
+        write_screenshot_file(path, &final_data)?;
+        eprintln!(
+            "Screenshot saved to: {} ({} bytes)",
+            terminal_safe(path.as_bytes()),
+            final_data.len(),
+        );
     } else {
-        // Output as base64 for LLM consumption
         let b64 = BASE64.encode(&final_data);
         println!("{}", b64);
         eprintln!(
@@ -48,23 +117,32 @@ pub fn take_screenshot(
             b64.len()
         );
     }
-
     Ok(())
 }
 
 /// Compress image for LLM processing
-fn compress_image(png_data: &[u8], max_width: u32, quality: u8) -> Result<Vec<u8>> {
-    // Load image
-    let img = image::load_from_memory(png_data)?;
+fn compress_image(
+    png_data: &[u8],
+    max_width: u32,
+    max_height: u32,
+    quality: u8,
+) -> Result<Vec<u8>> {
+    if max_width == 0
+        || max_height == 0
+        || max_width > MAX_IMAGE_DIMENSION
+        || max_height > MAX_IMAGE_DIMENSION
+        || !(1..=100).contains(&quality)
+    {
+        anyhow::bail!("Invalid screenshot compression options");
+    }
+    let img = decode_image(png_data)?;
     let (width, height) = img.dimensions();
 
     eprintln!("Original: {}x{} ({} bytes)", width, height, png_data.len());
 
-    // Resize if needed
-    let img = if width > max_width {
-        let new_height = (height as f32 * max_width as f32 / width as f32) as u32;
-        eprintln!("Resizing to: {}x{}", max_width, new_height);
-        img.resize(max_width, new_height, image::imageops::FilterType::Lanczos3)
+    let img = if width > max_width || height > max_height {
+        eprintln!("Resizing within: {}x{}", max_width, max_height);
+        img.resize(max_width, max_height, image::imageops::FilterType::Lanczos3)
     } else {
         img
     };
@@ -129,7 +207,7 @@ pub fn take_annotated_screenshot(
     };
 
     // Load image
-    let img = image::load_from_memory(&png_data)?;
+    let img = decode_image(&png_data)?;
     let mut rgba_img: RgbaImage = img.to_rgba8();
 
     // Colors for drawing
@@ -180,10 +258,10 @@ pub fn take_annotated_screenshot(
 
     // Output
     if let Some(path) = output {
-        std::fs::write(path, &output_data)?;
+        write_screenshot_file(path, &output_data)?;
         eprintln!(
             "Annotated screenshot saved to: {} ({} bytes)",
-            path,
+            terminal_safe(path.as_bytes()),
             output_data.len()
         );
     } else {
@@ -200,7 +278,7 @@ pub fn take_annotated_screenshot(
         eprintln!(
             "  {}: {} @ ({}, {})",
             i + 1,
-            element.label,
+            terminal_safe(element.label.as_bytes()),
             center.0,
             center.1
         );
@@ -212,7 +290,7 @@ pub fn take_annotated_screenshot(
 /// Analyze screenshot and return structured info (for future use)
 #[allow(dead_code)]
 pub fn analyze_screenshot(data: &[u8]) -> Result<ScreenshotInfo> {
-    let img = image::load_from_memory(data)?;
+    let img = decode_image(data)?;
     let (width, height) = img.dimensions();
 
     // Calculate average brightness
@@ -261,4 +339,46 @@ pub struct ScreenshotInfo {
     pub size_bytes: usize,
     pub brightness: f32,
     pub is_text_heavy: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_png(width: u32, height: u32) -> Vec<u8> {
+        let image = DynamicImage::new_rgba8(width, height);
+        let mut data = Vec::new();
+        image
+            .write_to(&mut Cursor::new(&mut data), image::ImageFormat::Png)
+            .unwrap();
+        data
+    }
+
+    #[test]
+    fn compression_honors_both_dimension_limits() {
+        let compressed = compress_image(&test_png(100, 200), 80, 80, 70).unwrap();
+        let image = decode_image(&compressed).unwrap();
+        assert_eq!(image.dimensions(), (40, 80));
+    }
+
+    #[test]
+    fn compression_rejects_invalid_options_before_decoding() {
+        assert!(compress_image(&test_png(1, 1), 0, 80, 70).is_err());
+        assert!(compress_image(&test_png(1, 1), 80, 80, 0).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn screenshot_output_refuses_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target.png");
+        let output = directory.path().join("output.png");
+        std::fs::write(&target, b"untouched").unwrap();
+        symlink(&target, &output).unwrap();
+
+        assert!(write_screenshot_file(output.to_str().unwrap(), b"replacement").is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"untouched");
+    }
 }

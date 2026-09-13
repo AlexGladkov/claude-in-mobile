@@ -212,7 +212,8 @@ fn resize_during_live_redraw_updates_grid_dims() {
     assert_eq!(snap_before.rows, 24, "initial rows");
 
     // Resize while the emitter keeps redrawing.
-    sup.resize("live_resize", 120, 35).expect("resize must not error during live redraw");
+    sup.resize("live_resize", 120, 35)
+        .expect("resize must not error during live redraw");
     sleep(Duration::from_millis(150));
 
     // Dimensions in the snapshot must reflect the resize.

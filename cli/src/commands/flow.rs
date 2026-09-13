@@ -5,13 +5,17 @@
 //! CLI action (tap, tap-text, input, find, etc.), and results are collected
 //! into a single JSON output.
 
-use std::io::Read as _;
+use std::io::{Read as _, Write as _};
+use std::path::Path;
 use std::time::Instant;
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
+use tempfile::Builder;
 
 use crate::utils::device_shell::DeviceShellCmd;
+use crate::utils::private_state::{cache_dir, read_bounded_file};
+use crate::utils::process::terminal_safe;
 use crate::{android, aurora, desktop, harmony, ios};
 
 // ---------------------------------------------------------------------------
@@ -26,6 +30,7 @@ const MAX_DURATION_LIMIT: u64 = 60_000;
 
 /// Maximum screenshots captured per flow in turbo mode.
 const MAX_SCREENSHOTS: usize = 5;
+const MAX_FLOW_BYTES: u64 = 1024 * 1024;
 
 /// Actions that are explicitly blocked for security reasons.
 const BLOCKED_ACTIONS: &[&str] = &["shell", "system_shell"];
@@ -79,6 +84,27 @@ const ALLOWED_ACTIONS: &[&str] = &[
     "perf-crashes",
     "perf-framestats",
 ];
+
+fn read_flow_input(file: Option<&str>) -> Result<Vec<u8>> {
+    if let Some(path) = file {
+        return read_bounded_file(Path::new(path), MAX_FLOW_BYTES, "flow input").map_err(|error| {
+            anyhow::anyhow!(
+                "Cannot read flow file '{}': {}",
+                terminal_safe(path.as_bytes()),
+                error
+            )
+        });
+    }
+
+    let mut data = Vec::new();
+    std::io::stdin()
+        .take(MAX_FLOW_BYTES + 1)
+        .read_to_end(&mut data)?;
+    if data.len() as u64 > MAX_FLOW_BYTES {
+        bail!("Flow input exceeds {MAX_FLOW_BYTES} bytes");
+    }
+    Ok(data)
+}
 
 // ---------------------------------------------------------------------------
 // Step definition (input)
@@ -161,18 +187,9 @@ pub fn run(
     // -- Validate max-duration ------------------------------------------------
     let max_duration = max_duration.min(MAX_DURATION_LIMIT);
 
-    // -- Read steps -----------------------------------------------------------
-    let json_text = match file {
-        Some(path) => std::fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("Cannot read file '{}': {}", path, e))?,
-        None => {
-            let mut buf = String::new();
-            std::io::stdin().read_to_string(&mut buf)?;
-            buf
-        }
-    };
-
-    let steps: Vec<FlowStep> = serde_json::from_str(&json_text)
+    // -- Read and parse steps -------------------------------------------------
+    let json_data = read_flow_input(file)?;
+    let steps: Vec<FlowStep> = serde_json::from_slice(&json_data)
         .map_err(|e| anyhow::anyhow!("Invalid step JSON: {}", e))?;
 
     // -- Validate step count --------------------------------------------------
@@ -384,19 +401,10 @@ pub fn batch(
     device: Option<&str>,
     companion_path: Option<&str>,
 ) -> Result<()> {
-    // Read input
-    let json_text = match file {
-        Some(path) => std::fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("Cannot read file '{}': {}", path, e))?,
-        None => {
-            let mut buf = String::new();
-            std::io::stdin().read_to_string(&mut buf)?;
-            buf
-        }
-    };
+    let json_data = read_flow_input(file)?;
 
     // Parse batch commands and map to FlowStep
-    let commands: Vec<BatchCommand> = serde_json::from_str(&json_text)
+    let commands: Vec<BatchCommand> = serde_json::from_slice(&json_data)
         .map_err(|e| anyhow::anyhow!("Invalid batch command JSON: {}", e))?;
 
     if commands.is_empty() {
@@ -587,18 +595,10 @@ pub fn parallel(
     let max_duration = max_duration.min(MAX_DURATION_LIMIT);
 
     // Read flow steps once — same steps are run on every device
-    let json_text = match file {
-        Some(path) => std::fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("Cannot read file '{}': {}", path, e))?,
-        None => {
-            let mut buf = String::new();
-            std::io::stdin().read_to_string(&mut buf)?;
-            buf
-        }
-    };
+    let json_data = read_flow_input(file)?;
 
     // Validate the step list once up-front (same for all devices)
-    let steps: Vec<FlowStep> = serde_json::from_str(&json_text)
+    let steps: Vec<FlowStep> = serde_json::from_slice(&json_data)
         .map_err(|e| anyhow::anyhow!("Invalid step JSON: {}", e))?;
 
     if steps.is_empty() {
@@ -1476,9 +1476,15 @@ fn capture_failure_screenshot(ctx: &PlatformCtx<'_>, step_num: usize) -> Result<
         _ => bail!("Cannot capture screenshot for platform"),
     };
 
-    let path = format!("/tmp/flow-step{}-fail.png", step_num);
-    std::fs::write(&path, &data)?;
-    Ok(path)
+    let directory = cache_dir("flow-artifacts")?;
+    let mut file = Builder::new()
+        .prefix(&format!("flow-step{step_num}-"))
+        .suffix("-fail.png")
+        .tempfile_in(directory)?;
+    file.write_all(&data)?;
+    file.as_file_mut().sync_all()?;
+    let (_, path) = file.keep()?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 // ---------------------------------------------------------------------------

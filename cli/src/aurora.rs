@@ -7,11 +7,13 @@
 //! [`crate::utils::device_shell::DeviceShellCmd`] — never `format!`. See
 //! the matching note at the top of `android.rs` for the audit checklist.
 
-use std::process::Command;
-use anyhow::{Result, Context, bail};
+use anyhow::{bail, Result};
 use serde::Serialize;
+use std::process::Command;
+use std::time::Duration;
 
 use crate::utils::device_shell::DeviceShellCmd;
+use crate::utils::process::{ensure_success, run_with_limits, terminal_safe};
 
 /// Build audb command with optional device serial
 fn audb_cmd(device: Option<&str>) -> Command {
@@ -22,11 +24,25 @@ fn audb_cmd(device: Option<&str>) -> Command {
     cmd
 }
 
-/// Execute audb command and return output
+/// Execute audb command with bounded output and a hard deadline.
 fn audb_exec(device: Option<&str>, args: &[&str]) -> Result<std::process::Output> {
-    let mut cmd = audb_cmd(device);
-    cmd.args(args);
-    cmd.output().context("Failed to execute audb command")
+    let mut command = audb_cmd(device);
+    command.args(args);
+    run_with_limits(
+        &mut command,
+        Duration::from_secs(120),
+        64 * 1024 * 1024,
+        "AUDB command",
+    )
+}
+
+fn audb_shell(device: Option<&str>, args: &[&str]) -> Result<std::process::Output> {
+    let mut command = DeviceShellCmd::new();
+    for arg in args {
+        command = command.user_input(arg);
+    }
+    let rendered = command.render();
+    audb_exec(device, &["shell", &rendered])
 }
 
 /// Take screenshot and return PNG bytes
@@ -34,7 +50,7 @@ pub fn screenshot(device: Option<&str>) -> Result<Vec<u8>> {
     let output = audb_exec(device, &["exec-out", "screencap", "-p"])?;
 
     if !output.status.success() {
-        bail!("audb screencap failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("audb screencap failed: {}", terminal_safe(&output.stderr));
     }
 
     Ok(output.stdout)
@@ -42,10 +58,10 @@ pub fn screenshot(device: Option<&str>) -> Result<Vec<u8>> {
 
 /// Tap at coordinates
 pub fn tap(x: i32, y: i32, device: Option<&str>) -> Result<()> {
-    let output = audb_exec(device, &["shell", "input", "tap", &x.to_string(), &y.to_string()])?;
+    let output = audb_shell(device, &["input", "tap", &x.to_string(), &y.to_string()])?;
 
     if !output.status.success() {
-        bail!("audb tap failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("audb tap failed: {}", terminal_safe(&output.stderr));
     }
 
     println!("Tapped at ({}, {})", x, y);
@@ -54,15 +70,21 @@ pub fn tap(x: i32, y: i32, device: Option<&str>) -> Result<()> {
 
 /// Long press at coordinates
 pub fn long_press(x: i32, y: i32, duration: u32, device: Option<&str>) -> Result<()> {
-    let output = audb_exec(device, &[
-        "shell", "input", "swipe",
-        &x.to_string(), &y.to_string(),
-        &x.to_string(), &y.to_string(),
-        &duration.to_string(),
-    ])?;
+    let output = audb_shell(
+        device,
+        &[
+            "input",
+            "swipe",
+            &x.to_string(),
+            &y.to_string(),
+            &x.to_string(),
+            &y.to_string(),
+            &duration.to_string(),
+        ],
+    )?;
 
     if !output.status.success() {
-        bail!("audb long press failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("audb long press failed: {}", terminal_safe(&output.stderr));
     }
 
     println!("Long pressed at ({}, {}) for {}ms", x, y, duration);
@@ -70,16 +92,29 @@ pub fn long_press(x: i32, y: i32, duration: u32, device: Option<&str>) -> Result
 }
 
 /// Swipe gesture
-pub fn swipe(x1: i32, y1: i32, x2: i32, y2: i32, duration: u32, device: Option<&str>) -> Result<()> {
-    let output = audb_exec(device, &[
-        "shell", "input", "swipe",
-        &x1.to_string(), &y1.to_string(),
-        &x2.to_string(), &y2.to_string(),
-        &duration.to_string(),
-    ])?;
+pub fn swipe(
+    x1: i32,
+    y1: i32,
+    x2: i32,
+    y2: i32,
+    duration: u32,
+    device: Option<&str>,
+) -> Result<()> {
+    let output = audb_shell(
+        device,
+        &[
+            "input",
+            "swipe",
+            &x1.to_string(),
+            &y1.to_string(),
+            &x2.to_string(),
+            &y2.to_string(),
+            &duration.to_string(),
+        ],
+    )?;
 
     if !output.status.success() {
-        bail!("audb swipe failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("audb swipe failed: {}", terminal_safe(&output.stderr));
     }
 
     println!("Swiped from ({}, {}) to ({}, {})", x1, y1, x2, y2);
@@ -101,10 +136,10 @@ pub fn input_text(text: &str, device: Option<&str>) -> Result<()> {
     let output = audb_exec(device, &["shell", &shell_cmd])?;
 
     if !output.status.success() {
-        bail!("audb input text failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("audb input text failed");
     }
 
-    println!("Input text: {}", text);
+    println!("Input accepted ({} characters)", text.chars().count());
     Ok(())
 }
 
@@ -129,13 +164,17 @@ pub fn press_key(key: &str, device: Option<&str>) -> Result<()> {
         _ => key,
     };
 
-    let output = audb_exec(device, &["shell", "input", "keyevent", keycode])?;
+    let output = audb_shell(device, &["input", "keyevent", keycode])?;
 
     if !output.status.success() {
-        bail!("audb keyevent failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("audb keyevent failed: {}", terminal_safe(&output.stderr));
     }
 
-    println!("Pressed key: {} ({})", key, keycode);
+    println!(
+        "Pressed key: {} ({})",
+        terminal_safe(key.as_bytes()),
+        terminal_safe(keycode.as_bytes()),
+    );
     Ok(())
 }
 
@@ -143,68 +182,63 @@ pub fn press_key(key: &str, device: Option<&str>) -> Result<()> {
 pub fn shell(command: &str, device: Option<&str>) -> Result<String> {
     let output = audb_exec(device, &["shell", command])?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-    if !output.status.success() && !stderr.is_empty() {
-        eprintln!("{}", stderr);
+    let stdout = terminal_safe(&output.stdout);
+    if !output.status.success() && !output.stderr.is_empty() {
+        eprintln!("{}", terminal_safe(&output.stderr));
     }
-
-    print!("{}", stdout);
+    print!("{stdout}");
     Ok(stdout)
 }
 
 /// Launch an app using Silica invoker
 pub fn launch_app(package: &str, device: Option<&str>) -> Result<()> {
-    let output = audb_exec(device, &[
-        "shell", "invoker", "--type=silica-qt5", package,
-    ])?;
+    let output = audb_shell(device, &["invoker", "--type=silica-qt5", package])?;
 
     if !output.status.success() {
-        bail!("Failed to launch {}: {}", package, String::from_utf8_lossy(&output.stderr));
+        bail!("Failed to launch app");
     }
 
-    println!("Launched: {}", package);
+    println!("Launched: {}", terminal_safe(package.as_bytes()));
     Ok(())
 }
 
 /// Stop an app
 pub fn stop_app(package: &str, device: Option<&str>) -> Result<()> {
-    let output = audb_exec(device, &["shell", "pkill", "-f", package])?;
+    let output = audb_shell(device, &["pkill", "-f", package])?;
 
     if !output.status.success() {
-        bail!("Failed to stop {}: {}", package, String::from_utf8_lossy(&output.stderr));
+        bail!("Failed to stop app");
     }
 
-    println!("Stopped: {}", package);
+    println!("Stopped: {}", terminal_safe(package.as_bytes()));
     Ok(())
 }
 
 /// Install an RPM package
 pub fn install_app(path: &str, device: Option<&str>) -> Result<()> {
-    println!("Installing {}...", path);
+    println!("Installing {}...", terminal_safe(path.as_bytes()));
 
     let output = audb_exec(device, &["install", path])?;
 
     if !output.status.success() {
-        bail!("Failed to install: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("Failed to install: {}", terminal_safe(&output.stderr));
     }
 
-    println!("Installed: {}", path);
+    println!("Installed: {}", terminal_safe(path.as_bytes()));
     Ok(())
 }
 
 /// Uninstall an app via rpm
 pub fn uninstall_app(package: &str, device: Option<&str>) -> Result<()> {
-    println!("Uninstalling {}...", package);
+    println!("Uninstalling {}...", terminal_safe(package.as_bytes()));
 
-    let output = audb_exec(device, &["shell", "rpm", "-e", package])?;
+    let output = audb_shell(device, &["rpm", "-e", package])?;
 
     if !output.status.success() {
-        bail!("Failed to uninstall: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("Failed to uninstall app");
     }
 
-    println!("Uninstalled: {}", package);
+    println!("Uninstalled: {}", terminal_safe(package.as_bytes()));
     Ok(())
 }
 
@@ -213,10 +247,14 @@ pub fn push_file(local: &str, remote: &str, device: Option<&str>) -> Result<()> 
     let output = audb_exec(device, &["push", local, remote])?;
 
     if !output.status.success() {
-        bail!("audb push failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("audb push failed: {}", terminal_safe(&output.stderr));
     }
 
-    println!("Pushed {} -> {}", local, remote);
+    println!(
+        "Pushed {} -> {}",
+        terminal_safe(local.as_bytes()),
+        terminal_safe(remote.as_bytes())
+    );
     Ok(())
 }
 
@@ -225,10 +263,14 @@ pub fn pull_file(remote: &str, local: &str, device: Option<&str>) -> Result<()> 
     let output = audb_exec(device, &["pull", remote, local])?;
 
     if !output.status.success() {
-        bail!("audb pull failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("audb pull failed: {}", terminal_safe(&output.stderr));
     }
 
-    println!("Pulled {} -> {}", remote, local);
+    println!(
+        "Pulled {} -> {}",
+        terminal_safe(remote.as_bytes()),
+        terminal_safe(local.as_bytes())
+    );
     Ok(())
 }
 
@@ -254,21 +296,25 @@ pub fn get_logs(filter: Option<&str>, lines: usize, device: Option<&str>) -> Res
     let output = audb_exec(device, &["shell", &cmd])?;
 
     if !output.status.success() {
-        bail!("journalctl failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("journalctl failed: {}", terminal_safe(&output.stderr));
     }
 
-    print!("{}", String::from_utf8_lossy(&output.stdout));
+    print!("{}", terminal_safe(&output.stdout));
     Ok(())
 }
 
 /// Clear device logs
 pub fn clear_logs(device: Option<&str>) -> Result<()> {
-    let output = audb_exec(device, &[
-        "shell", "journalctl --rotate && journalctl --vacuum-time=1s",
-    ])?;
+    let output = audb_exec(
+        device,
+        &[
+            "shell",
+            "journalctl --rotate && journalctl --vacuum-time=1s",
+        ],
+    )?;
 
     if !output.status.success() {
-        bail!("Failed to clear logs: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("Failed to clear logs: {}", terminal_safe(&output.stderr));
     }
 
     println!("Logs cleared");
@@ -278,13 +324,13 @@ pub fn clear_logs(device: Option<&str>) -> Result<()> {
 /// Get system info (uname, os-release, memory)
 pub fn get_system_info(device: Option<&str>) -> Result<()> {
     let uname = audb_exec(device, &["shell", "uname -a"])?;
-    let uname_out = String::from_utf8_lossy(&uname.stdout);
+    let uname_out = terminal_safe(&uname.stdout);
 
     let os_release = audb_exec(device, &["shell", "cat /etc/os-release"])?;
-    let os_release_out = String::from_utf8_lossy(&os_release.stdout);
+    let os_release_out = terminal_safe(&os_release.stdout);
 
     let mem = audb_exec(device, &["shell", "free -m"])?;
-    let mem_out = String::from_utf8_lossy(&mem.stdout);
+    let mem_out = terminal_safe(&mem.stdout);
 
     println!("System Info:");
     println!("--- Kernel ---");
@@ -302,35 +348,31 @@ pub fn list_apps(filter: Option<&str>, device: Option<&str>) -> Result<()> {
     let output = audb_exec(device, &["shell", "rpm -qa"])?;
 
     if !output.status.success() {
-        bail!("rpm -qa failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("rpm -qa failed: {}", terminal_safe(&output.stderr));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut apps: Vec<&str> = stdout
         .lines()
-        .filter(|line| {
-            filter.map_or(true, |f| line.to_lowercase().contains(&f.to_lowercase()))
-        })
+        .filter(|line| filter.map_or(true, |f| line.to_lowercase().contains(&f.to_lowercase())))
         .collect();
 
     apps.sort();
 
     println!("Installed packages ({}):", apps.len());
     for app in &apps {
-        println!("  {}", app);
+        println!("  {}", terminal_safe(app.as_bytes()));
     }
     Ok(())
 }
 
 /// Open URL via xdg-open
 pub fn open_url(url: &str, device: Option<&str>) -> Result<()> {
-    let output = audb_exec(device, &["shell", "xdg-open", url])?;
-
+    let output = audb_shell(device, &["xdg-open", url])?;
     if !output.status.success() {
-        bail!("Failed to open URL: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("Failed to open URL");
     }
-
-    println!("Opened URL: {}", url);
+    println!("URL opened");
     Ok(())
 }
 
@@ -344,14 +386,15 @@ pub struct Device {
 
 /// List connected devices
 pub fn list_devices() -> Result<Vec<Device>> {
-    let output = Command::new("audb")
-        .arg("devices")
-        .output()
-        .context("Failed to execute audb devices")?;
-
-    if !output.status.success() {
-        bail!("audb devices failed: {}", String::from_utf8_lossy(&output.stderr));
-    }
+    let mut command = Command::new("audb");
+    command.arg("devices");
+    let output = run_with_limits(
+        &mut command,
+        Duration::from_secs(30),
+        1024 * 1024,
+        "Aurora device listing",
+    )?;
+    ensure_success(&output, "Aurora device listing")?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut devices = Vec::new();
