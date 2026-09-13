@@ -5,6 +5,9 @@ on:
     branches: [main, 'release/**']
   pull_request:
     branches: [main]
+permissions:
+  contents: read
+
 
 jobs:
   test:
@@ -13,8 +16,8 @@ jobs:
       matrix:
         node-version: [20, 22]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: ${{ matrix.node-version }}
           cache: 'npm'
@@ -31,8 +34,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
           cache: 'npm'
@@ -44,18 +47,18 @@ jobs:
   cargo-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: cli
-      - run: cd cli && cargo test --lib && cargo test --test setup_grok && cargo test --test repl_observability && cargo test --test repl_live_tui && cargo test --test harmony_cli
+      - run: cd cli && cargo test --locked --lib && cargo test --locked --test setup_grok && cargo test --locked --test repl_observability && cargo test --locked --test repl_live_tui && cargo test --locked --test harmony_cli
 
   npm-audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
           cache: 'npm'
@@ -70,18 +73,12 @@ jobs:
   cargo-audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: cli
       - name: Install cargo-audit
         run: cargo install --locked cargo-audit
       - name: Audit Rust dependencies
-        # RUSTSEC-2026-0192: ttf-parser is flagged "unmaintained" (not an
-        # exploitable vuln). It is a transitive dep via ab_glyph ->
-        # owned_ttf_parser, used only for font rendering in screenshot
-        # annotation; there is no fixed/maintained release to move to without
-        # replacing ab_glyph. Ignored deliberately; revisit if ab_glyph adopts
-        # a maintained parser. All actual vulnerabilities still fail the build.
-        run: cd cli && cargo audit --deny warnings --ignore RUSTSEC-2026-0192
+        run: cd cli && cargo audit --deny warnings

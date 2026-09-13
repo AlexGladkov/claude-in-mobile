@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Hardened local persistence boundaries used by runtime configuration,
+  recordings, browser profiles, performance artifacts, screenshots, and native
+  CLI state with bounded reads, private permissions, symlink rejection, and
+  atomic replacement.
+- Bounded subprocess output, network responses, JSON/NDJSON payloads, image
+  decoding, directory scans, accessibility trees, debugger queues/caches, and
+  browser snapshots across the TypeScript, Rust, Kotlin, and Python runtimes.
+- Added strict schemas and identifier/path validation at browser CDP, desktop
+  JSON-RPC, WebDriverAgent, simulator, store API, HarmonyOS, recorder, and
+  debugger trust boundaries. Error and terminal output now redact credentials
+  and strip control and bidirectional formatting characters.
+- Published npm tarballs no longer expose the development-only self-link step as
+  an install lifecycle script.
+
+### Changed
+- Browser and desktop automation now reject oversized inputs, screenshots,
+  gestures, and session workloads instead of allowing unbounded memory, CPU,
+  file-descriptor, or process growth.
+- The native CLI stores flow failure captures and compiled Swift helpers through
+  private, collision-resistant paths and refuses symlinked screenshot outputs.
+- Concurrent REPL sessions now serialize only the PTY process-creation
+  handshake, preventing intermittent spawn failures while preserving concurrent
+  session execution.
+
 ## [4.3.0] — 2026-09-10
 
 ### Fixed
