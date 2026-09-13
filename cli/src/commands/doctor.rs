@@ -169,7 +169,7 @@ fn check_ios() -> bool {
     }
 
     // xcrun simctl
-    if run_ok("xcrun", &["simctl", "list", "--json"]) {
+    if run_command("xcrun", &["simctl", "list", "--json"]).is_some() {
         ok("xcrun simctl available");
     } else {
         fail("xcrun simctl not available — check Xcode installation");
