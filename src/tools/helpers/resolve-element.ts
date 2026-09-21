@@ -9,6 +9,7 @@
 import type { ToolContext } from "../context.js";
 import type { Platform } from "../../device-manager.js";
 import { findByText, findByResourceId } from "../../ui-tree/ui-parser.js";
+import type { UiElement } from "../../ui-tree/ui-parser.js";
 import { ElementNotFoundError } from "../../errors.js";
 import { getUiElements } from "./get-elements.js";
 import { screenshotStateKey } from "../context/shared-state-class.js";
@@ -139,7 +140,7 @@ export async function resolveElementCoordinates(
       deviceId,
     );
 
-    let found: import("../../ui-tree/ui-parser.js").UiElement[] = [];
+    let found: UiElement[] = [];
     if (args.text) {
       found = findByText(elements, args.text as string);
     } else if (args.resourceId) {

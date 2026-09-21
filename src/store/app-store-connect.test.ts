@@ -54,14 +54,11 @@ function makeFetch(...responses: MockResponse[]) {
     const r = responses[call++];
     if (!r) throw new Error(`Unexpected fetch call #${call}`);
     const isJson = typeof r.body === "object" && r.body !== null;
-    const text = isJson ? JSON.stringify(r.body) : String(r.body ?? "");
-    return Promise.resolve({
-      ok: r.status >= 200 && r.status < 300,
+    const body = r.status === 204 ? null : isJson ? JSON.stringify(r.body) : String(r.body ?? "");
+    return Promise.resolve(new Response(body, {
       status: r.status,
-      headers: { get: (k: string) => (r.headers ?? {})[k.toLowerCase()] ?? null },
-      text: () => Promise.resolve(text),
-      json: () => Promise.resolve(r.body),
-    });
+      headers: r.headers,
+    }));
   });
 }
 

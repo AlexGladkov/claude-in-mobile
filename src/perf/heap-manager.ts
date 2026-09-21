@@ -1,4 +1,5 @@
-import { requireHeapSnapshot, type HeapSnapshotOptions } from "../adapters/platform-adapter.js";
+import { requireHeapSnapshot } from "../adapters/platform-adapter.js";
+import type { HeapSnapshotOptions } from "../adapters/platform-adapter.js";
 import type { DeviceManager, Platform } from "../device-manager.js";
 import { MobileError } from "../errors.js";
 import { HeapArtifactStore } from "./heap-artifact-store.js";

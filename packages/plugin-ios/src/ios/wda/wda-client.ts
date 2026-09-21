@@ -1,12 +1,76 @@
-import {
-  WDASession,
+import { z } from "zod";
+import { unwrapWdaValue } from "./wda-types.js";
+import type {
   WDAElement,
   WDARect,
   UITreeNode,
   LocatorStrategy,
-  TouchAction,
-  unwrapWdaValue,
 } from "./wda-types.js";
+
+const MAX_WDA_RESPONSE_BYTES = 16 * 1024 * 1024;
+const MAX_WDA_REQUEST_BYTES = 4 * 1024 * 1024;
+const MAX_WDA_IDENTIFIER_LENGTH = 1024;
+
+const wdaResponseSchema = z.object({
+  status: z.number().int().safe().nonnegative().optional(),
+  value: z.unknown().optional(),
+  sessionId: z.string().max(MAX_WDA_IDENTIFIER_LENGTH).optional(),
+}).passthrough();
+type WdaResponse = z.infer<typeof wdaResponseSchema>;
+const wdaSessionValueSchema = z.object({
+  sessionId: z.string().max(MAX_WDA_IDENTIFIER_LENGTH).optional(),
+}).passthrough();
+const wdaElementReferenceSchema = z.object({
+  ELEMENT: z.string().max(MAX_WDA_IDENTIFIER_LENGTH).optional(),
+  element: z.string().max(MAX_WDA_IDENTIFIER_LENGTH).optional(),
+  "element-6066-11e4-a52e-4f735466cecf": z
+    .string()
+    .max(MAX_WDA_IDENTIFIER_LENGTH)
+    .optional(),
+}).passthrough();
+
+function pathSegment(value: string, label: string): string {
+  if (
+    value.length === 0
+    || value.length > MAX_WDA_IDENTIFIER_LENGTH
+    || /[\u0000-\u001f\u007f]/.test(value)
+    || !/^[A-Za-z0-9._:-]+$/.test(value)
+  ) {
+    throw new Error(`Invalid ${label}.`);
+  }
+  return encodeURIComponent(value);
+}
+
+async function readWdaResponse(response: Response): Promise<WdaResponse> {
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_WDA_RESPONSE_BYTES) {
+    await response.body?.cancel();
+    throw new Error("WebDriverAgent response exceeded the size limit.");
+  }
+  if (!response.body) throw new Error("WebDriverAgent returned no response body.");
+
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_WDA_RESPONSE_BYTES) {
+      await reader.cancel();
+      throw new Error("WebDriverAgent response exceeded the size limit.");
+    }
+    chunks.push(Buffer.from(value));
+  }
+
+  const result = wdaResponseSchema.safeParse(
+    JSON.parse(Buffer.concat(chunks, total).toString("utf8")),
+  );
+  if (!result.success) {
+    throw new Error("WebDriverAgent returned an invalid response.");
+  }
+  return result.data;
+}
 
 export class WDAClient {
   private baseUrl: string;
@@ -15,7 +79,10 @@ export class WDAClient {
   private ensureSessionPromise?: Promise<void>;
 
   constructor(port: number) {
-    this.baseUrl = `http://localhost:${port}`;
+    if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+      throw new Error("Invalid WebDriverAgent port.");
+    }
+    this.baseUrl = `http://127.0.0.1:${port}`;
   }
 
   async ensureSession(deviceId: string): Promise<void> {
@@ -39,9 +106,8 @@ export class WDAClient {
         // Verify session is still valid.
         await this.request("GET", `/session/${this.sessionId}`);
         return;
-      } catch (error: unknown) {
-        const msg = error instanceof Error ? error.message : String(error);
-        console.error("WDA session invalid, recreating:", msg);
+      } catch {
+        console.error("WDA session invalid; recreating.");
         this.sessionId = null;
       }
     }
@@ -60,17 +126,18 @@ export class WDAClient {
       },
     });
 
-    this.sessionId = response.sessionId || response.value?.sessionId;
-    if (!this.sessionId) {
-      throw new Error(
-        "Failed to create WebDriverAgent session.\n\n" +
-          "Possible causes:\n" +
-          "- Simulator is not running (boot with: xcrun simctl boot <UDID>)\n" +
-          "- Port in use (check: lsof -i :8100)\n" +
-          "- Code signing issues\n\n" +
-          "Try restarting the simulator."
-      );
+    const nested = wdaSessionValueSchema.safeParse(response.value);
+    const nestedSessionId = nested.success ? nested.data.sessionId : undefined;
+    const sessionId = typeof response.sessionId === "string"
+      ? response.sessionId
+      : typeof nestedSessionId === "string"
+        ? nestedSessionId
+        : undefined;
+    if (!sessionId) {
+      throw new Error("Failed to create WebDriverAgent session.");
     }
+    pathSegment(sessionId, "WebDriverAgent session ID");
+    this.sessionId = sessionId;
   }
 
   async deleteSession(): Promise<void> {
@@ -158,7 +225,7 @@ export class WDAClient {
 
     await this.request(
       "POST",
-      `/session/${this.sessionId}/element/${elementId}/click`
+      `/session/${this.sessionId}/element/${pathSegment(elementId, "WebDriverAgent element ID")}/click`
     );
   }
 
@@ -225,11 +292,21 @@ export class WDAClient {
 
     // Fallback: W3C standard — find active/focused element and setValue
     const activeEl = await this.request("GET", `/session/${this.sessionId}/element/active`);
-    const elementId = activeEl?.value?.ELEMENT ?? activeEl?.value?.element ?? activeEl?.ELEMENT;
-    if (!elementId) {
+    const nested = wdaElementReferenceSchema.safeParse(activeEl.value);
+    const topLevel = wdaElementReferenceSchema.safeParse(activeEl);
+    const nestedValue = nested.success ? nested.data : undefined;
+    const topLevelValue = topLevel.success ? topLevel.data : undefined;
+    const elementId = nestedValue?.ELEMENT
+      ?? nestedValue?.element
+      ?? nestedValue?.["element-6066-11e4-a52e-4f735466cecf"]
+      ?? topLevelValue?.ELEMENT
+      ?? topLevelValue?.element
+      ?? topLevelValue?.["element-6066-11e4-a52e-4f735466cecf"];
+    if (typeof elementId !== "string") {
       throw new Error("No focused element found for text input. Tap a text field first.");
     }
-    await this.request("POST", `/session/${this.sessionId}/element/${elementId}/value`, {
+    const encodedElementId = pathSegment(elementId, "WebDriverAgent element ID");
+    await this.request("POST", `/session/${this.sessionId}/element/${encodedElementId}/value`, {
       text,
       value: text.split(""),
     });
@@ -287,7 +364,7 @@ export class WDAClient {
 
     const response = await this.request(
       "GET",
-      `/session/${this.sessionId}/element/${elementId}/rect`
+      `/session/${this.sessionId}/element/${pathSegment(elementId, "WebDriverAgent element ID")}/rect`
     );
 
     return unwrapWdaValue<WDARect>(response, "element/rect");
@@ -300,10 +377,12 @@ export class WDAClient {
 
     const response = await this.request(
       "GET",
-      `/session/${this.sessionId}/element/${elementId}/text`
+      `/session/${this.sessionId}/element/${pathSegment(elementId, "WebDriverAgent element ID")}/text`
     );
-
-    return response.value || response || "";
+    if (typeof response.value !== "string") {
+      throw new Error("WebDriverAgent returned invalid element text.");
+    }
+    return response.value;
   }
 
   async isElementDisplayed(elementId: string): Promise<boolean> {
@@ -313,10 +392,12 @@ export class WDAClient {
 
     const response = await this.request(
       "GET",
-      `/session/${this.sessionId}/element/${elementId}/displayed`
+      `/session/${this.sessionId}/element/${pathSegment(elementId, "WebDriverAgent element ID")}/displayed`
     );
-
-    return response.value || response || false;
+    if (typeof response.value !== "boolean") {
+      throw new Error("WebDriverAgent returned invalid display state.");
+    }
+    return response.value;
   }
 
   /**
@@ -326,59 +407,64 @@ export class WDAClient {
    */
   async screenshot(): Promise<Buffer> {
     const data = await this.request("GET", "/screenshot");
-    const b64 = typeof data?.value === "string" ? data.value : "";
-    if (!b64) {
-      throw new Error("WebDriverAgent returned an empty screenshot");
+    const b64 = typeof data.value === "string" ? data.value : "";
+    if (!b64 || b64.length > MAX_WDA_RESPONSE_BYTES) {
+      throw new Error("WebDriverAgent returned an invalid screenshot.");
     }
-    return Buffer.from(b64, "base64");
+    const png = Buffer.from(b64, "base64");
+    if (
+      png.length < 8
+      || !png.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+    ) {
+      throw new Error("WebDriverAgent returned an invalid screenshot.");
+    }
+    return png;
   }
 
   private async request(
     method: string,
     path: string,
     body?: unknown
-  ): Promise<any> {
+  ): Promise<WdaResponse> {
+    const serializedBody = body === undefined ? undefined : JSON.stringify(body);
+    if (
+      serializedBody !== undefined
+      && Buffer.byteLength(serializedBody, "utf8") > MAX_WDA_REQUEST_BYTES
+    ) {
+      throw new Error("WebDriverAgent request exceeded the size limit.");
+    }
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.operationTimeout);
-
     try {
       const response = await fetch(`${this.baseUrl}${path}`, {
+        redirect: "error",
         method,
         headers: {
           "Content-Type": "application/json",
         },
-        body: body ? JSON.stringify(body) : undefined,
+        body: serializedBody,
         signal: controller.signal,
       });
-
-      clearTimeout(timeout);
-
       if (!response.ok) {
-        const text = await response.text();
-        throw new Error(
-          `WebDriverAgent request failed: ${response.status} ${response.statusText}\n${text}`
-        );
+        await response.body?.cancel();
+        throw new Error(`WebDriverAgent request failed with HTTP ${response.status}.`);
       }
 
-      const data = await response.json() as { status?: number; value?: { message?: string; sessionId?: string }; sessionId?: string };
-
+      const data = await readWdaResponse(response);
       if (data.status !== undefined && data.status !== 0) {
-        throw new Error(
-          `WebDriverAgent error: ${data.value?.message || JSON.stringify(data)}`
-        );
+        throw new Error(`WebDriverAgent request failed with status ${data.status}.`);
       }
-
       return data;
     } catch (error: unknown) {
-      clearTimeout(timeout);
-
       if (error instanceof Error && error.name === "AbortError") {
         throw new Error(
           `WebDriverAgent request timed out after ${this.operationTimeout}ms`
         );
       }
-
       throw error;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 }

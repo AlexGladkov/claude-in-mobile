@@ -55,9 +55,7 @@ fn init_patterns() -> Vec<(&'static str, RedactPattern)> {
         //    Group layout: (pre)(token)(post)
         (
             "aws-secret",
-            boundary(
-                r"(?:^|([^A-Za-z0-9/+=]))([A-Za-z0-9/+=]{40})(?:([^A-Za-z0-9/+=])|$)",
-            ),
+            boundary(r"(?:^|([^A-Za-z0-9/+=]))([A-Za-z0-9/+=]{40})(?:([^A-Za-z0-9/+=])|$)"),
         ),
         // 3. github-pat: gh[pousr]_[A-Za-z0-9_]{36,}
         ("github-pat", simple(r"gh[pousr]_[A-Za-z0-9_]{36,}")),
@@ -258,7 +256,10 @@ mod tests {
         for prefix in ["ghp_", "gho_", "ghu_", "ghs_", "ghr_"] {
             let token = format!("{prefix}1234567890abcdefghijklmnopqrstuvwxyz");
             let out = redact(&token);
-            assert!(out.contains("[REDACTED]"), "prefix {prefix} not redacted: {out}");
+            assert!(
+                out.contains("[REDACTED]"),
+                "prefix {prefix} not redacted: {out}"
+            );
         }
     }
 
@@ -279,8 +280,7 @@ mod tests {
 
     #[test]
     fn jwt_redacted() {
-        let jwt =
-            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signaturepart";
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signaturepart";
         let out = redact(jwt);
         assert!(out.contains("[REDACTED]"), "got: {out}");
         assert!(!out.contains("eyJ"), "got: {out}");

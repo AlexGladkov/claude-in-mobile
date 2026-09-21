@@ -5,7 +5,7 @@
 
 use anyhow::{bail, Result};
 
-use crate::utils::shell_gate;
+use crate::utils::{process::terminal_safe, shell_gate};
 use crate::{android, aurora, desktop, harmony, ios, scale, screenshot};
 
 // -- Screenshot / Annotate ----------------------------------------------------
@@ -15,25 +15,25 @@ pub fn screenshot(
     output: Option<&str>,
     compress: bool,
     max_width: u32,
+    max_height: u32,
     quality: u8,
     simulator: Option<&str>,
     device: Option<&str>,
     companion_path: Option<&str>,
 ) -> Result<()> {
-    if platform == "desktop" {
-        let data = desktop::screenshot(companion_path)?;
-        return write_or_base64(output, &data);
-    }
-    if platform == "aurora" {
-        let data = aurora::screenshot(device)?;
-        return write_or_base64(output, &data);
-    }
-    if platform == "harmony" {
-        let data = harmony::screenshot(device)?;
-        return write_or_base64(output, &data);
+    let captured = match platform {
+        "desktop" => Some(desktop::screenshot(companion_path)?),
+        "aurora" => Some(aurora::screenshot(device)?),
+        "harmony" => Some(harmony::screenshot(device)?),
+        _ => None,
+    };
+    if let Some(data) = captured {
+        return screenshot::write_screenshot_output(
+            data, output, compress, max_width, max_height, quality,
+        );
     }
     screenshot::take_screenshot(
-        platform, output, compress, max_width, quality, simulator, device,
+        platform, output, compress, max_width, max_height, quality, simulator, device,
     )
 }
 
@@ -253,7 +253,10 @@ pub fn ui_dump(
         "android" => android::ui_dump(format, device),
         "ios" => ios::ui_dump(format, simulator),
         "harmony" => {
-            println!("{}", harmony::ui_dump(format, device)?);
+            println!(
+                "{}",
+                terminal_safe(harmony::ui_dump(format, device)?.as_bytes())
+            );
             Ok(())
         }
         "desktop" => desktop::get_ui(companion_path),
@@ -510,7 +513,7 @@ pub fn ui_wait(
         };
 
         if let Some(elem_desc) = found {
-            println!("Found: {}", elem_desc);
+            println!("Found: {}", terminal_safe(elem_desc.as_bytes()));
             return Ok(());
         }
 
@@ -547,7 +550,10 @@ pub fn ui_assert_visible(
 
     match found {
         Some(elem_desc) => {
-            println!("PASS: Element visible -- {}", elem_desc);
+            println!(
+                "PASS: Element visible -- {}",
+                terminal_safe(elem_desc.as_bytes())
+            );
             Ok(())
         }
         None => {
@@ -581,7 +587,10 @@ pub fn ui_assert_gone(
             Ok(())
         }
         Some(elem_desc) => {
-            println!("FAIL: Element exists -- {}", elem_desc);
+            println!(
+                "FAIL: Element exists -- {}",
+                terminal_safe(elem_desc.as_bytes())
+            );
             std::process::exit(1);
         }
     }
@@ -769,18 +778,19 @@ pub fn permission_grant(
         "android" => android::permission_grant(package, permission, device),
         "harmony" => harmony::permission_grant(package, permission, device),
         "ios" => {
-            let sim = simulator.unwrap_or("booted");
-            let output = std::process::Command::new("xcrun")
-                .args(["simctl", "privacy", sim, "grant", permission, package])
-                .output()
-                .map_err(|e| anyhow::anyhow!("xcrun simctl privacy grant failed: {}", e))?;
+            crate::utils::validate::validate_bundle_identifier(package)?;
+            crate::utils::validate::validate_simulator_service(permission)?;
+            let output = ios::simctl_exec(&[
+                "privacy",
+                simulator.unwrap_or("booted"),
+                "grant",
+                permission,
+                package,
+            ])?;
             if !output.status.success() {
-                anyhow::bail!(
-                    "simctl privacy grant failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
+                bail!("Simulator permission grant failed");
             }
-            println!("Granted {} to {}", permission, package);
+            println!("Permission granted");
             Ok(())
         }
         _ => anyhow::bail!("Unsupported platform for permission-grant: {}", platform),
@@ -798,18 +808,19 @@ pub fn permission_revoke(
         "android" => android::permission_revoke(package, permission, device),
         "harmony" => harmony::permission_revoke(package, permission, device),
         "ios" => {
-            let sim = simulator.unwrap_or("booted");
-            let output = std::process::Command::new("xcrun")
-                .args(["simctl", "privacy", sim, "revoke", permission, package])
-                .output()
-                .map_err(|e| anyhow::anyhow!("xcrun simctl privacy revoke failed: {}", e))?;
+            crate::utils::validate::validate_bundle_identifier(package)?;
+            crate::utils::validate::validate_simulator_service(permission)?;
+            let output = ios::simctl_exec(&[
+                "privacy",
+                simulator.unwrap_or("booted"),
+                "revoke",
+                permission,
+                package,
+            ])?;
             if !output.status.success() {
-                anyhow::bail!(
-                    "simctl privacy revoke failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
+                bail!("Simulator permission revoke failed");
             }
-            println!("Revoked {} from {}", permission, package);
+            println!("Permission revoked");
             Ok(())
         }
         _ => anyhow::bail!("Unsupported platform for permission-revoke: {}", platform),
@@ -826,18 +837,18 @@ pub fn permission_reset(
         "android" => android::permission_reset(package, device),
         "harmony" => harmony::permission_reset(package, device),
         "ios" => {
-            let sim = simulator.unwrap_or("booted");
-            let output = std::process::Command::new("xcrun")
-                .args(["simctl", "privacy", sim, "reset", "all", package])
-                .output()
-                .map_err(|e| anyhow::anyhow!("xcrun simctl privacy reset failed: {}", e))?;
+            crate::utils::validate::validate_bundle_identifier(package)?;
+            let output = ios::simctl_exec(&[
+                "privacy",
+                simulator.unwrap_or("booted"),
+                "reset",
+                "all",
+                package,
+            ])?;
             if !output.status.success() {
-                anyhow::bail!(
-                    "simctl privacy reset failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
+                bail!("Simulator permission reset failed");
             }
-            println!("Permissions reset for {}", package);
+            println!("Permissions reset");
             Ok(())
         }
         _ => anyhow::bail!("Unsupported platform for permission-reset: {}", platform),
@@ -882,18 +893,12 @@ pub fn intent_deeplink(
     match platform {
         "android" => android::intent_deeplink(uri, package, device),
         "ios" => {
-            let sim = simulator.unwrap_or("booted");
-            let output = std::process::Command::new("xcrun")
-                .args(["simctl", "openurl", sim, uri])
-                .output()
-                .map_err(|e| anyhow::anyhow!("xcrun simctl openurl failed: {}", e))?;
+            crate::utils::validate::validate_deep_link(uri)?;
+            let output = ios::simctl_exec(&["openurl", simulator.unwrap_or("booted"), uri])?;
             if !output.status.success() {
-                anyhow::bail!(
-                    "simctl openurl failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
+                bail!("Simulator deep-link failed");
             }
-            println!("Opened deep-link on iOS simulator: {}", uri);
+            println!("Deep-link opened");
             Ok(())
         }
         _ => anyhow::bail!("Unsupported platform for intent-deeplink: {}", platform),
@@ -1042,18 +1047,4 @@ pub fn perf_crashes(package: Option<&str>, lines: usize, device: Option<&str>) -
 /// Detailed frame rendering stats (gfxinfo framestats) for a package.
 pub fn perf_framestats(package: &str, device: Option<&str>) -> Result<()> {
     android::perf_framestats(package, device)
-}
-
-// -- Helpers ------------------------------------------------------------------
-
-/// Write raw bytes to a file, or encode as base64 and print to stdout.
-fn write_or_base64(output: Option<&str>, data: &[u8]) -> Result<()> {
-    if let Some(path) = output {
-        std::fs::write(path, data)?;
-        eprintln!("Screenshot saved to: {}", path);
-    } else {
-        let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, data);
-        println!("{}", b64);
-    }
-    Ok(())
 }

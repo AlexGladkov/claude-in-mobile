@@ -63,24 +63,41 @@ export const SYNC_ASSERT_MAX_RETRIES = 5;
 export const SYNC_ASSERT_RETRY_DELAY = 500;
 export const SYNC_ASSERT_DEFAULT_DELAY = 1000;
 
-const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const FORBIDDEN_KEYS = {
+  ["__proto__"]: true,
+  ["constructor"]: true,
+  ["prototype"]: true,
+} as const satisfies Readonly<Record<string, true>>;
 
-const SYNC_BLOCKED_ACTIONS = new Set([
+const SYNC_BLOCKED_ACTIONS: Readonly<Record<string, true>> = {
   // Security-sensitive
-  "system_shell", "shell",
-  "browser_evaluate",
+  system_shell: true,
+  shell: true,
+  browser_evaluate: true,
   // Self-referential
-  "sync_create_group", "sync_run", "sync_assert_cross",
-  "sync_status", "sync_list", "sync_destroy",
-  "sync",
+  sync_create_group: true,
+  sync_run: true,
+  sync_assert_cross: true,
+  sync_status: true,
+  sync_list: true,
+  sync_destroy: true,
+  sync: true,
   // Flow nesting
-  "flow_batch", "flow_run", "flow_parallel",
-  "batch_commands", "run_flow", "parallel",
+  flow_batch: true,
+  flow_run: true,
+  flow_parallel: true,
+  batch_commands: true,
+  run_flow: true,
+  parallel: true,
   // Recorder conflicts
-  "recorder_start", "recorder_stop", "recorder_play", "recorder",
+  recorder_start: true,
+  recorder_stop: true,
+  recorder_play: true,
+  recorder: true,
   // Dangerous
-  "install_app", "push_file",
-]);
+  install_app: true,
+  push_file: true,
+};
 
 // ── Module state ──
 
@@ -90,14 +107,14 @@ export const activeGroups = new Map<string, SyncGroup>();
 
 export function validateStepArgs(args: Record<string, unknown>): void {
   for (const key of Object.keys(args)) {
-    if (FORBIDDEN_KEYS.has(key)) {
+    if (Object.hasOwn(FORBIDDEN_KEYS, key)) {
       throw new ValidationError(`Forbidden key "${key}" in step args`);
     }
   }
 }
 
 export function isSyncActionAllowed(actionName: string): boolean {
-  if (SYNC_BLOCKED_ACTIONS.has(actionName)) return false;
+  if (Object.hasOwn(SYNC_BLOCKED_ACTIONS, actionName)) return false;
   return getRegisteredToolNames().has(actionName);
 }
 

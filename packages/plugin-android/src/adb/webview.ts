@@ -3,8 +3,59 @@
  * Connects to WebViews in Android apps using ADB port-forwarding + CDP.
  */
 
+import { z } from "zod";
+import { createServer } from "node:net";
+
 import { AdbClient } from "./client.js";
 import { WebViewNotFoundError } from "mcp-devices/errors";
+const MAX_CDP_RESPONSE_BYTES = 2 * 1024 * 1024;
+const MAX_TARGETS = 1000;
+const SOCKET_NAME_RE = /^[A-Za-z0-9_.:-]{1,256}$/;
+const webViewTargetSchema = z.object({
+  description: z.string().max(8192).regex(/^[^\u0000-\u001f\u007f]*$/),
+  devtoolsFrontendUrl: z.string().max(8192).regex(/^[^\u0000-\u001f\u007f]*$/),
+  id: z.string().max(8192).regex(/^[^\u0000-\u001f\u007f]*$/),
+  title: z.string().max(8192).regex(/^[^\u0000-\u001f\u007f]*$/),
+  type: z.string().max(8192).regex(/^[^\u0000-\u001f\u007f]*$/),
+  url: z.string().max(8192).regex(/^[^\u0000-\u001f\u007f]*$/),
+  webSocketDebuggerUrl: z.string().max(8192).regex(/^[^\u0000-\u001f\u007f]*$/),
+}).strict();
+const webViewTargetsSchema = z.array(webViewTargetSchema).max(MAX_TARGETS);
+
+function parseTargets(value: unknown): WebViewTarget[] {
+  const result = webViewTargetsSchema.safeParse(value);
+  if (!result.success) {
+    throw new Error("Invalid WebView CDP target response.");
+  }
+  return result.data;
+}
+
+async function readTargets(response: Response): Promise<WebViewTarget[]> {
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error(`CDP request failed: ${response.status}`);
+  }
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_CDP_RESPONSE_BYTES) {
+    await response.body?.cancel();
+    throw new Error("WebView CDP response exceeded the size limit.");
+  }
+  if (!response.body) throw new Error("WebView CDP response had no body.");
+  const reader = response.body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_CDP_RESPONSE_BYTES) {
+      await reader.cancel();
+      throw new Error("WebView CDP response exceeded the size limit.");
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return parseTargets(JSON.parse(Buffer.concat(chunks, total).toString("utf8")));
+}
 
 export interface WebViewTarget {
   description: string;
@@ -44,9 +95,10 @@ export class WebViewInspector {
       for (const line of lines) {
         // Match devtools_remote sockets (Chrome, WebView, etc.)
         // Socket names may be prefixed with @ (abstract namespace)
-        const match = line.match(/@?([\w.]+_devtools_remote\S*)/);
-        if (match) {
+        const match = line.match(/@?([A-Za-z0-9_.:-]+_devtools_remote[A-Za-z0-9_.:-]*)/);
+        if (match?.[1] && SOCKET_NAME_RE.test(match[1])) {
           sockets.push(match[1]);
+          if (sockets.length >= MAX_TARGETS) break;
         }
       }
 
@@ -76,6 +128,9 @@ export class WebViewInspector {
       }
       socketName = sockets[0];
     }
+    if (!SOCKET_NAME_RE.test(socketName)) {
+      throw new Error("Invalid WebView socket name.");
+    }
 
     // Find a free port starting from 9222
     const port = await this.findFreePort(9222);
@@ -91,31 +146,26 @@ export class WebViewInspector {
    * List available pages/targets via CDP
    */
   async listTargets(port?: number): Promise<WebViewTarget[]> {
-    const p = port ?? this.forwardedPort;
-    if (!p) {
-      throw new Error("No WebView port forwarded. Call forwardWebView() first.");
+    const selectedPort = port ?? this.forwardedPort;
+    if (!selectedPort || !Number.isSafeInteger(selectedPort) || selectedPort < 1 || selectedPort > 65_535) {
+      throw new Error("No valid WebView port forwarded. Call forwardWebView() first.");
     }
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
-
     try {
-      const response = await fetch(`http://localhost:${p}/json/list`, {
+      const response = await fetch(`http://127.0.0.1:${selectedPort}/json/list`, {
+        redirect: "error",
         signal: controller.signal,
       });
-      clearTimeout(timeout);
-
-      if (!response.ok) {
-        throw new Error(`CDP request failed: ${response.status}`);
-      }
-
-      return await response.json() as WebViewTarget[];
+      return await readTargets(response);
     } catch (error: unknown) {
-      clearTimeout(timeout);
       if (error instanceof Error && error.name === "AbortError") {
         throw new Error("WebView CDP connection timed out. Is the WebView active?");
       }
       throw error;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
@@ -123,39 +173,31 @@ export class WebViewInspector {
    * Get page DOM tree via CDP HTTP endpoint
    */
   async getPageContent(targetId: string, port?: number): Promise<string> {
-    const p = port ?? this.forwardedPort;
-    if (!p) {
-      throw new Error("No WebView port forwarded. Call forwardWebView() first.");
+    if (targetId.length === 0 || targetId.length > 1024 || /[\u0000-\u001f\u007f]/.test(targetId)) {
+      throw new Error("Invalid WebView target ID.");
+    }
+    const selectedPort = port ?? this.forwardedPort;
+    if (!selectedPort || !Number.isSafeInteger(selectedPort) || selectedPort < 1 || selectedPort > 65_535) {
+      throw new Error("No valid WebView port forwarded. Call forwardWebView() first.");
     }
 
-    // Use CDP /json/protocol to get DOM — simpler approach: evaluate JS to get HTML
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-
+    const timeout = setTimeout(() => controller.abort(), 10_000);
     try {
-      // First get the websocket URL, but since we can't do WS easily,
-      // use the simpler HTTP-based approach via /json/version + evaluate
-      const response = await fetch(`http://localhost:${p}/json/list`, {
+      const response = await fetch(`http://127.0.0.1:${selectedPort}/json/list`, {
+        redirect: "error",
         signal: controller.signal,
       });
-      clearTimeout(timeout);
-
-      const targets = await response.json() as WebViewTarget[];
-      const target = targets.find(t => t.id === targetId);
-
-      if (!target) {
-        throw new Error(`Target ${targetId} not found`);
-      }
-
-      // Return target info with URL and title
+      const targets = await readTargets(response);
+      const target = targets.find((candidate) => candidate.id === targetId);
+      if (!target) throw new Error("WebView target not found.");
       return JSON.stringify({
         title: target.title,
         url: target.url,
         type: target.type,
       }, null, 2);
-    } catch (error: unknown) {
+    } finally {
       clearTimeout(timeout);
-      throw error;
     }
   }
 
@@ -192,7 +234,7 @@ export class WebViewInspector {
   }
 
   private async findFreePort(startPort: number): Promise<number> {
-    const { createServer } = await import("net");
+
 
     for (let port = startPort; port < startPort + 100; port++) {
       try {
@@ -202,7 +244,7 @@ export class WebViewInspector {
           server.once("listening", () => {
             server.close(() => resolve());
           });
-          server.listen(port);
+          server.listen(port, "127.0.0.1");
         });
         return port;
       } catch {

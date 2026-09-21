@@ -5,45 +5,52 @@
 //! work across separate invocations.
 
 use std::path::PathBuf;
-use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 
-fn drafts_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home)
-        .join(".config")
-        .join("mcp-devices")
-        .join("drafts")
+use crate::utils::private_state::{atomic_write, read_json_file, state_file};
+use anyhow::{bail, Context, Result};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
+
+fn draft_path(store: &str, package: &str) -> Result<PathBuf> {
+    state_file("store-drafts", &format!("{store}-{package}"), "json")
 }
 
-fn draft_path(store: &str, package: &str) -> PathBuf {
-    let safe_pkg = package.replace(['/', ':'], "_");
-    drafts_dir().join(format!("{}-{}.json", store, safe_pkg))
-}
-
-pub fn load<T: for<'de> Deserialize<'de>>(store: &str, package: &str) -> Result<T> {
-    let path = draft_path(store, package);
-    let content = std::fs::read_to_string(&path).with_context(|| {
+pub fn load<T: DeserializeOwned>(store: &str, package: &str) -> Result<T> {
+    let path = draft_path(store, package)?;
+    read_json_file(&path, 1024 * 1024, "store draft").with_context(|| {
         format!(
-            "No active draft for '{}'. Run '{} upload' first.",
+            "No valid active draft for '{}'. Run '{} upload' first.",
             package, store
         )
-    })?;
-    serde_json::from_str(&content)
-        .with_context(|| format!("Failed to parse draft state for '{}'", package))
+    })
 }
 
 pub fn save<T: Serialize>(store: &str, package: &str, draft: &T) -> Result<()> {
-    let dir = drafts_dir();
-    std::fs::create_dir_all(&dir).context("Failed to create drafts directory")?;
-    let path = draft_path(store, package);
-    let content =
-        serde_json::to_string_pretty(draft).context("Failed to serialize draft state")?;
-    std::fs::write(&path, content).context("Failed to write draft state")?;
+    let path = draft_path(store, package)?;
+    let content = serde_json::to_vec_pretty(draft).context("Failed to serialize draft state")?;
+    if content.len() > 1024 * 1024 {
+        bail!("Store draft exceeds 1048576 bytes");
+    }
+    atomic_write(&path, &content).context("Failed to write draft state")?;
     Ok(())
 }
 
-pub fn delete(store: &str, package: &str) {
-    let path = draft_path(store, package);
-    let _ = std::fs::remove_file(path);
+pub fn delete(store: &str, package: &str) -> Result<()> {
+    let path = draft_path(store, package)?;
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).context("Failed to delete draft state"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn draft_path_rejects_traversal() {
+        assert!(draft_path("google-play", "../../escape").is_err());
+        assert!(draft_path("google-play", r"..\\..\\escape").is_err());
+    }
 }

@@ -41,8 +41,9 @@ impl FakeHdc {
         fs::write(
             &hdc,
             r#"#!/bin/sh
-printf '%s\n' "$*" >> "$HDC_LOG"
-case "$*" in
+normalized=$(printf '%s' "$*" | tr -d "'")
+printf '%s\n' "$normalized" >> "$HDC_LOG"
+case "$normalized" in
   *"atm dump -t -b"*)
     printf '%s\n' '{"tokenId":42}'
     exit 0

@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
-import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
+import { z } from "zod";
+
 
 import {
   assertToolsAvailable,
@@ -13,9 +14,12 @@ import type { ToolDefinition } from "./tools/registry.js";
 import { createToolContext, MAX_RECURSION_DEPTH } from "./tools/context.js";
 import { MobileError } from "./errors.js";
 import { getGlobalMetrics } from "./utils/metrics.js";
-import { VALID_PROFILES, type MobileProfile } from "./profiles.js";
+import { sanitizeErrorMessage } from "./utils/sanitize.js";
+import { VALID_PROFILES } from "./profiles.js";
+import type { MobileProfile } from "./profiles.js";
 import { recordCall } from "./utils/anti-patterns.js";
-import { bootstrapKernelAsync, type KernelHandle } from "./runtime/bootstrap.js";
+import { bootstrapKernelAsync } from "./runtime/bootstrap.js";
+import type { KernelHandle } from "./runtime/bootstrap.js";
 import { DeviceManager } from "./device-manager.js";
 import type { ToolDefinition as PluginToolDefinition } from "@mcp-devices/plugin-api";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
@@ -26,10 +30,21 @@ import { runCliIfRequested } from "./runtime/cli.js";
 import { runPlatformCommand } from "./runtime/platform-cli.js";
 import { runToolPluginCommand } from "./runtime/tool-plugin-cli.js";
 import { createMcpServer } from "./runtime/mcp-server.js";
+import { readPrivateFileSync } from "./utils/private-storage.js";
 
-// Read version from package.json — single source of truth
+
+// Read version from package.json — single source of truth.
+const packageMetadataSchema = z.object({
+  version: z.string().min(1).max(128).regex(/^[^\u0000-\u001f\u007f]+$/),
+}).passthrough();
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const pkg = JSON.parse(readFileSync(join(__dirname, "../package.json"), "utf-8")) as { version: string };
+const pkg = packageMetadataSchema.parse(
+  JSON.parse(readPrivateFileSync(
+    join(__dirname, "../package.json"),
+    1024 * 1024,
+    "package metadata",
+  ).toString("utf8")),
+);
 
 /** Retry config for transient errors. Only at depth=0 (top-level MCP calls). */
 const RETRY_CONFIG: Record<string, { maxAttempts: number; delayMs: number[] }> = {
@@ -177,7 +192,7 @@ async function shutdown(signal: string): Promise<void> {
   try {
     await kernel.disposeAll();
   } catch (e) {
-    console.error("Kernel dispose error:", e);
+    console.error("Kernel dispose error:", sanitizeErrorMessage(e));
   }
   process.exit(0);
 }
@@ -191,6 +206,6 @@ process.stdin.on("close", () => shutdown("stdin-close"));
 void server;
 
 start().catch((error) => {
-  console.error("Fatal error:", error);
+  console.error("Fatal error:", sanitizeErrorMessage(error));
   process.exit(1);
 });

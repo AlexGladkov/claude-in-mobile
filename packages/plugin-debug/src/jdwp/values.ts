@@ -6,7 +6,8 @@
  * `objectId` the caller can drill into later; primitives decode to JS values.
  */
 
-import { JdwpReader, type JdwpWriter } from "./packet.js";
+import { JdwpReader } from "./packet.js";
+import type { JdwpWriter } from "./packet.js";
 import { Tag } from "./constants.js";
 
 export interface DecodedValue {

@@ -1,4 +1,6 @@
-import { getConfigSnippet, type ClientType } from "../client-adapter.js";
+import { getConfigSnippet } from "../client-adapter.js";
+import type { ClientType } from "../client-adapter.js";
+import { sanitizeErrorMessage } from "../utils/sanitize.js";
 
 export const INIT_CLIENTS = ["opencode", "cursor", "claude-code", "grok"] as const;
 
@@ -85,7 +87,7 @@ Docs
       console.log(snippet);
       process.exit(0);
     } catch (e: unknown) {
-      console.error(e instanceof Error ? e.message : String(e));
+      console.error(sanitizeErrorMessage(e));
       process.exit(1);
     }
   }

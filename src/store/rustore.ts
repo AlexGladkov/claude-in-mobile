@@ -1,10 +1,10 @@
-import { existsSync, createReadStream } from "fs";
-import { stat } from "fs/promises";
-import { Readable } from "stream";
+import { existsSync, openAsBlob } from "node:fs";
+import { basename } from "node:path";
 import { createSign } from "crypto";
+import { z } from "zod";
 import type { StoreClient, UploadResult } from "./store-client.js";
 import { AbstractStoreClient } from "./base-client.js";
-import { sanitizeErrorMessage } from "../utils/sanitize.js";
+import { validatePackageName } from "../utils/sanitize.js";
 
 const BASE = "https://public-api.rustore.ru/public/v1";
 const AUTH_URL = "https://public-api.rustore.ru/public/auth";
@@ -20,40 +20,6 @@ interface TokenCache {
   expiresAt: number;
 }
 
-interface AuthResponse {
-  code: string;
-  body: {
-    jwtToken: string;
-    ttl: number;
-  };
-  message?: string;
-}
-
-interface CreateVersionResponse {
-  code: string;
-  body: {
-    versionId: number;
-  };
-  message?: string;
-}
-
-interface VersionListResponse {
-  code: string;
-  body: Array<{
-    versionId: number;
-    versionCode?: number;
-    versionName?: string;
-    appStatus?: string;
-    publishType?: string;
-  }>;
-  message?: string;
-}
-
-interface RuStoreApiResponse {
-  code: string;
-  message?: string;
-  body?: unknown;
-}
 
 interface ReleaseNoteEntry {
   language: string;
@@ -64,18 +30,63 @@ interface DraftState {
   versionId: number;
   releaseNotes: ReleaseNoteEntry[];
 }
+const ruStoreCodeSchema = z.string().min(1).max(128).regex(/^[A-Za-z0-9._-]+$/);
+const ruStoreRecordSchema = z.record(z.string(), z.unknown());
+const ruStoreResponseSchema = z.object({
+  code: ruStoreCodeSchema,
+  message: z.string().max(4096).optional(),
+  body: z.unknown().optional(),
+}).passthrough();
+const ruStoreCredentialsSchema = z.object({
+  companyId: z.string().min(1).max(256),
+  keyId: z.string().min(1).max(256),
+  privateKey: z.string().min(1).max(1024 * 1024),
+}).strict();
+const ruStoreAuthBodySchema = z.object({
+  jwtToken: z.string().min(1).max(64 * 1024),
+  ttl: z.number().finite().positive().max(86_400),
+}).passthrough();
+const ruStoreDraftBodySchema = z.object({
+  versionId: z.number().int().safe().positive(),
+}).passthrough();
+const ruStoreVersionSchema = z.object({
+  versionId: z.number().int().safe(),
+  versionCode: z.number().int().safe().optional(),
+  versionName: z.string().max(256).optional(),
+  appStatus: z.string().max(128).optional(),
+  publishType: z.string().max(128).optional(),
+}).passthrough();
+const ruStoreVersionListSchema = z.array(ruStoreVersionSchema).max(10_000);
+
+function responseRecord(value: unknown): Record<string, unknown> {
+  const result = ruStoreRecordSchema.safeParse(value);
+  if (!result.success) {
+    throw new Error("RuStore returned an invalid response.");
+  }
+  return result.data;
+}
+
+function responseCode(value: unknown): { record: Record<string, unknown>; code: string } {
+  const result = ruStoreResponseSchema.safeParse(value);
+  if (!result.success) {
+    throw new Error("RuStore returned an invalid response.");
+  }
+  return { record: result.data, code: result.data.code };
+}
 
 function loadCredentials(): RuStoreCredentials {
-  // Try JSON config first
   const keyJson = process.env.RUSTORE_KEY_JSON;
+  // Try JSON config first
   if (keyJson) {
+    if (Buffer.byteLength(keyJson, "utf8") > 1024 * 1024) {
+      throw new Error("RuStore: RUSTORE_KEY_JSON exceeds the size limit");
+    }
     try {
-      const parsed = JSON.parse(keyJson) as RuStoreCredentials;
-      if (parsed.companyId && parsed.keyId && parsed.privateKey) {
-        return parsed;
-      }
+      const result = ruStoreCredentialsSchema.safeParse(JSON.parse(keyJson));
+      if (!result.success) throw new Error("invalid credentials");
+      return result.data;
     } catch {
-      throw new Error("RuStore: RUSTORE_KEY_JSON is not valid JSON");
+      throw new Error("RuStore: RUSTORE_KEY_JSON is not valid credentials JSON");
     }
   }
 
@@ -84,8 +95,9 @@ function loadCredentials(): RuStoreCredentials {
   const keyId = process.env.RUSTORE_KEY_ID;
   const privateKey = process.env.RUSTORE_PRIVATE_KEY;
 
-  if (companyId && keyId && privateKey) {
-    return { companyId, keyId, privateKey };
+  const result = ruStoreCredentialsSchema.safeParse({ companyId, keyId, privateKey });
+  if (result.success) {
+    return result.data;
   }
 
   throw new Error(
@@ -132,48 +144,50 @@ export class RuStoreClient extends AbstractStoreClient implements StoreClient {
     const credentials = loadCredentials();
     const jwtToken = createJwt(credentials);
 
-    const res = await fetch(AUTH_URL, {
+    const res = await this.fetchWithTimeout(AUTH_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ jwtToken }),
     });
 
     if (!res.ok) {
-      const text = sanitizeErrorMessage((await res.text()).slice(0, 200));
-      throw new Error(`RuStore auth failed ${res.status}: ${text}`);
+      await res.body?.cancel();
+      throw new Error(`RuStore auth failed with HTTP ${res.status}.`);
     }
 
-    const data = await res.json() as AuthResponse;
-    if (data.code !== "OK") {
-      throw new Error(`RuStore auth error: ${data.message ?? data.code}`);
+    const { record: data, code } = responseCode(await this.readJson(res));
+    if (code !== "OK") throw new Error(`RuStore auth failed with code ${code}.`);
+    const authResult = ruStoreAuthBodySchema.safeParse(data.body);
+    if (!authResult.success) {
+      throw new Error("RuStore returned invalid authentication data.");
     }
-
-    const ttlMs = data.body.ttl * 1000;
+    const authBody = authResult.data;
     this.tokenCache = {
-      token: data.body.jwtToken,
-      expiresAt: Date.now() + ttlMs,
+      token: authBody.jwtToken,
+      expiresAt: Date.now() + authBody.ttl * 1000,
     };
     return this.tokenCache.token;
   }
 
   private async createDraftVersion(packageName: string, token: string): Promise<number> {
-    const data = await this.api<CreateVersionResponse>(
+    const { record: data, code } = responseCode(await this.api(
       "POST",
       `${BASE}/application/${encodeURIComponent(packageName)}/version`,
       token,
       { whatsNew: {} }
-    );
-
-    if (data.code !== "OK") {
-      throw new Error(`RuStore: failed to create draft version: ${data.message ?? data.code}`);
+    ));
+    if (code !== "OK") throw new Error(`RuStore draft creation failed with code ${code}.`);
+    const bodyResult = ruStoreDraftBodySchema.safeParse(data.body);
+    if (!bodyResult.success) {
+      throw new Error("RuStore returned an invalid draft version ID.");
     }
-
-    return data.body.versionId;
+    return bodyResult.data.versionId;
   }
 
   // ── Public API ───────────────────────────────────────────────────────────────
 
   async upload(packageName: string, filePath: string): Promise<UploadResult> {
+    validatePackageName(packageName);
     if (!existsSync(filePath)) {
       throw new Error(`File not found: ${filePath}`);
     }
@@ -183,47 +197,50 @@ export class RuStoreClient extends AbstractStoreClient implements StoreClient {
 
     const isAab = filePath.toLowerCase().endsWith(".aab");
     const uploadPath = isAab ? "aab" : "apk";
-    const { size: fileSize } = await stat(filePath);
-    const fileName = filePath.split("/").pop() ?? filePath;
+    const fileName = basename(filePath);
 
     const formData = new FormData();
-    const webStream = Readable.toWeb(createReadStream(filePath)) as ReadableStream<Uint8Array>;
-    const blob = new Blob([await this.streamToBuffer(webStream)], { type: "application/octet-stream" });
+    const blob = await openAsBlob(filePath, { type: "application/octet-stream" });
     formData.append("file", blob, fileName);
 
     const uploadUrl =
       `${BASE}/application/${encodeURIComponent(packageName)}/version/${versionId}/${uploadPath}` +
       `?servicesType=Unknown&isMainApk=true`;
 
-    const res = await fetch(uploadUrl, {
+    const res = await this.fetchWithTimeout(uploadUrl, {
       method: "POST",
       headers: {
         "Public-Token": token,
         // No Content-Type — let fetch set multipart boundary automatically
       },
       body: formData,
-    });
+    }, 10 * 60_000);
 
     if (!res.ok) {
-      const text = sanitizeErrorMessage((await res.text()).slice(0, 200));
-      // Clean up orphaned draft
+      await res.body?.cancel();
       await this.deleteDraft(packageName, versionId, token);
-      throw new Error(`RuStore: APK/AAB upload failed ${res.status}: ${text}`);
+      throw new Error(`RuStore upload failed with HTTP ${res.status}.`);
     }
 
-    const uploadData = await res.json() as RuStoreApiResponse;
-    if (uploadData.code !== "OK") {
+    const { code } = responseCode(await this.readJson(res));
+    if (code !== "OK") {
       await this.deleteDraft(packageName, versionId, token);
-      throw new Error(`RuStore: upload error: ${uploadData.message ?? uploadData.code}`);
+      throw new Error(`RuStore upload failed with code ${code}.`);
     }
 
     this.drafts.set(packageName, { versionId, releaseNotes: [] });
-    void fileSize; // fileSize available if needed for logging
 
     return { versionId: String(versionId) };
   }
 
   async setReleaseNotes(packageName: string, language: string, text: string): Promise<void> {
+    validatePackageName(packageName);
+    if (!/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(language)) {
+      throw new Error("Invalid RuStore release language.");
+    }
+    if (Buffer.byteLength(text, "utf8") > 50 * 1024 || text.includes("\0")) {
+      throw new Error("RuStore release notes exceed the size limit.");
+    }
     const draft = this.drafts.get(packageName);
     if (!draft) {
       throw new Error(`RuStore: no active upload for "${packageName}". Call rustore_upload first.`);
@@ -237,6 +254,13 @@ export class RuStoreClient extends AbstractStoreClient implements StoreClient {
   }
 
   async submit(packageName: string, _options?: { rollout?: number }): Promise<void> {
+    validatePackageName(packageName);
+    if (
+      _options?.rollout !== undefined
+      && (!Number.isFinite(_options.rollout) || _options.rollout !== 1)
+    ) {
+      throw new Error("RuStore does not support staged rollout.");
+    }
     const draft = this.drafts.get(packageName);
     if (!draft) {
       throw new Error(`RuStore: no active upload for "${packageName}". Call rustore_upload first.`);
@@ -251,58 +275,71 @@ export class RuStoreClient extends AbstractStoreClient implements StoreClient {
       for (const note of releaseNotes) {
         whatsNew[note.language] = note.text;
       }
-      const patchData = await this.api<RuStoreApiResponse>(
+      const patchData = await this.api(
         "PATCH",
         `${BASE}/application/${encodeURIComponent(packageName)}/version/${versionId}/publishing-settings`,
         token,
         { whatsNew }
       );
-      if (patchData.code !== "OK") {
-        throw new Error(`RuStore: failed to set release notes: ${patchData.message ?? patchData.code}`);
+      const { code } = responseCode(patchData);
+      if (code !== "OK") {
+        throw new Error(`RuStore release notes update failed with code ${code}.`);
       }
     }
 
     // Submit for moderation
-    const submitData = await this.api<RuStoreApiResponse>(
+    const submitData = await this.api(
       "POST",
       `${BASE}/application/${encodeURIComponent(packageName)}/version/${versionId}/submit-for-moderation`,
       token
     );
 
-    if (submitData.code !== "OK") {
-      throw new Error(`RuStore: submit failed: ${submitData.message ?? submitData.code}`);
+    const { code } = responseCode(submitData);
+    if (code !== "OK") {
+      throw new Error(`RuStore submission failed with code ${code}.`);
     }
 
     this.drafts.delete(packageName);
   }
 
   async getReleases(packageName: string): Promise<string> {
+    validatePackageName(packageName);
     const token = await this.getToken();
 
-    const data = await this.api<VersionListResponse>(
+    const data = await this.api(
       "GET",
       `${BASE}/application/${encodeURIComponent(packageName)}/version`,
       token
     );
 
-    if (data.code !== "OK") {
-      throw new Error(`RuStore: getReleases failed: ${data.message ?? data.code}`);
+    const { record, code } = responseCode(data);
+    if (code !== "OK") {
+      throw new Error(`RuStore release listing failed with code ${code}.`);
+    }
+    const versionsResult = ruStoreVersionListSchema.safeParse(record.body);
+    if (!versionsResult.success) {
+      throw new Error("RuStore returned an invalid release list.");
     }
 
-    if (!data.body || data.body.length === 0) {
-      return `${packageName}: no versions found`;
-    }
-
-    const lines = data.body.map(v => {
-      const version = v.versionName ? `${v.versionName} (${v.versionCode ?? "?"})` : `versionId=${v.versionId}`;
-      const status = v.appStatus ?? "unknown";
-      return `  v${version} — ${status}`;
+    if (versionsResult.data.length === 0) return `${packageName}: no versions found`;
+    const lines = versionsResult.data.map((version) => {
+      const versionName = version.versionName
+        ?.replace(/[\u0000-\u001f\u007f]/g, "")
+        .slice(0, 256);
+      const versionCode = version.versionCode ?? "?";
+      const status = version.appStatus
+        ?.replace(/[\u0000-\u001f\u007f]/g, "")
+        .slice(0, 128) ?? "unknown";
+      const displayVersion = versionName
+        ? `${versionName} (${versionCode})`
+        : `versionId=${String(version.versionId)}`;
+      return `  v${displayVersion} — ${status}`;
     });
-
     return `${packageName}:\n${lines.join("\n")}`;
   }
 
   async discard(packageName: string): Promise<void> {
+    validatePackageName(packageName);
     const draft = this.drafts.get(packageName);
     if (!draft) {
       throw new Error(`RuStore: no active draft for "${packageName}"`);
@@ -316,7 +353,7 @@ export class RuStoreClient extends AbstractStoreClient implements StoreClient {
   // ── Private helpers ──────────────────────────────────────────────────────────
 
   private async deleteDraft(packageName: string, versionId: number, token: string): Promise<void> {
-    const res = await fetch(
+    const res = await this.fetchWithTimeout(
       `${BASE}/application/${encodeURIComponent(packageName)}/version/${versionId}`,
       {
         method: "DELETE",

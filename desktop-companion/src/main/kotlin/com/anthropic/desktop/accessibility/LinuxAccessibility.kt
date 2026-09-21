@@ -10,14 +10,18 @@ import com.anthropic.desktop.*
  * This is a simplified version that provides basic window information
  */
 class LinuxAccessibility : BaseAccessibilityService() {
+    private val processRunner = SecureProcessRunner()
+
 
     override fun checkPermissions(): PermissionStatus {
         // Check if AT-SPI2 is running
         return try {
-            val process = ProcessBuilder("pgrep", "-x", "at-spi2-registryd").start()
-            val exitCode = process.waitFor()
+            val result = processRunner.run(
+                listOf("pgrep", "-x", "at-spi2-registryd"),
+                java.time.Duration.ofSeconds(5)
+            )
 
-            if (exitCode == 0) {
+            if (result.succeeded) {
                 PermissionStatus(granted = true)
             } else {
                 PermissionStatus(
@@ -31,9 +35,11 @@ class LinuxAccessibility : BaseAccessibilityService() {
                     )
                 )
             }
-        } catch (e: Exception) {
-            // AT-SPI2 check failed, assume it's available
-            PermissionStatus(granted = true)
+        } catch (_: Exception) {
+            PermissionStatus(
+                granted = false,
+                instructions = listOf("Unable to verify that AT-SPI2 is running.")
+            )
         }
     }
 

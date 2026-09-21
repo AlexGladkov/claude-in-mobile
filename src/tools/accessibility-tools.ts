@@ -19,13 +19,18 @@ import { truncateOutput } from "../utils/truncate.js";
 import { ValidationError, A11yRuleNotFoundError } from "../errors.js";
 import { textResult, errorResult } from "../utils/tool-result.js";
 
-const VALID_STANDARDS = new Set(["A", "AA", "AAA"]);
-const VALID_SEVERITIES = new Set(["critical", "serious", "moderate", "minor"]);
+const VALID_STANDARDS: Readonly<Record<string, true>> = { A: true, AA: true, AAA: true };
+const VALID_SEVERITIES: Readonly<Record<string, true>> = {
+  critical: true,
+  serious: true,
+  moderate: true,
+  minor: true,
+};
 
 function validateStandard(standard: unknown): string {
   if (standard === undefined || standard === null) return "AA";
   const s = String(standard).toUpperCase();
-  if (!VALID_STANDARDS.has(s)) {
+  if (!Object.hasOwn(VALID_STANDARDS, s)) {
     throw new ValidationError(
       `Invalid standard: "${standard}". Valid: A, AA, AAA`,
     );
@@ -36,7 +41,7 @@ function validateStandard(standard: unknown): string {
 function validateSeverityFilter(severity: unknown): A11ySeverity | undefined {
   if (severity === undefined || severity === null) return undefined;
   const s = String(severity).toLowerCase();
-  if (!VALID_SEVERITIES.has(s)) {
+  if (!Object.hasOwn(VALID_SEVERITIES, s)) {
     throw new ValidationError(
       `Invalid severity: "${severity}". Valid: critical, serious, moderate, minor`,
     );

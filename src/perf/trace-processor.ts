@@ -2,7 +2,6 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 
 import type { PerformanceTraceSummary } from "../adapters/platform-adapter.js";
-import { sanitizeErrorMessage } from "../utils/sanitize.js";
 
 const execFileAsync = promisify(execFile);
 const QUERY_TIMEOUT_MS = 30_000;
@@ -59,10 +58,9 @@ export async function analyzePerfettoTrace(
         ],
       };
     }
-    const message = sanitizeErrorMessage(details.stderr?.toString() || details.message || String(error));
     return {
       analysisTool: "failed",
-      warnings: [`Perfetto Trace Processor analysis failed: ${message.slice(0, 300)}`],
+      warnings: ["Perfetto Trace Processor analysis failed."],
     };
   }
 }

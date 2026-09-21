@@ -1,76 +1,125 @@
 /**
- * Structural ("…Like") views of platform clients/adapters.
+ * Minimal structural contracts for plugin clients used by the base package.
  *
- * After the 4.0.0 physical split, the concrete implementations live in the
- * separate `@mcp-devices/plugin-*` packages, so the base package (device
- * manager, tools, facades) must NOT import them. These permissive structural
- * types let base code keep calling the legacy `getXClient()` / `getXAdapter()`
- * escape hatches without a build-time dependency on the implementation.
- *
- * Trade-off: these are intentionally loose (index-signature `any`) — full
- * type-safety on these escape hatches now lives in the platform packages.
- * Prefer the typed `CorePlatformAdapter` capability interfaces where possible.
+ * Concrete implementations live in separate `@mcp-devices/plugin-*` packages,
+ * so these types intentionally describe only the methods consumed here.
  */
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
-
-// Named methods document + name-check the surface base tools actually call;
-// the index signature stays as the escape hatch for internal field access
-// (e.g. `.client`, `.sessionManager`) whose full types live in the package.
 export interface BrowserAdapterLike {
-  open(...args: any[]): any;
-  closeSession(...args: any[]): any;
-  listSessions(...args: any[]): any;
-  navigate(...args: any[]): any;
-  clickElement(...args: any[]): any;
-  fillField(...args: any[]): any;
-  fillForm(...args: any[]): any;
-  snapshot(...args: any[]): any;
-  screenshotBrowser(...args: any[]): any;
-  clearSessionData(...args: any[]): any;
-  [key: string]: any;
+  open(options: Record<string, unknown>): Promise<string>;
+  closeSession(session?: string): Promise<void>;
+  listSessions(): string[];
+  navigate(options: Record<string, unknown>): Promise<string>;
+  clickElement(options: Record<string, unknown>): Promise<string>;
+  fillField(options: Record<string, unknown>): Promise<void>;
+  fillForm(options: Record<string, unknown>): Promise<void>;
+  snapshot(session?: string): Promise<string>;
+  screenshotBrowser(session?: string, fullPage?: boolean): Promise<Buffer>;
+  evaluateJs(expression: string, session?: string): Promise<string>;
+  waitForSelector(
+    selector: string,
+    timeout?: number,
+    state?: "attached" | "visible",
+    session?: string,
+  ): Promise<void>;
+  clearSessionData(session: string): Promise<void>;
+  sessionManager: {
+    getSession(session?: string): unknown;
+  };
+  client: {
+    pressKey(session: unknown, key: string): Promise<void>;
+  };
+}
+
+export interface DesktopStateLike {
+  status: string;
+  crashCount: number;
+  lastError?: string;
 }
 
 export interface DesktopAdapterLike {
-  launch(...args: any[]): any;
-  stop(...args: any[]): any;
-  isRunning(...args: any[]): any;
-  getClient(...args: any[]): any;
-  getState(...args: any[]): any;
-  [key: string]: any;
+  launch(options: RawLaunchOptionsLike): Promise<void>;
+  stop(): Promise<void>;
+  isRunning(): boolean;
+  getClient(): DesktopClientLike;
+  getState(): DesktopStateLike;
+}
+
+export interface DesktopWindowLike {
+  id: string;
+  title: string;
+  bounds: { x: number; y: number; width: number; height: number };
+  focused: boolean;
+  processId?: number;
 }
 
 export interface DesktopClientLike {
-  tapByText(...args: any[]): any;
-  getWindowInfo(...args: any[]): any;
-  focusWindow(...args: any[]): any;
-  getClipboard(...args: any[]): any;
-  setClipboard(...args: any[]): any;
-  getPerformanceMetrics(...args: any[]): any;
-  getMonitors(...args: any[]): any;
-  getTargetPid(...args: any[]): any;
-  [key: string]: any;
+  tapByText(text: string, pid?: number, exactMatch?: boolean): Promise<{
+    success: boolean;
+    elementRole?: string;
+    error?: string;
+  }>;
+  getWindowInfo(): Promise<{ windows: DesktopWindowLike[] }>;
+  focusWindow(windowId: string): Promise<void>;
+  resizeWindow(width: number, height: number, windowId?: string): Promise<void>;
+  getClipboard(): Promise<string>;
+  setClipboard(text: string): Promise<void>;
+  getPerformanceMetrics(): Promise<{
+    memoryUsageMb?: number;
+    cpuPercent?: number;
+    fps?: number;
+  }>;
+  getMonitors(): Promise<Array<{
+    index: number;
+    name: string;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    isPrimary: boolean;
+  }>>;
+  getTargetPid(): number | null;
+  getState(): DesktopStateLike;
 }
 
-/** Shape of desktop launch options — loose; concrete type lives in plugin-desktop. */
 export type RawLaunchOptionsLike = Record<string, unknown>;
+
+export interface IosElementLike {
+  ELEMENT: string;
+  type?: string;
+  label?: string;
+  rect: { x: number; y: number; width: number; height: number };
+}
 
 export interface IosClientLike {
   openUrl(url: string, deviceId?: string): void | Promise<void>;
-  /** Screen size in points — the space WDA's coordinate APIs work in. */
   getScreenPointSize(deviceId?: string): Promise<{ width: number; height: number }>;
+  findElement(options: Record<string, unknown>): Promise<IosElementLike>;
+  findElements(options: Record<string, unknown>): Promise<IosElementLike[]>;
+  getElementRect(elementId: string): Promise<IosElementLike["rect"] | null>;
+  tapElement(elementId: string): Promise<void>;
   cleanup(): void | Promise<void>;
-  [key: string]: any;
 }
 
 export interface AdbClientLike {
-  [key: string]: any;
+  exec(command: string): string;
+  execWithUiDump(actionArgs: readonly string[]): Promise<{ actionOutput: string; uiXml: string }>;
+  getCurrentActivity(): string;
+  getBatteryInfo(): string;
+  selectAll(): void;
+  copyToClipboard(): void;
+  pasteFromClipboard(): void;
+  getClipboardText(): string;
+  tap(x: number, y: number): void;
 }
 
 export interface WebViewInspectorLike {
-  inspect(): Promise<any>;
+  inspect(): Promise<{
+    sockets: string[];
+    forwardedPort: number;
+    targets: Array<{ type: string; title: string; url: string; id: string }>;
+  }>;
   cleanup(): void;
-  [key: string]: any;
 }
 
 export interface AuroraClientLike {

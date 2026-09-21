@@ -2,11 +2,15 @@
 //! Auth: RSA RS256 JWT → RuStore token.
 //! Env: RUSTORE_KEY_JSON  or  RUSTORE_COMPANY_ID + RUSTORE_KEY_ID + RUSTORE_PRIVATE_KEY
 
+use super::{
+    draft,
+    http::{client, parse_json_response},
+    jwt,
+};
+use crate::utils::process::terminal_safe;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-
-use super::{draft, jwt};
 
 const BASE: &str = "https://public-api.rustore.ru/public/v1";
 const AUTH_URL: &str = "https://public-api.rustore.ru/public/auth";
@@ -21,6 +25,18 @@ struct Credentials {
     key_id: String,
     #[serde(rename = "privateKey")]
     private_key: String,
+}
+
+impl Credentials {
+    fn validate(self) -> Result<Self> {
+        if self.company_id.trim().is_empty()
+            || self.key_id.trim().is_empty()
+            || self.private_key.trim().is_empty()
+        {
+            anyhow::bail!("RuStore credentials contain an empty field");
+        }
+        Ok(self)
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -40,7 +56,9 @@ struct Note {
 fn load_credentials() -> Result<Credentials> {
     // Prefer JSON bundle
     if let Ok(raw) = std::env::var("RUSTORE_KEY_JSON") {
-        return serde_json::from_str(&raw).context("RUSTORE_KEY_JSON is not valid JSON");
+        return serde_json::from_str::<Credentials>(&raw)
+            .context("RUSTORE_KEY_JSON is not valid JSON")?
+            .validate();
     }
     // Fall back to individual vars
     match (
@@ -48,9 +66,12 @@ fn load_credentials() -> Result<Credentials> {
         std::env::var("RUSTORE_KEY_ID").ok(),
         std::env::var("RUSTORE_PRIVATE_KEY").ok(),
     ) {
-        (Some(company_id), Some(key_id), Some(private_key)) => {
-            Ok(Credentials { company_id, key_id, private_key })
+        (Some(company_id), Some(key_id), Some(private_key)) => Credentials {
+            company_id,
+            key_id,
+            private_key,
         }
+        .validate(),
         _ => anyhow::bail!(
             "RuStore: missing credentials.\n\
              Set RUSTORE_KEY_JSON  or  RUSTORE_COMPANY_ID + RUSTORE_KEY_ID + RUSTORE_PRIVATE_KEY."
@@ -66,34 +87,23 @@ fn get_token() -> Result<String> {
     });
     let jwt_token = jwt::create_rs256(&creds.private_key, &payload)?;
 
-    let resp: serde_json::Value = client()
+    let response = client()
         .post(AUTH_URL)
         .json(&json!({ "jwtToken": jwt_token }))
         .send()
         .context("Failed to connect to RuStore auth endpoint")?
         .error_for_status()
-        .context("RuStore auth returned error")?
-        .json()
-        .context("Failed to parse RuStore auth response")?;
+        .context("RuStore auth returned error")?;
+    let resp: serde_json::Value = parse_json_response(response, "RuStore auth response")?;
 
     if resp["code"].as_str() != Some("OK") {
-        let msg = resp["message"]
-            .as_str()
-            .or_else(|| resp["code"].as_str())
-            .unwrap_or("unknown");
-        anyhow::bail!("RuStore auth error: {}", msg);
+        anyhow::bail!("RuStore authentication was rejected");
     }
 
     resp["body"]["jwtToken"]
         .as_str()
         .map(|s| s.to_string())
         .context("RuStore auth: no jwtToken in response body")
-}
-
-// ── HTTP helpers ─────────────────────────────────────────────────────────────
-
-fn client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::new()
 }
 
 fn api(
@@ -121,10 +131,10 @@ fn api(
     if resp.status().as_u16() == 204 {
         return Ok(json!({}));
     }
-    resp.error_for_status()
-        .with_context(|| format!("{} {} failed", method, url))?
-        .json()
-        .context("Failed to parse JSON response")
+    let response = resp
+        .error_for_status()
+        .with_context(|| format!("{} {} failed", method, url))?;
+    parse_json_response(response, "RuStore API response")
 }
 
 fn create_draft_version(package: &str, token: &str) -> Result<i64> {
@@ -141,17 +151,18 @@ fn create_draft_version(package: &str, token: &str) -> Result<i64> {
 }
 
 fn delete_version(package: &str, version_id: i64, token: &str) {
-    let url = format!("{}/application/{}/version/{}", BASE, urlenc(package), version_id);
+    let url = format!(
+        "{}/application/{}/version/{}",
+        BASE,
+        urlenc(package),
+        version_id
+    );
     let _ = client().delete(&url).header("Public-Token", token).send();
 }
 
-fn check_ok(resp: &serde_json::Value, context: &str) -> Result<()> {
-    if resp["code"].as_str() != Some("OK") {
-        let msg = resp["message"]
-            .as_str()
-            .or_else(|| resp["code"].as_str())
-            .unwrap_or("unknown");
-        anyhow::bail!("{}: {}", context, msg);
+fn check_ok(response: &serde_json::Value, context: &str) -> Result<()> {
+    if response["code"].as_str() != Some("OK") {
+        anyhow::bail!("{context}");
     }
     Ok(())
 }
@@ -201,22 +212,23 @@ pub fn upload(package: &str, file_path: &str) -> Result<()> {
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().unwrap_or_default();
         delete_version(package, version_id, &token);
-        anyhow::bail!("RuStore: upload failed {}: {}", status, text);
+        anyhow::bail!("RuStore upload failed with HTTP {}", status);
     }
 
-    let data: serde_json::Value = resp.json().context("Failed to parse RuStore upload response")?;
+    let data: serde_json::Value = parse_json_response(resp, "RuStore upload response")?;
     if data["code"].as_str() != Some("OK") {
-        let msg = data["message"].as_str().unwrap_or("unknown");
         delete_version(package, version_id, &token);
-        anyhow::bail!("RuStore: upload error: {}", msg);
+        anyhow::bail!("RuStore rejected the uploaded file");
     }
 
     draft::save(
         "rustore",
         package,
-        &DraftState { version_id, release_notes: vec![] },
+        &DraftState {
+            version_id,
+            release_notes: vec![],
+        },
     )?;
 
     println!(
@@ -233,7 +245,11 @@ pub fn set_notes(package: &str, language: &str, text: &str) -> Result<()> {
     let mut state: DraftState = draft::load("rustore", package)?;
     upsert_note(&mut state.release_notes, language, text);
     draft::save("rustore", package, &state)?;
-    println!("RuStore what's new set for {} ({}/500 chars)", language, text.len());
+    println!(
+        "RuStore what's new set for {} ({}/500 chars)",
+        language,
+        text.len()
+    );
     Ok(())
 }
 
@@ -251,7 +267,9 @@ pub fn submit(package: &str) -> Result<()> {
             "PATCH",
             &format!(
                 "{}/application/{}/version/{}/publishing-settings",
-                BASE, urlenc(package), state.version_id
+                BASE,
+                urlenc(package),
+                state.version_id
             ),
             &token,
             Some(&json!({ "whatsNew": whats_new })),
@@ -264,14 +282,16 @@ pub fn submit(package: &str) -> Result<()> {
         "POST",
         &format!(
             "{}/application/{}/version/{}/submit-for-moderation",
-            BASE, urlenc(package), state.version_id
+            BASE,
+            urlenc(package),
+            state.version_id
         ),
         &token,
         None,
     )?;
     check_ok(&submit_data, "Submit failed")?;
 
-    draft::delete("rustore", package);
+    draft::delete("rustore", package)?;
     println!(
         "Submitted to RuStore for moderation: {}\nPublication requires moderation approval (typically 1–3 business days).",
         package
@@ -309,7 +329,11 @@ pub fn get_versions(package: &str) -> Result<()> {
             format!("  v{} — {}", ver, status)
         })
         .collect();
-    println!("{}:\n{}", package, lines.join("\n"));
+    println!(
+        "{}:\n{}",
+        terminal_safe(package.as_bytes()),
+        terminal_safe(lines.join("\n").as_bytes()),
+    );
     Ok(())
 }
 
@@ -317,7 +341,7 @@ pub fn discard(package: &str) -> Result<()> {
     let state: DraftState = draft::load("rustore", package)?;
     let token = get_token()?;
     delete_version(package, state.version_id, &token);
-    draft::delete("rustore", package);
+    draft::delete("rustore", package)?;
     println!("RuStore draft deleted for {}", package);
     Ok(())
 }
@@ -328,6 +352,9 @@ fn upsert_note(notes: &mut Vec<Note>, language: &str, text: &str) {
     if let Some(idx) = notes.iter().position(|n| n.language == language) {
         notes[idx].text = text.to_string();
     } else {
-        notes.push(Note { language: language.to_string(), text: text.to_string() });
+        notes.push(Note {
+            language: language.to_string(),
+            text: text.to_string(),
+        });
     }
 }

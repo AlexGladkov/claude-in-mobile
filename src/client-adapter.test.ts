@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { detectClient, getConfigSnippet, type ClientType } from "./client-adapter.js";
+import { detectClient, getConfigSnippet } from "./client-adapter.js";
+import type { ClientType } from "./client-adapter.js";
 import { INIT_CLIENTS } from "./runtime/cli.js";
 
 describe("detectClient", () => {

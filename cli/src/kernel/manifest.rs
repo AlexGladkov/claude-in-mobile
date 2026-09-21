@@ -64,9 +64,7 @@ fn is_valid_id(s: &str) -> bool {
     if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
         return false;
     }
-    chars.all(|c| {
-        c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '_' || c == '-'
-    })
+    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '_' || c == '-')
 }
 
 #[cfg(test)]

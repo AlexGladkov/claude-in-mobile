@@ -1,7 +1,10 @@
-import { mkdir, readFile, writeFile, unlink } from "fs/promises";
+import { unlink } from "fs/promises";
 import { join, resolve } from "path";
 import { createHash } from "crypto";
+import { z } from "zod";
 import { validateBaselineName, validatePathContainment } from "./sanitize.js";
+import { readJsonOrDefault, writeJsonAtomic } from "./json-file.js";
+import { ensurePrivateDirectory } from "./private-storage.js";
 import {
   ScenarioNotFoundError,
   ScenarioExistsError,
@@ -72,8 +75,124 @@ const MAX_SCENARIOS = 200;
 const MAX_SCENARIO_FILE_SIZE = 512 * 1024; // 512KB
 const MAX_TOTAL_SIZE = 50 * 1024 * 1024;   // 50MB
 export const MAX_STEPS_PER_SCENARIO = 100;
+const FORBIDDEN_KEY_LOOKUP: Readonly<Record<string, true>> = Object.freeze({
+  ["__proto__"]: true as const,
+  constructor: true as const,
+  prototype: true as const,
+});
+const MAX_MANIFEST_FILE_SIZE = 1024 * 1024;
+const MAX_JSON_NODES = 10_000;
+const MAX_JSON_DEPTH = 16;
+const scenarioObjectKeySchema = z.string().max(256).refine(
+  (key) => !Object.hasOwn(FORBIDDEN_KEY_LOOKUP, key),
+  "Step args contain a forbidden key",
+);
 
-const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const scenarioJsonValueSchema = z.unknown().superRefine((root, ctx) => {
+  const stack: Array<{ value: unknown; depth: number }> = [{ value: root, depth: 0 }];
+  let nodes = 0;
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    nodes += 1;
+    if (nodes > MAX_JSON_NODES) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Step args exceed the value limit" });
+      return;
+    }
+    if (
+      current.value === null
+      || typeof current.value === "boolean"
+      || (typeof current.value === "number" && Number.isFinite(current.value))
+      || (typeof current.value === "string" && current.value.length <= 65_536)
+    ) {
+      continue;
+    }
+    if (current.depth >= MAX_JSON_DEPTH) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Step args exceed the nesting limit" });
+      return;
+    }
+    if (Array.isArray(current.value)) {
+      if (current.value.length > 1_000) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Step args array is too large" });
+        return;
+      }
+      for (const value of current.value) stack.push({ value, depth: current.depth + 1 });
+      continue;
+    }
+    if (typeof current.value === "object") {
+      const entries = Object.entries(current.value);
+      if (entries.length > 1_000) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Step args object is too large" });
+        return;
+      }
+      for (const [key, value] of entries) {
+        if (Object.hasOwn(FORBIDDEN_KEY_LOOKUP, key)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Step args contain forbidden key: ${key}`,
+          });
+          return;
+        }
+        stack.push({ value, depth: current.depth + 1 });
+      }
+      continue;
+    }
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Step args must contain JSON values" });
+    return;
+  }
+});
+
+const scenarioAssertionSchema = z.object({
+  type: z.enum(["element_exists", "element_not_exists", "visual_match", "text_contains"]),
+  target: z.string().min(1).max(4_096),
+  options: z.record(scenarioObjectKeySchema, scenarioJsonValueSchema).optional(),
+}).strict();
+
+const scenarioStepSchema = z.object({
+  index: z.number().int().nonnegative().max(MAX_STEPS_PER_SCENARIO),
+  type: z.enum(["tool_call", "wait", "assert", "visual", "navigate", "data_input", "gesture"]),
+  action: z.string().min(1).max(256),
+  args: z.record(scenarioObjectKeySchema, scenarioJsonValueSchema),
+  label: z.string().max(4_096).optional(),
+  timestampMs: z.number().finite().nonnegative(),
+  delayBeforeMs: z.number().finite().nonnegative(),
+  sensitive: z.boolean().optional(),
+  assertion: scenarioAssertionSchema.optional(),
+  onError: z.enum(["stop", "skip", "retry"]).optional(),
+}).strict();
+
+const scenarioSchema = z.object({
+  version: z.literal(1),
+  name: z.string().min(1).max(128),
+  platform: z.string().min(1).max(128),
+  description: z.string().max(16_384),
+  tags: z.array(z.string().max(256)).max(64),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  checksum: z.string().regex(/^[0-9a-f]{64}$/),
+  steps: z.array(scenarioStepSchema).max(MAX_STEPS_PER_SCENARIO),
+  metadata: z.object({
+    recordedWithVersion: z.string().min(1).max(128),
+    totalRecordingTimeMs: z.number().finite().nonnegative(),
+    deviceInfo: z.string().max(4_096).optional(),
+  }).strict(),
+}).strict();
+
+const scenarioEntrySchema = z.object({
+  name: z.string().min(1).max(128),
+  platform: z.string().min(1).max(128),
+  tags: z.array(z.string().max(256)).max(64),
+  description: z.string().max(16_384),
+  stepCount: z.number().int().nonnegative().max(MAX_STEPS_PER_SCENARIO),
+  fileSize: z.number().int().nonnegative().max(MAX_SCENARIO_FILE_SIZE),
+  checksum: z.string().regex(/^[0-9a-f]{64}$/),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict();
+
+const scenarioManifestSchema = z.object({
+  version: z.literal(1),
+  scenarios: z.array(scenarioEntrySchema).max(MAX_SCENARIOS),
+}).strict();
 
 // ── ScenarioStore ──
 
@@ -102,24 +221,32 @@ export class ScenarioStore {
   }
 
   private async readManifest(): Promise<Manifest> {
-    try {
-      const data = await readFile(this.manifestPath, "utf-8");
-      return JSON.parse(data) as Manifest;
-    } catch {
-      return { version: 1, scenarios: [] };
+    await ensurePrivateDirectory(this.scenariosDir);
+    const manifest = await readJsonOrDefault(
+      this.manifestPath,
+      (): Manifest => ({ version: 1, scenarios: [] }),
+      "scenario manifest",
+      MAX_MANIFEST_FILE_SIZE,
+    );
+    const result = scenarioManifestSchema.safeParse(manifest);
+    if (!result.success) {
+      throw new ValidationError("Scenario manifest is corrupted or has an unsupported version");
     }
+    return result.data;
   }
 
   private async writeManifest(manifest: Manifest): Promise<void> {
     await this.ensureDir();
-    const data = JSON.stringify(manifest, null, 2);
-    await writeFile(this.manifestPath, data, { mode: FILE_MODE });
+    await writeJsonAtomic(this.manifestPath, manifest, FILE_MODE);
   }
 
   private async ensureDir(platform?: string): Promise<void> {
-    const dir = platform ? join(this.scenariosDir, platform) : this.scenariosDir;
-    validatePathContainment(dir, this.scenariosDir);
-    await mkdir(dir, { recursive: true, mode: DIR_MODE });
+    await ensurePrivateDirectory(this.scenariosDir);
+    if (platform) {
+      const dir = join(this.scenariosDir, platform);
+      validatePathContainment(dir, this.scenariosDir);
+      await ensurePrivateDirectory(dir);
+    }
   }
 
   private computeChecksum(steps: ScenarioStep[]): string {
@@ -135,58 +262,17 @@ export class ScenarioStore {
   }
 
   private validateScenarioJson(data: unknown): Scenario {
-    if (typeof data !== "object" || data === null || Array.isArray(data)) {
-      throw new ValidationError("Scenario file must be a JSON object");
+    const result = scenarioSchema.safeParse(data);
+    if (!result.success) {
+      throw new ValidationError("Scenario file is invalid or has an unsupported version");
     }
-    const obj = data as Record<string, unknown>;
-
-    // Prototype pollution defense
-    for (const key of Object.keys(obj)) {
-      if (FORBIDDEN_KEYS.has(key)) {
-        throw new ValidationError(`Scenario file contains forbidden key: ${key}`);
-      }
-    }
-
-    if (obj.version !== 1) {
-      throw new ValidationError("Unsupported scenario version");
-    }
-    if (typeof obj.name !== "string" || !obj.name) {
-      throw new ValidationError("Scenario must have a non-empty name");
-    }
-    if (!Array.isArray(obj.steps)) {
-      throw new ValidationError("Scenario must contain a steps array");
-    }
-    if (obj.steps.length > MAX_STEPS_PER_SCENARIO) {
-      throw new ValidationError(`Scenario exceeds ${MAX_STEPS_PER_SCENARIO} steps limit`);
-    }
-
-    // Validate each step
-    for (const step of obj.steps) {
-      if (typeof step !== "object" || step === null) {
-        throw new ValidationError("Each step must be an object");
-      }
-      const s = step as Record<string, unknown>;
-      if (typeof s.action !== "string" || !s.action) {
-        throw new ValidationError("Each step must have a non-empty string action");
-      }
-      if (s.args !== undefined && (typeof s.args !== "object" || s.args === null || Array.isArray(s.args))) {
-        throw new ValidationError("Step args must be a plain object");
-      }
-      if (s.args) {
-        for (const key of Object.keys(s.args as Record<string, unknown>)) {
-          if (FORBIDDEN_KEYS.has(key)) {
-            throw new ValidationError(`Step args contain forbidden key: ${key}`);
-          }
-        }
-      }
-    }
-
-    return data as Scenario;
+    return result.data;
   }
 
   // ── Public API ──
 
   async save(scenario: Scenario, options?: { overwrite?: boolean }): Promise<ScenarioEntry> {
+    this.validateScenarioJson(scenario);
     validateBaselineName(scenario.name, "scenario_name");
     validateBaselineName(scenario.platform, "platform");
 
@@ -205,7 +291,9 @@ export class ScenarioStore {
       throw new ValidationError(`Scenario limit reached: ${MAX_SCENARIOS}. Delete unused scenarios first.`);
     }
 
-    const jsonData = JSON.stringify(scenario, null, 2);
+    const checksum = this.computeChecksum(scenario.steps);
+    const normalizedScenario: Scenario = { ...scenario, checksum };
+    const jsonData = JSON.stringify(normalizedScenario, null, 2);
     const fileSize = Buffer.byteLength(jsonData);
 
     if (fileSize > MAX_SCENARIO_FILE_SIZE) {
@@ -219,8 +307,7 @@ export class ScenarioStore {
 
     await this.ensureDir(scenario.platform);
     const filePath = this.getScenarioPath(scenario.platform, scenario.name);
-    await writeFile(filePath, jsonData, { mode: FILE_MODE });
-
+    await writeJsonAtomic(filePath, normalizedScenario, FILE_MODE);
     const now = new Date().toISOString();
     const entry: ScenarioEntry = {
       name: scenario.name,
@@ -229,7 +316,7 @@ export class ScenarioStore {
       description: scenario.description ?? "",
       stepCount: scenario.steps.length,
       fileSize,
-      checksum: scenario.checksum,
+      checksum,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };
@@ -246,24 +333,27 @@ export class ScenarioStore {
   }
 
   async get(name: string, platform: string): Promise<Scenario> {
+    validateBaselineName(platform, "platform");
     validateBaselineName(name, "scenario_name");
     const manifest = await this.readManifest();
     const entry = this.findEntry(manifest, name, platform);
     if (!entry) throw new ScenarioNotFoundError(name, platform);
 
     const filePath = this.getScenarioPath(platform, name);
-    let raw: string;
+    let parsed: unknown;
     try {
-      raw = await readFile(filePath, "utf-8");
-    } catch {
-      throw new ScenarioNotFoundError(name, platform);
+      parsed = await readJsonOrDefault(
+        filePath,
+        () => {
+          throw new ScenarioNotFoundError(name, platform);
+        },
+        `scenario "${name}"`,
+        MAX_SCENARIO_FILE_SIZE,
+      );
+    } catch (error) {
+      if (error instanceof ScenarioNotFoundError) throw error;
+      throw new ScenarioCorruptedError(name, "invalid, oversized, or unreadable JSON");
     }
-
-    if (Buffer.byteLength(raw) > MAX_SCENARIO_FILE_SIZE) {
-      throw new ValidationError(`Scenario file exceeds ${MAX_SCENARIO_FILE_SIZE / 1024}KB limit`);
-    }
-
-    const parsed = JSON.parse(raw);
     const scenario = this.validateScenarioJson(parsed);
 
     // Verify checksum
@@ -276,6 +366,7 @@ export class ScenarioStore {
   }
 
   async delete(name: string, platform: string): Promise<void> {
+    validateBaselineName(platform, "platform");
     validateBaselineName(name, "scenario_name");
     const manifest = await this.readManifest();
     const entry = this.findEntry(manifest, name, platform);

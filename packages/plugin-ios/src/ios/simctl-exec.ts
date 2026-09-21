@@ -20,7 +20,7 @@ interface ExecError {
 
 function handleExecError(error: unknown, fullArgs: string[]): never {
   const e = error as ExecError;
-  const display = `xcrun ${fullArgs.join(" ")}`;
+  const display = `xcrun simctl ${fullArgs[1] ?? "unknown"}`;
   if (e.killed === true || e.signal === "SIGTERM") {
     throw new Error(
       `simctl command timed out after ${SIMCTL_EXEC_TIMEOUT_MS}ms: ${display}. Simulator may be unresponsive.`,

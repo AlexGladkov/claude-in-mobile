@@ -2,6 +2,8 @@ import type {
   PerformanceTracePreset,
   PerformanceTraceSummary,
 } from "mcp-devices/adapters/platform-adapter";
+import { z } from "zod";
+
 
 import type { CDPClientInterface } from "./cdp-types.js";
 
@@ -25,15 +27,14 @@ const STARTUP_CATEGORIES = [
   "v8",
 ];
 
-interface ChromeTraceEvent {
-  name?: unknown;
-  ph?: unknown;
-  dur?: unknown;
-}
-
-interface ChromeTraceDocument {
-  traceEvents?: unknown;
-}
+const chromeTraceEventSchema = z.object({
+  name: z.string().max(4096).catch(""),
+  ph: z.string().max(32).catch(""),
+  dur: z.number().finite().nonnegative().catch(0),
+}).passthrough();
+const chromeTraceDocumentSchema = z.object({
+  traceEvents: z.array(chromeTraceEventSchema).max(1_000_000),
+}).passthrough();
 
 export async function startCdpPerformanceTrace(
   cdp: CDPClientInterface,
@@ -91,14 +92,13 @@ export async function stopCdpPerformanceTrace(
 }
 
 export function summarizeChromeTrace(data: Uint8Array): PerformanceTraceSummary {
-  let parsed: ChromeTraceDocument;
+  let parsed: z.infer<typeof chromeTraceDocumentSchema>;
   try {
-    parsed = JSON.parse(Buffer.from(data).toString("utf8")) as ChromeTraceDocument;
+    parsed = chromeTraceDocumentSchema.parse(
+      JSON.parse(Buffer.from(data).toString("utf8")),
+    );
   } catch {
     throw new Error("Chrome returned an invalid JSON performance trace.");
-  }
-  if (!Array.isArray(parsed.traceEvents)) {
-    throw new Error("Chrome performance trace does not contain a traceEvents array.");
   }
 
   let longTaskCount = 0;
@@ -109,13 +109,9 @@ export function summarizeChromeTrace(data: Uint8Array): PerformanceTraceSummary 
   let scriptCount = 0;
   let navigationCount = 0;
 
-  for (const raw of parsed.traceEvents) {
-    if (!raw || typeof raw !== "object") continue;
-    const event = raw as ChromeTraceEvent;
-    const name = typeof event.name === "string" ? event.name : "";
-    const durationUs = typeof event.dur === "number" && Number.isFinite(event.dur)
-      ? event.dur
-      : 0;
+  for (const event of parsed.traceEvents) {
+    const name = event.name;
+    const durationUs = event.dur;
 
     if (
       event.ph === "X"

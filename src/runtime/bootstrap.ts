@@ -9,24 +9,28 @@
  * adapters from the kernel via a static factory (see DeviceManager.fromKernel).
  */
 
-import {
-  PluginContractError,
-  type Logger,
-  type SourcePlugin,
-  type ToolDefinition,
+import { PluginContractError } from "@mcp-devices/plugin-api";
+import type {
+  Logger,
+  SourcePlugin,
+  ToolDefinition,
 } from "@mcp-devices/plugin-api";
 
 import { InMemoryEventBus } from "../kernel/eventbus.js";
-import { InMemoryRegistry, type PluginRegistry } from "../kernel/registry.js";
+import { InMemoryRegistry } from "../kernel/registry.js";
+import type { PluginRegistry } from "../kernel/registry.js";
 import { LifecycleOrchestrator } from "../kernel/lifecycle.js";
 import { CapabilityResolver } from "../kernel/resolver.js";
 import { ExternalPluginLoader } from "../kernel/external-loader.js";
 import { assertToolsAvailable } from "../tools/registry.js";
+import { sanitizeErrorMessage } from "../utils/sanitize.js";
 
 import { createBuiltinToolsPlugin } from "../plugins/builtin-tools/index.js";
 import { createReplPlugin } from "../plugins/repl/index.js";
-import { resolveEnabledPlatforms, type PlatformId } from "./platform-config.js";
-import { resolveEnabledToolPlugins, type ToolPluginId } from "./tool-plugin-config.js";
+import { resolveEnabledPlatforms } from "./platform-config.js";
+import type { PlatformId } from "./platform-config.js";
+import { resolveEnabledToolPlugins } from "./tool-plugin-config.js";
+import type { ToolPluginId } from "./tool-plugin-config.js";
 
 export interface KernelHandle {
   readonly registry: PluginRegistry;
@@ -160,7 +164,7 @@ async function loadPackagedPlatform(
       // The package IS installed but failed to load (broken build / bad
       // transitive dep / throw-on-import) — surface it, don't mask as missing.
       logger.error(`platform '${id}': '${pkg}' failed to load`, {
-        error: err instanceof Error ? err.message : String(err),
+        error: sanitizeErrorMessage(err instanceof Error ? err.message : String(err)).slice(0, 1000),
       });
     }
     return undefined;
@@ -201,30 +205,47 @@ async function loadToolPlugin(
       );
     } else {
       logger.error(`tool plugin '${id}': '${pkg}' failed to load`, {
-        error: err instanceof Error ? err.message : String(err),
+        error: sanitizeErrorMessage(err instanceof Error ? err.message : String(err)).slice(0, 1000),
       });
     }
     return undefined;
   }
 }
 
+function writeConsoleLog(
+  level: "info" | "warn" | "error",
+  message: string,
+  meta?: Record<string, unknown>,
+): void {
+  const safeMessage = sanitizeErrorMessage(message).replace(/\n/g, "\\n");
+  let safeMeta = "";
+  if (meta !== undefined) {
+    try {
+      safeMeta = sanitizeErrorMessage(JSON.stringify(meta)).replace(/\n/g, "\\n");
+    } catch {
+      safeMeta = "[unserializable metadata]";
+    }
+  }
+  console.error(`[${level}] ${safeMessage}${safeMeta ? ` ${safeMeta}` : ""}`);
+}
+
 function consoleLogger(): Logger {
   // stderr-only: stdout is reserved for MCP JSON-RPC framing.
   return {
     debug: () => {},
-    info: (m, meta) => console.error(`[info] ${m}`, meta ?? ""),
-    warn: (m, meta) => console.error(`[warn] ${m}`, meta ?? ""),
-    error: (m, meta) => console.error(`[error] ${m}`, meta ?? ""),
+    info: (message, meta) => writeConsoleLog("info", message, meta),
+    warn: (message, meta) => writeConsoleLog("warn", message, meta),
+    error: (message, meta) => writeConsoleLog("error", message, meta),
   };
 }
 
 export async function bootstrapKernelAsync(options: BootstrapOptions = {}): Promise<KernelHandle> {
   const handle = bootstrapKernel(options);
+  const logger = options.logger ?? consoleLogger();
 
   // Load enabled platforms that ship as separate packages (dynamic import).
   // Skipped entirely when explicit `builtins` are supplied.
   if (!options.builtins) {
-    const logger = options.logger ?? consoleLogger();
     const enabled = options.platforms ?? resolveEnabledPlatforms();
     for (const id of enabled) {
       if (!(id in PACKAGED_PLATFORMS)) continue;
@@ -249,8 +270,17 @@ export async function bootstrapKernelAsync(options: BootstrapOptions = {}): Prom
       logger: options.logger,
     });
     const discovered = await loader.discover();
-    for (const d of discovered) {
-      handle.registry.register(d.factory());
+    for (const plugin of discovered) {
+      try {
+        handle.registry.register(plugin.factory());
+      } catch (error) {
+        logger.error("external plugin registration failed", {
+          source: sanitizeErrorMessage(plugin.source).slice(0, 1000),
+          error: sanitizeErrorMessage(
+            error instanceof Error ? error.message : String(error),
+          ).slice(0, 1000),
+        });
+      }
     }
   }
   return handle;

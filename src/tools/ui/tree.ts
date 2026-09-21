@@ -5,11 +5,12 @@ import {
   harmonyHierarchyToUiElements,
   formatUiTree,
   formatUiTreeSemantic,
-  type UiElement,
 } from "../../ui-tree/ui-parser.js";
+import type { UiElement } from "../../ui-tree/ui-parser.js";
 import { parseCommonArgs } from "../../utils/parse-common-args.js";
 import { textResult } from "../../utils/tool-result.js";
 import { TRUNCATION } from "../../constants/truncation.js";
+import { truncateOutput } from "../../utils/truncate.js";
 import type { ToolContext } from "../context.js";
 
 /** Formatting/caching options shared by every platform that yields UiElement[]. */
@@ -117,7 +118,7 @@ export const uiTree = defineTool({
     const xml = await ctx.deviceManager.getUiHierarchyAsync(platform, deviceId);
 
     if (currentPlatform === "desktop") {
-      const { truncateOutput } = await import("../../utils/truncate.js");
+
       return textResult(truncateOutput(xml, { maxChars: TRUNCATION.DEFAULT_MAX_CHARS }));
     }
 

@@ -1,4 +1,5 @@
 import { Jimp } from "jimp";
+import { validatePngForDecode } from "./input.js";
 import type { DiffOverlayResult, DiffRegion, RGBA } from "./types.js";
 import {
   COLOR_BG,
@@ -29,6 +30,8 @@ export async function generateDiffOverlay(
     ignoreRegions?: DiffRegion[];
   },
 ): Promise<DiffOverlayResult> {
+  validatePngForDecode(baseline);
+  validatePngForDecode(current);
   const baseImg = await Jimp.read(baseline);
   const currImg = await Jimp.read(current);
 

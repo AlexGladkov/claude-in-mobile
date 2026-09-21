@@ -5,7 +5,7 @@ import Foundation
 // Usage: cgevent_helper <command> <args...>
 //
 // Commands:
-//   type <pid> <text>           - Type text to specific process
+//   type <pid>                  - Read text from stdin and type it to the process
 //   key <pid> <keycode> [mods]  - Send key event (mods: shift,ctrl,alt,cmd)
 //   click <pid> <x> <y>         - Click at coordinates in process window
 //   mousedown <pid> <x> <y>     - Mouse down at coordinates
@@ -143,11 +143,11 @@ func sendMouseEvent(pid: Int32, x: CGFloat, y: CGFloat, eventType: CGEventType, 
 // Main command handling
 switch command {
 case "type":
-    guard CommandLine.arguments.count >= 4 else {
-        fputs("Usage: cgevent_helper type <pid> <text>\n", stderr)
+    let data = FileHandle.standardInput.readDataToEndOfFile()
+    guard data.count <= 1_048_576, let text = String(data: data, encoding: .utf8) else {
+        fputs("Invalid or oversized UTF-8 input\n", stderr)
         exit(1)
     }
-    let text = CommandLine.arguments[3...].joined(separator: " ")
     for char in text {
         typeChar(pid: pid, char: char)
         usleep(10000) // 10ms between characters

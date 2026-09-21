@@ -26,7 +26,7 @@ pub fn run(command: Commands) -> Result<()> {
             output,
             compress,
             max_width,
-            max_height: _,
+            max_height,
             quality,
             simulator,
             device,
@@ -37,6 +37,7 @@ pub fn run(command: Commands) -> Result<()> {
             output.as_deref(),
             compress,
             max_width,
+            max_height,
             quality,
             simulator.as_deref(),
             device.as_deref(),
@@ -666,7 +667,7 @@ pub fn run(command: Commands) -> Result<()> {
         // -- Flow commands ----------------------------------------------------
         Commands::Flow { command } => {
             // Resolve turbo: CLI flag || global config.
-            let global_turbo = config::get_bool("turbo").unwrap_or(false);
+            let global_turbo = config::get_bool("turbo")?.unwrap_or(false);
 
             match command {
                 crate::cli::FlowCommands::Run {

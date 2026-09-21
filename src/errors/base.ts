@@ -47,12 +47,14 @@ export function getRecoveryHints(error: unknown): { tool: string; args: Record<s
   return RECOVERY_HINTS[error.code] ?? [];
 }
 
-const RETRYABLE_CODES = new Set([
-  "DEVICE_OFFLINE", "COMMAND_TIMEOUT", "ADB_ERROR",
-  "SYNC_BARRIER_TIMEOUT",
-  "ASC_RATE_LIMIT",
-]);
+const RETRYABLE_CODES: Readonly<Record<string, true>> = {
+  DEVICE_OFFLINE: true,
+  COMMAND_TIMEOUT: true,
+  ADB_ERROR: true,
+  SYNC_BARRIER_TIMEOUT: true,
+  ASC_RATE_LIMIT: true,
+};
 
 export function isRetryable(error: unknown): boolean {
-  return error instanceof MobileError && RETRYABLE_CODES.has(error.code);
+  return error instanceof MobileError && Object.hasOwn(RETRYABLE_CODES, error.code);
 }

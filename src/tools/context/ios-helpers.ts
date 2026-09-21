@@ -3,6 +3,7 @@
  */
 
 import type { UiElement } from "../../ui-tree/ui-parser.js";
+import { z } from "zod";
 
 /**
  * Structural shape of a WebDriverAgent accessibility node (`/wda/accessibleSource`).
@@ -29,11 +30,6 @@ export interface WdaNode {
  * on session degradation WDA still answers 200 but with `value: null`. We must not
  * cast that envelope straight to a tree node — doing so silently yields `[]`.
  */
-interface WdaEnvelope {
-  value?: WdaNode | null;
-  status?: number;
-  sessionId?: string;
-}
 
 /**
  * Thrown when the WDA response cannot be interpreted as an accessibility tree.
@@ -47,14 +43,48 @@ export class WdaTreeError extends Error {
   }
 }
 
-/** Type guard: does this object structurally look like a WDA tree node? */
-function isWdaNode(v: unknown): v is WdaNode {
-  if (typeof v !== "object" || v === null) return false;
-  const o = v as Record<string, unknown>;
-  // A node is identified by having at least a type, a rect, or children — the
-  // three things a real accessibility node always carries. The bare envelope
-  // ({status, value:null, sessionId}) has none of these.
-  return "type" in o || "rect" in o || "children" in o;
+const wdaRectSchema = z.object({
+  x: z.number().finite().optional(),
+  y: z.number().finite().optional(),
+  width: z.number().finite().optional(),
+  height: z.number().finite().optional(),
+}).passthrough();
+const wdaNodeSchema = z.object({
+  type: z.string().max(65_536).optional(),
+  label: z.string().max(65_536).optional(),
+  value: z.string().max(65_536).optional(),
+  name: z.string().max(65_536).optional(),
+  identifier: z.string().max(65_536).optional(),
+  enabled: z.boolean().optional(),
+  selected: z.boolean().optional(),
+  rect: wdaRectSchema.optional(),
+  children: z.array(z.unknown()).max(50_000).optional(),
+}).passthrough().refine(
+  (node) => Object.hasOwn(node, "type")
+    || Object.hasOwn(node, "rect")
+    || Object.hasOwn(node, "children"),
+  "WDA node has no recognizable fields",
+);
+const wdaEnvelopeSchema = z.object({
+  value: z.unknown().optional(),
+  status: z.number().finite().optional(),
+  sessionId: z.string().max(1024).optional(),
+}).passthrough();
+
+function validateWdaTree(root: unknown): WdaNode {
+  const stack: unknown[] = [root];
+  let visited = 0;
+  while (stack.length > 0) {
+    if (++visited > 50_000) {
+      throw new WdaTreeError("WDA accessibility tree exceeded the node limit.");
+    }
+    const result = wdaNodeSchema.safeParse(stack.pop());
+    if (!result.success) {
+      throw new WdaTreeError("WDA accessibility tree contains an invalid node.");
+    }
+    if (result.data.children) stack.push(...result.data.children);
+  }
+  return root as WdaNode;
 }
 
 /**
@@ -68,14 +98,16 @@ function isWdaNode(v: unknown): v is WdaNode {
  * `value:null` envelope leak through and parse to `[]` with no error.
  */
 export function unwrapWdaTree(response: unknown): WdaNode {
-  if (isWdaNode(response)) {
-    return response;
+  const nodeResult = wdaNodeSchema.safeParse(response);
+  if (nodeResult.success) {
+    return validateWdaTree(response);
   }
 
-  if (typeof response === "object" && response !== null && "value" in response) {
-    const env = response as WdaEnvelope;
-    if (isWdaNode(env.value)) {
-      return env.value;
+  const envelopeResult = wdaEnvelopeSchema.safeParse(response);
+  if (envelopeResult.success && envelopeResult.data.value !== undefined) {
+    const valueResult = wdaNodeSchema.safeParse(envelopeResult.data.value);
+    if (valueResult.success) {
+      return validateWdaTree(envelopeResult.data.value);
     }
     throw new WdaTreeError(
       "WDA returned an empty accessibility tree (value is null/absent). " +
@@ -105,82 +137,87 @@ export function iosTreeToUiElements(
   elements: UiElement[] = [],
   index = { value: 0 },
 ): UiElement[] {
-  // Only validate/unwrap at the top of the recursion; children are already
-  // real nodes at that point.
-  const root: WdaNode = index.value === 0 && elements.length === 0 ? unwrapWdaTree(tree) : (tree as WdaNode);
+  const root = unwrapWdaTree(tree);
+  const stack: WdaNode[] = [root];
+  let visited = 0;
 
-  walkWdaNode(root, elements, index);
+  while (stack.length > 0) {
+    if (++visited > 50_000) {
+      throw new WdaTreeError("WDA accessibility tree exceeded the node limit.");
+    }
+    const node = stack.pop();
+    if (!node) continue;
+    const rect = node.rect;
+    if (rect) {
+      const x = rect.x ?? 0;
+      const y = rect.y ?? 0;
+      const width = rect.width ?? 0;
+      const height = rect.height ?? 0;
+      if (width > 0 && height > 0) {
+        elements.push({
+          index: index.value++,
+          resourceId: node.identifier ?? "",
+          className: node.type ?? "",
+          packageName: "",
+          text: node.label ?? node.value ?? "",
+          contentDesc: node.name ?? "",
+          checkable: false,
+          checked: false,
+          clickable:
+            node.enabled !== false
+            && Boolean(node.type?.includes("Button") || node.type?.includes("Link") || node.type?.includes("Cell")),
+          enabled: node.enabled !== false,
+          focusable: node.enabled !== false,
+          focused: false,
+          scrollable: node.type?.includes("ScrollView") ?? false,
+          longClickable: false,
+          password: node.type?.includes("SecureTextField") ?? false,
+          selected: node.selected ?? false,
+          bounds: { x1: x, y1: y, x2: x + width, y2: y + height },
+          centerX: Math.floor(x + width / 2),
+          centerY: Math.floor(y + height / 2),
+          width,
+          height,
+        });
+      }
+    }
+    const children = node.children ?? [];
+    for (let childIndex = children.length - 1; childIndex >= 0; childIndex--) {
+      stack.push(children[childIndex]);
+    }
+  }
   return elements;
 }
 
-function walkWdaNode(node: WdaNode, elements: UiElement[], index: { value: number }): void {
-  if (!node || typeof node !== "object") return;
-
-  const rect = node.rect;
-  if (rect) {
-    const x = rect.x ?? 0;
-    const y = rect.y ?? 0;
-    const w = rect.width ?? 0;
-    const h = rect.height ?? 0;
-
-    // Emit only nodes with a real, paintable rect. Zero-rect containers fall
-    // through to the child recursion below instead of being dropped.
-    if (w > 0 && h > 0) {
-      elements.push({
-        index: index.value++,
-        resourceId: node.identifier ?? "",
-        className: node.type ?? "",
-        packageName: "",
-        text: node.label ?? node.value ?? "",
-        contentDesc: node.name ?? "",
-        checkable: false,
-        checked: false,
-        clickable:
-          node.enabled !== false &&
-          Boolean(node.type?.includes("Button") || node.type?.includes("Link") || node.type?.includes("Cell")),
-        enabled: node.enabled !== false,
-        focusable: node.enabled !== false,
-        focused: false,
-        scrollable: node.type?.includes("ScrollView") ?? false,
-        longClickable: false,
-        password: node.type?.includes("SecureTextField") ?? false,
-        selected: node.selected ?? false,
-        bounds: { x1: x, y1: y, x2: x + w, y2: y + h },
-        centerX: Math.floor(x + w / 2),
-        centerY: Math.floor(y + h / 2),
-        width: w,
-        height: h,
-      });
-    }
-  }
-
-  if (node.children) {
-    for (const child of node.children) {
-      walkWdaNode(child, elements, index);
-    }
-  }
-}
-
-export function formatIOSUITree(tree: any, indent = 0): string {
+export function formatIOSUITree(tree: unknown, indent = 0): string {
+  const root = unwrapWdaTree(tree);
   const lines: string[] = [];
-  const prefix = '  '.repeat(indent);
+  const stack: Array<{ node: WdaNode; depth: number }> = [{ node: root, depth: indent }];
+  let visited = 0;
+  const safeText = (value: string) =>
+    value.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 1000);
 
-  if (tree.type) {
-    const parts: string[] = [`<${tree.type}>`];
-    if (tree.label) parts.push(`label="${tree.label}"`);
-    if (tree.value) parts.push(`value="${tree.value}"`);
-    if (tree.name) parts.push(`name="${tree.name}"`);
-    if (tree.identifier) parts.push(`id="${tree.identifier}"`);
-    if (tree.enabled !== undefined) parts.push(`enabled=${tree.enabled}`);
-    if (tree.rect) parts.push(`@ (${tree.rect.x}, ${tree.rect.y})`);
-    lines.push(`${prefix}${parts.join(' ')}`);
-  }
-
-  if (tree.children) {
-    for (const child of tree.children) {
-      lines.push(formatIOSUITree(child, indent + 1));
+  while (stack.length > 0) {
+    if (++visited > 50_000) {
+      throw new WdaTreeError("WDA accessibility tree exceeded the node limit.");
+    }
+    const entry = stack.pop();
+    if (!entry) continue;
+    const { node, depth } = entry;
+    if (node.type) {
+      const parts: string[] = [`<${safeText(node.type)}>`];
+      if (node.label) parts.push(`label=${JSON.stringify(safeText(node.label))}`);
+      if (node.value) parts.push(`value=${JSON.stringify(safeText(node.value))}`);
+      if (node.name) parts.push(`name=${JSON.stringify(safeText(node.name))}`);
+      if (node.identifier) parts.push(`id=${JSON.stringify(safeText(node.identifier))}`);
+      if (node.enabled !== undefined) parts.push(`enabled=${node.enabled}`);
+      if (node.rect) parts.push(`@ (${node.rect.x ?? 0}, ${node.rect.y ?? 0})`);
+      lines.push(`${"  ".repeat(Math.min(depth, 100))}${parts.join(" ")}`);
+    }
+    const children = node.children ?? [];
+    for (let childIndex = children.length - 1; childIndex >= 0; childIndex--) {
+      stack.push({ node: children[childIndex], depth: depth + 1 });
     }
   }
-
-  return lines.join('\n');
+  return lines.join("\n");
 }

@@ -42,15 +42,15 @@ import {
   registerToolsHidden,
   registerAliasesWithDefaults,
   registerAllModuleMetadata,
-  type ToolDefinition,
 } from "../../tools/registry.js";
+import type { ToolDefinition } from "../../tools/registry.js";
 import {
   ALWAYS_VISIBLE,
   PROFILE_VISIBLE,
   VALID_PROFILES,
   MODULE_METADATA,
-  type MobileProfile,
 } from "../../profiles.js";
+import type { MobileProfile } from "../../profiles.js";
 import {
   META_TOOL_DESCRIPTORS,
   META_SHORT_ALIASES,
@@ -60,7 +60,7 @@ import {
 export const BUILTIN_TOOLS_PLUGIN_MANIFEST: PluginManifest = {
   id: "builtin-tools",
   name: "Built-in tools",
-  version: "4.3.0",
+  version: "4.4.1",
   apiVersion: "1",
   // Marker-only capability — meta-tools fan out to platform plugins, so we
   // must not show up in `findByCapability("screen")` etc.

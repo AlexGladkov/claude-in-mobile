@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { JdwpReader, JdwpWriter, encodeCommand, HEADER_LEN, type IdSizes } from "./packet.js";
+import { JdwpReader, JdwpWriter, encodeCommand, HEADER_LEN } from "./packet.js";
+import type { IdSizes } from "./packet.js";
 
 const SIZES: IdSizes = {
   fieldIDSize: 8,

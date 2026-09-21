@@ -8,8 +8,8 @@ import {
   MODULE_METADATA_MAP,
   getModulesByCategory,
   getHideableNamesByCategory,
-  type MobileProfile,
 } from "./profiles.js";
+import type { MobileProfile } from "./profiles.js";
 
 describe("profiles", () => {
   it("ALWAYS_VISIBLE contains device and screen", () => {

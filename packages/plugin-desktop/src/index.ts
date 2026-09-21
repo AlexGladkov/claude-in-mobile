@@ -17,7 +17,7 @@ import { DesktopAdapter } from "./desktop-adapter.js";
 export const DESKTOP_PLUGIN_MANIFEST: PluginManifest = {
   id: "desktop",
   name: "Desktop",
-  version: "4.3.0",
+  version: "4.4.1",
   apiVersion: "1",
   capabilities: ["screen", "input", "ui", "shell", "appLifecycle", "logs", "deviceMgmt"],
   description: "Desktop automation via Compose companion JSON-RPC (screen, input, app lifecycle, shell)",

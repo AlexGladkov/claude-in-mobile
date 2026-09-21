@@ -54,12 +54,14 @@ export const storeTools: ToolDefinition[] = [
         .describe("Release track. Use 'internal' for internal testing, 'production' for full release."),
       rollout: z
         .number()
+        .min(0.01)
+        .max(1.0)
         .default(1.0)
         .describe("Staged rollout percentage 0.01–1.0 (default: 1.0 = 100%). Use < 1.0 for gradual rollout."),
     }),
     handler: async (args) => {
       validatePackageName(args.packageName);
-      const rollout = Math.min(1.0, Math.max(0.01, args.rollout ?? 1.0));
+      const rollout = args.rollout ?? 1.0;
       await client().submit(args.packageName, args.track, rollout);
       const pct = rollout === 1.0 ? "100%" : `${(rollout * 100).toFixed(0)}%`;
       return textResult(`Published to ${args.track} track (${pct} rollout)`);

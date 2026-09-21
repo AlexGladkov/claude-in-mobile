@@ -21,6 +21,7 @@ use serde_json::{json, Value};
 
 use super::expect::ExpectOutcome;
 use super::supervisor::{SnapshotMode, SpawnRequest, Supervisor};
+use crate::utils::private_state::state_file;
 
 #[derive(Deserialize)]
 struct Request {
@@ -289,8 +290,7 @@ fn parse_history(params: &Value) -> Result<Option<usize>> {
 
 /// Parse `record` + `castPath` from spawn params and return the resolved path.
 ///
-/// - `record: false` or absent → `None`
-/// - `record: true` → `Some(temp_dir/<id>.cast)`
+/// - `record: true` → a private per-user cast path
 /// - `record: "<path>"` → `Some(PathBuf::from(path))` (validated server-side)
 fn parse_cast_path(params: &Value, id: &str) -> Result<Option<PathBuf>> {
     let record_v = params.get("record");
@@ -305,9 +305,7 @@ fn parse_cast_path(params: &Value, id: &str) -> Result<Option<PathBuf>> {
         return Ok(Some(PathBuf::from(path_str)));
     }
     if rv.as_bool() == Some(true) {
-        // Default path: temp_dir/<id>.cast
-        let path = std::env::temp_dir().join(format!("{id}.cast"));
-        return Ok(Some(path));
+        return Ok(Some(state_file("repl-casts", id, "cast")?));
     }
     // record is a string path (as per TS type `boolean | string`).
     if let Some(s) = rv.as_str() {

@@ -1,16 +1,31 @@
 //! Recorder commands — record, manage and replay automation scenarios.
 //!
-//! Scenarios are stored as JSON files under `~/.claude-mobile/scenarios/<platform>/`.
-//! An active recording session is tracked in `/tmp/claude-mobile-recording-<name>.json`.
+//! Scenarios and active recording state are kept in private user directories.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::RecorderCommands;
+use crate::utils::private_state::{
+    app_dir, atomic_write, create_private_dir, read_json_file, state_dir, state_file,
+    validate_identifier,
+};
+use crate::utils::process::terminal_safe;
+
+const MAX_SCENARIO_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_RECORDING_FILES: usize = 128;
+const MAX_STEPS: usize = 10_000;
+const MAX_DESCRIPTION_BYTES: usize = 16 * 1024;
+const MAX_TAGS: usize = 64;
+const MAX_TAG_BYTES: usize = 256;
+const MAX_STEP_ARGS: usize = 64;
+const MAX_STEP_ARG_BYTES: usize = 4096;
+const MAX_LABEL_BYTES: usize = 4096;
+const MAX_ARGS_JSON_BYTES: usize = 512 * 1024;
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -58,7 +73,7 @@ pub struct Scenario {
     pub updated_at: String,
 }
 
-/// In-progress recording state stored in `/tmp/claude-mobile-recording-<name>.json`.
+/// In-progress recording state stored in the private recording-state directory.
 #[derive(Debug, Serialize, Deserialize)]
 struct RecordingState {
     pub name: String,
@@ -78,24 +93,87 @@ struct RecordingState {
 // ---------------------------------------------------------------------------
 
 fn scenarios_dir(platform: &str) -> Result<PathBuf> {
-    let home = dirs_home()?;
-    Ok(home.join(".claude-mobile").join("scenarios").join(platform))
+    validate_identifier(platform, "scenario platform")?;
+    let root = app_dir()?.join("scenarios");
+    create_private_dir(&root)?;
+    let path = root.join(platform);
+    create_private_dir(&path)?;
+    Ok(path)
 }
 
 fn scenario_path(platform: &str, name: &str) -> Result<PathBuf> {
-    Ok(scenarios_dir(platform)?.join(format!("{}.json", name)))
+    validate_identifier(name, "scenario name")?;
+    Ok(scenarios_dir(platform)?.join(format!("{name}.json")))
 }
 
-fn recording_tmp_path(name: &str) -> PathBuf {
-    PathBuf::from(format!("/tmp/claude-mobile-recording-{}.json", name))
+fn recording_state_path(name: &str) -> Result<PathBuf> {
+    state_file("recordings", name, "json")
 }
 
-/// Returns the home directory for the current user.
-fn dirs_home() -> Result<PathBuf> {
-    std::env::var("HOME")
-        .map(PathBuf::from)
-        .or_else(|_| std::env::var("USERPROFILE").map(PathBuf::from))
-        .context("Cannot determine home directory (HOME not set)")
+fn validate_bounded_text(value: &str, label: &str, max_bytes: usize) -> Result<()> {
+    if value.len() > max_bytes || value.chars().any(char::is_control) {
+        bail!("{label} exceeds {max_bytes} bytes or contains control characters");
+    }
+    Ok(())
+}
+fn validate_steps(steps: &[ScenarioStep]) -> Result<()> {
+    if steps.len() > MAX_STEPS {
+        bail!("Scenario cannot exceed {MAX_STEPS} steps");
+    }
+    for (expected_index, step) in steps.iter().enumerate() {
+        if step.index != expected_index {
+            bail!("Scenario step indices are invalid");
+        }
+        validate_identifier(&step.action, "scenario action")?;
+        validate_identifier(&step.step_type, "scenario step type")?;
+        if step.args.len() > MAX_STEP_ARGS
+            || step.args.iter().any(|arg| arg.len() > MAX_STEP_ARG_BYTES)
+        {
+            bail!(
+                "Scenario step arguments exceed {MAX_STEP_ARGS} entries or {MAX_STEP_ARG_BYTES} bytes"
+            );
+        }
+        if let Some(label) = &step.label {
+            validate_bounded_text(label, "scenario step label", MAX_LABEL_BYTES)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_scenario(scenario: &Scenario) -> Result<()> {
+    if scenario.version != 1 {
+        bail!("Unsupported scenario version");
+    }
+    validate_identifier(&scenario.name, "scenario name")?;
+    validate_identifier(&scenario.platform, "scenario platform")?;
+    if let Some(description) = &scenario.description {
+        validate_bounded_text(description, "scenario description", MAX_DESCRIPTION_BYTES)?;
+    }
+    if scenario.tags.len() > MAX_TAGS {
+        bail!("Scenario cannot exceed {MAX_TAGS} tags");
+    }
+    for tag in &scenario.tags {
+        validate_bounded_text(tag, "scenario tag", MAX_TAG_BYTES)?;
+    }
+    validate_bounded_text(&scenario.created_at, "scenario creation time", 128)?;
+    validate_bounded_text(&scenario.updated_at, "scenario update time", 128)?;
+    validate_steps(&scenario.steps)
+}
+
+fn validate_recording(state: &RecordingState) -> Result<()> {
+    validate_identifier(&state.name, "recording name")?;
+    validate_identifier(&state.platform, "recording platform")?;
+    if let Some(description) = &state.description {
+        validate_bounded_text(description, "recording description", MAX_DESCRIPTION_BYTES)?;
+    }
+    if state.tags.len() > MAX_TAGS {
+        bail!("Recording cannot exceed {MAX_TAGS} tags");
+    }
+    for tag in &state.tags {
+        validate_bounded_text(tag, "recording tag", MAX_TAG_BYTES)?;
+    }
+    validate_bounded_text(&state.started_at, "recording start time", 128)?;
+    validate_steps(&state.steps)
 }
 
 // ---------------------------------------------------------------------------
@@ -164,59 +242,54 @@ fn is_leap(y: u64) -> bool {
 // I/O helpers
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)]
-fn read_recording(name: &str) -> Result<RecordingState> {
-    let path = recording_tmp_path(name);
-    let text = fs::read_to_string(&path).with_context(|| {
-        format!(
-            "No active recording for '{}' (expected {})",
-            name,
-            path.display()
-        )
-    })?;
-    serde_json::from_str(&text).context("Corrupt recording state")
-}
-
 fn write_recording(state: &RecordingState) -> Result<()> {
-    let path = recording_tmp_path(&state.name);
-    let text = serde_json::to_string_pretty(state)?;
-    fs::write(&path, text).with_context(|| format!("Cannot write recording to {}", path.display()))
+    validate_recording(state)?;
+    let path = recording_state_path(&state.name)?;
+    let text = serde_json::to_vec_pretty(state)?;
+    if text.len() as u64 > MAX_SCENARIO_BYTES {
+        bail!("Recording state exceeds {MAX_SCENARIO_BYTES} bytes");
+    }
+    atomic_write(&path, &text)
+        .with_context(|| format!("Cannot write recording to {}", path.display()))
 }
 
 fn read_scenario(platform: &str, name: &str) -> Result<Scenario> {
     let path = scenario_path(platform, name)?;
-    let text = fs::read_to_string(&path)
-        .with_context(|| format!("Scenario '{}' not found for platform '{}'", name, platform))?;
-    serde_json::from_str(&text).context("Corrupt scenario file")
+    let scenario: Scenario = read_json_file(&path, MAX_SCENARIO_BYTES, "scenario file")?;
+    validate_scenario(&scenario)?;
+    if scenario.platform != platform || scenario.name != name {
+        bail!("Scenario identity does not match its storage path");
+    }
+    Ok(scenario)
 }
 
 fn write_scenario(scenario: &Scenario) -> Result<()> {
-    let dir = scenarios_dir(&scenario.platform)?;
-    fs::create_dir_all(&dir)
-        .with_context(|| format!("Cannot create scenario directory {}", dir.display()))?;
+    validate_scenario(scenario)?;
     let path = scenario_path(&scenario.platform, &scenario.name)?;
-    let text = serde_json::to_string_pretty(scenario)?;
-    fs::write(&path, text).with_context(|| format!("Cannot write scenario to {}", path.display()))
+    let text = serde_json::to_vec_pretty(scenario)?;
+    if text.len() as u64 > MAX_SCENARIO_BYTES {
+        bail!("Scenario exceeds {MAX_SCENARIO_BYTES} bytes");
+    }
+    atomic_write(&path, &text)
+        .with_context(|| format!("Cannot write scenario to {}", path.display()))
 }
 
-/// Find the first active recording in `/tmp/`.
-fn find_active_recording() -> Option<RecordingState> {
-    let pattern = "/tmp/claude-mobile-recording-";
-    let dir = Path::new("/tmp");
-    let entries = fs::read_dir(dir).ok()?;
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if name_str.starts_with("claude-mobile-recording-") && name_str.ends_with(".json") {
-            if let Ok(text) = fs::read_to_string(entry.path()) {
-                if let Ok(state) = serde_json::from_str::<RecordingState>(&text) {
-                    return Some(state);
-                }
-            }
+fn find_active_recording() -> Result<Option<RecordingState>> {
+    let dir = state_dir("recordings")?;
+    for (index, entry) in fs::read_dir(&dir)?.enumerate() {
+        if index >= MAX_RECORDING_FILES {
+            bail!("Recording state directory exceeds {MAX_RECORDING_FILES} entries");
         }
+        let entry = entry?;
+        if entry.path().extension().and_then(|value| value.to_str()) != Some("json") {
+            continue;
+        }
+        let state: RecordingState =
+            read_json_file(&entry.path(), MAX_SCENARIO_BYTES, "recording state")?;
+        validate_recording(&state)?;
+        return Ok(Some(state));
     }
-    let _ = pattern;
-    None
+    Ok(None)
 }
 
 // ---------------------------------------------------------------------------
@@ -282,7 +355,15 @@ fn cmd_start(
     description: Option<&str>,
     tags: Option<&str>,
 ) -> Result<()> {
-    let tmp_path = recording_tmp_path(name);
+    validate_identifier(name, "recording name")?;
+    validate_identifier(platform, "recording platform")?;
+    if let Some(value) = description {
+        validate_bounded_text(value, "recording description", MAX_DESCRIPTION_BYTES)?;
+    }
+    if let Some(value) = tags {
+        validate_bounded_text(value, "recording tags", MAX_DESCRIPTION_BYTES)?;
+    }
+    let tmp_path = recording_state_path(name)?;
     if tmp_path.exists() {
         bail!(
             "Recording '{}' is already active. Run `recorder stop` first.",
@@ -296,6 +377,12 @@ fn cmd_start(
         .map(|t| t.trim().to_owned())
         .filter(|t| !t.is_empty())
         .collect();
+    if tags_list.len() > MAX_TAGS {
+        bail!("Recording cannot exceed {MAX_TAGS} tags");
+    }
+    for tag in &tags_list {
+        validate_bounded_text(tag, "recording tag", MAX_TAG_BYTES)?;
+    }
 
     let state = RecordingState {
         name: name.to_owned(),
@@ -310,9 +397,9 @@ fn cmd_start(
 
     println!(
         "Recording '{}' started for platform '{}'. State: {}",
-        name,
-        platform,
-        tmp_path.display()
+        terminal_safe(name.as_bytes()),
+        terminal_safe(platform.as_bytes()),
+        terminal_safe(tmp_path.display().to_string().as_bytes()),
     );
     Ok(())
 }
@@ -322,14 +409,17 @@ fn cmd_start(
 // ---------------------------------------------------------------------------
 
 fn cmd_stop(discard: bool) -> Result<()> {
-    let state = find_active_recording()
-        .ok_or_else(|| anyhow::anyhow!("No active recording found in /tmp/"))?;
+    let state =
+        find_active_recording()?.ok_or_else(|| anyhow::anyhow!("No active recording found"))?;
 
-    let tmp_path = recording_tmp_path(&state.name);
+    let tmp_path = recording_state_path(&state.name)?;
 
     if discard {
         fs::remove_file(&tmp_path).ok();
-        println!("Recording '{}' discarded.", state.name);
+        println!(
+            "Recording '{}' discarded.",
+            terminal_safe(state.name.as_bytes())
+        );
         return Ok(());
     }
 
@@ -350,9 +440,9 @@ fn cmd_stop(discard: bool) -> Result<()> {
     let saved_path = scenario_path(&scenario.platform, &scenario.name)?;
     println!(
         "Recording '{}' saved ({} steps) -> {}",
-        scenario.name,
+        terminal_safe(scenario.name.as_bytes()),
         scenario.steps.len(),
-        saved_path.display()
+        terminal_safe(saved_path.display().to_string().as_bytes())
     );
     Ok(())
 }
@@ -362,25 +452,30 @@ fn cmd_stop(discard: bool) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_status() -> Result<()> {
-    let state = find_active_recording()
-        .ok_or_else(|| anyhow::anyhow!("No active recording found in /tmp/"))?;
+    let state =
+        find_active_recording()?.ok_or_else(|| anyhow::anyhow!("No active recording found"))?;
 
-    println!("Active recording: '{}'", state.name);
-    println!("  Platform : {}", state.platform);
+    println!(
+        "Active recording: '{}'",
+        terminal_safe(state.name.as_bytes())
+    );
+    println!("  Platform : {}", terminal_safe(state.platform.as_bytes()));
     println!("  Steps    : {}", state.steps.len());
-    println!("  Started  : {}", state.started_at);
+    println!(
+        "  Started  : {}",
+        terminal_safe(state.started_at.as_bytes())
+    );
 
     let recent_count = state.steps.len().min(5);
     if recent_count > 0 {
         println!("  Recent steps:");
         for step in state.steps.iter().rev().take(recent_count).rev() {
-            let label = step.label.as_deref().unwrap_or("-");
+            let label = terminal_safe(step.label.as_deref().unwrap_or("-").as_bytes());
             println!(
-                "    [{}] {} {:?}  ({})",
+                "    [{}] {}  ({})",
                 step.index + 1,
-                step.action,
-                step.args,
-                label
+                terminal_safe(step.action.as_bytes()),
+                label,
             );
         }
     }
@@ -392,7 +487,14 @@ fn cmd_status() -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_add_step(action_name: &str, args_json: Option<&str>, label: Option<&str>) -> Result<()> {
-    let mut state = find_active_recording()
+    validate_identifier(action_name, "scenario action")?;
+    if let Some(value) = label {
+        validate_bounded_text(value, "scenario step label", MAX_LABEL_BYTES)?;
+    }
+    if args_json.is_some_and(|value| value.len() > MAX_ARGS_JSON_BYTES) {
+        bail!("--args exceeds {MAX_ARGS_JSON_BYTES} bytes");
+    }
+    let mut state = find_active_recording()?
         .ok_or_else(|| anyhow::anyhow!("No active recording. Start one with `recorder start`."))?;
 
     let args: Vec<String> = match args_json {
@@ -400,6 +502,14 @@ fn cmd_add_step(action_name: &str, args_json: Option<&str>, label: Option<&str>)
         Some(raw) => serde_json::from_str(raw)
             .context("--args must be a JSON array of strings, e.g. '[\"100\",\"200\"]'")?,
     };
+    if args.len() > MAX_STEP_ARGS || args.iter().any(|arg| arg.len() > MAX_STEP_ARG_BYTES) {
+        bail!(
+            "--args cannot exceed {MAX_STEP_ARGS} entries or {MAX_STEP_ARG_BYTES} bytes per entry"
+        );
+    }
+    if state.steps.len() >= MAX_STEPS {
+        bail!("Recording cannot exceed {MAX_STEPS} steps");
+    }
 
     let index = state.steps.len();
     state.steps.push(ScenarioStep {
@@ -413,7 +523,12 @@ fn cmd_add_step(action_name: &str, args_json: Option<&str>, label: Option<&str>)
     });
 
     write_recording(&state)?;
-    println!("Step {} added: {} {:?}", index + 1, action_name, args);
+    println!(
+        "Step {} added: {} ({} argument(s))",
+        index + 1,
+        terminal_safe(action_name.as_bytes()),
+        args.len()
+    );
     Ok(())
 }
 
@@ -423,7 +538,7 @@ fn cmd_add_step(action_name: &str, args_json: Option<&str>, label: Option<&str>)
 
 fn cmd_remove_step(step_index: usize) -> Result<()> {
     let mut state =
-        find_active_recording().ok_or_else(|| anyhow::anyhow!("No active recording."))?;
+        find_active_recording()?.ok_or_else(|| anyhow::anyhow!("No active recording."))?;
 
     if step_index == 0 || step_index > state.steps.len() {
         bail!(
@@ -442,8 +557,10 @@ fn cmd_remove_step(step_index: usize) -> Result<()> {
 
     write_recording(&state)?;
     println!(
-        "Removed step {}: {} {:?}",
-        step_index, removed.action, removed.args
+        "Removed step {}: {} ({} argument(s))",
+        step_index,
+        terminal_safe(removed.action.as_bytes()),
+        removed.args.len(),
     );
     Ok(())
 }
@@ -453,13 +570,14 @@ fn cmd_remove_step(step_index: usize) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 fn cmd_list(platform: Option<&str>, tag: Option<&str>) -> Result<()> {
-    let home = dirs_home()?;
-    let base = home.join(".claude-mobile").join("scenarios");
-
-    if !base.exists() {
-        println!("No scenarios found.");
-        return Ok(());
+    if let Some(value) = platform {
+        validate_identifier(value, "scenario platform")?;
     }
+    if let Some(value) = tag {
+        validate_bounded_text(value, "scenario tag filter", MAX_TAG_BYTES)?;
+    }
+    let base = app_dir()?.join("scenarios");
+    create_private_dir(&base)?;
 
     let mut found = false;
 
@@ -468,19 +586,22 @@ fn cmd_list(platform: Option<&str>, tag: Option<&str>) -> Result<()> {
     } else {
         fs::read_dir(&base)
             .context("Cannot read scenarios directory")?
+            .take(32)
             .flatten()
-            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|entry| entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false))
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .collect()
     };
 
     for plat in &platforms {
-        let dir = base.join(plat);
-        if !dir.exists() {
+        if validate_identifier(plat, "scenario platform").is_err() {
             continue;
         }
+        let dir = base.join(plat);
+        create_private_dir(&dir)?;
         for entry in fs::read_dir(&dir)
             .context("Cannot read platform directory")?
+            .take(MAX_RECORDING_FILES)
             .flatten()
         {
             let file_name = entry.file_name();
@@ -488,28 +609,34 @@ fn cmd_list(platform: Option<&str>, tag: Option<&str>) -> Result<()> {
             if !file_str.ends_with(".json") {
                 continue;
             }
-            if let Ok(text) = fs::read_to_string(entry.path()) {
-                if let Ok(scenario) = serde_json::from_str::<Scenario>(&text) {
-                    // Filter by tag if provided.
-                    if let Some(filter_tag) = tag {
-                        if !scenario.tags.iter().any(|t| t == filter_tag) {
-                            continue;
-                        }
+            let Some(scenario_name) = entry
+                .path()
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .map(str::to_owned)
+            else {
+                continue;
+            };
+            if let Ok(scenario) = read_scenario(plat, &scenario_name) {
+                // Filter by tag if provided.
+                if let Some(filter_tag) = tag {
+                    if !scenario.tags.iter().any(|t| t == filter_tag) {
+                        continue;
                     }
-                    let tags_str = if scenario.tags.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" [{}]", scenario.tags.join(", "))
-                    };
-                    println!(
-                        "{}/{} — {} steps{}",
-                        plat,
-                        scenario.name,
-                        scenario.steps.len(),
-                        tags_str
-                    );
-                    found = true;
                 }
+                let tags_str = if scenario.tags.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", scenario.tags.join(", "))
+                };
+                println!(
+                    "{}/{} — {} steps{}",
+                    terminal_safe(plat.as_bytes()),
+                    terminal_safe(scenario.name.as_bytes()),
+                    scenario.steps.len(),
+                    terminal_safe(tags_str.as_bytes()),
+                );
+                found = true;
             }
         }
     }
@@ -582,8 +709,8 @@ fn cmd_play(
 
     println!(
         "Playing scenario '{}' on '{}' ({} steps, speed={}, dry_run={})…",
-        name,
-        platform,
+        terminal_safe(name.as_bytes()),
+        terminal_safe(platform.as_bytes()),
         steps_to_run.len(),
         speed,
         dry_run
@@ -606,11 +733,10 @@ fn cmd_play(
 
         let step_label = step.label.as_deref().unwrap_or(&step.action);
         print!(
-            "  Step {}/{}: {} {:?} … ",
+            "  Step {}/{}: {} … ",
             i + 1,
             steps_to_run.len(),
-            step_label,
-            step.args
+            terminal_safe(step_label.as_bytes()),
         );
 
         if dry_run {
@@ -642,11 +768,11 @@ fn cmd_play(
 
         match result {
             Ok(msg) => {
-                println!("OK  {}", msg);
+                println!("OK  {}", terminal_safe(msg.as_bytes()));
                 passed += 1;
             }
             Err(e) => {
-                println!("FAIL  {}", e);
+                println!("FAIL  {}", terminal_safe(e.to_string().as_bytes()));
                 failed += 1;
                 if stop_on_fail {
                     println!("Stopping on failure (--stop-on-fail).");
@@ -760,14 +886,20 @@ fn export_flow_steps(scenario: &Scenario) -> Result<()> {
 }
 
 fn export_markdown(scenario: &Scenario) -> Result<()> {
-    println!("# Scenario: {}", scenario.name);
+    println!("# Scenario: {}", terminal_safe(scenario.name.as_bytes()));
     println!();
-    println!("**Platform:** {}", scenario.platform);
+    println!(
+        "**Platform:** {}",
+        terminal_safe(scenario.platform.as_bytes()),
+    );
     if let Some(desc) = &scenario.description {
-        println!("**Description:** {}", desc);
+        println!("**Description:** {}", terminal_safe(desc.as_bytes()));
     }
     if !scenario.tags.is_empty() {
-        println!("**Tags:** {}", scenario.tags.join(", "));
+        println!(
+            "**Tags:** {}",
+            terminal_safe(scenario.tags.join(", ").as_bytes()),
+        );
     }
     println!();
     println!("## Steps");
@@ -776,17 +908,17 @@ fn export_markdown(scenario: &Scenario) -> Result<()> {
         let label = step
             .label
             .as_deref()
-            .map(|l| format!(" — {}", l))
+            .map(|value| format!(" — {}", terminal_safe(value.as_bytes())))
             .unwrap_or_default();
         let args_str = if step.args.is_empty() {
             String::new()
         } else {
-            format!(" `{}`", step.args.join(", "))
+            format!(" `{}`", terminal_safe(step.args.join(", ").as_bytes()))
         };
         println!(
             "{}. **{}**{}{}",
             step.index + 1,
-            step.action,
+            terminal_safe(step.action.as_bytes()),
             args_str,
             label
         );
@@ -947,12 +1079,10 @@ mod tests {
     }
 
     #[test]
-    fn test_recording_tmp_path() {
-        let path = recording_tmp_path("my-flow");
-        assert_eq!(
-            path,
-            PathBuf::from("/tmp/claude-mobile-recording-my-flow.json")
-        );
+    fn recording_state_path_rejects_traversal() {
+        assert!(recording_state_path("../escape").is_err());
+        assert!(scenario_path("android", "../../escape").is_err());
+        assert!(scenario_path("../escape", "flow").is_err());
     }
 
     #[test]

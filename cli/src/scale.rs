@@ -11,8 +11,14 @@ pub fn parse_size(s: &str) -> Result<(f64, f64)> {
     if parts.len() != 2 {
         anyhow::bail!("Invalid size format '{}'. Use WxH (e.g. 540x960)", s);
     }
-    let w: f64 = parts[0].trim().parse().context("Invalid width in --from-size")?;
-    let h: f64 = parts[1].trim().parse().context("Invalid height in --from-size")?;
+    let w: f64 = parts[0]
+        .trim()
+        .parse()
+        .context("Invalid width in --from-size")?;
+    let h: f64 = parts[1]
+        .trim()
+        .parse()
+        .context("Invalid height in --from-size")?;
     if w <= 0.0 || h <= 0.0 {
         anyhow::bail!("Size values must be positive");
     }

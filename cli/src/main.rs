@@ -1,25 +1,13 @@
-//! mcp-devices-cli - Fast native CLI for mobile device automation
+//! mcp-devices command-line entry point.
 //!
 //! Supports Android (via ADB), iOS (via simctl), HarmonyOS (via HDC), Aurora (via audb), and Desktop (via companion app).
 //! Also supports Google Play, Huawei AppGallery, and RuStore store management.
 
-mod android;
-mod aurora;
-mod cli;
-mod commands;
-mod desktop;
-mod ios;
-mod kernel;
-mod plugins;
-mod scale;
-mod harmony;
-mod screenshot;
-mod store;
-mod utils;
-
 use std::process::ExitCode;
 
 use clap::Parser;
+use mcp_devices::utils::process::terminal_safe;
+use mcp_devices::{cli, commands};
 
 fn main() -> ExitCode {
     let parsed = cli::Cli::parse();
@@ -27,7 +15,7 @@ fn main() -> ExitCode {
     match commands::run(parsed.command) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {}", terminal_safe(e.to_string().as_bytes()));
             ExitCode::FAILURE
         }
     }

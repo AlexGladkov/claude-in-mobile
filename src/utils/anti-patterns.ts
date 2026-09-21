@@ -14,6 +14,25 @@ const WINDOW_SIZE = 5;
 const HINT_COOLDOWN = 3; // don't repeat same hint within N calls
 let lastHint: { text: string; callIndex: number } | null = null;
 let callCounter = 0;
+const SCREENSHOT_NAMES: Readonly<Record<string, true>> = {
+  screen_capture: true,
+  screenshot: true,
+};
+const INTERACTION_NAMES: Readonly<Record<string, true>> = {
+  input_tap: true,
+  input_text: true,
+  input_swipe: true,
+  input_key: true,
+  tap: true,
+  swipe: true,
+  click: true,
+  type_text: true,
+};
+const TREE_NAMES: Readonly<Record<string, true>> = {
+  ui_tree: true,
+  get_ui: true,
+};
+
 
 /** Record a tool call for pattern analysis */
 export function recordCall(name: string, depth: number): void {
@@ -30,13 +49,12 @@ export function detectAntiPattern(): string | null {
   const recent = callWindow.map(c => c.toolName);
 
   // Rule 1: 3+ consecutive screenshots without interaction
-  const screenshotNames = new Set(["screen_capture", "screenshot"]);
-  const interactionNames = new Set(["input_tap", "input_text", "input_swipe", "input_key", "tap", "swipe", "click", "type_text"]);
+
   let consecutiveScreenshots = 0;
   for (let i = recent.length - 1; i >= 0; i--) {
-    if (screenshotNames.has(recent[i])) {
+    if (Object.hasOwn(SCREENSHOT_NAMES, recent[i])) {
       consecutiveScreenshots++;
-    } else if (interactionNames.has(recent[i])) {
+    } else if (Object.hasOwn(INTERACTION_NAMES, recent[i])) {
       break;
     } else {
       break;
@@ -48,10 +66,10 @@ export function detectAntiPattern(): string | null {
 
   // Rule 2: ui_tree + screen_capture in same window without interaction between
   const lastTwo = recent.slice(-2);
-  const treeNames = new Set(["ui_tree", "get_ui"]);
+
   if (
-    (treeNames.has(lastTwo[0]) && screenshotNames.has(lastTwo[1])) ||
-    (screenshotNames.has(lastTwo[0]) && treeNames.has(lastTwo[1]))
+    (Object.hasOwn(TREE_NAMES, lastTwo[0]) && Object.hasOwn(SCREENSHOT_NAMES, lastTwo[1])) ||
+    (Object.hasOwn(SCREENSHOT_NAMES, lastTwo[0]) && Object.hasOwn(TREE_NAMES, lastTwo[1]))
   ) {
     return emitHint("Pick one: tree OR screenshot, not both");
   }
@@ -62,9 +80,9 @@ export function detectAntiPattern(): string | null {
   // Rule 4: 3+ consecutive ui_tree without interaction
   let consecutiveTrees = 0;
   for (let i = recent.length - 1; i >= 0; i--) {
-    if (treeNames.has(recent[i])) {
+    if (Object.hasOwn(TREE_NAMES, recent[i])) {
       consecutiveTrees++;
-    } else if (interactionNames.has(recent[i])) {
+    } else if (Object.hasOwn(INTERACTION_NAMES, recent[i])) {
       break;
     } else {
       break;

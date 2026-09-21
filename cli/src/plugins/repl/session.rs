@@ -27,6 +27,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::utils::private_state::state_dir;
 use anyhow::{anyhow, bail, Context, Result};
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
@@ -40,6 +41,12 @@ pub(crate) type ExitCallback = Arc<dyn Fn() + Send + Sync + 'static>;
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
+
+/// `portable-pty` uses a fork/exec handshake on Unix that is not safe to run
+/// concurrently: overlapping handshakes can exchange malformed child errors.
+/// Keep the narrow process-creation section serialized; sessions run
+/// concurrently after `spawn_command` returns.
+static PTY_SPAWN_LOCK: Mutex<()> = Mutex::new(());
 
 /// Maximum number of filmstrip frames retained per session.
 pub const FILMSTRIP_CAP: usize = 50;
@@ -153,30 +160,25 @@ fn write_cast_event(w: &mut impl Write, elapsed_secs: f64, data: &str) -> std::i
 // castPath validation
 // ---------------------------------------------------------------------------
 
-/// Validate and open a `.cast` file path, confining it to `std::env::temp_dir()`.
-///
-/// Order (STRICT — path-traversal guard):
-/// 1. Canonicalize the *parent* directory (the file does not exist yet).
-/// 2. Canonicalize the base (`std::env::temp_dir()`).
-/// 3. Reject if the canonical parent does not start with the canonical base.
-/// 4. Open with `create_new(true) + mode(0o600)` — atomic, no TOCTOU.
+/// Validate and open a `.cast` file path, confining it to the system temp
+/// directory or the private per-user REPL cast directory.
 fn open_cast_file(path: &PathBuf) -> Result<std::fs::File> {
-    let base = {
-        let tmp = std::env::temp_dir();
-        tmp.canonicalize().unwrap_or(tmp)
+    let temp_base = {
+        let temp = std::env::temp_dir();
+        temp.canonicalize().unwrap_or(temp)
     };
-
+    let state_base = state_dir("repl-casts")?
+        .canonicalize()
+        .context("canonicalize private REPL cast directory")?;
     let parent = path.parent().unwrap_or(path);
-    // The file does not exist yet — canonicalize the parent directory.
-    let canon_parent = parent
+    let canonical_parent = parent
         .canonicalize()
         .with_context(|| format!("canonicalize parent of {}", path.display()))?;
 
-    if !canon_parent.starts_with(&base) {
+    if !canonical_parent.starts_with(&temp_base) && !canonical_parent.starts_with(&state_base) {
         bail!(
-            "castPath '{}' is outside the allowed temp-dir '{}' (path-traversal rejected)",
+            "castPath '{}' is outside an allowed private directory",
             path.display(),
-            base.display()
         );
     }
 
@@ -292,10 +294,14 @@ impl PtySession {
             builder.env(k, v);
         }
 
-        let child = pair
-            .slave
-            .spawn_command(builder)
-            .context("spawn_command failed")?;
+        let child = {
+            let _spawn_guard = PTY_SPAWN_LOCK
+                .lock()
+                .map_err(|_| anyhow!("PTY spawn lock poisoned"))?;
+            pair.slave
+                .spawn_command(builder)
+                .context("spawn_command failed")?
+        };
 
         // portable-pty's Unix backend establishes a fresh session with
         // setsid() in its pre-exec hook. Capture the foreground process group

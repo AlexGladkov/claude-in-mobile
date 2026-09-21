@@ -3,6 +3,8 @@ import { systemTools } from "../system-tools.js";
 import { clipboardTools } from "../clipboard-tools.js";
 import { permissionTools } from "../permission-tools.js";
 import { UnknownActionError } from "../../errors.js";
+import { getGlobalMetrics } from "../../utils/metrics.js";
+
 
 const handlers = new Map<string, ToolDefinition["handler"]>();
 
@@ -76,11 +78,10 @@ export const systemMeta: ToolDefinition = {
 
     // Metrics actions (handled inline, not via systemTools)
     if (action === "metrics") {
-      const { getGlobalMetrics } = await import("../../utils/metrics.js");
-      return { text: getGlobalMetrics().getFormatted() };
+      const metrics = getGlobalMetrics();
+      return { text: metrics.getFormatted() };
     }
     if (action === "reset_metrics") {
-      const { getGlobalMetrics } = await import("../../utils/metrics.js");
       getGlobalMetrics().reset();
       return { text: "Metrics reset." };
     }

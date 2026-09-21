@@ -62,11 +62,7 @@ mod tests {
 
     #[test]
     fn matches_python_prompt_at_tail() {
-        let rules = ExpectRules::new(
-            Some(Regex::new(r"(?m)>>> $").unwrap()),
-            300,
-            5000,
-        );
+        let rules = ExpectRules::new(Some(Regex::new(r"(?m)>>> $").unwrap()), 300, 5000);
         assert!(rules.prompt_matches("Python 3.12\n>>> "));
         assert!(!rules.prompt_matches("no prompt here"));
     }
@@ -75,15 +71,11 @@ mod tests {
     fn ignores_prompt_in_far_scrollback() {
         let mut buf = String::new();
         buf.push_str(">>> "); // older prompt
-        // 5KB filler so the older prompt falls outside the 4KB tail window
+                              // 5KB filler so the older prompt falls outside the 4KB tail window
         for _ in 0..5000 {
             buf.push('x');
         }
-        let rules = ExpectRules::new(
-            Some(Regex::new(r"(?m)>>> $").unwrap()),
-            300,
-            5000,
-        );
+        let rules = ExpectRules::new(Some(Regex::new(r"(?m)>>> $").unwrap()), 300, 5000);
         assert!(!rules.prompt_matches(&buf));
     }
 

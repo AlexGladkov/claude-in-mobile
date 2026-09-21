@@ -1,7 +1,13 @@
 import { execFileSync } from "child_process";
-import { readFileSync, unlinkSync } from "fs";
-import { randomBytes } from "crypto";
-import { tmpdir } from "os";
+import { rmSync } from "fs";
+import { homedir } from "os";
+import { join } from "path";
+import { MobileError } from "mcp-devices/errors";
+import { validateDeviceId } from "mcp-devices/utils/sanitize";
+import {
+  makePrivateTempDir,
+  readPrivateFileSync,
+} from "mcp-devices/utils/private-storage";
 
 export interface Device {
   id: string;
@@ -21,6 +27,8 @@ export interface LogOptions {
 }
 
 const EXEC_TIMEOUT_MS = 30_000;
+const MAX_SCREENSHOT_BYTES = 50 * 1024 * 1024;
+const MAX_PULL_BYTES = 16 * 1024 * 1024;
 
 export class AuroraClient {
   /**
@@ -39,20 +47,26 @@ export class AuroraClient {
       });
       return output.trim();
     } catch (error: unknown) {
-      const display = `audb ${args.join(" ")}`;
-      if (error instanceof Error) {
-        if (error.message.includes("audb: command not found") || error.message.includes("ENOENT")) {
-          throw new Error("audb not found. Install: cargo install audb-client");
-        }
-        throw new Error(`Command '${display}' failed: ${error.message}`);
+      const code = typeof error === "object" && error !== null && "code" in error
+        ? Reflect.get(error, "code")
+        : undefined;
+      if (code === "ENOENT") {
+        throw new Error("audb not found. Install: cargo install audb-client");
       }
-      throw new Error(`Command '${display}' failed with unknown error`);
-    }
+      throw new MobileError(
+        `audb ${args[0] ?? "unknown"} command failed.`,
+        "AUDB_COMMAND_FAILED",
+      );
+  }
   }
 
   async checkAvailability(): Promise<boolean> {
     try {
-      execFileSync("audb", ["--version"], { encoding: "utf-8", timeout: EXEC_TIMEOUT_MS });
+      execFileSync("audb", ["--version"], {
+        encoding: "utf-8",
+        timeout: EXEC_TIMEOUT_MS,
+        maxBuffer: 64 * 1024,
+      });
       return true;
     } catch {
       return false;
@@ -102,18 +116,20 @@ export class AuroraClient {
   }
 
   getActiveDevice(): string {
-    const path = `${process.env.HOME}/.config/audb/current_device`;
+    const path = join(homedir(), ".config", "audb", "current_device");
+    let selected: string;
     try {
-      return readFileSync(path, "utf-8");
-    } catch (error: unknown) {
-      if (error instanceof Error && 'code' in error) {
-        const errorCode = (error as NodeJS.ErrnoException).code;
-        if (errorCode === 'ENOENT') {
-          throw new Error("No device selected");
-        }
-      }
-      throw new Error(`Failed to read active device from ${path}: ${error instanceof Error ? error.message : String(error)}`);
+      selected = readPrivateFileSync(path, 4096, "active Aurora device").toString("utf8").trim();
+    } catch {
+      throw new Error("Failed to read the active Aurora device.");
     }
+    validateDeviceId(selected);
+    return selected;
+  }
+
+  selectDevice(deviceId: string): void {
+    validateDeviceId(deviceId);
+    this.runAudbSync(["select", deviceId]);
   }
 
   /**
@@ -167,32 +183,23 @@ export class AuroraClient {
     this.runAudbSync(["swipe", String(x1), String(y1), String(x2), String(y2)]);
   }
 
-  /**
-   * Input text on Aurora device.
-   * @unimplemented - audb doesn't have direct text input support yet
-   * @todo Implement via clipboard or D-Bus when available
-   */
+  /** Input text on the selected Aurora device. */
   inputText(text: string): void {
-    console.warn(`[Aurora] inputText not implemented: "${text}"`);
-    // Placeholder - return silently or implement via clipboard in future
+    this.runAudbSync(["text", text]);
   }
 
-  /**
-   * Get UI hierarchy from Aurora device.
-   * @unimplemented - UI scraping not available via audb yet
-   * @todo Implement when audb adds UI dump support
-   */
   getUiHierarchy(): string {
-    console.warn("[Aurora] getUiHierarchy not implemented");
-    return "<hierarchy><note>Aurora UI hierarchy not yet available via audb</note></hierarchy>";
+    throw new MobileError(
+      "Aurora UI hierarchy is not supported by audb.",
+      "CAPABILITY_NOT_SUPPORTED",
+    );
   }
 
-  /**
-   * Clear app data on Aurora device.
-   * @unimplemented - audb doesn't have this command yet
-   */
-  clearAppData(packageName: string): void {
-    console.warn(`[Aurora] clearAppData not implemented for ${packageName}`);
+  clearAppData(_packageName: string): void {
+    throw new MobileError(
+      "Aurora app-data clearing is not supported by audb.",
+      "CAPABILITY_NOT_SUPPORTED",
+    );
   }
 
   /**
@@ -208,16 +215,16 @@ export class AuroraClient {
    * @returns Raw PNG buffer
    */
   screenshotRaw(): Buffer {
-    const uniqueId = randomBytes(8).toString("hex");
-    const tmpFile = `${tmpdir()}/aurora_screenshot_${uniqueId}.png`;
+    const tempDir = makePrivateTempDir("aurora-screenshot");
+    const tmpFile = join(tempDir, "screenshot.png");
 
     try {
       // tmpFile passes as a literal argv slot — host shell never parses it,
       // so embedded metacharacters (if any future change introduced them) are inert.
       this.runAudbSync(["screenshot", "--output", tmpFile]);
-      return readFileSync(tmpFile);
+      return readPrivateFileSync(tmpFile, MAX_SCREENSHOT_BYTES, "Aurora screenshot");
     } finally {
-      try { unlinkSync(tmpFile); } catch {}
+      rmSync(tempDir, { recursive: true, force: true });
     }
   }
 
@@ -352,7 +359,7 @@ export class AuroraClient {
   pullFile(remotePath: string, localPath?: string): Buffer {
     const local = localPath || remotePath.split("/").pop() || "pulled_file";
     this.runAudbSync(["pull", remotePath, "--output", local]);
-    return readFileSync(local);
+    return readPrivateFileSync(local, MAX_PULL_BYTES, "Aurora pulled file");
   }
 }
 

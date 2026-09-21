@@ -7,7 +7,8 @@
 
 import type { JdwpSession } from "./session.js";
 import type { JdwpConnection } from "./connection.js";
-import { JdwpReader, JdwpWriter, type IdSizes } from "./packet.js";
+import { JdwpReader, JdwpWriter } from "./packet.js";
+import type { IdSizes } from "./packet.js";
 import {
   decodeByTag,
   prettyTypeSignature,
@@ -15,9 +16,8 @@ import {
   writeTaggedValue,
   parseLiteral,
   coerceForSignature,
-  type DecodedValue,
-  type EncodableValue,
 } from "./values.js";
+import type { DecodedValue, EncodableValue } from "./values.js";
 import {
   CommandSet,
   VirtualMachineCmd,
@@ -97,11 +97,15 @@ interface InternalEvent extends DebugEvent {
   rawLoc?: { classID: bigint; methodID: bigint; index: bigint };
   resolved?: boolean;
 }
+const MAX_QUEUED_EVENTS = 1024;
+const MAX_CACHE_ENTRIES = 4096;
+const MAX_VM_COLLECTION_ENTRIES = 10_000;
 
 export class JdwpDebugger {
   private readonly conn: JdwpConnection;
   private readonly idSizes: IdSizes;
   private events: InternalEvent[] = [];
+  private nextEventCursor = 0;
   private classCache = new Map<string, ClassInfo>(); // signature → class
   private methodCache = new Map<string, MethodInfo[]>(); // classID → methods
   private nameByClassId = new Map<string, string>();
@@ -117,7 +121,7 @@ export class JdwpDebugger {
     this.session.onClose(() => {
       if (this.closed) return;
       this.closed = true;
-      this.events.push({ cursor: this.events.length, kind: "VM_DEATH" });
+      this.pushEvent({ kind: "VM_DEATH" });
     });
   }
 
@@ -134,6 +138,20 @@ export class JdwpDebugger {
   }
   private r(buf: Buffer): JdwpReader {
     return new JdwpReader(buf, this.idSizes);
+  }
+
+  private pushEvent(event: Omit<InternalEvent, "cursor">): void {
+    this.events.push({ cursor: this.nextEventCursor++, ...event });
+    if (this.events.length > MAX_QUEUED_EVENTS) {
+      this.events.splice(0, this.events.length - MAX_QUEUED_EVENTS);
+    }
+  }
+
+  private setCached<K, V>(cache: Map<K, V>, key: K, value: V): void {
+    if (!cache.has(key) && cache.size >= MAX_CACHE_ENTRIES) {
+      cache.delete(cache.keys().next().value as K);
+    }
+    cache.set(key, value);
   }
 
   // ---------- class / method resolution ----------
@@ -155,8 +173,8 @@ export class JdwpDebugger {
     const typeTag = r.byte();
     const classID = r.referenceTypeID();
     const info: ClassInfo = { typeTag, classID };
-    this.classCache.set(sig, info);
-    this.nameByClassId.set(classID.toString(), className);
+    this.setCached(this.classCache, sig, info);
+    this.setCached(this.nameByClassId, classID.toString(), className);
     return info;
   }
 
@@ -165,6 +183,9 @@ export class JdwpDebugger {
     const data = await this.req(CommandSet.VirtualMachine, VirtualMachineCmd.AllClasses);
     const r = this.r(data);
     const count = r.int();
+    if (count < 0 || count > MAX_VM_COLLECTION_ENTRIES) {
+      throw new Error("JDWP class list exceeds the entry limit");
+    }
     const out: { className: string; classID: string }[] = [];
     for (let i = 0; i < count; i++) {
       r.byte(); // refTypeTag
@@ -175,7 +196,7 @@ export class JdwpDebugger {
         const name = prettyTypeSignature(sig);
         if (!filter || name.includes(filter)) {
           out.push({ className: name, classID: classID.toString() });
-          this.nameByClassId.set(classID.toString(), name);
+          this.setCached(this.nameByClassId, classID.toString(), name);
         }
       }
     }
@@ -194,6 +215,9 @@ export class JdwpDebugger {
     );
     const r = this.r(data);
     const count = r.int();
+    if (count < 0 || count > MAX_VM_COLLECTION_ENTRIES) {
+      throw new Error("JDWP method list exceeds the entry limit");
+    }
     const methods: MethodInfo[] = [];
     for (let i = 0; i < count; i++) {
       const methodID = r.methodID();
@@ -203,7 +227,7 @@ export class JdwpDebugger {
       const modBits = r.int();
       methods.push({ methodID, name, signature, modBits });
     }
-    this.methodCache.set(key, methods);
+    this.setCached(this.methodCache, key, methods);
     return methods;
   }
 
@@ -221,6 +245,9 @@ export class JdwpDebugger {
       r.long(); // start
       r.long(); // end
       const n = r.int();
+      if (n < 0 || n > MAX_VM_COLLECTION_ENTRIES) {
+        throw new Error("JDWP line table exceeds the entry limit");
+      }
       const lines: { index: bigint; line: number }[] = [];
       for (let i = 0; i < n; i++) lines.push({ index: r.long(), line: r.int() });
       return { lines };
@@ -309,6 +336,7 @@ export class JdwpDebugger {
     const r = this.r(data);
     r.byte(); // suspendPolicy
     const count = r.int();
+    if (count < 0 || count > MAX_VM_COLLECTION_ENTRIES) return;
     for (let i = 0; i < count; i++) {
       let kind: number;
       let requestId: number;
@@ -318,7 +346,6 @@ export class JdwpDebugger {
       } catch {
         return; // truncated — stop
       }
-      const cursor = this.events.length;
       try {
         switch (kind) {
           case EventKind.SINGLE_STEP:
@@ -327,20 +354,17 @@ export class JdwpDebugger {
           case 41 /* METHOD_EXIT */: {
             const threadId = r.threadID();
             const loc = r.location();
-            this.events.push({
-              cursor,
-              kind: kind === EventKind.SINGLE_STEP ? "STEP_HIT" : "BREAKPOINT_HIT",
-              requestId,
-              threadId: threadId.toString(),
-              rawLoc: loc,
-            });
+            this.pushEvent({ kind: kind === EventKind.SINGLE_STEP ? "STEP_HIT" : "BREAKPOINT_HIT",
+            requestId,
+            threadId: threadId.toString(),
+            rawLoc: loc, });
             break;
           }
           case 42 /* METHOD_EXIT_WITH_RETURN_VALUE */: {
             const threadId = r.threadID();
             const loc = r.location();
             decodeByTag(r.byte(), r); // return value
-            this.events.push({ cursor, kind: "BREAKPOINT_HIT", requestId, threadId: threadId.toString(), rawLoc: loc });
+            this.pushEvent({ kind: "BREAKPOINT_HIT", requestId, threadId: threadId.toString(), rawLoc: loc });
             break;
           }
           case EventKind.EXCEPTION: {
@@ -348,7 +372,7 @@ export class JdwpDebugger {
             const loc = r.location();
             decodeByTag(r.byte(), r); // exception object (tagged)
             r.location(); // catch location (all-zero if uncaught)
-            this.events.push({ cursor, kind: "EXCEPTION_HIT", requestId, threadId: threadId.toString(), rawLoc: loc });
+            this.pushEvent({ kind: "EXCEPTION_HIT", requestId, threadId: threadId.toString(), rawLoc: loc });
             break;
           }
           case EventKind.CLASS_PREPARE: {
@@ -357,59 +381,55 @@ export class JdwpDebugger {
             r.referenceTypeID(); // typeID
             const sig = r.string();
             r.int(); // status
-            this.events.push({
-              cursor, kind: "CLASS_PREPARE", requestId,
-              threadId: threadId.toString(), location: { className: prettyTypeSignature(sig) }, resolved: true,
-            });
+            this.pushEvent({ kind: "CLASS_PREPARE", requestId,
+            threadId: threadId.toString(), location: { className: prettyTypeSignature(sig) }, resolved: true, });
             break;
           }
           case 9 /* CLASS_UNLOAD */: {
             r.string(); // signature
-            this.events.push({ cursor, kind: "CLASS_UNLOAD", requestId, resolved: true });
+            this.pushEvent({ kind: "CLASS_UNLOAD", requestId, resolved: true });
             break;
           }
           case EventKind.THREAD_START:
           case EventKind.THREAD_DEATH:
           case 90 /* VM_START */: {
             const threadId = r.threadID();
-            this.events.push({
-              cursor, kind: kind === EventKind.THREAD_START ? "THREAD_START" : kind === EventKind.THREAD_DEATH ? "THREAD_DEATH" : "VM_START",
-              requestId, threadId: threadId.toString(), resolved: true,
-            });
+            this.pushEvent({ kind: kind === EventKind.THREAD_START ? "THREAD_START" : kind === EventKind.THREAD_DEATH ? "THREAD_DEATH" : "VM_START",
+            requestId, threadId: threadId.toString(), resolved: true, });
             break;
           }
           case 20 /* FIELD_ACCESS */: {
             r.threadID(); r.location(); r.byte(); r.referenceTypeID(); r.fieldID(); decodeByTag(r.byte(), r);
-            this.events.push({ cursor, kind: "FIELD_ACCESS", requestId, resolved: true });
+            this.pushEvent({ kind: "FIELD_ACCESS", requestId, resolved: true });
             break;
           }
           case 21 /* FIELD_MODIFICATION */: {
             r.threadID(); r.location(); r.byte(); r.referenceTypeID(); r.fieldID(); decodeByTag(r.byte(), r); decodeByTag(r.byte(), r);
-            this.events.push({ cursor, kind: "FIELD_MODIFICATION", requestId, resolved: true });
+            this.pushEvent({ kind: "FIELD_MODIFICATION", requestId, resolved: true });
             break;
           }
           case 43: case 44 /* MONITOR_CONTENDED_ENTER/ED */: {
             r.threadID(); decodeByTag(r.byte(), r); r.location();
-            this.events.push({ cursor, kind: "MONITOR", requestId, resolved: true });
+            this.pushEvent({ kind: "MONITOR", requestId, resolved: true });
             break;
           }
           case 45 /* MONITOR_WAIT */: {
             r.threadID(); decodeByTag(r.byte(), r); r.location(); r.long();
-            this.events.push({ cursor, kind: "MONITOR", requestId, resolved: true });
+            this.pushEvent({ kind: "MONITOR", requestId, resolved: true });
             break;
           }
           case 46 /* MONITOR_WAITED */: {
             r.threadID(); decodeByTag(r.byte(), r); r.location(); r.boolean();
-            this.events.push({ cursor, kind: "MONITOR", requestId, resolved: true });
+            this.pushEvent({ kind: "MONITOR", requestId, resolved: true });
             break;
           }
           case EventKind.VM_DEATH:
-            this.events.push({ cursor, kind: "VM_DEATH", requestId, resolved: true });
+            this.pushEvent({ kind: "VM_DEATH", requestId, resolved: true });
             break;
           default:
             // Unknown kind → we don't know its width; abort the packet rather
             // than desync. (We never request kinds we can't decode.)
-            this.events.push({ cursor, kind: `UNKNOWN_${kind}`, requestId, resolved: true });
+            this.pushEvent({ kind: `UNKNOWN_${kind}`, requestId, resolved: true });
             return;
         }
       } catch {
@@ -437,9 +457,9 @@ export class JdwpDebugger {
 
   /** Return events at/after cursor (locations resolved) and the next cursor. */
   async poll(cursor: number): Promise<{ events: DebugEvent[]; nextCursor: number; alive: boolean }> {
-    const from = Math.max(0, cursor);
-    const slice = this.events.slice(from);
-    for (const ev of slice) {
+    const from = Number.isSafeInteger(cursor) && cursor >= 0 ? cursor : 0;
+    const pending = this.events.filter((event) => event.cursor >= from);
+    for (const ev of pending) {
       await this.resolveEvent(ev);
       // A single-step is one-shot: clear its request once delivered so it
       // doesn't keep firing on every subsequent line (no request leak).
@@ -456,8 +476,8 @@ export class JdwpDebugger {
         }
       }
     }
-    const events = slice.map(({ rawLoc: _r, resolved: _s, ...pub }) => pub as DebugEvent);
-    return { events, nextCursor: this.events.length, alive: this.alive };
+    const events = pending.map(({ rawLoc: _r, resolved: _s, ...pub }) => pub as DebugEvent);
+    return { events, nextCursor: this.nextEventCursor, alive: this.alive };
   }
 
   // ---------- pause state ----------
@@ -470,6 +490,9 @@ export class JdwpDebugger {
     const data = await this.req(CommandSet.ThreadReference, ThreadReferenceCmd.Frames, w.build());
     const r = this.r(data);
     const count = r.int();
+    if (count < 0 || count > max) {
+      throw new Error("JDWP frame response exceeds the requested limit");
+    }
     const out: { index: number; frameId: bigint; loc: { classID: bigint; methodID: bigint; index: bigint } }[] = [];
     for (let i = 0; i < count; i++) {
       const frameId = r.frameID();
@@ -569,6 +592,9 @@ export class JdwpDebugger {
       const r = this.r(data);
       r.int(); // argCnt
       const n = r.int();
+      if (n < 0 || n > MAX_VM_COLLECTION_ENTRIES) {
+        throw new Error("JDWP local variable table exceeds the entry limit");
+      }
       for (let i = 0; i < n; i++) {
         const start = r.long();
         const name = r.string();
@@ -647,6 +673,9 @@ export class JdwpDebugger {
     );
     const r = this.r(data);
     const n = r.int();
+    if (n < 0 || n > MAX_VM_COLLECTION_ENTRIES) {
+      throw new Error("JDWP field list exceeds the entry limit");
+    }
     const out: { fieldID: bigint; name: string; sig: string }[] = [];
     for (let i = 0; i < n; i++) {
       const fieldID = r.fieldID();
@@ -846,6 +875,9 @@ export class JdwpDebugger {
     const r = this.r(data);
     r.int(); // argCnt
     const n = r.int();
+    if (n < 0 || n > MAX_VM_COLLECTION_ENTRIES) {
+      throw new Error("JDWP local variable table exceeds the entry limit");
+    }
     let target: { slot: number; sig: string } | undefined;
     for (let i = 0; i < n; i++) {
       const start = r.long();
@@ -883,7 +915,10 @@ export class JdwpDebugger {
       .int(STEP_DEPTH[action]);
     const data = await this.req(CommandSet.EventRequest, EventRequestCmd.Set, w.build());
     const requestId = this.r(data).int();
-    this.stepRequests.add(requestId); // cleared once the STEP_HIT is polled (no leak)
+    if (this.stepRequests.size >= MAX_QUEUED_EVENTS) {
+      throw new Error("too many pending JDWP step requests");
+    }
+    this.stepRequests.add(requestId); // cleared once the STEP_HIT is polled
     await this.session.resume();
     return requestId;
   }
@@ -897,24 +932,23 @@ export class JdwpDebugger {
    * the raw JDWP THREAD_NOT_SUSPENDED (error 13) into an actionable message.
    */
   private async assertSuspended(threadId: bigint): Promise<void> {
+    let suspendStatus: number;
     try {
       const data = await this.req(
         CommandSet.ThreadReference,
         ThreadReferenceCmd.Status,
         this.w().threadID(threadId).build(),
       );
-      const r = this.r(data);
-      r.int(); // threadStatus
-      const suspendStatus = r.int();
-      if ((suspendStatus & 0x1) === 0) {
-        throw new Error(
-          `thread ${threadId} is not suspended — inspect/step require a thread paused at a breakpoint/exception/step`,
-        );
-      }
-    } catch (e) {
-      if (e instanceof Error && e.message.includes("not suspended")) throw e;
-      // Status query itself failed (e.g. invalid thread) — surface plainly.
-      throw new Error(`cannot verify thread ${threadId} suspend state: ${(e as Error).message}`);
+      const reader = this.r(data);
+      reader.int();
+      suspendStatus = reader.int();
+    } catch {
+      throw new Error(`cannot verify thread ${threadId} suspend state`);
+    }
+    if ((suspendStatus & 0x1) === 0) {
+      throw new Error(
+        `thread ${threadId} is not suspended — inspect/step require a thread paused at a breakpoint/exception/step`,
+      );
     }
   }
 }

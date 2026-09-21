@@ -400,7 +400,6 @@ export class BrowserAdapter implements CorePlatformAdapter, PerformanceTraceAdap
   async evaluateJs(expression: string, sessionName?: string): Promise<string> {
     const session = this.sessionManager.getSession(sessionName ?? DEFAULT_SESSION);
     if (!session) throw new BrowserNoSessionError();
-    console.error(`[browser_evaluate] session=${sessionName ?? DEFAULT_SESSION} expression=${expression.slice(0, 200)}`);
     return this.client.evaluate(session, expression);
   }
 

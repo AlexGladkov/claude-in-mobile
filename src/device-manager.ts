@@ -33,10 +33,8 @@ import type { DesktopClientLike, RawLaunchOptionsLike } from "./adapters/contrac
 
 import type { Device, Platform } from "./platform-types.js";
 import { buildDefaultAdapters } from "./device/client-cache.js";
-import {
-  adaptersFromKernel,
-  type KernelHandleView,
-} from "./device/kernel-device-locator.js";
+import { adaptersFromKernel } from "./device/kernel-device-locator.js";
+import type { KernelHandleView } from "./device/kernel-device-locator.js";
 import { InputProxy } from "./device/proxies/input-proxy.js";
 import { AppProxy } from "./device/proxies/app-proxy.js";
 import { PermissionProxy } from "./device/proxies/permission-proxy.js";
@@ -45,6 +43,7 @@ import { FileTransferProxy } from "./device/proxies/file-transfer-proxy.js";
 import { ScreenProxy } from "./device/proxies/screen-proxy.js";
 import { DesktopFacade } from "./device/proxies/desktop-facade.js";
 import { DeviceFacade } from "./device/proxies/device-facade.js";
+import { sanitizeErrorMessage } from "./utils/sanitize.js";
 
 // Re-export platform types so the ~125 existing call sites that import
 // `Platform`, `Device`, `BuiltinPlatform`, etc. from "./device-manager.js"
@@ -185,7 +184,10 @@ export class DeviceManager {
         try {
           await adapter.dispose?.();
         } catch (error) {
-          console.error(`Failed to dispose '${adapter.platform}' adapter:`, error);
+          console.error(
+            `Failed to dispose '${sanitizeErrorMessage(adapter.platform)}' adapter:`,
+            sanitizeErrorMessage(error),
+          );
         }
       }),
     );

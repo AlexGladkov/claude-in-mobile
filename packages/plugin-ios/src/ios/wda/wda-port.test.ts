@@ -1,4 +1,5 @@
-import { createServer, type Server } from "node:net";
+import { createServer } from "node:net";
+import type { Server } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { WDAManager } from "./wda-manager.js";

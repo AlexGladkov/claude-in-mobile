@@ -5,6 +5,7 @@ import type {
   ToolDefinition,
 } from "@mcp-devices/plugin-api";
 import type { PluginRegistry, RegistryEntry } from "./registry.js";
+import { sanitizeErrorMessage } from "../utils/sanitize.js";
 
 export const DEFAULT_INIT_TIMEOUT_MS = 10_000;
 export const DEFAULT_DISPOSE_TIMEOUT_MS = 5_000;
@@ -66,7 +67,21 @@ export class LifecycleOrchestrator {
   private readonly disposeOperations = new WeakMap<RegistryEntry, Promise<void>>();
   private readonly attempts = new WeakMap<RegistryEntry, InitAttempt>();
 
-  constructor(private readonly deps: LifecycleDeps) {}
+  constructor(private readonly deps: LifecycleDeps) {
+    const boundedTimeouts = [
+      ["initTimeoutMs", deps.initTimeoutMs, 300_000],
+      ["disposeTimeoutMs", deps.disposeTimeoutMs, 300_000],
+      ["cancelGraceMs", deps.cancelGraceMs, 10_000],
+    ] as const;
+    for (const [name, value, maximum] of boundedTimeouts) {
+      if (
+        value !== undefined
+        && (!Number.isSafeInteger(value) || value < 0 || value > maximum)
+      ) {
+        throw new Error(`${name} is out of range.`);
+      }
+    }
+  }
 
   async initAll(): Promise<void> {
     for (const entry of this.deps.registry.list()) {
@@ -140,7 +155,9 @@ export class LifecycleOrchestrator {
       attempt.controller.abort();
       if (entry.state === "initializing") {
         entry.state = "failed";
-        entry.lastError = error instanceof Error ? error.message : String(error);
+        entry.lastError = sanitizeErrorMessage(
+          error instanceof Error ? error.message : String(error),
+        ).slice(0, 1000);
         this.deps.eventBus.emit("plugin.failed", {
           pluginId: id,
           error: entry.lastError,
@@ -209,7 +226,9 @@ export class LifecycleOrchestrator {
     } catch (error) {
       this.deps.logger.warn("plugin dispose threw", {
         pluginId: id,
-        error: error instanceof Error ? error.message : String(error),
+        error: sanitizeErrorMessage(
+          error instanceof Error ? error.message : String(error),
+        ).slice(0, 1000),
       });
     } finally {
       entry.state = "disposed";

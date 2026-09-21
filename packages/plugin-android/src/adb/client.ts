@@ -24,7 +24,8 @@ import {
   stripDumpPrefix,
   splitActionAndUiXml,
 } from "./parsers.js";
-import { buildLogcatArgs, filterLogsByPackage, type LogcatOptions } from "./logcat.js";
+import { buildLogcatArgs, filterLogsByPackage } from "./logcat.js";
+import type { LogcatOptions } from "./logcat.js";
 import {
   buildPerfettoStartArgs,
   perfettoRemotePath,
@@ -121,7 +122,11 @@ export class AdbClient {
    */
   getDevices(): Device[] {
     const adbBin = resolveAdbPath();
-    const output = execFileSync(adbBin, ["devices", "-l"], { encoding: "utf-8", timeout: EXEC_TIMEOUT_MS });
+    const output = execFileSync(adbBin, ["devices", "-l"], {
+      encoding: "utf-8",
+      timeout: EXEC_TIMEOUT_MS,
+      maxBuffer: 1024 * 1024,
+    });
     return parseDevicesOutput(output);
   }
 

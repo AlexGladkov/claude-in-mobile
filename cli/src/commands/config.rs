@@ -25,29 +25,25 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 
+use crate::utils::private_state::read_json_file;
+use crate::utils::process::terminal_safe;
+
+const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+const MAX_CONFIG_KEYS: usize = 256;
 // ---------------------------------------------------------------------------
 // Path helpers
 // ---------------------------------------------------------------------------
 
-/// Returns `~/.claude-mobile/`, creating the directory if it does not exist.
-///
-/// Falls back to `$HOME/.claude-mobile/` when `dirs` is unavailable.
-pub fn config_dir() -> PathBuf {
-    let home = std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."));
-    let dir = home.join(".claude-mobile");
-    if !dir.exists() {
-        let _ = fs::create_dir_all(&dir);
-    }
-    dir
+/// Returns the private application configuration directory.
+pub fn config_dir() -> Result<PathBuf> {
+    crate::utils::private_state::app_dir()
 }
 
 /// Returns the full path to `~/.claude-mobile/config.json`.
-pub fn config_path() -> PathBuf {
-    config_dir().join("config.json")
+pub fn config_path() -> Result<PathBuf> {
+    Ok(config_dir()?.join("config.json"))
 }
 
 // ---------------------------------------------------------------------------
@@ -56,31 +52,54 @@ pub fn config_path() -> PathBuf {
 
 /// Load the config file.
 ///
-/// Returns an empty map when the file does not exist or cannot be parsed.
-pub fn load_config() -> HashMap<String, serde_json::Value> {
-    load_config_from(&config_path())
+/// A missing file produces an empty map. Corrupt or unreadable configuration is
+/// reported instead of silently resetting user settings.
+pub fn load_config() -> Result<HashMap<String, serde_json::Value>> {
+    load_config_from(&config_path()?)
 }
 
-fn load_config_from(path: &Path) -> HashMap<String, serde_json::Value> {
-    let Ok(text) = fs::read_to_string(path) else {
-        return HashMap::new();
-    };
-    serde_json::from_str(&text).unwrap_or_default()
+fn load_config_from(path: &Path) -> Result<HashMap<String, serde_json::Value>> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(HashMap::new());
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Failed to inspect config at {}", path.display()));
+        }
+        Ok(_) => {}
+    }
+
+    let config: HashMap<String, serde_json::Value> =
+        read_json_file(path, MAX_CONFIG_BYTES, "CLI config")
+            .with_context(|| format!("Invalid config JSON in {}", path.display()))?;
+    if config.len() > MAX_CONFIG_KEYS {
+        bail!("CLI config exceeds the {MAX_CONFIG_KEYS}-key limit");
+    }
+    for key in config.keys() {
+        validate_config_key(key)?;
+    }
+    Ok(config)
 }
 
-/// Serialize `config` to `~/.claude-mobile/config.json` as pretty-printed JSON.
+/// Serialize `config` atomically to `~/.claude-mobile/config.json`.
 pub fn save_config(config: &HashMap<String, serde_json::Value>) -> Result<()> {
-    save_config_to(&config_path(), config)
+    save_config_to(&config_path()?, config)
 }
 
 fn save_config_to(path: &Path, config: &HashMap<String, serde_json::Value>) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create config directory {}", parent.display()))?;
+    if config.len() > MAX_CONFIG_KEYS {
+        bail!("CLI config exceeds the {MAX_CONFIG_KEYS}-key limit");
+    }
+    for key in config.keys() {
+        validate_config_key(key)?;
     }
     let text =
         serde_json::to_string_pretty(config).context("Failed to serialize config to JSON")?;
-    fs::write(path, text).with_context(|| format!("Failed to write config to {}", path.display()))
+    if text.len() as u64 > MAX_CONFIG_BYTES {
+        bail!("CLI config exceeds the {MAX_CONFIG_BYTES}-byte limit");
+    }
+    crate::utils::private_state::atomic_write(path, text.as_bytes())
 }
 
 // ---------------------------------------------------------------------------
@@ -89,9 +108,9 @@ fn save_config_to(path: &Path, config: &HashMap<String, serde_json::Value>) -> R
 
 /// Print the value of `key`, or `"not set"` when the key is absent.
 pub fn get(key: &str) -> Result<()> {
-    let config = load_config();
+    let config = load_config()?;
     match config.get(key) {
-        Some(value) => println!("{}", value),
+        Some(value) => println!("{}", terminal_safe(value.to_string().as_bytes())),
         None => println!("not set"),
     }
     Ok(())
@@ -104,25 +123,33 @@ pub fn get(key: &str) -> Result<()> {
 /// - All-digit string → JSON number (integer)
 /// - Anything else → JSON string
 pub fn set(key: &str, value: &str) -> Result<()> {
-    let mut config = load_config();
+    validate_config_key(key)?;
+    let mut config = load_config()?;
     let parsed = parse_value(value);
     config.insert(key.to_owned(), parsed);
     save_config(&config)?;
-    println!("Set {} = {}", key, value);
+    println!("Updated {}", terminal_safe(key.as_bytes()));
     Ok(())
 }
 
 /// Print every key=value pair in the config file.
 pub fn list() -> Result<()> {
-    let config = load_config();
+    let config = load_config()?;
     if config.is_empty() {
         println!("(empty)");
     } else {
-        // Sort keys for stable output.
         let mut pairs: Vec<_> = config.iter().collect();
-        pairs.sort_by_key(|(k, _)| k.as_str());
-        for (k, v) in pairs {
-            println!("{k}={v}");
+        pairs.sort_by_key(|(key, _)| key.as_str());
+        for (key, value) in pairs {
+            if is_sensitive_key(key) {
+                println!("{}=<redacted>", terminal_safe(key.as_bytes()));
+            } else {
+                println!(
+                    "{}={}",
+                    terminal_safe(key.as_bytes()),
+                    terminal_safe(value.to_string().as_bytes()),
+                );
+            }
         }
     }
     Ok(())
@@ -130,12 +157,13 @@ pub fn list() -> Result<()> {
 
 /// Remove `key` from the config file.
 pub fn reset(key: &str) -> Result<()> {
-    let mut config = load_config();
+    validate_config_key(key)?;
+    let mut config = load_config()?;
     if config.remove(key).is_some() {
         save_config(&config)?;
-        println!("Removed {key}");
+        println!("Removed {}", terminal_safe(key.as_bytes()));
     } else {
-        println!("{key} was not set");
+        println!("{} was not set", terminal_safe(key.as_bytes()));
     }
     Ok(())
 }
@@ -148,15 +176,36 @@ pub fn reset(key: &str) -> Result<()> {
 ///
 /// Used by flow commands to resolve the global turbo toggle:
 /// ```rust,ignore
-/// let turbo = turbo || config::get_bool("turbo").unwrap_or(false);
+/// let turbo = turbo || config::get_bool("turbo")?.unwrap_or(false);
 /// ```
-pub fn get_bool(key: &str) -> Option<bool> {
-    load_config().get(key).and_then(|v| v.as_bool())
+pub fn get_bool(key: &str) -> Result<Option<bool>> {
+    Ok(load_config()?.get(key).and_then(|value| value.as_bool()))
 }
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+fn validate_config_key(key: &str) -> Result<()> {
+    if key.is_empty() || key.len() > 128 || key.chars().any(char::is_control) {
+        bail!("Config keys must contain 1-128 non-control characters");
+    }
+    Ok(())
+}
+
+fn is_sensitive_key(key: &str) -> bool {
+    let normalized = key.to_ascii_lowercase();
+    [
+        "authorization",
+        "cookie",
+        "credential",
+        "password",
+        "secret",
+        "token",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+}
 
 /// Parse a string argument into the most specific JSON value type.
 fn parse_value(s: &str) -> serde_json::Value {
@@ -223,7 +272,7 @@ mod tests {
 
     #[test]
     fn config_path_ends_with_config_json() {
-        let p = config_path();
+        let p = config_path().expect("config path");
         assert!(
             p.to_string_lossy().ends_with("config.json"),
             "unexpected path: {}",
@@ -242,9 +291,20 @@ mod tests {
         cfg.insert("count".to_owned(), serde_json::Value::Number(7_i64.into()));
 
         save_config_to(&path, &cfg).expect("save");
-        let loaded = load_config_from(&path);
+        let loaded = load_config_from(&path).expect("load");
 
         assert_eq!(loaded.get("turbo").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(loaded.get("count").and_then(|v| v.as_i64()), Some(7));
+    }
+
+    #[test]
+    fn corrupt_config_is_reported() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let path = tmp.path().join("config.json");
+        fs::write(&path, "{broken").expect("write corrupt config");
+
+        let error = load_config_from(&path).expect_err("corruption must fail");
+
+        assert!(error.to_string().contains("Invalid config JSON"));
     }
 }

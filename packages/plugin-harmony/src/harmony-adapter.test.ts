@@ -1,8 +1,10 @@
 import type { PluginContext, ToolDefinition } from "@mcp-devices/plugin-api";
 import { describe, expect, it, vi } from "vitest";
 
-import { HdcClient, type HdcExecutor } from "./client.js";
+import { HdcClient } from "./client.js";
+import type { HdcExecutor } from "./client.js";
 import { HarmonyAdapter } from "./harmony-adapter.js";
+import { buildDeviceShellCommand } from "mcp-devices/utils/device-shell";
 import {
   HARMONY_PLUGIN_MANIFEST,
   HarmonyPlugin,
@@ -31,8 +33,12 @@ describe("HarmonyAdapter", () => {
 
     expect(adapter.getSelectedDeviceId()).toBe("selected");
     expect(calls[0]).toEqual([
-      "-t", "explicit", "shell", "uitest", "uiInput", "swipe",
-      "1", "2", "3", "4", "200",
+      "-t",
+      "explicit",
+      "shell",
+      buildDeviceShellCommand([
+        "uitest", "uiInput", "swipe", "1", "2", "3", "4", "200",
+      ]),
     ]);
   });
 
@@ -54,8 +60,12 @@ describe("HarmonyAdapter", () => {
       deviceId: "phone",
     })).resolves.toEqual({ message: "started" });
     expect(calls[0]).toEqual([
-      "-t", "phone", "shell", "aa", "start",
-      "-b", "com.example.demo", "-a", "MainAbility", "-m", "entry",
+      "-t",
+      "phone",
+      "shell",
+      buildDeviceShellCommand([
+        "aa", "start", "-b", "com.example.demo", "-a", "MainAbility", "-m", "entry",
+      ]),
     ]);
   });
 });

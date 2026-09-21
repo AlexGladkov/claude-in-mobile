@@ -1,6 +1,7 @@
 import { Jimp } from "jimp";
 import type { UiElement } from "../../ui-tree/ui-parser.js";
 import { compressScreenshot } from "./compress.js";
+import { validatePngForDecode } from "./input.js";
 import type { AnnotateResult, CompressOptions } from "./types.js";
 import {
   COLOR_BG,
@@ -35,6 +36,7 @@ export async function annotateScreenshot(
   elements: UiElement[],
   compressOptions?: CompressOptions,
 ): Promise<AnnotateResult> {
+  validatePngForDecode(pngBuffer);
   const image = await Jimp.read(pngBuffer);
   const imgWidth = image.width;
   const imgHeight = image.height;

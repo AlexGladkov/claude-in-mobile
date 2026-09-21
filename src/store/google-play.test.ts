@@ -31,13 +31,11 @@ function makeFetch(...responses: MockResponse[]) {
     if (!r) throw new Error(`Unexpected fetch call #${call}`);
     const isJson = typeof r.body === "object" && r.body !== null;
     const text = isJson ? JSON.stringify(r.body) : String(r.body ?? "");
-    return Promise.resolve({
-      ok: r.status >= 200 && r.status < 300,
+    const noBody = r.status === 204 || r.status === 205 || r.status === 304;
+    return Promise.resolve(new Response(noBody ? null : text, {
       status: r.status,
-      headers: { get: (k: string) => (r.headers ?? {})[k.toLowerCase()] ?? null },
-      text: () => Promise.resolve(text),
-      json: () => Promise.resolve(r.body),
-    });
+      headers: r.headers,
+    }));
   });
 }
 
@@ -107,7 +105,7 @@ describe("GooglePlayClient", () => {
         { status: 403, body: "Forbidden" },
       ));
       await expect(client.upload("com.example.app", tmpFile))
-        .rejects.toThrow("Upload initiation failed 403");
+        .rejects.toThrow(/403/);
     });
 
     it("throws if initiation response has no Location header", async () => {
@@ -119,6 +117,16 @@ describe("GooglePlayClient", () => {
         .rejects.toThrow("missing Location header");
     });
 
+    it("rejects upload sessions outside Google API domains", async () => {
+      vi.stubGlobal("fetch", makeFetch(
+        { status: 200, body: EDIT },
+        { status: 200, body: {}, headers: { location: "https://googleapis.com.attacker.example/upload" } },
+      ));
+
+      await expect(client.upload("com.example.app", tmpFile))
+        .rejects.toThrow("untrusted URL");
+    });
+
     it("throws if stream PUT fails", async () => {
       vi.stubGlobal("fetch", makeFetch(
         { status: 200, body: EDIT },
@@ -126,7 +134,7 @@ describe("GooglePlayClient", () => {
         { status: 500, body: "Internal Server Error" },
       ));
       await expect(client.upload("com.example.app", tmpFile))
-        .rejects.toThrow("Upload failed 500");
+        .rejects.toThrow(/500/);
     });
 
     it("uses /apks endpoint for .apk files", async () => {

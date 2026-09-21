@@ -1,71 +1,95 @@
 //! iOS Simulator automation via simctl
 
-use std::process::Command;
-use std::path::PathBuf;
-use anyhow::{Result, Context, bail};
+use anyhow::{bail, Context, Result};
 use serde::Serialize;
+use std::io::Write;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+use tempfile::Builder;
 
+use crate::utils::private_state::{
+    atomic_write, cache_dir, private_temp_dir, read_bounded_file, validate_identifier,
+};
+use crate::utils::process::{ensure_success, run_with_limits, terminal_safe};
 use crate::utils::validate::validate_osascript_key;
 
 /// Get simulator UDID (booted or by name)
 fn get_simulator_udid(simulator: Option<&str>) -> Result<String> {
-    if let Some(name) = simulator {
-        let output = Command::new("xcrun")
-            .args(["simctl", "list", "devices", "-j"])
-            .output()
-            .context("Failed to list simulators")?;
+    let Some(name) = simulator else {
+        return Ok("booted".to_string());
+    };
+    let output = simctl_exec(&["list", "devices", "-j"])?;
+    ensure_success(&output, "Simulator discovery")?;
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout)?;
 
-        let json: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-
-        if let Some(devices) = json["devices"].as_object() {
-            for (_runtime, device_list) in devices {
-                if let Some(devices) = device_list.as_array() {
-                    for device in devices {
-                        if device["name"].as_str() == Some(name) {
-                            if let Some(udid) = device["udid"].as_str() {
-                                return Ok(udid.to_string());
-                            }
-                        }
+    if let Some(runtimes) = json["devices"].as_object() {
+        for devices in runtimes.values().filter_map(serde_json::Value::as_array) {
+            for device in devices {
+                if device["name"].as_str() == Some(name) {
+                    if let Some(udid) = device["udid"].as_str() {
+                        return Ok(udid.to_string());
                     }
                 }
             }
         }
-        bail!("Simulator '{}' not found", name);
-    } else {
-        Ok("booted".to_string())
     }
+    bail!("Requested simulator was not found")
 }
 
-/// Execute simctl command
-fn simctl_exec(args: &[&str]) -> Result<std::process::Output> {
-    Command::new("xcrun")
-        .arg("simctl")
-        .args(args)
-        .output()
-        .context("Failed to execute simctl command")
+/// Execute simctl with bounded output and a hard deadline.
+pub(crate) fn simctl_exec(args: &[&str]) -> Result<std::process::Output> {
+    let mut command = Command::new("xcrun");
+    command.arg("simctl").args(args);
+    run_with_limits(
+        &mut command,
+        Duration::from_secs(120),
+        64 * 1024 * 1024,
+        "simctl command",
+    )
 }
 
+fn run_osascript(script: &str, action: &str) -> Result<std::process::Output> {
+    let mut command = Command::new("osascript");
+    command.args(["-e", script]);
+    run_with_limits(&mut command, Duration::from_secs(15), 64 * 1024, action)
+}
+
+fn run_cliclick(args: &[String], action: &str) -> Result<()> {
+    let mut command = Command::new("cliclick");
+    command.args(args);
+    let output = run_with_limits(&mut command, Duration::from_secs(30), 64 * 1024, action)?;
+    ensure_success(&output, action)
+}
 /// Embedded Swift source for CGWindowList-based geometry lookup.
 /// Does NOT require TCC/Accessibility — works in ad-hoc signed terminals.
+
 const SWIFT_HELPER_SOURCE: &str = include_str!("../assets/simwindow.swift");
 
 /// Get path to compiled Swift helper, compiling on first use or when source changes.
 /// Binary cached at ~/.cache/mcp-devices/simwindow
 fn get_swift_helper_path() -> Result<PathBuf> {
-    let cache_dir = dirs_or_fallback();
-    std::fs::create_dir_all(&cache_dir).context("Failed to create cache dir")?;
-
+    let cache_dir = cache_dir("swift-helpers")?;
     let bin_path = cache_dir.join("simwindow");
     let hash_path = cache_dir.join("simwindow.hash");
 
-    // Simple hash: length + first 64 bytes to detect source changes
-    let current_hash = format!("{}-{}", SWIFT_HELPER_SOURCE.len(),
-        &SWIFT_HELPER_SOURCE[..SWIFT_HELPER_SOURCE.len().min(64)]);
+    let current_hash = format!("{:x}", {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        SWIFT_HELPER_SOURCE.hash(&mut hasher);
+        hasher.finish()
+    });
 
-    let needs_compile = if bin_path.exists() {
-        match std::fs::read_to_string(&hash_path) {
-            Ok(stored) => stored.trim() != current_hash,
-            Err(_) => true,
+    let binary_is_regular = std::fs::symlink_metadata(&bin_path)
+        .map(|metadata| metadata.file_type().is_file())
+        .unwrap_or(false);
+    let needs_compile = if binary_is_regular {
+        match read_bounded_file(&hash_path, 1024, "Swift helper hash")
+            .ok()
+            .and_then(|stored| String::from_utf8(stored).ok())
+        {
+            Some(stored) => stored.trim() != current_hash,
+            None => true,
         }
     } else {
         true
@@ -73,43 +97,43 @@ fn get_swift_helper_path() -> Result<PathBuf> {
 
     if needs_compile {
         let src_path = cache_dir.join("simwindow.swift");
-        std::fs::write(&src_path, SWIFT_HELPER_SOURCE)?;
+        atomic_write(&src_path, SWIFT_HELPER_SOURCE.as_bytes())?;
 
-        let output = Command::new("swiftc")
-            .args(["-O", "-o"])
-            .arg(&bin_path)
-            .arg(&src_path)
-            .output()
-            .context("Failed to compile Swift helper (is Xcode installed?)")?;
+        let staged_binary = Builder::new()
+            .prefix(".simwindow-")
+            .tempfile_in(&cache_dir)?;
+        let staged_path = staged_binary.into_temp_path();
+        let mut command = Command::new("swiftc");
+        command.args(["-O", "-o"]).arg(&staged_path).arg(&src_path);
+        let output = run_with_limits(
+            &mut command,
+            Duration::from_secs(120),
+            1024 * 1024,
+            "Swift helper compilation",
+        )?;
+        ensure_success(&output, "Swift helper compilation")?;
+        staged_path
+            .persist(&bin_path)
+            .map_err(|error| error.error)
+            .context("Failed to atomically install Swift helper")?;
 
-        if !output.status.success() {
-            bail!("Swift compilation failed: {}", String::from_utf8_lossy(&output.stderr));
-        }
-
-        std::fs::write(&hash_path, &current_hash)?;
+        atomic_write(&hash_path, current_hash.as_bytes())?;
         let _ = std::fs::remove_file(&src_path);
     }
 
     Ok(bin_path)
 }
 
-/// Cache dir: ~/.cache/mcp-devices
-fn dirs_or_fallback() -> PathBuf {
-    if let Some(home) = std::env::var_os("HOME") {
-        PathBuf::from(home).join(".cache").join("mcp-devices")
-    } else {
-        PathBuf::from("/tmp/mcp-devices")
-    }
-}
-
 /// Parse "x,y,w,h" string into (f64, f64, f64, f64)
 fn parse_geometry(text: &str) -> Result<(f64, f64, f64, f64)> {
-    let parts: Vec<f64> = text.trim().split(',')
+    let parts: Vec<f64> = text
+        .trim()
+        .split(',')
         .filter_map(|s| s.trim().parse().ok())
         .collect();
 
     if parts.len() != 4 {
-        bail!("Failed to parse window geometry: {}", text);
+        bail!("Failed to parse Simulator window geometry");
     }
 
     Ok((parts[0], parts[1], parts[2], parts[3]))
@@ -121,17 +145,18 @@ fn parse_geometry(text: &str) -> Result<(f64, f64, f64, f64)> {
 fn get_simulator_window_geometry() -> Result<(f64, f64, f64, f64)> {
     // Primary: Swift helper using CGWindowListCopyWindowInfo (no TCC required)
     if let Ok(helper_path) = get_swift_helper_path() {
-        let output = Command::new(&helper_path)
-            .output()
-            .context("Failed to run Swift window geometry helper")?;
+        let mut command = Command::new(&helper_path);
+        let output = run_with_limits(
+            &mut command,
+            Duration::from_secs(10),
+            64 * 1024,
+            "Swift window geometry helper",
+        )?;
 
         if output.status.success() {
             let text = String::from_utf8_lossy(&output.stdout).to_string();
             return parse_geometry(&text);
         }
-        // Swift helper failed — fall through to osascript
-        eprintln!("Swift helper failed: {}, falling back to osascript",
-            String::from_utf8_lossy(&output.stderr).trim());
     }
 
     // Fallback: osascript (requires Accessibility/TCC permission)
@@ -149,18 +174,17 @@ tell application "System Events"
     end tell
 end tell
 "#;
-    let output = Command::new("osascript")
-        .args(["-e", script])
-        .output()
-        .context("Failed to get Simulator window geometry via osascript")?;
-
+    let mut command = Command::new("osascript");
+    command.args(["-e", script]);
+    let output = run_with_limits(
+        &mut command,
+        Duration::from_secs(10),
+        64 * 1024,
+        "Simulator window geometry",
+    )?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
         bail!(
-            "Cannot get Simulator window geometry.\n\
-             CGWindowList helper failed and osascript requires Accessibility permission.\n\
-             If using Cursor/VibeStudio: grant Accessibility access in System Settings > Privacy & Security.\n\
-             Error: {}", stderr.trim()
+            "Cannot get Simulator window geometry. Grant Accessibility access to the terminal host."
         );
     }
 
@@ -200,47 +224,41 @@ fn sim_to_screen_coords(sim_x: i32, sim_y: i32, simulator: Option<&str>) -> Resu
     Ok((screen_x as i32, screen_y as i32))
 }
 
-/// Take screenshot and return PNG bytes
+/// Take screenshot and return PNG bytes.
 pub fn screenshot(simulator: Option<&str>) -> Result<Vec<u8>> {
     let udid = get_simulator_udid(simulator)?;
-    let temp_path = "/tmp/ios_screenshot.png";
-
-    let output = simctl_exec(&["io", &udid, "screenshot", temp_path])?;
+    let temp_dir = private_temp_dir("ios-screenshot")?;
+    let temp_path = temp_dir.path().join("screenshot.png");
+    let temp_text = temp_path
+        .to_str()
+        .context("iOS screenshot path is not valid UTF-8")?;
+    let output = simctl_exec(&["io", &udid, "screenshot", temp_text])?;
 
     if !output.status.success() {
-        bail!("simctl screenshot failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("simctl screenshot failed");
     }
 
-    let data = std::fs::read(temp_path).context("Failed to read screenshot")?;
-    std::fs::remove_file(temp_path).ok();
-
-    Ok(data)
+    read_bounded_file(&temp_path, 50 * 1024 * 1024, "iOS screenshot")
+        .context("Failed to read screenshot")
 }
 
 /// Long press at coordinates via AppleScript mouse events
 pub fn long_press(x: i32, y: i32, duration: u32, simulator: Option<&str>) -> Result<()> {
-    let _udid = get_simulator_udid(simulator)?;
-
-    let (sx, sy) = sim_to_screen_coords(x, y, simulator)?;
-    let delay_sec = duration as f64 / 1000.0;
-
-    let script = format!(
-        r#"tell application "Simulator" to activate
-delay 0.2
-tell application "System Events"
-    set p to {{{}, {}}}
-    -- mouse down, hold, mouse up
-    click at p
-    delay {}
-end tell"#,
-        sx, sy, delay_sec
-    );
-
-    let _ = Command::new("osascript")
-        .args(["-e", &script])
-        .output();
-
-    println!("Long pressed at ({}, {}) for {}ms", x, y, duration);
+    get_simulator_udid(simulator)?;
+    let (screen_x, screen_y) = sim_to_screen_coords(x, y, simulator)?;
+    let activate = run_osascript(
+        "tell application \"Simulator\" to activate",
+        "Simulator activation",
+    )?;
+    ensure_success(&activate, "Simulator activation")?;
+    let args = [
+        format!("dd:{screen_x},{screen_y}"),
+        format!("w:{}", duration.max(1)),
+        format!("du:{screen_x},{screen_y}"),
+    ];
+    run_cliclick(&args, "Simulator long press")
+        .context("Long press requires the cliclick executable")?;
+    println!("Long press completed");
     Ok(())
 }
 
@@ -251,143 +269,116 @@ pub fn open_url(url: &str, simulator: Option<&str>) -> Result<()> {
     let output = simctl_exec(&["openurl", &udid, url])?;
 
     if !output.status.success() {
-        bail!("Failed to open URL: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("Failed to open URL");
     }
 
-    println!("Opened URL: {}", url);
+    println!("URL opened");
     Ok(())
 }
 
 /// Execute shell command in simulator (safe - uses spawn)
 pub fn shell(command: &str, simulator: Option<&str>) -> Result<String> {
     let udid = get_simulator_udid(simulator)?;
-
-    // Use spawn with full path to sh (not in PATH on iOS simulator)
-    let output = Command::new("xcrun")
-        .args(["simctl", "spawn", &udid, "/bin/sh", "-c", command])
-        .output()
-        .context("Failed to execute shell command")?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-    if !output.status.success() && !stderr.is_empty() {
-        eprintln!("{}", stderr);
-    }
-
-    print!("{}", stdout);
+    let output = simctl_exec(&["spawn", &udid, "/bin/sh", "-c", command])?;
+    ensure_success(&output, "Simulator shell command")?;
+    let stdout = terminal_safe(&output.stdout);
+    print!("{stdout}");
     Ok(stdout)
 }
 
 /// Tap at coordinates using AppleScript
 pub fn tap(x: i32, y: i32, simulator: Option<&str>) -> Result<()> {
-    let _udid = get_simulator_udid(simulator)?;
-
-    let (sx, sy) = sim_to_screen_coords(x, y, simulator)?;
-
+    get_simulator_udid(simulator)?;
+    let (screen_x, screen_y) = sim_to_screen_coords(x, y, simulator)?;
     let script = format!(
-        r#"tell application "Simulator" to activate
-delay 0.2
-tell application "System Events"
-    click at {{{}, {}}}
-end tell"#,
-        sx, sy
+        "tell application \"Simulator\" to activate\n\
+         delay 0.2\n\
+         tell application \"System Events\" to click at {{{screen_x}, {screen_y}}}"
     );
-
-    let output = Command::new("osascript")
-        .args(["-e", &script])
-        .output()
-        .context("Failed to tap via AppleScript")?;
-
-    if !output.status.success() {
-        eprintln!("Warning: AppleScript tap may not work without accessibility permissions");
-    }
-
-    println!("Tapped at ({}, {})", x, y);
+    let output = run_osascript(&script, "Simulator tap")?;
+    ensure_success(&output, "Simulator tap")?;
+    println!("Tap completed");
     Ok(())
 }
 
 /// Swipe gesture via AppleScript drag
-pub fn swipe(x1: i32, y1: i32, x2: i32, y2: i32, duration: u32, simulator: Option<&str>) -> Result<()> {
-    let _udid = get_simulator_udid(simulator)?;
-
-    let (sx1, sy1) = sim_to_screen_coords(x1, y1, simulator)?;
-    let (sx2, sy2) = sim_to_screen_coords(x2, y2, simulator)?;
-    let dur_sec = (duration as f64 / 1000.0).max(0.1);
-
-    // Use cliclick if available for reliable drag, otherwise AppleScript
-    let cliclick = Command::new("which").arg("cliclick").output();
-    if cliclick.is_ok() && cliclick.unwrap().status.success() {
-        let script = format!(
-            r#"tell application "Simulator" to activate
-delay 0.2"#
-        );
-        let _ = Command::new("osascript").args(["-e", &script]).output();
-
-        let _ = Command::new("cliclick")
-            .args([
-                &format!("dd:{},{}", sx1, sy1),
-                &format!("dm:{},{}", sx2, sy2),
-                &format!("du:{},{}", sx2, sy2),
-            ])
-            .output();
-    } else {
-        let script = format!(
-            r#"tell application "Simulator" to activate
-delay 0.2
-tell application "System Events"
-    -- Click start point, drag to end point
-    click at {{{sx1}, {sy1}}}
-    delay {dur_sec}
-    click at {{{sx2}, {sy2}}}
-end tell"#,
-        );
-        let _ = Command::new("osascript").args(["-e", &script]).output();
-    }
-
-    println!("Swiped from ({}, {}) to ({}, {})", x1, y1, x2, y2);
+pub fn swipe(
+    x1: i32,
+    y1: i32,
+    x2: i32,
+    y2: i32,
+    duration: u32,
+    simulator: Option<&str>,
+) -> Result<()> {
+    get_simulator_udid(simulator)?;
+    let (start_x, start_y) = sim_to_screen_coords(x1, y1, simulator)?;
+    let (end_x, end_y) = sim_to_screen_coords(x2, y2, simulator)?;
+    let activate = run_osascript(
+        "tell application \"Simulator\" to activate",
+        "Simulator activation",
+    )?;
+    ensure_success(&activate, "Simulator activation")?;
+    let args = [
+        format!("dd:{start_x},{start_y}"),
+        format!("w:{}", duration.max(1)),
+        format!("dm:{end_x},{end_y}"),
+        format!("du:{end_x},{end_y}"),
+    ];
+    run_cliclick(&args, "Simulator swipe").context("Swipe requires the cliclick executable")?;
+    println!("Swipe completed");
     Ok(())
 }
 
-/// Input text (safe - uses simctl directly)
+fn copy_to_clipboard(text: &str) -> Result<()> {
+    let mut child = Command::new("pbcopy")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("Failed to start pbcopy")?;
+    child
+        .stdin
+        .take()
+        .context("pbcopy stdin was unavailable")?
+        .write_all(text.as_bytes())?;
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            if !status.success() {
+                bail!("pbcopy failed");
+            }
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("pbcopy timed out");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Input text without exposing it through shell source or command output.
 pub fn input_text(text: &str, simulator: Option<&str>) -> Result<()> {
     let udid = get_simulator_udid(simulator)?;
 
-    // Try simctl io sendKeyboardInput (iOS 14+ simulator)
-    let output = simctl_exec(&["io", &udid, "sendKeyboardInput", text]);
-
-    if let Ok(out) = output {
-        if out.status.success() {
-            println!("Input text: {}", text);
+    if let Ok(output) = simctl_exec(&["io", &udid, "sendKeyboardInput", text]) {
+        if output.status.success() {
+            println!("Input accepted ({} characters)", text.chars().count());
             return Ok(());
         }
     }
 
-    // Fallback: use pbcopy + paste (safe, no shell injection)
-    // SECURITY INVARIANT: `temp_path` MUST remain a static string literal.
-    // The `sh -c "cat '<path>' | pbcopy"` below is only safe because the path
-    // is a compile-time constant we control. If a future refactor makes this
-    // dynamic (e.g. per-user tempdir, randomised filename), switch to passing
-    // `text` directly to `pbcopy` via stdin instead — DO NOT keep this shape.
-    let temp_path = "/tmp/ios_input_text.txt";
-    std::fs::write(temp_path, text)?;
+    copy_to_clipboard(text)?;
 
-    Command::new("sh")
-        .args(["-c", &format!("cat '{}' | pbcopy", temp_path)])
-        .output()?;
-
-    std::fs::remove_file(temp_path).ok();
-
-    // Simulate Cmd+V paste
     let script = r#"tell application "System Events"
         keystroke "v" using command down
     end tell"#;
+    let output = run_osascript(script, "Simulator text paste")?;
+    ensure_success(&output, "Simulator text paste")?;
 
-    Command::new("osascript")
-        .args(["-e", script])
-        .output()?;
-
-    println!("Input text (via paste): {}", text);
+    println!("Input accepted ({} characters)", text.chars().count());
     Ok(())
 }
 
@@ -397,42 +388,42 @@ pub fn press_key(key: &str, simulator: Option<&str>) -> Result<()> {
 
     match key.to_lowercase().as_str() {
         "home" => {
-            // Simulator shortcut: Cmd+Shift+H
             let script = r#"tell application "Simulator" to activate
             delay 0.3
             tell application "System Events" to key code 4 using {command down, shift down}"#;
-            let output = Command::new("osascript")
-                .args(["-e", script])
-                .output()
-                .context("Failed to press Home via AppleScript")?;
+            let output = run_osascript(script, "Simulator Home key")?;
             if !output.status.success() {
-                let _ = simctl_exec(&["spawn", &udid, "notifyutil", "-p", "com.apple.springboard.home"]);
+                let fallback = simctl_exec(&[
+                    "spawn",
+                    &udid,
+                    "notifyutil",
+                    "-p",
+                    "com.apple.springboard.home",
+                ])?;
+                ensure_success(&fallback, "Simulator Home key")?;
             }
         }
         "lock" => {
-            // Cmd+L
             let script = r#"tell application "Simulator" to activate
             delay 0.1
             tell application "System Events"
                 keystroke "l" using {command down}
             end tell"#;
-            let _ = Command::new("osascript").args(["-e", script]).output();
+            let output = run_osascript(script, "Simulator Lock key")?;
+            ensure_success(&output, "Simulator Lock key")?;
         }
         "shake" => {
-            // Cmd+Ctrl+Z
             let script = r#"tell application "Simulator" to activate
             delay 0.1
             tell application "System Events"
                 keystroke "z" using {command down, control down}
             end tell"#;
-            let _ = Command::new("osascript").args(["-e", script]).output();
+            let output = run_osascript(script, "Simulator Shake gesture")?;
+            ensure_success(&output, "Simulator Shake gesture")?;
         }
         _ => {
-            let output = simctl_exec(&["io", &udid, "key", key]);
-            if output.is_err() || !output.as_ref().unwrap().status.success() {
-                // SECURITY: `key` is about to be interpolated into an
-                // AppleScript double-quoted string literal. Reject anything
-                // that could close the literal or inject extra AppleScript.
+            let simctl_output = simctl_exec(&["io", &udid, "key", key]);
+            if !matches!(&simctl_output, Ok(output) if output.status.success()) {
                 validate_osascript_key(key)?;
                 let script = format!(
                     r#"tell application "Simulator" to activate
@@ -442,12 +433,13 @@ pub fn press_key(key: &str, simulator: Option<&str>) -> Result<()> {
                     end tell"#,
                     key
                 );
-                let _ = Command::new("osascript").args(["-e", &script]).output();
+                let output = run_osascript(&script, "Simulator key press")?;
+                ensure_success(&output, "Simulator key press")?;
             }
         }
     }
 
-    println!("Pressed key: {}", key);
+    println!("Key press completed");
     Ok(())
 }
 
@@ -506,26 +498,46 @@ tell application "System Events"
     end tell
 end tell
 "#;
-    let output = Command::new("osascript")
-        .args(["-e", script])
-        .output()
-        .context("Failed to get accessibility elements")?;
+    let output = run_osascript(script, "Simulator accessibility query")?;
+    ensure_success(&output, "Simulator accessibility query")?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut elements = Vec::new();
 
     for line in stdout.lines() {
         let parts: Vec<&str> = line.split('|').collect();
-        if parts.len() < 7 { continue; }
+        if parts.len() < 7 {
+            continue;
+        }
 
-        let index: usize = parts[0].parse().unwrap_or(0);
+        let Ok(index) = parts[0].parse::<usize>() else {
+            continue;
+        };
         let role = parts[1].to_string();
-        let title = if parts[2] == "missing value" { String::new() } else { parts[2].to_string() };
-        let value = if parts[3] == "missing value" { String::new() } else { parts[3].to_string() };
-        let description = if parts[4] == "missing value" { String::new() } else { parts[4].to_string() };
+        let title = if parts[2] == "missing value" {
+            String::new()
+        } else {
+            parts[2].to_string()
+        };
+        let value = if parts[3] == "missing value" {
+            String::new()
+        } else {
+            parts[3].to_string()
+        };
+        let description = if parts[4] == "missing value" {
+            String::new()
+        } else {
+            parts[4].to_string()
+        };
 
-        let pos: Vec<i32> = parts[5].split(',').filter_map(|s| s.trim().parse().ok()).collect();
-        let size: Vec<i32> = parts[6].split('x').filter_map(|s| s.trim().parse().ok()).collect();
+        let pos: Vec<i32> = parts[5]
+            .split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
+        let size: Vec<i32> = parts[6]
+            .split('x')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
 
         if pos.len() == 2 && size.len() == 2 {
             elements.push(UiElement {
@@ -567,9 +579,16 @@ pub fn ui_dump(format: &str, _simulator: Option<&str>) -> Result<()> {
             } else {
                 ""
             };
-            println!("[{}] {} \"{}\" ({},{} {}x{})",
-                elem.index, elem.role, label,
-                elem.x, elem.y, elem.width, elem.height);
+            println!(
+                "[{}] {} \"{}\" ({},{} {}x{})",
+                elem.index,
+                terminal_safe(elem.role.as_bytes()),
+                terminal_safe(label.as_bytes()),
+                elem.x,
+                elem.y,
+                elem.width,
+                elem.height
+            );
         }
     }
 
@@ -637,7 +656,7 @@ pub fn list_apps(filter: Option<&str>, simulator: Option<&str>) -> Result<()> {
     let output = simctl_exec(&["listapps", &udid])?;
 
     if !output.status.success() {
-        bail!("simctl listapps failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("simctl listapps failed: {}", terminal_safe(&output.stderr));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -670,7 +689,11 @@ pub fn list_apps(filter: Option<&str>, simulator: Option<&str>) -> Result<()> {
     }
     if let Some(bundle) = current_bundle {
         let display = current_display.unwrap_or_default();
-        let entry = if display.is_empty() { bundle } else { format!("{} ({})", bundle, display) };
+        let entry = if display.is_empty() {
+            bundle
+        } else {
+            format!("{} ({})", bundle, display)
+        };
         apps.push(entry);
     }
 
@@ -684,36 +707,46 @@ pub fn list_apps(filter: Option<&str>, simulator: Option<&str>) -> Result<()> {
 
     println!("Installed apps ({}):", apps.len());
     for app in &apps {
-        println!("  {}", app);
+        println!("  {}", terminal_safe(app.as_bytes()));
     }
     Ok(())
 }
 
 /// Launch an app
 pub fn launch_app(bundle_id: &str, simulator: Option<&str>) -> Result<()> {
+    validate_identifier(bundle_id, "bundle identifier")?;
     let udid = get_simulator_udid(simulator)?;
 
     let output = simctl_exec(&["launch", &udid, bundle_id])?;
 
     if !output.status.success() {
-        bail!("Failed to launch {}: {}", bundle_id, String::from_utf8_lossy(&output.stderr));
+        bail!(
+            "Failed to launch {}: {}",
+            bundle_id,
+            terminal_safe(&output.stderr)
+        );
     }
 
-    println!("Launched: {}", bundle_id);
+    println!("Launched: {}", terminal_safe(bundle_id.as_bytes()));
     Ok(())
 }
 
 /// Stop an app
 pub fn stop_app(bundle_id: &str, simulator: Option<&str>) -> Result<()> {
+    validate_identifier(bundle_id, "bundle identifier")?;
     let udid = get_simulator_udid(simulator)?;
 
     let output = simctl_exec(&["terminate", &udid, bundle_id])?;
 
     if !output.status.success() {
-        bail!("Failed to stop {}: {}", bundle_id, String::from_utf8_lossy(&output.stderr));
+        bail!(
+            "Failed to stop {}: {}",
+            bundle_id,
+            terminal_safe(&output.stderr)
+        );
     }
 
-    println!("Stopped: {}", bundle_id);
+    println!("Stopped: {}", terminal_safe(bundle_id.as_bytes()));
     Ok(())
 }
 
@@ -721,31 +754,32 @@ pub fn stop_app(bundle_id: &str, simulator: Option<&str>) -> Result<()> {
 pub fn install_app(path: &str, simulator: Option<&str>) -> Result<()> {
     let udid = get_simulator_udid(simulator)?;
 
-    println!("Installing {}...", path);
+    println!("Installing {}...", terminal_safe(path.as_bytes()));
 
     let output = simctl_exec(&["install", &udid, path])?;
 
     if !output.status.success() {
-        bail!("Failed to install: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("Failed to install: {}", terminal_safe(&output.stderr));
     }
 
-    println!("Installed: {}", path);
+    println!("Installed: {}", terminal_safe(path.as_bytes()));
     Ok(())
 }
 
 /// Uninstall an app
 pub fn uninstall_app(bundle_id: &str, simulator: Option<&str>) -> Result<()> {
+    validate_identifier(bundle_id, "bundle identifier")?;
     let udid = get_simulator_udid(simulator)?;
 
-    println!("Uninstalling {}...", bundle_id);
+    println!("Uninstalling {}...", terminal_safe(bundle_id.as_bytes()));
 
     let output = simctl_exec(&["uninstall", &udid, bundle_id])?;
 
     if !output.status.success() {
-        bail!("Failed to uninstall: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("Failed to uninstall: {}", terminal_safe(&output.stderr));
     }
 
-    println!("Uninstalled: {}", bundle_id);
+    println!("Uninstalled: {}", terminal_safe(bundle_id.as_bytes()));
     Ok(())
 }
 
@@ -762,16 +796,26 @@ pub fn find_element(query: &str, _simulator: Option<&str>) -> Result<Option<(i32
         if matches && elem.width > 0 && elem.height > 0 {
             let cx = elem.x + elem.width / 2;
             let cy = elem.y + elem.height / 2;
-            println!("Found: \"{}\" role={} at ({},{}) size={}x{}",
-                if !elem.title.is_empty() { &elem.title }
-                else if !elem.description.is_empty() { &elem.description }
-                else { &elem.value },
-                elem.role, elem.x, elem.y, elem.width, elem.height);
+            println!(
+                "Found: \"{}\" role={} at ({},{}) size={}x{}",
+                if !elem.title.is_empty() {
+                    &elem.title
+                } else if !elem.description.is_empty() {
+                    &elem.description
+                } else {
+                    &elem.value
+                },
+                elem.role,
+                elem.x,
+                elem.y,
+                elem.width,
+                elem.height
+            );
             return Ok(Some((cx, cy)));
         }
     }
 
-    println!("Element '{}' not found", query);
+    println!("Element '{}' not found", terminal_safe(query.as_bytes()));
     Ok(None)
 }
 
@@ -798,7 +842,7 @@ pub fn find_ui_element(
     let res_q = resource_id.map(|s| s.to_lowercase());
 
     for elem in &elements {
-        if let Some(ref q) = text_q {
+        if let Some(q) = &text_q {
             let matches_title = elem.title.to_lowercase().contains(q.as_str());
             let matches_value = elem.value.to_lowercase().contains(q.as_str());
             let matches_desc = elem.description.to_lowercase().contains(q.as_str());
@@ -807,7 +851,7 @@ pub fn find_ui_element(
             }
         }
 
-        if let Some(ref q) = res_q {
+        if let Some(q) = &res_q {
             let matches_desc = elem.description.to_lowercase().contains(q.as_str());
             let matches_title = elem.title.to_lowercase().contains(q.as_str());
             if !matches_desc && !matches_title {
@@ -815,9 +859,13 @@ pub fn find_ui_element(
             }
         }
 
-        let label = if !elem.title.is_empty() { &elem.title }
-            else if !elem.description.is_empty() { &elem.description }
-            else { &elem.value };
+        let label = if !elem.title.is_empty() {
+            &elem.title
+        } else if !elem.description.is_empty() {
+            &elem.description
+        } else {
+            &elem.value
+        };
 
         let desc = format!(
             "role=\"{}\" label=\"{}\" at ({},{}) size={}x{}",
@@ -841,10 +889,11 @@ tell application "System Events"
 end tell"#,
             x, y
         );
-        let _ = Command::new("osascript").args(["-e", &script]).output();
-        println!("Tapped element at ({}, {})", x, y);
+        let output = run_osascript(&script, "Simulator element tap")?;
+        ensure_success(&output, "Simulator element tap")?;
+        println!("Element tap completed");
     } else {
-        bail!("Element '{}' not found", query);
+        bail!("Element was not found");
     }
     Ok(())
 }
@@ -885,10 +934,23 @@ pub fn get_system_info(simulator: Option<&str>) -> Result<()> {
 
                     if device_udid == udid || (udid == "booted" && is_booted) {
                         println!("System Info:");
-                        println!("  Name: {}", device["name"].as_str().unwrap_or("unknown"));
-                        println!("  State: {}", device["state"].as_str().unwrap_or("unknown"));
-                        println!("  Runtime: {}", runtime.replace("com.apple.CoreSimulator.SimRuntime.", ""));
-                        println!("  UDID: {}", device_udid);
+                        println!(
+                            "  Name: {}",
+                            terminal_safe(device["name"].as_str().unwrap_or("unknown").as_bytes()),
+                        );
+                        println!(
+                            "  State: {}",
+                            terminal_safe(device["state"].as_str().unwrap_or("unknown").as_bytes()),
+                        );
+                        println!(
+                            "  Runtime: {}",
+                            terminal_safe(
+                                runtime
+                                    .replace("com.apple.CoreSimulator.SimRuntime.", "")
+                                    .as_bytes(),
+                            ),
+                        );
+                        println!("  UDID: {}", terminal_safe(device_udid.as_bytes()));
                         return Ok(());
                     }
                 }
@@ -904,10 +966,8 @@ pub fn get_system_info(simulator: Option<&str>) -> Result<()> {
 pub fn get_current_activity(simulator: Option<&str>) -> Result<()> {
     let udid = get_simulator_udid(simulator)?;
 
-    let output = Command::new("xcrun")
-        .args(["simctl", "spawn", &udid, "launchctl", "list"])
-        .output()
-        .context("Failed to get running processes")?;
+    let output = simctl_exec(&["spawn", &udid, "launchctl", "list"])?;
+    ensure_success(&output, "Simulator process lookup")?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let re = regex::Regex::new(r"UIKitApplication:([^\[]+)\[").unwrap();
@@ -919,7 +979,8 @@ pub fn get_current_activity(simulator: Option<&str>) -> Result<()> {
             // Skip system background services
             if !bundle.contains("WidgetRenderer")
                 && !bundle.contains("ViewService")
-                && !bundle.contains("Spotlight") {
+                && !bundle.contains("Spotlight")
+            {
                 // Check if PID is running (first column is PID, "-" means not running)
                 let pid = line.split_whitespace().next().unwrap_or("-");
                 if pid != "-" {
@@ -932,9 +993,9 @@ pub fn get_current_activity(simulator: Option<&str>) -> Result<()> {
     if apps.is_empty() {
         println!("No foreground app detected (SpringBoard/Home Screen)");
     } else {
-        println!("Foreground app: {}", apps[0]);
+        println!("Foreground app: {}", terminal_safe(apps[0].as_bytes()));
         for app in apps.iter().skip(1) {
-            println!("Background app: {}", app);
+            println!("Background app: {}", terminal_safe(app.as_bytes()));
         }
     }
 
@@ -946,7 +1007,9 @@ pub fn get_logs(filter: Option<&str>, lines: usize, simulator: Option<&str>) -> 
     let udid = get_simulator_udid(simulator)?;
 
     let predicate;
-    let mut args = vec!["spawn", &udid, "log", "show", "--last", "5m", "--style", "compact"];
+    let mut args = vec![
+        "spawn", &udid, "log", "show", "--last", "5m", "--style", "compact",
+    ];
 
     if let Some(f) = filter {
         predicate = format!("processImagePath CONTAINS '{}'", f);
@@ -958,16 +1021,16 @@ pub fn get_logs(filter: Option<&str>, lines: usize, simulator: Option<&str>) -> 
 
     if !output.status.success() {
         let fallback = simctl_exec(&["spawn", &udid, "log", "show", "--last", "1m"])?;
-        let stdout = String::from_utf8_lossy(&fallback.stdout);
+        let stdout = terminal_safe(&fallback.stdout);
         for line in stdout.lines().take(lines) {
-            println!("{}", line);
+            println!("{line}");
         }
         return Ok(());
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = terminal_safe(&output.stdout);
     for line in stdout.lines().take(lines) {
-        println!("{}", line);
+        println!("{line}");
     }
     Ok(())
 }
@@ -984,7 +1047,7 @@ pub fn reboot(simulator: Option<&str>) -> Result<()> {
     let output = simctl_exec(&["boot", &udid])?;
 
     if !output.status.success() {
-        bail!("Failed to reboot: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("Failed to reboot: {}", terminal_safe(&output.stderr));
     }
 
     println!("Reboot initiated");
@@ -993,49 +1056,35 @@ pub fn reboot(simulator: Option<&str>) -> Result<()> {
 
 // ============== File Transfer ==============
 
-/// Push file to simulator (limited support)
-pub fn push_file(local: &str, remote: &str, simulator: Option<&str>) -> Result<()> {
-    let _udid = get_simulator_udid(simulator)?;
-    println!("Note: File push to iOS simulator is not directly supported via simctl.");
-    println!("Use 'xcrun simctl addmedia' for media files or app container paths.");
-    println!("  Local: {}", local);
-    println!("  Remote: {}", remote);
-    Ok(())
+/// File transfer requires an application container and is not exposed by this command.
+pub fn push_file(_local: &str, _remote: &str, _simulator: Option<&str>) -> Result<()> {
+    bail!("iOS Simulator file push is unsupported; use simctl addmedia or an app container")
 }
 
-/// Pull file from simulator (limited support)
-pub fn pull_file(remote: &str, local: &str, simulator: Option<&str>) -> Result<()> {
-    let _udid = get_simulator_udid(simulator)?;
-    println!("Note: File pull from iOS simulator is not directly supported via simctl.");
-    println!("Use app container paths: xcrun simctl get_app_container <udid> <bundle_id>");
-    println!("  Remote: {}", remote);
-    println!("  Local: {}", local);
-    Ok(())
+/// File transfer requires an application container and is not exposed by this command.
+pub fn pull_file(_remote: &str, _local: &str, _simulator: Option<&str>) -> Result<()> {
+    bail!("iOS Simulator file pull is unsupported; use an app container")
 }
 
 // ============== Clipboard ==============
 
 /// Get clipboard content (host clipboard since simulator shares it)
 pub fn get_clipboard(_simulator: Option<&str>) -> Result<()> {
-    let output = Command::new("pbpaste")
-        .output()
-        .context("Failed to execute pbpaste")?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    println!("{}", text);
+    let mut command = Command::new("pbpaste");
+    let output = run_with_limits(
+        &mut command,
+        Duration::from_secs(5),
+        1024 * 1024,
+        "Clipboard read",
+    )?;
+    ensure_success(&output, "Clipboard read")?;
+    println!("{}", terminal_safe(&output.stdout));
     Ok(())
 }
 
 /// Set clipboard content (host clipboard since simulator shares it)
 pub fn set_clipboard(text: &str, _simulator: Option<&str>) -> Result<()> {
-    let mut child = Command::new("pbcopy")
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-        .context("Failed to execute pbcopy")?;
-    if let Some(mut stdin) = child.stdin.take() {
-        use std::io::Write;
-        stdin.write_all(text.as_bytes())?;
-    }
-    child.wait()?;
+    copy_to_clipboard(text)?;
     println!("Clipboard set");
     Ok(())
 }

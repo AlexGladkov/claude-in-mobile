@@ -1,15 +1,19 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
+import { z } from "zod";
+
 
 const ROOT = new URL("../", import.meta.url).pathname;
+const jsonRecordSchema = z.record(z.string(), z.unknown());
+
 
 function read(rel: string): string {
   return readFileSync(join(ROOT, rel), "utf8");
 }
 
 function readJson(rel: string): Record<string, unknown> {
-  return JSON.parse(read(rel)) as Record<string, unknown>;
+  return jsonRecordSchema.parse(JSON.parse(read(rel)));
 }
 
 function cargoVersion(toml: string): string {

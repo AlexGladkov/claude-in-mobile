@@ -14,7 +14,7 @@ import { buildDebugTools } from "./tools.js";
 export const DEBUG_PLUGIN_MANIFEST: PluginManifest = {
   id: "debug",
   name: "Debug",
-  version: "4.3.0",
+  version: "4.4.1",
   apiVersion: "1",
   // "meta-tools" marks this as a cross-platform tool provider, NOT a device
   // platform. findByCapability("screen") must not return this plugin.

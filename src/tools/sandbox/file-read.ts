@@ -1,4 +1,5 @@
-import { validatePackageName, validatePath, sanitizeForShell } from "../../utils/sanitize.js";
+import { validatePackageName, validateSandboxPath } from "../../utils/sanitize.js";
+import { buildDeviceShellCommand } from "../../utils/device-shell.js";
 import { truncateOutput } from "../../utils/truncate.js";
 import { defineTool, z } from "../define-tool.js";
 import { deviceIdField } from "../common-schema.js";
@@ -40,32 +41,32 @@ export const sandboxFileReadTool = defineTool({
     const pkg = args.package;
     validatePackageName(pkg);
 
-    const rawPath = args.path;
-    validatePath(rawPath, "path");
-    const safePath = sanitizeForShell(rawPath);
-    if (safePath.length === 0) {
-      return errorResult("Invalid path after sanitization.");
-    }
+    const path = args.path;
+    validateSandboxPath(path);
 
     const maxBytes = Math.min(Math.max(1, args.maxBytes ?? 10_000), 50_000);
 
     let content: string;
     try {
-      content = ctx.deviceManager.shell(`run-as ${pkg} cat ${safePath}`, "android", deviceId);
+      content = ctx.deviceManager.shell(
+        buildDeviceShellCommand(["run-as", pkg, "cat", path]),
+        "android",
+        deviceId,
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (isRunAsFailure(msg)) return errorResult(runAsUnavailableHint(pkg));
       if (msg.toLowerCase().includes("no such file")) {
-        return errorResult(`File not found: "${safePath}" in sandbox of "${pkg}".`);
+        return errorResult("Sandbox file was not found.");
       }
-      return errorResult(`Failed to read file: ${msg}`);
+      return errorResult("Failed to read sandbox file.");
     }
 
     if (isRunAsFailure(content)) return errorResult(runAsUnavailableHint(pkg));
 
     if (looksLikeBinary(content)) {
       return textResult(
-        `File "${safePath}" in "${pkg}" appears to be a binary file and cannot be displayed as text.\n\n` +
+        `File "${path}" in "${pkg}" appears to be a binary file and cannot be displayed as text.\n\n` +
           "If this is a SQLite database, use sandbox(action:'sqlite_query') instead.",
       );
     }
