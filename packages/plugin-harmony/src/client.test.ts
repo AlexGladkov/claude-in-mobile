@@ -1,15 +1,30 @@
 import { writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-import {
-  HdcClient,
-  type HdcExecutor,
-  type HdcFetch,
-} from "./client.js";
+import { HdcClient } from "./client.js";
+import type { HdcExecutor, HdcFetch } from "./client.js";
 
 interface RecordedCall {
   binary: string;
   args: string[];
+}
+
+function decodeDeviceShellCommand(command: string): string[] {
+  const protectedQuotes = command.replaceAll(`'"'"'`, "\0");
+  return [...protectedQuotes.matchAll(/'([^']*)'/g)]
+    .map((match) => match[1]!.replaceAll("\0", "'"));
+}
+
+function semanticHdcArgs(args: readonly string[]): string[] {
+  const shellIndex = args.indexOf("shell");
+  const command = args.at(-1);
+  if (shellIndex === -1 || typeof command !== "string" || !command.startsWith("'")) {
+    return [...args];
+  }
+  return [
+    ...args.slice(0, -1),
+    ...decodeDeviceShellCommand(command),
+  ];
 }
 
 function fakeHdc(
@@ -17,11 +32,14 @@ function fakeHdc(
   response: (args: readonly string[]) => string = () => "",
 ): HdcExecutor {
   return (binary, args) => {
-    calls.push({ binary, args: [...args] });
-    const recvIndex = args.findIndex((arg, index) => arg === "recv" && args[index - 1] === "file");
+    const semanticArgs = semanticHdcArgs(args);
+    calls.push({ binary, args: semanticArgs });
+    const recvIndex = semanticArgs.findIndex(
+      (arg, index) => arg === "recv" && semanticArgs[index - 1] === "file",
+    );
     if (recvIndex !== -1) {
-      const localPath = args[recvIndex + 2];
-      const remotePath = args[recvIndex + 1];
+      const localPath = semanticArgs[recvIndex + 2];
+      const remotePath = semanticArgs[recvIndex + 1];
       if (localPath && remotePath) {
         const content = remotePath.endsWith(".json")
           ? JSON.stringify({ attributes: { type: "Button", text: "Continue", bounds: "[0,0][100,40]" } })
@@ -29,7 +47,7 @@ function fakeHdc(
         writeFileSync(localPath, content);
       }
     }
-    return response(args);
+    return response(semanticArgs);
   };
 }
 

@@ -2,15 +2,20 @@ import Cocoa
 import ApplicationServices
 
 // AXClick - Click elements by text using Accessibility API (no cursor movement)
-// Usage: ax_click <pid> <text> [--exact]
+// Usage: ax_click <pid> [--exact], with target text on stdin
 
-guard CommandLine.arguments.count >= 3 else {
-    fputs("Usage: ax_click <pid> <text> [--exact]\n", stderr)
+guard CommandLine.arguments.count >= 2 else {
+    fputs("Usage: ax_click <pid> [--exact]\n", stderr)
     exit(1)
 }
 
 let pid = pid_t(CommandLine.arguments[1]) ?? 0
-let targetText = CommandLine.arguments[2]
+let textData = FileHandle.standardInput.readDataToEndOfFile()
+guard textData.count <= 1_048_576,
+      let targetText = String(data: textData, encoding: .utf8) else {
+    fputs("Invalid or oversized UTF-8 input\n", stderr)
+    exit(1)
+}
 let exactMatch = CommandLine.arguments.contains("--exact")
 
 guard pid > 0 else {

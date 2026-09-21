@@ -85,9 +85,9 @@ export interface BrowserSnapshotNode {
 // through; an allowlist is fail-closed and mirrors validateUrl in
 // src/utils/sanitize.ts. (market:/tel:/mailto: are valid for system_open_url
 // but never for a headless browser navigation, so they stay out here.)
-export const ALLOWED_URL_PROTOCOLS = new Set([
-  "http:",
-  "https:",
-]);
+export const ALLOWED_URL_PROTOCOLS: Readonly<Record<string, true>> = {
+  "http:": true,
+  "https:": true,
+};
 
 export const DEFAULT_SESSION = "default";

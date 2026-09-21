@@ -97,6 +97,22 @@ describe("compressScreenshot", () => {
     const decoded = Buffer.from(result.data, "base64");
     expect(decoded.length).toBeLessThanOrEqual(maxSize);
   });
+
+  it("rejects oversized dimensions before decoding pixel data", async () => {
+    const bomb = Buffer.alloc(24);
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bomb);
+    Buffer.from("IHDR", "ascii").copy(bomb, 12);
+    bomb.writeUInt32BE(50_000, 16);
+    bomb.writeUInt32BE(50_000, 20);
+
+    await expect(compressScreenshot(bomb)).rejects.toThrow("decode limit");
+  });
+
+  it("rejects resource-exhausting compression options", async () => {
+    const png = await createTestPng(10, 10);
+    await expect(compressScreenshot(png, { maxWidth: Number.MAX_SAFE_INTEGER }))
+      .rejects.toThrow("Invalid screenshot compression options");
+  });
 });
 
 // ──────────────────────────────────────────────

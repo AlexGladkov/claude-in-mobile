@@ -60,9 +60,7 @@ fn detect_interactive() -> bool {
 /// contract in user-facing error messages. Avoid leniency (`yes`, `true`,
 /// etc.) so the gate's semantics can never silently broaden.
 fn env_allows_shell() -> bool {
-    env::var(ALLOW_SHELL_ENV)
-        .map(|v| v == "1")
-        .unwrap_or(false)
+    env::var(ALLOW_SHELL_ENV).map(|v| v == "1").unwrap_or(false)
 }
 
 /// Gate the `shell` subcommand against unintended non-interactive use.

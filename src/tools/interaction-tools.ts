@@ -245,7 +245,7 @@ export const interactionTools: ToolDefinition[] = [
       const text = args.text;
       await ctx.deviceManager.inputText(text, platform, args.targetPid, deviceId);
       ctx.invalidateUiTreeCache(platform ?? ctx.deviceManager.getCurrentPlatform() ?? undefined);
-      let result = `Entered text: "${text}"`;
+      let result = `Entered ${text.length} character(s).`;
       if (args.hints) {
         result += await ctx.generateActionHints(args.platform);
       }

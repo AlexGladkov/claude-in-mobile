@@ -7,7 +7,7 @@ import com.sun.jna.platform.win32.User32
 import com.sun.jna.platform.win32.WinDef
 import com.sun.jna.platform.win32.WinUser
 import java.awt.Rectangle
-import java.util.concurrent.TimeUnit
+import java.time.Duration
 
 /**
  * Cross-platform window management
@@ -16,6 +16,7 @@ class WindowManager {
     private val isMac = System.getProperty("os.name").lowercase().contains("mac")
     private val isWindows = System.getProperty("os.name").lowercase().contains("windows")
 
+    private val processRunner = SecureProcessRunner()
     // Cache window list to avoid expensive AppleScript calls
     // AppleScript can take 10-20 seconds on macOS with many processes
     @Volatile
@@ -97,6 +98,9 @@ class WindowManager {
      * Resize a window
      */
     fun resizeWindow(windowId: String?, width: Int, height: Int) {
+        require(width in 1..32768 && height in 1..32768) {
+            "Window dimensions must be between 1 and 32768 pixels"
+        }
         when {
             isMac -> resizeMacWindow(windowId, width, height)
             isWindows -> resizeWindowsWindow(windowId, width, height)
@@ -137,46 +141,22 @@ class WindowManager {
                 }
             """.trimIndent()
 
-            // Write Swift code to temp file and compile/run
-            val tempSwift = java.io.File.createTempFile("windowlist", ".swift")
-            val tempExe = java.io.File(tempSwift.parent, "windowlist_exe")
-            try {
-                tempSwift.writeText(swiftCode)
-
-                // Compile Swift code
-                val compileProcess = ProcessBuilder("swiftc", "-O", "-o", tempExe.absolutePath, tempSwift.absolutePath)
-                    .redirectErrorStream(true)
-                    .start()
-                val compileCompleted = compileProcess.waitFor(APPLESCRIPT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-
-                if (!compileCompleted || compileProcess.exitValue() != 0) {
-                    val error = compileProcess.inputStream.bufferedReader().readText()
-                    System.err.println("Swift compile failed: $error")
+            val helper = SwiftHelperManager.compileSource(swiftCode, "window-list")
+            if (helper == null) {
+                System.err.println("Swift window helper compilation failed")
+            } else {
+                val result = processRunner.run(
+                    listOf(helper.toString()),
+                    Duration.ofSeconds(5)
+                )
+                if (result.succeeded) {
+                    parseCGWindowListOutput(result.stdout, windows)
                 } else {
-                    // Run the compiled executable
-                    val runProcess = ProcessBuilder(tempExe.absolutePath)
-                        .redirectErrorStream(false)
-                        .start()
-
-                    val stdoutFuture = java.util.concurrent.CompletableFuture.supplyAsync {
-                        runProcess.inputStream.bufferedReader().readText()
-                    }
-
-                    val runCompleted = runProcess.waitFor(5, TimeUnit.SECONDS)
-                    if (runCompleted) {
-                        val output = stdoutFuture.get(2, TimeUnit.SECONDS)
-                        parseCGWindowListOutput(output, windows)
-                    } else {
-                        runProcess.destroyForcibly()
-                        System.err.println("Swift window list timeout")
-                    }
+                    System.err.println("Swift window list failed")
                 }
-            } finally {
-                tempSwift.delete()
-                tempExe.delete()
             }
-        } catch (e: Exception) {
-            System.err.println("Error getting macOS windows via CGWindowList: ${e.message}")
+        } catch (_: Exception) {
+            System.err.println("Error getting macOS windows via CGWindowList")
         }
 
         // Get actual focused window (with timeout)
@@ -187,43 +167,23 @@ class WindowManager {
                     return name of frontApp
                 end tell
             """.trimIndent()
-
-            val focusProcess = ProcessBuilder("osascript", "-e", focusScript)
-                .redirectErrorStream(false)
-                .start()
-
-            // Read streams in separate threads
-            val focusStdoutFuture = java.util.concurrent.CompletableFuture.supplyAsync {
-                focusProcess.inputStream.bufferedReader().readText()
-            }
-            val focusStderrFuture = java.util.concurrent.CompletableFuture.supplyAsync {
-                focusProcess.errorStream.bufferedReader().readText()
-            }
-
-            val focusCompleted = focusProcess.waitFor(5, TimeUnit.SECONDS)
-
-            if (!focusCompleted) {
-                focusProcess.destroyForcibly()
-                System.err.println("AppleScript focus check timeout")
-            } else {
-                val focusedApp = focusStdoutFuture.get(2, TimeUnit.SECONDS).trim()
-                val focusStderr = focusStderrFuture.get(2, TimeUnit.SECONDS)
-                val focusExitCode = focusProcess.exitValue()
-
-                if (focusExitCode != 0) {
-                    System.err.println("AppleScript focus check failed: $focusStderr")
-                }
-
-                // Mark the focused app's first window as focused
+            val result = processRunner.run(
+                listOf("osascript", "-e", focusScript),
+                Duration.ofSeconds(5)
+            )
+            if (result.succeeded) {
+                val focusedApp = result.stdout.trim()
                 val focusedIndex = windows.indexOfFirst { it.ownerName == focusedApp }
                 if (focusedIndex >= 0) {
                     windows[focusedIndex] = windows[focusedIndex].copy(focused = true)
                 } else if (windows.isNotEmpty()) {
                     windows[0] = windows[0].copy(focused = true)
                 }
+            } else {
+                System.err.println("AppleScript focus check failed")
             }
-        } catch (e: Exception) {
-            System.err.println("Error getting focused window: ${e.message}")
+        } catch (_: Exception) {
+            System.err.println("Error getting focused window")
         }
 
         // If no window marked as focused, mark first one
@@ -268,8 +228,8 @@ class WindowManager {
                         )
                     }
                 }
-            } catch (e: Exception) {
-                System.err.println("Failed to parse CGWindowList line: $line - ${e.message}")
+            } catch (_: Exception) {
+                System.err.println("Failed to parse CGWindowList output")
             }
         }
     }
@@ -333,8 +293,8 @@ class WindowManager {
                             )
                         )
                     }
-                } catch (e: Exception) {
-                    System.err.println("Failed to parse window chunk at index $i: ${e.message}")
+                } catch (_: Exception) {
+                    System.err.println("Failed to parse window output")
                 }
             }
             return
@@ -356,90 +316,68 @@ class WindowManager {
                 )
             )
         } else if (output.isNotBlank()) {
-            System.err.println("Failed to parse AppleScript output (parts=${parts.size}): $output")
+            System.err.println("Failed to parse AppleScript window output")
         }
     }
 
     private fun focusMacWindow(windowId: String) {
-        val windows = getMacWindows()
-        val window = windows.find { it.id == windowId } ?: return
-
-        // Strategy 1: Try direct application activation (works for native apps)
-        var success = false
-        try {
-            val script1 = """
-                tell application "${window.ownerName}"
-                    activate
+        val window = getMacWindows().find { it.id == windowId } ?: return
+        val ownerName = window.ownerName ?: return
+        val script = """
+            on run argv
+                set processName to item 1 of argv
+                set windowTitle to item 2 of argv
+                tell application "System Events"
+                    tell process processName
+                        set frontmost to true
+                        try
+                            perform action "AXRaise" of first window whose name is windowTitle
+                        end try
+                    end tell
                 end tell
-            """.trimIndent()
-
-            val proc1 = ProcessBuilder("osascript", "-e", script1).start()
-            val exitCode = proc1.waitFor()
-            success = exitCode == 0
-
-            // Verify it actually worked
-            if (success) {
-                Thread.sleep(100) // Give time to switch
-                val verifyScript = """
-                    tell application "System Events"
-                        set frontApp to first application process whose frontmost is true
-                        return name of frontApp
-                    end tell
-                """.trimIndent()
-                val verifyProc = ProcessBuilder("osascript", "-e", verifyScript).start()
-                val frontApp = verifyProc.inputStream.bufferedReader().readText().trim()
-                verifyProc.waitFor()
-                success = frontApp == window.ownerName
-            }
-        } catch (e: Exception) {
-            success = false
+            end run
+        """.trimIndent()
+        val result = processRunner.run(
+            listOf("osascript", "-e", script, ownerName, window.title),
+            Duration.ofSeconds(10)
+        )
+        if (!result.succeeded) {
+            System.err.println("Error focusing macOS window")
         }
-
-        // Strategy 2: Use System Events for Java/background processes
-        if (!success) {
-            try {
-                val script2 = """
-                    tell application "System Events"
-                        set frontmost of process "${window.ownerName}" to true
-                    end tell
-                """.trimIndent()
-                ProcessBuilder("osascript", "-e", script2).start().waitFor()
-            } catch (e: Exception) {
-                System.err.println("Error focusing window via System Events: ${e.message}")
-            }
-        }
-
-        // Strategy 3: Click on the window to bring it to front (last resort)
-        if (!success) {
-            try {
-                val script3 = """
-                    tell application "System Events"
-                        tell process "${window.ownerName}"
-                            try
-                                perform action "AXRaise" of window 1
-                            end try
-                            set frontmost to true
-                        end tell
-                    end tell
-                """.trimIndent()
-                ProcessBuilder("osascript", "-e", script3).start().waitFor()
-            } catch (e: Exception) {
-                System.err.println("Error raising window: ${e.message}")
-            }
-        }
+        invalidateCache()
     }
 
     private fun resizeMacWindow(windowId: String?, width: Int, height: Int) {
+        val window = windowId?.let { requestedId ->
+            getMacWindows().find { it.id == requestedId }
+                ?: throw IllegalArgumentException("Window not found")
+        }
+        val ownerName = window?.ownerName.orEmpty()
+        val title = window?.title.orEmpty()
         val script = """
-            tell application "System Events"
-                set frontApp to first application process whose frontmost is true
-                tell frontApp
-                    set size of window 1 to {$width, $height}
+            on run argv
+                set ownerName to item 1 of argv
+                set windowTitle to item 2 of argv
+                set targetWidth to (item 3 of argv) as integer
+                set targetHeight to (item 4 of argv) as integer
+                tell application "System Events"
+                    if ownerName is "" then
+                        set targetApp to first application process whose frontmost is true
+                        tell targetApp to set size of window 1 to {targetWidth, targetHeight}
+                    else
+                        tell application process ownerName
+                            set size of first window whose name is windowTitle to {targetWidth, targetHeight}
+                        end tell
+                    end if
                 end tell
-            end tell
+            end run
         """.trimIndent()
-
-        ProcessBuilder("osascript", "-e", script).start().waitFor()
+        val result = processRunner.run(
+            listOf("osascript", "-e", script, ownerName, title, width.toString(), height.toString()),
+            Duration.ofSeconds(10)
+        )
+        if (!result.succeeded) throw IllegalStateException("Failed to resize macOS window")
+        invalidateCache()
     }
 
     // ============ Windows Implementation ============
@@ -478,8 +416,8 @@ class WindowManager {
                 }
                 true
             }, null)
-        } catch (e: Exception) {
-            System.err.println("Error getting Windows windows: ${e.message}")
+        } catch (_: Exception) {
+            System.err.println("Error getting Windows windows")
         }
 
         return windows
@@ -495,8 +433,8 @@ class WindowManager {
 
             user32.SetForegroundWindow(hwnd)
             user32.BringWindowToTop(hwnd)
-        } catch (e: Exception) {
-            System.err.println("Error focusing window: ${e.message}")
+        } catch (_: Exception) {
+            System.err.println("Error focusing window")
         }
     }
 
@@ -514,8 +452,8 @@ class WindowManager {
             user32.GetWindowRect(hwnd, rect)
 
             user32.MoveWindow(hwnd, rect.left, rect.top, width, height, true)
-        } catch (e: Exception) {
-            System.err.println("Error resizing window: ${e.message}")
+        } catch (_: Exception) {
+            System.err.println("Error resizing window")
         }
     }
 
@@ -525,16 +463,13 @@ class WindowManager {
         val windows = mutableListOf<WindowInfo>()
 
         try {
-            // Use wmctrl to list windows
-            val process = ProcessBuilder("wmctrl", "-l", "-G").start()
-            val output = process.inputStream.bufferedReader().readText()
-            process.waitFor()
-
-            // Parse wmctrl output
-            // Format: 0x12345678  0 x y w h hostname title
+            val listResult = processRunner.run(
+                listOf("wmctrl", "-l", "-G"),
+                Duration.ofSeconds(5)
+            )
+            if (!listResult.succeeded) return windows
             val pattern = Regex("""(0x[0-9a-f]+)\s+\d+\s+(-?\d+)\s+(-?\d+)\s+(\d+)\s+(\d+)\s+\S+\s+(.*)""")
-
-            pattern.findAll(output).forEach { match ->
+            pattern.findAll(listResult.stdout).forEach { match ->
                 val (id, x, y, w, h, title) = match.destructured
                 windows.add(
                     WindowInfo(
@@ -545,43 +480,43 @@ class WindowManager {
                     )
                 )
             }
-
-            // Get active window
-            val activeProcess = ProcessBuilder("xdotool", "getactivewindow").start()
-            val activeId = activeProcess.inputStream.bufferedReader().readText().trim()
-            activeProcess.waitFor()
-
-            // Mark active window
-            windows.replaceAll { win ->
-                if (win.id.contains(activeId)) win.copy(focused = true) else win
+            val activeResult = processRunner.run(
+                listOf("xdotool", "getactivewindow"),
+                Duration.ofSeconds(5)
+            )
+            if (activeResult.succeeded) {
+                val activeId = activeResult.stdout.trim()
+                windows.replaceAll { window ->
+                    if (window.id.contains(activeId)) window.copy(focused = true) else window
+                }
             }
-        } catch (e: Exception) {
-            System.err.println("Error getting Linux windows: ${e.message}")
+        } catch (_: Exception) {
+            System.err.println("Error getting Linux windows")
         }
 
         return windows
     }
 
     private fun focusLinuxWindow(windowId: String) {
-        try {
-            ProcessBuilder("wmctrl", "-i", "-a", windowId).start().waitFor()
-        } catch (e: Exception) {
-            System.err.println("Error focusing window: ${e.message}")
-        }
+        val result = processRunner.run(
+            listOf("wmctrl", "-i", "-a", windowId),
+            Duration.ofSeconds(5)
+        )
+        if (!result.succeeded) throw IllegalStateException("Failed to focus Linux window")
     }
 
     private fun resizeLinuxWindow(windowId: String?, width: Int, height: Int) {
-        try {
-            val id = windowId ?: run {
-                val process = ProcessBuilder("xdotool", "getactivewindow").start()
-                val output = process.inputStream.bufferedReader().readText().trim()
-                process.waitFor()
-                output
-            }
-
-            ProcessBuilder("wmctrl", "-i", "-r", id, "-e", "0,-1,-1,$width,$height").start().waitFor()
-        } catch (e: Exception) {
-            System.err.println("Error resizing window: ${e.message}")
+        val id = windowId ?: processRunner.run(
+            listOf("xdotool", "getactivewindow"),
+            Duration.ofSeconds(5)
+        ).let { result ->
+            if (!result.succeeded) throw IllegalStateException("Failed to resolve active window")
+            result.stdout.trim()
         }
+        val result = processRunner.run(
+            listOf("wmctrl", "-i", "-r", id, "-e", "0,-1,-1,$width,$height"),
+            Duration.ofSeconds(5)
+        )
+        if (!result.succeeded) throw IllegalStateException("Failed to resize Linux window")
     }
 }

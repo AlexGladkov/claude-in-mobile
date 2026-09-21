@@ -11,13 +11,14 @@
  */
 
 import { isBinAvailable } from "../utils/which-bin.js";
+import { sanitizeErrorMessage } from "../utils/sanitize.js";
 import {
   ALL_PLATFORMS,
   parsePlatformList,
   resolveEnabledPlatforms,
   writeEnabledPlatforms,
-  type PlatformId,
 } from "./platform-config.js";
+import type { PlatformId } from "./platform-config.js";
 
 export const PLATFORM_COMMANDS = [
   "platforms",
@@ -165,7 +166,7 @@ export function doctorReport(
   let healthy = true;
   for (const platform of platforms) {
     const result = probePlatform(platform, present, harmonyHdcPath);
-    console.log(formatProbe(result));
+    console.log(sanitizeErrorMessage(formatProbe(result)));
     if (result.missing.length > 0) healthy = false;
   }
   return healthy;

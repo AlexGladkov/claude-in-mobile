@@ -6,14 +6,13 @@ import {
   validatePath,
   validateShellCommand,
   validateUrl,
-  sanitizeForShell,
   validatePackageName,
 } from "../utils/sanitize.js";
 import { parseCommonArgs } from "../utils/parse-common-args.js";
 import { textResult } from "../utils/tool-result.js";
 import { sleep } from "../utils/sleep.js";
-import { AM, PIDOF } from "../adb/commands.js";
-import { dispatchByPlatform } from "./helpers/dispatch.js";
+import { BoundedRegexMatcher } from "../utils/bounded-regex.js";
+import { PIDOF } from "../adb/commands.js";
 import { hasShell, hasUrlOpening } from "../adapters/platform-adapter.js";
 
 const commonFields = {
@@ -133,28 +132,12 @@ export const systemTools: ToolDefinition[] = [
     handler: async (args, ctx) => {
       const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
       validateUrl(args.url);
-      const sanitizedUrl = sanitizeForShell(args.url);
-
-      return dispatchByPlatform(platform, {
-        android: () => {
-          ctx.deviceManager.shell(AM.START_VIEW(sanitizedUrl), "android", deviceId);
-          return textResult(`Opened URL: ${args.url}`);
-        },
-        ios: () => {
-          ctx.deviceManager.getIosClient(deviceId).openUrl(args.url);
-          return textResult(`Opened URL: ${args.url}`);
-        },
-        harmony: async () => {
-          const adapter = ctx.deviceManager.getAdapter("harmony", deviceId);
-          if (!hasUrlOpening(adapter)) {
-            return textResult("open_url is not supported for harmony platform.");
-          }
-          await adapter.openUrl(args.url, deviceId);
-          return textResult(`Opened URL: ${args.url}`);
-        },
-        unsupported: (p) =>
-          textResult(`open_url is not supported for ${p} platform. Supported: android, ios, harmony.`),
-      });
+      const adapter = ctx.deviceManager.getAdapter(platform, deviceId);
+      if (!hasUrlOpening(adapter)) {
+        return textResult(`open_url is not supported for ${platform} platform.`);
+      }
+      await adapter.openUrl(args.url, deviceId);
+      return textResult("URL opened.");
     },
   }),
 
@@ -235,12 +218,11 @@ export const systemTools: ToolDefinition[] = [
         return textResult(`system_wait_log is not supported for ${platform}.`);
       }
 
-      let regex: RegExp;
+      let matcher: BoundedRegexMatcher;
       try {
-        regex = new RegExp(args.pattern, args.caseSensitive ? "" : "i");
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return textResult(`Invalid regex pattern: ${msg}`);
+        matcher = new BoundedRegexMatcher(args.pattern, args.caseSensitive);
+      } catch (error) {
+        return textResult(error instanceof Error ? error.message : String(error));
       }
 
       const timeoutMs = Math.max(0, Math.min(args.timeoutMs, 30_000));
@@ -250,53 +232,64 @@ export const systemTools: ToolDefinition[] = [
       );
       const contextLines = Math.max(0, Math.min(args.contextLines, 20));
 
-      if (args.clearFirst) {
-        try {
-          ctx.deviceManager.clearLogs(platform, deviceId);
-        } catch {
-          /* best-effort */
+      try {
+        if (args.clearFirst) {
+          try {
+            ctx.deviceManager.clearLogs(platform, deviceId);
+          } catch {
+            /* best-effort */
+          }
         }
-      }
 
-      const filterArgs = {
-        platform,
-        deviceId,
-        level: args.level,
-        tag: args.tag,
-        lines: 500,
-        package: args.package,
-      };
-      const seen = new Set<string>();
-      const start = Date.now();
-      while (true) {
-        let dump = "";
-        try {
-          dump = ctx.deviceManager.getLogs(filterArgs);
-        } catch {
-          /* keep looping */
-        }
-        const lines = dump.split(/\r?\n/);
-        for (let i = 0; i < lines.length; i++) {
-          const line = lines[i];
-          if (!line || seen.has(line)) continue;
-          seen.add(line);
-          if (regex.test(line)) {
+        const filterArgs = {
+          platform,
+          deviceId,
+          level: args.level,
+          tag: args.tag,
+          lines: 500,
+          package: args.package,
+        };
+        const seen = new Set<string>();
+        const start = Date.now();
+        while (true) {
+          let dump = "";
+          try {
+            dump = ctx.deviceManager.getLogs(filterArgs);
+          } catch {
+            /* keep looping */
+          }
+          const lines = dump.split(/\r?\n/);
+          const candidates: string[] = [];
+          const candidateIndexes: number[] = [];
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            if (!line || seen.has(line)) continue;
+            seen.add(line);
+            candidates.push(line);
+            candidateIndexes.push(i);
+          }
+          const matchIndex = await matcher.findMatch(candidates);
+          if (matchIndex >= 0) {
+            const lineIndex = candidateIndexes[matchIndex];
+            const line = lines[lineIndex];
             const elapsed = Date.now() - start;
             const context =
               contextLines > 0
-                ? lines.slice(i + 1, i + 1 + contextLines).filter(Boolean).join("\n")
+                ? lines.slice(lineIndex + 1, lineIndex + 1 + contextLines).filter(Boolean).join("\n")
                 : "";
             return textResult(
               `Match found after ${elapsed}ms:\n${line}${context ? `\n${context}` : ""}`,
             );
           }
+          if (Date.now() - start >= timeoutMs) {
+            return textResult(
+              `Timeout after ${timeoutMs}ms — pattern not found. Scanned ${seen.size} unique lines.`,
+            );
+          }
+          await sleep(pollIntervalMs);
         }
-        if (Date.now() - start >= timeoutMs) {
-          return textResult(
-            `Timeout after ${timeoutMs}ms — pattern not found. Scanned ${seen.size} unique lines.`,
-          );
-        }
-        await sleep(pollIntervalMs);
+      } finally {
+        await matcher.close();
       }
     },
   }),
@@ -380,20 +373,33 @@ export const systemTools: ToolDefinition[] = [
       const inspector = ctx.deviceManager.getWebViewInspector();
       const result = await inspector.inspect();
 
-      let output = `WebView sockets found: ${result.sockets.join(", ")}\n`;
-      output += `Forwarded to port: ${result.forwardedPort}\n\n`;
-
+      const lines = [
+        `WebView sockets found: ${result.sockets.join(", ")}`,
+        `Forwarded to port: ${result.forwardedPort}`,
+        "",
+      ];
+      let formattedChars = lines.reduce((total, line) => total + line.length + 1, 0);
       if (result.targets.length === 0) {
-        output += "No active pages found in WebView.";
+        lines.push("No active pages found in WebView.");
       } else {
-        output += `Pages (${result.targets.length}):\n`;
-        for (const target of result.targets) {
-          output += `  • [${target.type}] "${target.title}"\n`;
-          output += `    URL: ${target.url}\n`;
-          output += `    ID: ${target.id}\n`;
+        lines.push(`Pages (${result.targets.length}):`);
+        for (let index = 0; index < result.targets.length; index++) {
+          const target = result.targets[index];
+          const entry = [
+            `  • [${target.type}] "${target.title}"`,
+            `    URL: ${target.url}`,
+            `    ID: ${target.id}`,
+          ];
+          const entryChars = entry.reduce((total, line) => total + line.length + 1, 0);
+          if (formattedChars + entryChars > 12_000) {
+            lines.push(`  [${result.targets.length - index} targets omitted]`);
+            break;
+          }
+          lines.push(...entry);
+          formattedChars += entryChars;
         }
       }
-      return textResult(output);
+      return textResult(truncateOutput(lines.join("\n")));
     },
   }),
 ];

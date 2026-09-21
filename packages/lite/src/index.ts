@@ -15,8 +15,10 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 import { MobileError } from "mcp-devices/errors";
-import { createLiteDeviceManager } from "./context.js";
-import { createLiteTools, type LiteToolDefinition } from "./tools/definitions.js";
+import { sanitizeErrorMessage } from "mcp-devices/utils/sanitize";
+import { createLiteDeviceContext } from "./context.js";
+import { createLiteTools } from "./tools/definitions.js";
+import type { LiteToolDefinition } from "./tools/definitions.js";
 import { truncateResponse, formatLiteError, MAX_RESPONSE_CHARS } from "./tools/formatter.js";
 
 const VERSION = "1.0.0";
@@ -90,8 +92,8 @@ if (initIndex !== -1) {
 
 // ============ Server setup ============
 
-// Create lite device manager (3 adapters: Android, iOS, Desktop)
-const deviceManager = createLiteDeviceManager();
+// Create lite kernel and device manager (3 adapters: Android, iOS, Desktop)
+const { deviceManager, dispose } = await createLiteDeviceContext();
 
 // Create 12 atomic tools
 const liteTools = createLiteTools();
@@ -174,7 +176,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function shutdown(signal: string): Promise<void> {
   console.error(`Lite MCP server received ${signal}, shutting down...`);
   try {
-    await deviceManager.cleanup();
+    await dispose();
   } catch {}
   process.exit(0);
 }
@@ -192,6 +194,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error("Fatal error:", error);
+  console.error("Fatal error:", sanitizeErrorMessage(error));
   process.exit(1);
 });

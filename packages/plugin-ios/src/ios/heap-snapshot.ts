@@ -6,7 +6,6 @@ import { promisify } from "util";
 
 import type { HeapSnapshotCapture } from "mcp-devices/adapters/platform-adapter";
 import { MobileError } from "mcp-devices/errors";
-import { sanitizeErrorMessage } from "mcp-devices/utils/sanitize";
 
 import {
   parseXctraceToc,
@@ -103,11 +102,9 @@ export async function captureIosHeapSnapshot(
           : [],
       },
     };
-  } catch (error) {
+  } catch (error: unknown) {
     if (error instanceof MobileError) throw error;
-    const details = error as { stderr?: string | Buffer; message?: string };
-    const message = sanitizeErrorMessage(details.stderr?.toString() || details.message || String(error));
-    throw new MobileError(`iOS Allocations capture failed: ${message.slice(-800)}`, "IOS_HEAP_CAPTURE_FAILED");
+    throw new MobileError("iOS Allocations capture failed.", "IOS_HEAP_CAPTURE_FAILED");
   } finally {
     await rm(rootDir, { recursive: true, force: true });
   }

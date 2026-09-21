@@ -3,6 +3,7 @@ package com.anthropic.desktop
 import kotlinx.coroutines.*
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
+import kotlinx.coroutines.sync.Semaphore
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.PrintWriter
@@ -23,6 +24,13 @@ class JsonRpcServer(
     @PublishedApi
     internal val handlers = mutableMapOf<String, suspend (JsonElement?) -> JsonElement>()
     private val writer = PrintWriter(outputStream, true)
+    private val requestSlots = Semaphore(16)
+
+    companion object {
+        private const val MAX_REQUEST_CHARS = 1024 * 1024
+        private const val MAX_JSON_DEPTH = 64
+        private const val MAX_METHOD_CHARS = 128
+    }
 
     /**
      * Register a handler for a method
@@ -84,7 +92,7 @@ class JsonRpcServer(
         val handler = handlers[request.method]
 
         if (handler == null) {
-            sendError(request.id, -32601, "Method not found: ${request.method}")
+            sendError(request.id, -32601, "Method not found")
             return
         }
 
@@ -96,8 +104,8 @@ class JsonRpcServer(
                     result = result
                 )
             )
-        } catch (e: Exception) {
-            sendError(request.id, -32603, e.message ?: "Internal error")
+        } catch (_: Exception) {
+            sendError(request.id, -32603, "Internal error")
         }
     }
 
@@ -111,29 +119,90 @@ class JsonRpcServer(
         val reader = BufferedReader(InputStreamReader(inputStream))
 
         while (true) {
-            val line = reader.readLine() ?: break
-
+            val line = try {
+                readBoundedLine(reader) ?: break
+            } catch (_: RequestTooLargeException) {
+                sendError(0, -32600, "Request exceeds the 1 MiB limit")
+                continue
+            }
             if (line.isBlank()) continue
+            if (exceedsJsonNestingLimit(line)) {
+                sendError(0, -32600, "Request exceeds the JSON nesting limit")
+                continue
+            }
 
             try {
                 val request = json.decodeFromString<JsonRpcRequest>(line)
-                // Launch request processing in a SEPARATE THREAD (Dispatchers.IO)
-                // This is critical because runBlocking uses a single thread and
-                // readLine() blocks it, preventing coroutines from executing
+                if (request.jsonrpc != "2.0" ||
+                    request.method.isEmpty() ||
+                    request.method.length > MAX_METHOD_CHARS ||
+                    request.method.any { !it.isLetterOrDigit() && it != '_' && it != '.' && it != '-' }
+                ) {
+                    sendError(request.id, -32600, "Invalid Request")
+                    continue
+                }
+                requestSlots.acquire()
                 launch(Dispatchers.IO) {
                     try {
                         processRequest(request)
-                    } catch (e: Exception) {
-                        System.err.println("Request processing error: ${e.message}")
-                        sendError(request.id, -32603, "Internal error: ${e.message}")
+                    } catch (_: Exception) {
+                        sendError(request.id, -32603, "Internal error")
+                    } finally {
+                        requestSlots.release()
                     }
                 }
-            } catch (e: Exception) {
-                // Parse error
-                sendError(0, -32700, "Parse error: ${e.message}")
+            } catch (_: Exception) {
+                sendError(0, -32700, "Parse error")
             }
         }
     }
+
+
+    private fun exceedsJsonNestingLimit(input: String): Boolean {
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for (character in input) {
+            if (inString) {
+                if (escaped) {
+                    escaped = false
+                } else if (character == '\\') {
+                    escaped = true
+                } else if (character == '"') {
+                    inString = false
+                }
+                continue
+            }
+            when (character) {
+                '"' -> inString = true
+                '{', '[' -> {
+                    depth++
+                    if (depth > MAX_JSON_DEPTH) return true
+                }
+                '}', ']' -> depth--
+            }
+        }
+        return false
+    }
+
+    private fun readBoundedLine(reader: BufferedReader): String? {
+        val line = StringBuilder()
+        while (true) {
+            val value = reader.read()
+            if (value == -1) return if (line.isEmpty()) null else line.toString()
+            if (value == '\n'.code) return line.toString().removeSuffix("\r")
+            if (line.length >= MAX_REQUEST_CHARS) {
+                while (true) {
+                    val remainder = reader.read()
+                    if (remainder == -1 || remainder == '\n'.code) break
+                }
+                throw RequestTooLargeException()
+            }
+            line.append(value.toChar())
+        }
+    }
+
+    private class RequestTooLargeException : RuntimeException()
 
     /**
      * Stop the server

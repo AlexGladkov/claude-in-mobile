@@ -1,6 +1,6 @@
 {
   "name": "@mcp-devices/plugin-debug",
-  "version": "4.3.0",
+  "version": "4.4.1",
   "description": "Runtime debug plugin for mcp-devices (Android JDWP + iOS LLDB).",
   "type": "module",
   "main": "dist/index.js",
@@ -35,7 +35,8 @@
   ],
   "dependencies": {
     "@mcp-devices/plugin-api": "1.0.0",
-    "mcp-devices": "*"
+    "mcp-devices": "*",
+    "zod": "^4.1.13"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

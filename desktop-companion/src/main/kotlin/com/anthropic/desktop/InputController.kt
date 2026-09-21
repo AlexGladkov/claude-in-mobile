@@ -2,12 +2,11 @@ package com.anthropic.desktop
 
 import java.awt.Robot
 import java.awt.Toolkit
-import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
 import java.awt.event.InputEvent
 import java.awt.event.KeyEvent
-import java.io.File
-import java.util.concurrent.TimeUnit
+import java.nio.charset.StandardCharsets
+import java.time.Duration
 import kotlin.math.max
 
 /**
@@ -19,6 +18,11 @@ import kotlin.math.max
  * 2. Background mode (CGEvent) - macOS only, sends events to specific PID without stealing focus
  */
 class InputController {
+    private companion object {
+        const val MAX_GESTURE_DURATION_MS = 60_000
+        const val MAX_TYPED_TEXT_CHARS = 4_096
+        const val MAX_CLIPBOARD_TEXT_CHARS = 1024 * 1024
+    }
     private val robot = Robot().apply {
         autoDelay = 10
         isAutoWaitForIdle = true
@@ -26,14 +30,7 @@ class InputController {
 
     private val defaultScaleFactor: Double = detectDefaultScaleFactor()
     private val isMac = System.getProperty("os.name").lowercase().contains("mac")
-
-    // Cached compiled CGEvent helper
-    private var cgEventHelperPath: String? = null
-    private val cgEventHelperLock = Any()
-
-    // Cached compiled AXClick helper (for cursor-free clicks)
-    private var axClickHelperPath: String? = null
-    private val axClickHelperLock = Any()
+    private val processRunner = SecureProcessRunner()
 
     // Cache for monitor info
     private data class MonitorBounds(
@@ -166,18 +163,13 @@ class InputController {
      * Returns true if successful, false if cliclick not available
      */
     private fun tryCliClick(x: Int, y: Int): Boolean {
+        if (!isMac) return false
         return try {
-            val process = ProcessBuilder("cliclick", "c:$x,$y")
-                .redirectErrorStream(true)
-                .start()
-
-            val success = process.waitFor(5, TimeUnit.SECONDS) && process.exitValue() == 0
-            if (!success) {
-                System.err.println("cliclick failed or not found, falling back to Robot")
-            }
-            success
-        } catch (e: Exception) {
-            // cliclick not installed
+            processRunner.run(
+                listOf("cliclick", "c:$x,$y"),
+                Duration.ofSeconds(5)
+            ).succeeded
+        } catch (_: Exception) {
             false
         }
     }
@@ -186,19 +178,15 @@ class InputController {
      * Double tap at coordinates
      */
     fun doubleTap(x: Int, y: Int) {
-        // Try cliclick for double-click on macOS
         if (isMac) {
             try {
-                val process = ProcessBuilder("cliclick", "dc:$x,$y")
-                    .redirectErrorStream(true)
-                    .start()
-                if (process.waitFor(5, TimeUnit.SECONDS) && process.exitValue() == 0) {
-                    return
-                }
+                if (processRunner.run(
+                        listOf("cliclick", "dc:$x,$y"),
+                        Duration.ofSeconds(5)
+                    ).succeeded
+                ) return
             } catch (_: Exception) {}
         }
-
-        // Fallback to two taps
         tap(x, y)
         Thread.sleep(50)
         tap(x, y)
@@ -208,30 +196,31 @@ class InputController {
      * Long press at coordinates
      */
     fun longPress(x: Int, y: Int, durationMs: Int = 1000) {
+        require(durationMs in 1..MAX_GESTURE_DURATION_MS) {
+            "Long-press duration must be between 1 and $MAX_GESTURE_DURATION_MS ms"
+        }
         val (px, py) = toPhysical(x, y)
         robot.mouseMove(px, py)
         robot.mousePress(InputEvent.BUTTON1_DOWN_MASK)
-        Thread.sleep(durationMs.toLong())
-        robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK)
+        try {
+            Thread.sleep(durationMs.toLong())
+        } finally {
+            robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK)
+        }
     }
-
     /**
      * Right click at coordinates
      */
     fun rightClick(x: Int, y: Int) {
-        // Try cliclick for right-click on macOS
         if (isMac) {
             try {
-                val process = ProcessBuilder("cliclick", "rc:$x,$y")
-                    .redirectErrorStream(true)
-                    .start()
-                if (process.waitFor(5, TimeUnit.SECONDS) && process.exitValue() == 0) {
-                    return
-                }
+                if (processRunner.run(
+                        listOf("cliclick", "rc:$x,$y"),
+                        Duration.ofSeconds(5)
+                    ).succeeded
+                ) return
             } catch (_: Exception) {}
         }
-
-        // Fallback to Robot
         val (px, py) = toPhysical(x, y)
         robot.mouseMove(px, py)
         robot.mousePress(InputEvent.BUTTON3_DOWN_MASK)
@@ -242,31 +231,32 @@ class InputController {
      * Swipe gesture from one point to another
      */
     fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Int = 300) {
+        require(durationMs in 1..MAX_GESTURE_DURATION_MS) {
+            "Swipe duration must be between 1 and $MAX_GESTURE_DURATION_MS ms"
+        }
         val steps = max(10, durationMs / 16)
         val dx = (x2 - x1).toDouble() / steps
         val dy = (y2 - y1).toDouble() / steps
         val delay = durationMs.toLong() / steps
-
         val (px1, py1) = toPhysical(x1, y1)
         robot.mouseMove(px1, py1)
         robot.mousePress(InputEvent.BUTTON1_DOWN_MASK)
-
-        for (i in 1..steps) {
-            val (px, py) = toPhysical(
-                (x1 + dx * i).toInt(),
-                (y1 + dy * i).toInt()
-            )
-            robot.mouseMove(px, py)
-            Thread.sleep(delay)
+        try {
+            for (i in 1..steps) {
+                val (px, py) = toPhysical(
+                    (x1 + dx * i).toInt(),
+                    (y1 + dy * i).toInt()
+                )
+                robot.mouseMove(px, py)
+                Thread.sleep(delay)
+            }
+        } finally {
+            robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK)
         }
-
-        robot.mouseRelease(InputEvent.BUTTON1_DOWN_MASK)
     }
 
-    /**
-     * Swipe in a direction from screen center
-     */
     fun swipeDirection(direction: String, distance: Int = 400) {
+        require(distance in 1..100_000) { "Swipe distance must be between 1 and 100000" }
         val screenSize = Toolkit.getDefaultToolkit().screenSize
         val centerX = (screenSize.width / defaultScaleFactor / 2).toInt()
         val centerY = (screenSize.height / defaultScaleFactor / 2).toInt()
@@ -286,6 +276,7 @@ class InputController {
      * Scroll wheel
      */
     fun scroll(amount: Int, x: Int? = null, y: Int? = null) {
+        require(amount in -100_000..100_000) { "Scroll amount is out of range" }
         if (x != null && y != null) {
             val (px, py) = toPhysical(x, y)
             robot.mouseMove(px, py)
@@ -297,33 +288,19 @@ class InputController {
      * Type text using clipboard (most reliable cross-platform method)
      */
     fun typeText(text: String) {
+        require(text.length <= MAX_CLIPBOARD_TEXT_CHARS) { "Clipboard input exceeds the size limit" }
         val clipboard = Toolkit.getDefaultToolkit().systemClipboard
-
-        // Save original clipboard content
-        val original = try {
-            clipboard.getData(DataFlavor.stringFlavor) as? String
-        } catch (e: Exception) {
-            null
-        }
-
-        // Set new content
-        clipboard.setContents(StringSelection(text), null)
-
-        // Paste using platform-specific shortcut
-        val isMac = System.getProperty("os.name").lowercase().contains("mac")
-        val modifier = if (isMac) KeyEvent.VK_META else KeyEvent.VK_CONTROL
-
-        robot.keyPress(modifier)
-        robot.keyPress(KeyEvent.VK_V)
-        robot.keyRelease(KeyEvent.VK_V)
-        robot.keyRelease(modifier)
-
-        // Wait for paste to complete
-        Thread.sleep(100)
-
-        // Restore original clipboard
-        if (original != null) {
-            clipboard.setContents(StringSelection(original), null)
+        val original = clipboard.getContents(null)
+        try {
+            clipboard.setContents(StringSelection(text), null)
+            val modifier = if (isMac) KeyEvent.VK_META else KeyEvent.VK_CONTROL
+            robot.keyPress(modifier)
+            robot.keyPress(KeyEvent.VK_V)
+            robot.keyRelease(KeyEvent.VK_V)
+            robot.keyRelease(modifier)
+            Thread.sleep(100)
+        } finally {
+            clipboard.setContents(original ?: StringSelection(""), null)
         }
     }
 
@@ -332,16 +309,17 @@ class InputController {
      * This is more reliable than clipboard paste for Compose TextField
      */
     fun typeTextDirect(text: String) {
-        // Disable auto-wait-for-idle temporarily (Compose has separate event loop)
+        require(text.length <= MAX_TYPED_TEXT_CHARS) { "Typed input exceeds the size limit" }
         val wasAutoWait = robot.isAutoWaitForIdle
         robot.isAutoWaitForIdle = false
-
-        for (char in text) {
-            typeCharDirect(char)
-            Thread.sleep(10) // Small delay between characters for reliability
+        try {
+            for (char in text) {
+                typeCharDirect(char)
+                Thread.sleep(10)
+            }
+        } finally {
+            robot.isAutoWaitForIdle = wasAutoWait
         }
-
-        robot.isAutoWaitForIdle = wasAutoWait
     }
 
     /**
@@ -456,17 +434,14 @@ class InputController {
      */
     fun keyEvent(key: String, modifiers: List<String>? = null) {
         val keyCode = mapKeyCode(key)
-
-        // Press modifiers
         val modifierCodes = modifiers?.map { mapModifier(it) } ?: emptyList()
         modifierCodes.forEach { robot.keyPress(it) }
-
-        // Press and release key
-        robot.keyPress(keyCode)
-        robot.keyRelease(keyCode)
-
-        // Release modifiers in reverse order
-        modifierCodes.reversed().forEach { robot.keyRelease(it) }
+        try {
+            robot.keyPress(keyCode)
+            robot.keyRelease(keyCode)
+        } finally {
+            modifierCodes.reversed().forEach { robot.keyRelease(it) }
+        }
     }
 
     /**
@@ -526,71 +501,28 @@ class InputController {
 
     // ============ CGEvent-based input (macOS, no focus stealing) ============
 
-    /**
-     * Get or compile the CGEvent helper
-     */
+    /** Get or compile the private CGEvent helper. */
     private fun getCGEventHelper(): String? {
         if (!isMac) return null
-
-        synchronized(cgEventHelperLock) {
-            cgEventHelperPath?.let { if (File(it).exists()) return it }
-
-            try {
-                // Write Swift source to temp file
-                val swiftSource = javaClass.getResourceAsStream("/cgevent_helper.swift")
-                    ?.bufferedReader()?.readText()
-                    ?: return null
-
-                val tempSwift = File.createTempFile("cgevent_helper", ".swift")
-                val tempExe = File(tempSwift.parent, "cgevent_helper_exe")
-
-                tempSwift.writeText(swiftSource)
-
-                // Compile Swift
-                val compileProcess = ProcessBuilder("swiftc", "-O", "-o", tempExe.absolutePath, tempSwift.absolutePath)
-                    .redirectErrorStream(true)
-                    .start()
-
-                val compileOutput = compileProcess.inputStream.bufferedReader().readText()
-                val compileOk = compileProcess.waitFor(30, TimeUnit.SECONDS) && compileProcess.exitValue() == 0
-
-                tempSwift.delete()
-
-                if (!compileOk) {
-                    System.err.println("CGEvent helper compile failed: $compileOutput")
-                    return null
-                }
-
-                cgEventHelperPath = tempExe.absolutePath
-                return cgEventHelperPath
-            } catch (e: Exception) {
-                System.err.println("CGEvent helper setup failed: ${e.message}")
-                return null
-            }
-        }
+        return SwiftHelperManager
+            .compileResource(javaClass, "/cgevent_helper.swift", "cgevent-helper")
+            ?.toString()
     }
 
-    /**
-     * Run CGEvent helper command
-     */
-    private fun runCGEventHelper(vararg args: String): Boolean {
+    private fun runCGEventHelper(args: List<String>, stdin: String? = null): Boolean {
         val helper = getCGEventHelper() ?: return false
-
         return try {
-            val process = ProcessBuilder(helper, *args)
-                .redirectErrorStream(true)
-                .start()
-
-            val output = process.inputStream.bufferedReader().readText()
-            val success = process.waitFor(10, TimeUnit.SECONDS) && process.exitValue() == 0
-
-            if (!success && output.isNotBlank()) {
-                System.err.println("CGEvent helper error: $output")
+            val result = processRunner.run(
+                listOf(helper) + args,
+                Duration.ofSeconds(10),
+                stdin?.toByteArray(StandardCharsets.UTF_8)
+            )
+            if (!result.succeeded && result.stderr.isNotBlank()) {
+                System.err.println("CGEvent helper failed")
             }
-
-            success
-        } catch (e: Exception) {
-            System.err.println("CGEvent helper execution failed: ${e.message}")
+            result.succeeded
+        } catch (_: Exception) {
+            System.err.println("CGEvent helper execution failed")
             false
         }
     }
@@ -605,7 +537,7 @@ class InputController {
             return true
         }
 
-        return runCGEventHelper("type", pid.toString(), text)
+        return runCGEventHelper(listOf("type", pid.toString()), text)
     }
 
     /**
@@ -620,7 +552,7 @@ class InputController {
 
         // CGEvent uses screen coordinates, need to convert from logical
         val (px, py) = toPhysical(x, y)
-        return runCGEventHelper("click", pid.toString(), px.toString(), py.toString())
+        return runCGEventHelper(listOf("click", pid.toString(), px.toString(), py.toString()))
     }
 
     /**
@@ -636,9 +568,9 @@ class InputController {
         val modsStr = modifiers?.joinToString(",") ?: ""
 
         return if (modsStr.isNotEmpty()) {
-            runCGEventHelper("key", pid.toString(), keyCode.toString(), modsStr)
+            runCGEventHelper(listOf("key", pid.toString(), keyCode.toString(), modsStr))
         } else {
-            runCGEventHelper("key", pid.toString(), keyCode.toString())
+            runCGEventHelper(listOf("key", pid.toString(), keyCode.toString()))
         }
     }
 
@@ -705,54 +637,12 @@ class InputController {
 
     // ============ AXUIElement-based input (macOS, no cursor movement) ============
 
-    /**
-     * Get or compile the AXClick helper
-     */
+    /** Get or compile the private AXClick helper. */
     private fun getAXClickHelper(): String? {
         if (!isMac) return null
-
-        synchronized(axClickHelperLock) {
-            axClickHelperPath?.let { if (File(it).exists()) return it }
-
-            try {
-                // Write Swift source to temp file
-                val swiftSource = javaClass.getResourceAsStream("/ax_click.swift")
-                    ?.bufferedReader()?.readText()
-                    ?: return null
-
-                val tempDir = File(System.getProperty("java.io.tmpdir"), "claude-desktop")
-                tempDir.mkdirs()
-
-                val tempSwift = File(tempDir, "ax_click.swift")
-                val tempExe = File(tempDir, "ax_click")
-
-                // Only recompile if source changed or exe missing
-                if (!tempExe.exists() || tempSwift.exists() && tempSwift.readText() != swiftSource) {
-                    tempSwift.writeText(swiftSource)
-
-                    System.err.println("Compiling AXClick helper...")
-                    val compileProcess = ProcessBuilder("swiftc", "-O", "-o", tempExe.absolutePath, tempSwift.absolutePath)
-                        .redirectErrorStream(true)
-                        .start()
-
-                    val compileOutput = compileProcess.inputStream.bufferedReader().readText()
-                    val compileOk = compileProcess.waitFor(60, TimeUnit.SECONDS) && compileProcess.exitValue() == 0
-
-                    if (!compileOk) {
-                        System.err.println("AXClick helper compile failed: $compileOutput")
-                        return null
-                    }
-
-                    System.err.println("AXClick helper compiled successfully")
-                }
-
-                axClickHelperPath = tempExe.absolutePath
-                return axClickHelperPath
-            } catch (e: Exception) {
-                System.err.println("AXClick helper setup failed: ${e.message}")
-                return null
-            }
-        }
+        return SwiftHelperManager
+            .compileResource(javaClass, "/ax_click.swift", "ax-click")
+            ?.toString()
     }
 
     /**
@@ -782,40 +672,29 @@ class InputController {
             ?: return TapByTextResult(false, error = "Failed to compile AXClick helper")
 
         return try {
-            val args = mutableListOf(helper, pid.toString(), text)
-            if (exactMatch) {
-                args.add("--exact")
-            }
-
-            val process = ProcessBuilder(args)
-                .redirectErrorStream(false)
-                .start()
-
-            val stdout = process.inputStream.bufferedReader().readText().trim()
-            val stderr = process.errorStream.bufferedReader().readText().trim()
-            val completed = process.waitFor(10, TimeUnit.SECONDS)
-
-            if (!completed) {
-                process.destroyForcibly()
-                return TapByTextResult(false, error = "Timeout waiting for AXClick")
-            }
-
-            val exitCode = process.exitValue()
-
-            when (exitCode) {
+            val args = mutableListOf(helper, pid.toString())
+            if (exactMatch) args.add("--exact")
+            val result = processRunner.run(
+                args,
+                Duration.ofSeconds(10),
+                text.toByteArray(StandardCharsets.UTF_8)
+            )
+            when (result.exitCode) {
                 0 -> {
-                    // Parse output like "OK:pressed:AXStaticText"
-                    val role = stdout.substringAfterLast(":", "unknown")
+                    val role = result.stdout.trim().substringAfterLast(":", "unknown")
                     TapByTextResult(true, elementRole = role)
                 }
                 2 -> TapByTextResult(false, error = "Cannot access app. Check accessibility permissions.")
                 3 -> TapByTextResult(false, error = "No windows found for PID $pid")
                 4 -> TapByTextResult(false, error = "Found element but press action failed")
-                5 -> TapByTextResult(false, error = "Element with text '$text' not found")
-                else -> TapByTextResult(false, error = stderr.ifEmpty { "Unknown error (exit code $exitCode)" })
+                5 -> TapByTextResult(false, error = "Element was not found")
+                else -> TapByTextResult(
+                    false,
+                    error = if (result.timedOut) "Timeout waiting for AXClick" else "AXClick failed"
+                )
             }
-        } catch (e: Exception) {
-            TapByTextResult(false, error = "Exception: ${e.message}")
+        } catch (_: Exception) {
+            TapByTextResult(false, error = "AXClick failed")
         }
     }
 }

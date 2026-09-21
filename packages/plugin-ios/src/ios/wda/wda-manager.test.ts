@@ -84,7 +84,7 @@ describe("WDAManager ownership", () => {
 
     const client = await manager.ensureWDAReady("device-a");
 
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://localhost:8177/session");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://127.0.0.1:8177/session");
     expect(manager.isClientActive("device-a", client)).toBe(true);
     child.emit("exit", 0, null);
     expect(manager.isClientActive("device-a", client)).toBe(false);

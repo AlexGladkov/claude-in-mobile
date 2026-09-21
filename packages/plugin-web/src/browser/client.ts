@@ -1,16 +1,37 @@
+import { launch as launchChrome } from "chrome-launcher";
+// @ts-expect-error — chrome-remote-interface does not publish declarations.
+import createCdpClient from "chrome-remote-interface";
+import { z } from "zod";
+
 import type { BrowserSession, BrowserOpenOptions, BrowserClickOptions, BrowserFillOptions, BrowserNavigateOptions, LaunchedChrome } from "./types.js";
 import type { CDPClientInterface } from "./cdp-types.js";
 import { ALLOWED_URL_PROTOCOLS, DEFAULT_SESSION } from "./types.js";
 import { SessionManager } from "./session-manager.js";
 import { BrowserRefNotFoundError, BrowserSecurityError } from "mcp-devices/errors";
+import { validatePngForDecode } from "mcp-devices/utils/image/input";
 import { findNodeBySelector, findNodeByText, getCoordinates } from "./cdp-helpers.js";
 import { buildSnapshot } from "./snapshot-builder.js";
 import { pressKeyOnCdp, formatEvaluateResult } from "./key-map.js";
 
-// chrome-launcher >=1.0 ships as ESM-only. `createRequire(...)("chrome-launcher")`
-// throws `ERR_REQUIRE_ESM` under Node 20 when the host bundle is CJS. Switching
-// to dynamic `import()` works in both CJS and ESM bundles (and matches the
-// existing async-launch surface). See issue #43.
+type CdpFactory = (opts: { port: number }) => Promise<CDPClientInterface>;
+const CDP = createCdpClient as unknown as CdpFactory;
+const MAX_SCREENSHOT_BYTES = 50 * 1024 * 1024;
+const captureScreenshotResultSchema = z.object({
+  data: z
+    .string()
+    .max(Math.ceil(MAX_SCREENSHOT_BYTES / 3) * 4)
+    .regex(/^[A-Za-z0-9+/]*={0,2}$/),
+}).passthrough();
+const locationResultSchema = z.object({
+  result: z.object({
+    value: z.string().max(8192),
+  }).passthrough(),
+}).passthrough();
+const visibilityResultSchema = z.object({
+  result: z.object({
+    value: z.boolean(),
+  }).passthrough(),
+}).passthrough();
 
 export class BrowserClient {
   private sessionManager: SessionManager;
@@ -27,7 +48,7 @@ export class BrowserClient {
       throw new Error(`Invalid URL: ${url}`);
     }
     // S2: fail-closed allowlist — only http/https may reach CDP Page.navigate.
-    if (!ALLOWED_URL_PROTOCOLS.has(parsed.protocol)) {
+    if (!Object.hasOwn(ALLOWED_URL_PROTOCOLS, parsed.protocol)) {
       throw new BrowserSecurityError(url, parsed.protocol);
     }
   }
@@ -42,14 +63,7 @@ export class BrowserClient {
 
     try {
       this.sessionManager.cleanupOrphanChrome(session);
-      const chromeLauncher = await import("chrome-launcher");
-      // @ts-expect-error — no type declarations published for chrome-remote-interface
-      const cdpModule = (await import("chrome-remote-interface")) as {
-        default?: unknown;
-      } & Record<string, unknown>;
-      const CDP = (cdpModule.default ?? cdpModule) as (
-        opts: { port: number }
-      ) => Promise<CDPClientInterface>;
+
 
       const chromeFlags = [
         "--disable-gpu",
@@ -62,14 +76,15 @@ export class BrowserClient {
         "--disable-save-password-bubble",
         "--password-store=basic",
         `--user-data-dir=${profileDir}`,
+        "--remote-debugging-address=127.0.0.1",
       ];
       if (headless) chromeFlags.push("--headless=new");
-      if (process.env.CI || process.env.DOCKER) {
+      if (process.env.MCP_DEVICES_DISABLE_CHROME_SANDBOX === "1") {
         chromeFlags.push("--no-sandbox", "--disable-dev-shm-usage");
       }
 
       try {
-        chrome = (await chromeLauncher.launch({
+        chrome = (await launchChrome({
           chromeFlags,
           handleSIGINT: false,
           port: 0,
@@ -271,10 +286,12 @@ export class BrowserClient {
     let newUrl: string | undefined;
 
     try {
-      const { result } = await cdp.Runtime.evaluate({ expression: "location.href", returnByValue: true });
-      newUrl = result.value as string | undefined;
+      const parsed = locationResultSchema.parse(
+        await cdp.Runtime.evaluate({ expression: "location.href", returnByValue: true }),
+      );
+      newUrl = parsed.result.value;
       navigated = newUrl !== prevUrl;
-      if (navigated && newUrl) session.url = newUrl;
+      if (navigated) session.url = newUrl;
     } catch {}
 
     return { navigated, newUrl };
@@ -334,11 +351,15 @@ export class BrowserClient {
   }
 
   async screenshot(session: BrowserSession, fullPage = false): Promise<Buffer> {
-    const { data } = await session.cdp.Page.captureScreenshot({
-      format: "png",
-      captureBeyondViewport: fullPage,
-    });
-    return Buffer.from(data, "base64");
+    const parsed = captureScreenshotResultSchema.parse(
+      await session.cdp.Page.captureScreenshot({
+        format: "png",
+        captureBeyondViewport: fullPage,
+      }),
+    );
+    const screenshot = Buffer.from(parsed.data, "base64");
+    validatePngForDecode(screenshot);
+    return screenshot;
   }
 
   async evaluate(session: BrowserSession, expression: string): Promise<string> {
@@ -366,17 +387,19 @@ export class BrowserClient {
         if (nodeId !== 0) {
           if (state === "attached") return;
           // Check visibility
-          const { result } = await session.cdp.Runtime.evaluate({
-            expression: `(function() {
-              const el = document.querySelector(${JSON.stringify(selector)});
-              if (!el) return false;
-              const rect = el.getBoundingClientRect();
-              const style = getComputedStyle(el);
-              return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
-            })()`,
-            returnByValue: true,
-          });
-          if (result.value) return;
+          const parsed = visibilityResultSchema.parse(
+            await session.cdp.Runtime.evaluate({
+              expression: `(function() {
+                const el = document.querySelector(${JSON.stringify(selector)});
+                if (!el) return false;
+                const rect = el.getBoundingClientRect();
+                const style = getComputedStyle(el);
+                return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
+              })()`,
+              returnByValue: true,
+            }),
+          );
+          if (parsed.result.value) return;
         }
       } catch {}
       await new Promise(r => setTimeout(r, interval));

@@ -1,9 +1,11 @@
 import { GoogleAuth } from "google-auth-library";
-import { existsSync, createReadStream } from "fs";
+import { createReadStream, existsSync } from "fs";
 import { stat } from "fs/promises";
 import { Readable } from "stream";
+import { z } from "zod";
+import { readPrivateFileSync } from "../utils/private-storage.js";
 import { AbstractStoreClient } from "./base-client.js";
-import { sanitizeErrorMessage } from "../utils/sanitize.js";
+import { validatePackageName } from "../utils/sanitize.js";
 
 const BASE = "https://androidpublisher.googleapis.com/androidpublisher/v3";
 const UPLOAD_BASE = "https://androidpublisher.googleapis.com/upload/androidpublisher/v3";
@@ -26,23 +28,129 @@ interface TrackData {
   releases?: TrackRelease[];
 }
 
+function validateUploadUrl(value: string): void {
+  if (value.length > 8192 || /[\u0000-\u001f\u007f]/.test(value)) {
+    throw new Error("Upload initiation returned an invalid URL");
+  }
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("Upload initiation returned an invalid URL");
+  }
+  const host = url.hostname.toLowerCase();
+  if (
+    url.protocol !== "https:"
+    || (url.port !== "" && url.port !== "443")
+    || url.username !== ""
+    || url.password !== ""
+    || (host !== "googleapis.com" && !host.endsWith(".googleapis.com"))
+  ) {
+    throw new Error("Upload initiation returned an untrusted URL");
+  }
+}
+function validateTrack(track: string): void {
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(track)) {
+    throw new Error("Invalid Google Play track.");
+  }
+}
+
+function validateReleaseLanguage(language: string): void {
+  if (!/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(language)) {
+    throw new Error("Invalid Google Play release language.");
+  }
+}
+const googleTextSchema = z.string().min(1).max(1024).refine(
+  (value) => !/[\u0000-\u001f\u007f]/.test(value),
+  "text contains control characters",
+);
+const googleStatusSchema = z.string().min(1).max(64).refine(
+  (value) => !/[\u0000-\u001f\u007f]/.test(value),
+  "status contains control characters",
+);
+const googleReleaseNoteSchema = z.object({
+  language: z.string().min(1).max(64),
+  text: z.string().refine(
+    (value) => Buffer.byteLength(value, "utf8") <= 50 * 1024,
+    "release note exceeds the size limit",
+  ),
+}).passthrough();
+const googleTrackReleaseSchema = z.object({
+  versionCodes: z.array(z.string().regex(/^\d{1,20}$/)).max(100).optional(),
+  userFraction: z.number().finite().min(0).max(1).optional(),
+  releaseNotes: z.array(googleReleaseNoteSchema).max(100).optional(),
+  status: googleStatusSchema,
+}).passthrough();
+const googleTrackDataSchema = z.object({
+  releases: z.array(googleTrackReleaseSchema).max(100).optional(),
+}).passthrough();
+const googleServiceAccountSchema = z.object({
+  client_email: z.string().email().max(320),
+  private_key: z.string().min(1).max(1024 * 1024),
+}).passthrough();
+
+const googleEditResponseSchema = z.object({
+  id: googleTextSchema,
+}).passthrough();
+const googleUploadResponseSchema = z.object({
+  versionCode: z.number().int().safe().positive(),
+}).passthrough();
+
+function parseEditId(value: unknown): string {
+  const result = googleEditResponseSchema.safeParse(value);
+  if (!result.success) {
+    throw new Error("Google Play returned an invalid edit identifier.");
+  }
+  return encodeURIComponent(result.data.id);
+}
+function parseTrackData(value: unknown): TrackData {
+  const result = googleTrackDataSchema.safeParse(value);
+  if (!result.success) {
+    throw new Error("Google Play returned invalid track data.");
+  }
+  return result.data;
+}
+
+function parseServiceAccountCredentials(value: string): z.infer<typeof googleServiceAccountSchema> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error("Google Play service account credentials are not valid JSON.");
+  }
+  const result = googleServiceAccountSchema.safeParse(parsed);
+  if (!result.success) {
+    throw new Error("Google Play service account credentials are invalid.");
+  }
+  return result.data;
+}
+
 function buildAuth(): GoogleAuth {
   const keyFile = process.env.GOOGLE_PLAY_KEY_FILE;
   const keyContent = process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON;
-
-  if (keyFile && existsSync(keyFile)) {
-    return new GoogleAuth({ keyFile, scopes: SCOPES });
+  if (keyFile) {
+    try {
+      if (keyFile.length > 4096 || keyFile.includes("\0")) {
+        throw new Error("GOOGLE_PLAY_KEY_FILE is invalid.");
+      }
+      const credentials = parseServiceAccountCredentials(
+        readPrivateFileSync(keyFile, 1024 * 1024, "Google Play key file").toString("utf8"),
+      );
+      return new GoogleAuth({ credentials, scopes: SCOPES });
+    } catch (error) {
+      if (!keyContent) throw error;
+    }
   }
   if (keyContent) {
-    let credentials: Record<string, unknown>;
-    try {
-      credentials = JSON.parse(keyContent);
-    } catch {
-      throw new Error("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON is not valid JSON. Check the environment variable.");
+    if (Buffer.byteLength(keyContent, "utf8") > 1024 * 1024) {
+      throw new Error("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON exceeds the size limit.");
     }
-    return new GoogleAuth({ credentials, scopes: SCOPES });
+    return new GoogleAuth({
+      credentials: parseServiceAccountCredentials(keyContent),
+      scopes: SCOPES,
+    });
   }
-  // Will fail on first use with a clear message
+  // Will fail on first use with a clear message.
   return new GoogleAuth({ scopes: SCOPES });
 }
 
@@ -66,16 +174,20 @@ export class GooglePlayClient extends AbstractStoreClient {
   }
 
   private async ensureEdit(packageName: string): Promise<EditState> {
+    validatePackageName(packageName);
     const existing = this.activeEdits.get(packageName);
     if (existing) return existing;
 
     const token = await this.token();
-    const data = await this.api<{ id: string }>(
+    const data = await this.api(
       "POST",
       `${BASE}/applications/${packageName}/edits`,
       token
     );
-    const state: EditState = { editId: data.id, releaseNotes: [] };
+    const state: EditState = {
+      editId: parseEditId(data),
+      releaseNotes: [],
+    };
     this.activeEdits.set(packageName, state);
     return state;
   }
@@ -92,7 +204,7 @@ export class GooglePlayClient extends AbstractStoreClient {
     const { size: fileSize } = await stat(filePath);
 
     // Step 1: initiate resumable upload — get upload URL from Location header
-    const initiateRes = await fetch(
+    const initiateRes = await this.fetchWithTimeout(
       `${UPLOAD_BASE}/applications/${packageName}/edits/${state.editId}/${type}?uploadType=resumable`,
       {
         method: "POST",
@@ -107,17 +219,17 @@ export class GooglePlayClient extends AbstractStoreClient {
     );
 
     if (!initiateRes.ok) {
-      const text = sanitizeErrorMessage((await initiateRes.text()).slice(0, 200));
-      throw new Error(`Upload initiation failed ${initiateRes.status}: ${text}`);
+      await initiateRes.body?.cancel();
+      throw new Error(`Upload initiation failed with HTTP ${initiateRes.status}.`);
     }
-
     const uploadUrl = initiateRes.headers.get("location");
     if (!uploadUrl) {
       throw new Error("Upload initiation response missing Location header");
     }
+    validateUploadUrl(uploadUrl);
 
     // Step 2: stream file to upload URL — no full file in memory
-    const uploadRes = await fetch(uploadUrl, {
+    const uploadRes = await this.fetchWithTimeout(uploadUrl, {
       method: "PUT",
       headers: {
         "Content-Type": "application/octet-stream",
@@ -125,19 +237,29 @@ export class GooglePlayClient extends AbstractStoreClient {
       },
       duplex: "half" as const,
       body: Readable.toWeb(createReadStream(filePath)),
-    });
+    }, 10 * 60_000);
 
     if (!uploadRes.ok) {
-      const text = sanitizeErrorMessage((await uploadRes.text()).slice(0, 200));
-      throw new Error(`Upload failed ${uploadRes.status}: ${text}`);
+      await uploadRes.body?.cancel();
+      throw new Error(`Upload failed with HTTP ${uploadRes.status}.`);
     }
-
-    const data = await uploadRes.json() as { versionCode: number };
-    state.versionCode = data.versionCode;
-    return { versionCode: data.versionCode };
+    const uploadResult = googleUploadResponseSchema.safeParse(
+      await this.readJson(uploadRes),
+    );
+    if (!uploadResult.success) {
+      throw new Error("Google Play returned an invalid version code.");
+    }
+    const { versionCode } = uploadResult.data;
+    state.versionCode = versionCode;
+    return { versionCode };
   }
 
   async setReleaseNotes(packageName: string, language: string, text: string): Promise<void> {
+    validatePackageName(packageName);
+    validateReleaseLanguage(language);
+    if (Buffer.byteLength(text, "utf8") > 50 * 1024 || text.includes("\0")) {
+      throw new Error("Google Play release notes exceed the size limit.");
+    }
     const state = this.activeEdits.get(packageName);
     if (!state) {
       throw new Error(`No active release for "${packageName}". Call store_upload first.`);
@@ -151,6 +273,11 @@ export class GooglePlayClient extends AbstractStoreClient {
   }
 
   async submit(packageName: string, track: string, rollout: number): Promise<void> {
+    validatePackageName(packageName);
+    validateTrack(track);
+    if (!Number.isFinite(rollout) || rollout <= 0 || rollout > 1) {
+      throw new Error("Google Play rollout must be greater than 0 and at most 1.");
+    }
     const state = this.activeEdits.get(packageName);
     if (!state) {
       throw new Error(`No active release for "${packageName}". Call store_upload first.`);
@@ -177,15 +304,19 @@ export class GooglePlayClient extends AbstractStoreClient {
   }
 
   async promote(packageName: string, fromTrack: string, toTrack: string): Promise<void> {
+    validatePackageName(packageName);
+    validateTrack(fromTrack);
+    validateTrack(toTrack);
     const token = await this.token();
-    const { id: editId } = await this.api<{ id: string }>(
+    const editData = await this.api(
       "POST", `${BASE}/applications/${packageName}/edits`, token
     );
+    const editId = parseEditId(editData);
 
     try {
-      const trackData = await this.api<TrackData>(
+      const trackData = parseTrackData(await this.api(
         "GET", `${BASE}/applications/${packageName}/edits/${editId}/tracks/${fromTrack}`, token
-      );
+      ));
       const release = trackData.releases?.[0];
       if (!release?.versionCodes?.length) {
         throw new Error(`No releases found on track "${fromTrack}"`);
@@ -208,10 +339,13 @@ export class GooglePlayClient extends AbstractStoreClient {
   }
 
   async getReleases(packageName: string, track?: string): Promise<string> {
+    validatePackageName(packageName);
+    if (track !== undefined) validateTrack(track);
     const token = await this.token();
-    const { id: editId } = await this.api<{ id: string }>(
+    const editData = await this.api(
       "POST", `${BASE}/applications/${packageName}/edits`, token
     );
+    const editId = parseEditId(editData);
 
     try {
       const tracks = track ? [track] : ["internal", "alpha", "beta", "production"];
@@ -219,9 +353,9 @@ export class GooglePlayClient extends AbstractStoreClient {
 
       for (const t of tracks) {
         try {
-          const data = await this.api<TrackData>(
+          const data = parseTrackData(await this.api(
             "GET", `${BASE}/applications/${packageName}/edits/${editId}/tracks/${t}`, token
-          );
+          ));
           lines.push(this.formatTrack(t, data.releases ?? []));
         } catch (err) {
           if (track) throw err; // Re-throw if specific track was requested
@@ -236,15 +370,18 @@ export class GooglePlayClient extends AbstractStoreClient {
   }
 
   async haltRollout(packageName: string, track: string): Promise<void> {
+    validatePackageName(packageName);
+    validateTrack(track);
     const token = await this.token();
-    const { id: editId } = await this.api<{ id: string }>(
+    const editData = await this.api(
       "POST", `${BASE}/applications/${packageName}/edits`, token
     );
+    const editId = parseEditId(editData);
 
     try {
-      const data = await this.api<TrackData>(
+      const data = parseTrackData(await this.api(
         "GET", `${BASE}/applications/${packageName}/edits/${editId}/tracks/${track}`, token
-      );
+      ));
       const release = data.releases?.[0];
       if (!release) throw new Error(`No active release on track "${track}"`);
       if (release.status !== "inProgress") {
@@ -264,6 +401,7 @@ export class GooglePlayClient extends AbstractStoreClient {
   }
 
   async discard(packageName: string): Promise<void> {
+    validatePackageName(packageName);
     const state = this.activeEdits.get(packageName);
     if (!state) {
       throw new Error(`No active release draft for "${packageName}"`);

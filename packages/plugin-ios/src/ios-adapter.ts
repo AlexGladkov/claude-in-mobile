@@ -26,9 +26,11 @@ import type {
 import type { Device } from "mcp-devices/device-manager";
 import { IosClient } from "./ios/client.js";
 import { MobileError } from "mcp-devices/errors";
-import { compressScreenshot, type CompressOptions } from "mcp-devices/utils/image";
+import { compressScreenshot } from "mcp-devices/utils/image";
+import type { CompressOptions } from "mcp-devices/utils/image";
 import { PERFORMANCE } from "mcp-devices/constants/timeouts";
-import { XctraceRecording, type XctraceStartOptions } from "./ios/xctrace.js";
+import { XctraceRecording } from "./ios/xctrace.js";
+import type { XctraceStartOptions } from "./ios/xctrace.js";
 import { captureIosHeapSnapshot } from "./ios/heap-snapshot.js";
 
 

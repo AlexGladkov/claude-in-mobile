@@ -9,7 +9,8 @@ import type {
   UrlOpeningAdapter,
 } from "mcp-devices/adapters/platform-adapter";
 import type { Device } from "mcp-devices/device-manager";
-import { compressScreenshot, type CompressOptions } from "mcp-devices/utils/image";
+import { compressScreenshot } from "mcp-devices/utils/image";
+import type { CompressOptions } from "mcp-devices/utils/image";
 
 import { HdcClient } from "./client.js";
 

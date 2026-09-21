@@ -15,17 +15,19 @@
 //!   2. `rg '\.user_input\(' src/android.rs` lists every untrusted shell
 //!      segment. Each should be paired with a documented threat model.
 
+use anyhow::{bail, Context, Result};
+use regex::Regex;
+use serde::Serialize;
 use std::process::Command;
 use std::sync::OnceLock;
 use std::time::Duration;
-use anyhow::{Result, Context, bail};
-use regex::Regex;
-use serde::Serialize;
 
 use crate::utils::device_shell::DeviceShellCmd;
+use crate::utils::private_state::{atomic_write, read_json_file, state_file};
+use crate::utils::process::{ensure_success, run_with_limits, terminal_safe};
 use crate::utils::validate::{
-    validate_permission_name, validate_pref_key, validate_relative_path,
-    validate_sqlite_value, validate_xml_filename,
+    validate_permission_name, validate_pref_key, validate_relative_path, validate_sqlite_value,
+    validate_xml_filename,
 };
 
 // Compiled regexes (created once, reused)
@@ -78,18 +80,20 @@ fn adb_cmd(device: Option<&str>) -> Command {
     cmd
 }
 
-/// Execute ADB command with timeout
-fn adb_exec(device: Option<&str>, args: &[&str], timeout: Option<Duration>) -> Result<std::process::Output> {
-    let mut cmd = adb_cmd(device);
-    cmd.args(args);
-
-    if let Some(_t) = timeout {
-        // For now, just execute without timeout
-        // Full timeout support would require tokio or similar
-        cmd.output().context("Failed to execute adb command")
-    } else {
-        cmd.output().context("Failed to execute adb command")
-    }
+/// Execute an ADB command with bounded output and a hard deadline.
+fn adb_exec(
+    device: Option<&str>,
+    args: &[&str],
+    timeout: Option<Duration>,
+) -> Result<std::process::Output> {
+    let mut command = adb_cmd(device);
+    command.args(args);
+    run_with_limits(
+        &mut command,
+        timeout.unwrap_or(Duration::from_secs(120)),
+        64 * 1024 * 1024,
+        "ADB command",
+    )
 }
 
 /// Take screenshot and return PNG bytes
@@ -97,7 +101,7 @@ pub fn screenshot(device: Option<&str>) -> Result<Vec<u8>> {
     let output = adb_exec(device, &["exec-out", "screencap", "-p"], None)?;
 
     if !output.status.success() {
-        bail!("adb screencap failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("adb screencap failed: {}", terminal_safe(&output.stderr));
     }
 
     Ok(output.stdout)
@@ -105,10 +109,14 @@ pub fn screenshot(device: Option<&str>) -> Result<Vec<u8>> {
 
 /// Tap at coordinates
 pub fn tap(x: i32, y: i32, device: Option<&str>) -> Result<()> {
-    let output = adb_exec(device, &["shell", "input", "tap", &x.to_string(), &y.to_string()], None)?;
+    let output = adb_exec(
+        device,
+        &["shell", "input", "tap", &x.to_string(), &y.to_string()],
+        None,
+    )?;
 
     if !output.status.success() {
-        bail!("adb tap failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("adb tap failed: {}", terminal_safe(&output.stderr));
     }
 
     println!("Tapped at ({}, {})", x, y);
@@ -117,15 +125,23 @@ pub fn tap(x: i32, y: i32, device: Option<&str>) -> Result<()> {
 
 /// Long press at coordinates
 pub fn long_press(x: i32, y: i32, duration: u32, device: Option<&str>) -> Result<()> {
-    let output = adb_exec(device, &[
-        "shell", "input", "swipe",
-        &x.to_string(), &y.to_string(),
-        &x.to_string(), &y.to_string(),
-        &duration.to_string(),
-    ], None)?;
+    let output = adb_exec(
+        device,
+        &[
+            "shell",
+            "input",
+            "swipe",
+            &x.to_string(),
+            &y.to_string(),
+            &x.to_string(),
+            &y.to_string(),
+            &duration.to_string(),
+        ],
+        None,
+    )?;
 
     if !output.status.success() {
-        bail!("adb long press failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("adb long press failed: {}", terminal_safe(&output.stderr));
     }
 
     println!("Long pressed at ({}, {}) for {}ms", x, y, duration);
@@ -134,13 +150,19 @@ pub fn long_press(x: i32, y: i32, duration: u32, device: Option<&str>) -> Result
 
 /// Open URL in default browser
 pub fn open_url(url: &str, device: Option<&str>) -> Result<()> {
-    let output = adb_exec(device, &["shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", url], None)?;
-
+    let shell_cmd = DeviceShellCmd::new()
+        .literal("am")
+        .literal("start")
+        .literal("-a")
+        .literal("android.intent.action.VIEW")
+        .literal("-d")
+        .user_input(url)
+        .render();
+    let output = adb_exec(device, &["shell", &shell_cmd], None)?;
     if !output.status.success() {
-        bail!("Failed to open URL: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("Failed to open URL");
     }
-
-    println!("Opened URL: {}", url);
+    println!("URL opened");
     Ok(())
 }
 
@@ -148,28 +170,40 @@ pub fn open_url(url: &str, device: Option<&str>) -> Result<()> {
 pub fn shell(command: &str, device: Option<&str>) -> Result<String> {
     let output = adb_exec(device, &["shell", command], None)?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-    if !output.status.success() && !stderr.is_empty() {
-        eprintln!("{}", stderr);
+    let stdout = terminal_safe(&output.stdout);
+    if !output.status.success() && !output.stderr.is_empty() {
+        eprintln!("{}", terminal_safe(&output.stderr));
     }
-
-    print!("{}", stdout);
+    print!("{stdout}");
     Ok(stdout)
 }
 
 /// Swipe gesture
-pub fn swipe(x1: i32, y1: i32, x2: i32, y2: i32, duration: u32, device: Option<&str>) -> Result<()> {
-    let output = adb_exec(device, &[
-        "shell", "input", "swipe",
-        &x1.to_string(), &y1.to_string(),
-        &x2.to_string(), &y2.to_string(),
-        &duration.to_string(),
-    ], None)?;
+pub fn swipe(
+    x1: i32,
+    y1: i32,
+    x2: i32,
+    y2: i32,
+    duration: u32,
+    device: Option<&str>,
+) -> Result<()> {
+    let output = adb_exec(
+        device,
+        &[
+            "shell",
+            "input",
+            "swipe",
+            &x1.to_string(),
+            &y1.to_string(),
+            &x2.to_string(),
+            &y2.to_string(),
+            &duration.to_string(),
+        ],
+        None,
+    )?;
 
     if !output.status.success() {
-        bail!("adb swipe failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("adb swipe failed: {}", terminal_safe(&output.stderr));
     }
 
     println!("Swiped from ({}, {}) to ({}, {})", x1, y1, x2, y2);
@@ -193,10 +227,10 @@ pub fn input_text(text: &str, device: Option<&str>) -> Result<()> {
     let output = adb_exec(device, &["shell", &shell_cmd], None)?;
 
     if !output.status.success() {
-        bail!("adb input text failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("adb input text failed");
     }
 
-    println!("Input text: {}", text);
+    println!("Input accepted ({} characters)", text.chars().count());
     Ok(())
 }
 
@@ -227,7 +261,7 @@ pub fn press_key(key: &str, device: Option<&str>) -> Result<()> {
     let output = adb_exec(device, &["shell", "input", "keyevent", keycode], None)?;
 
     if !output.status.success() {
-        bail!("adb keyevent failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("adb keyevent failed: {}", terminal_safe(&output.stderr));
     }
 
     println!("Pressed key: {} ({})", key, keycode);
@@ -245,7 +279,7 @@ fn get_ui_xml(device: Option<&str>) -> Result<String> {
     ], None)?;
 
     if !output.status.success() {
-        bail!("Failed to get UI dump: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("Failed to get UI dump: {}", terminal_safe(&output.stderr));
     }
 
     let xml = String::from_utf8_lossy(&output.stdout).to_string();
@@ -269,7 +303,10 @@ pub struct UiElement {
 
 impl UiElement {
     pub fn center(&self) -> (i32, i32) {
-        ((self.bounds.0 + self.bounds.2) / 2, (self.bounds.1 + self.bounds.3) / 2)
+        (
+            (self.bounds.0 + self.bounds.2) / 2,
+            (self.bounds.1 + self.bounds.3) / 2,
+        )
     }
 
     pub fn label(&self) -> String {
@@ -302,38 +339,52 @@ fn parse_ui_elements(xml: &str) -> Vec<UiElement> {
     for node in node_regex().find_iter(xml) {
         let node_str = node.as_str();
 
-        let class = class_regex().captures(node_str)
+        let class = class_regex()
+            .captures(node_str)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
 
-        let text = text_regex().captures(node_str)
+        let text = text_regex()
+            .captures(node_str)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
 
-        let resource_id = resource_regex().captures(node_str)
+        let resource_id = resource_regex()
+            .captures(node_str)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
 
-        let content_desc = content_regex().captures(node_str)
+        let content_desc = content_regex()
+            .captures(node_str)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
 
-        let bounds = if let Some(caps) = bounds_regex().captures(node_str) {
-            (
-                caps[1].parse().unwrap_or(0),
-                caps[2].parse().unwrap_or(0),
-                caps[3].parse().unwrap_or(0),
-                caps[4].parse().unwrap_or(0),
-            )
-        } else {
+        let Some(caps) = bounds_regex().captures(node_str) else {
             continue;
         };
+        let Ok(x1) = caps[1].parse::<i32>() else {
+            continue;
+        };
+        let Ok(y1) = caps[2].parse::<i32>() else {
+            continue;
+        };
+        let Ok(x2) = caps[3].parse::<i32>() else {
+            continue;
+        };
+        let Ok(y2) = caps[4].parse::<i32>() else {
+            continue;
+        };
+        if x2 < x1 || y2 < y1 {
+            continue;
+        }
+        let bounds = (x1, y1, x2, y2);
 
-        let clickable = clickable_regex().captures(node_str)
+        let clickable = clickable_regex()
+            .captures(node_str)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str() == "true")
             .unwrap_or(false);
@@ -366,7 +417,7 @@ pub fn ui_dump(format: &str, device: Option<&str>) -> Result<()> {
     if format == "json" {
         println!("{}", xml_to_json(&xml)?);
     } else {
-        println!("{}", xml);
+        println!("{}", terminal_safe(xml.as_bytes()));
     }
 
     Ok(())
@@ -392,32 +443,38 @@ fn xml_to_json(xml: &str) -> Result<String> {
     for node in node_regex().find_iter(xml) {
         let node_str = node.as_str();
 
-        let class = class_regex().captures(node_str)
+        let class = class_regex()
+            .captures(node_str)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
 
-        let text = text_regex().captures(node_str)
+        let text = text_regex()
+            .captures(node_str)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
 
-        let resource_id = resource_regex().captures(node_str)
+        let resource_id = resource_regex()
+            .captures(node_str)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
 
-        let content_desc = content_regex().captures(node_str)
+        let content_desc = content_regex()
+            .captures(node_str)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
 
-        let bounds = bounds_string_regex().captures(node_str)
+        let bounds = bounds_string_regex()
+            .captures(node_str)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().to_string())
             .unwrap_or_default();
 
-        let clickable = clickable_regex().captures(node_str)
+        let clickable = clickable_regex()
+            .captures(node_str)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str() == "true")
             .unwrap_or(false);
@@ -447,17 +504,20 @@ pub fn find_element(query: &str, device: Option<&str>) -> Result<Option<(i32, i3
     for node in node_regex().find_iter(&xml) {
         let node_str = node.as_str();
 
-        let text = text_regex().captures(node_str)
+        let text = text_regex()
+            .captures(node_str)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str())
             .unwrap_or("");
 
-        let resource_id = resource_regex().captures(node_str)
+        let resource_id = resource_regex()
+            .captures(node_str)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str())
             .unwrap_or("");
 
-        let content_desc = content_regex().captures(node_str)
+        let content_desc = content_regex()
+            .captures(node_str)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str())
             .unwrap_or("");
@@ -468,23 +528,43 @@ pub fn find_element(query: &str, device: Option<&str>) -> Result<Option<(i32, i3
 
         if matches {
             if let Some(caps) = bounds_regex().captures(node_str) {
-                let x1: i32 = caps[1].parse().unwrap_or(0);
-                let y1: i32 = caps[2].parse().unwrap_or(0);
-                let x2: i32 = caps[3].parse().unwrap_or(0);
-                let y2: i32 = caps[4].parse().unwrap_or(0);
+                let coordinates = (
+                    caps[1].parse::<i32>(),
+                    caps[2].parse::<i32>(),
+                    caps[3].parse::<i32>(),
+                    caps[4].parse::<i32>(),
+                );
+                let (Ok(x1), Ok(y1), Ok(x2), Ok(y2)) = coordinates else {
+                    continue;
+                };
+                if x2 < x1 || y2 < y1 {
+                    continue;
+                }
+                let center_x = i32::try_from((i64::from(x1) + i64::from(x2)) / 2)
+                    .context("Android element horizontal bounds overflow")?;
+                let center_y = i32::try_from((i64::from(y1) + i64::from(y2)) / 2)
+                    .context("Android element vertical bounds overflow")?;
 
-                let center_x = (x1 + x2) / 2;
-                let center_y = (y1 + y2) / 2;
-
-                println!("Found: text=\"{}\" resource_id=\"{}\" content_desc=\"{}\"", text, resource_id, content_desc);
-                println!("Bounds: [{},{}][{},{}] -> center: ({}, {})", x1, y1, x2, y2, center_x, center_y);
+                println!(
+                    "Found: text=\"{}\" resource_id=\"{}\" content_desc=\"{}\"",
+                    terminal_safe(text.as_bytes()),
+                    terminal_safe(resource_id.as_bytes()),
+                    terminal_safe(content_desc.as_bytes())
+                );
+                println!(
+                    "Bounds: [{},{}][{},{}] -> center: ({}, {})",
+                    x1, y1, x2, y2, center_x, center_y
+                );
 
                 return Ok(Some((center_x, center_y)));
             }
         }
     }
 
-    println!("Element with '{}' not found", query);
+    println!(
+        "Element with '{}' not found",
+        terminal_safe(query.as_bytes())
+    );
     Ok(None)
 }
 
@@ -512,11 +592,13 @@ pub fn find_ui_element(
         let node_str = node.as_str();
 
         if let Some(ref q) = text_q {
-            let elem_text = text_regex().captures(node_str)
+            let elem_text = text_regex()
+                .captures(node_str)
                 .and_then(|c| c.get(1))
                 .map(|m| m.as_str().to_lowercase())
                 .unwrap_or_default();
-            let elem_desc = content_regex().captures(node_str)
+            let elem_desc = content_regex()
+                .captures(node_str)
                 .and_then(|c| c.get(1))
                 .map(|m| m.as_str().to_lowercase())
                 .unwrap_or_default();
@@ -526,7 +608,8 @@ pub fn find_ui_element(
         }
 
         if let Some(ref q) = res_q {
-            let elem_res = resource_regex().captures(node_str)
+            let elem_res = resource_regex()
+                .captures(node_str)
                 .and_then(|c| c.get(1))
                 .map(|m| m.as_str().to_lowercase())
                 .unwrap_or_default();
@@ -536,7 +619,8 @@ pub fn find_ui_element(
         }
 
         if let Some(ref q) = class_q {
-            let elem_class = class_regex().captures(node_str)
+            let elem_class = class_regex()
+                .captures(node_str)
                 .and_then(|c| c.get(1))
                 .map(|m| m.as_str().to_lowercase())
                 .unwrap_or_default();
@@ -546,19 +630,23 @@ pub fn find_ui_element(
         }
 
         // All provided criteria matched — build a description string
-        let elem_text = text_regex().captures(node_str)
+        let elem_text = text_regex()
+            .captures(node_str)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str())
             .unwrap_or("");
-        let elem_res = resource_regex().captures(node_str)
+        let elem_res = resource_regex()
+            .captures(node_str)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str())
             .unwrap_or("");
-        let elem_class = class_regex().captures(node_str)
+        let elem_class = class_regex()
+            .captures(node_str)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str())
             .unwrap_or("");
-        let elem_bounds = bounds_string_regex().captures(node_str)
+        let elem_bounds = bounds_string_regex()
+            .captures(node_str)
             .and_then(|c| c.get(1))
             .map(|m| m.as_str())
             .unwrap_or("");
@@ -594,14 +682,15 @@ pub struct Device {
 
 /// List connected devices
 pub fn list_devices() -> Result<Vec<Device>> {
-    let output = Command::new("adb")
-        .args(["devices", "-l"])
-        .output()
-        .context("Failed to execute adb devices")?;
-
-    if !output.status.success() {
-        bail!("adb devices failed: {}", String::from_utf8_lossy(&output.stderr));
-    }
+    let mut command = Command::new("adb");
+    command.args(["devices", "-l"]);
+    let output = run_with_limits(
+        &mut command,
+        Duration::from_secs(30),
+        1024 * 1024,
+        "ADB device listing",
+    )?;
+    ensure_success(&output, "ADB device listing")?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut devices = Vec::new();
@@ -613,7 +702,8 @@ pub fn list_devices() -> Result<Vec<Device>> {
 
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() >= 2 {
-            let model = parts.iter()
+            let model = parts
+                .iter()
                 .find(|p| p.starts_with("model:"))
                 .map(|p| p.trim_start_matches("model:").to_string());
 
@@ -643,16 +733,14 @@ pub fn list_apps(filter: Option<&str>, device: Option<&str>) -> Result<()> {
     let output = adb_exec(device, &["shell", "pm", "list", "packages", "-3"], None)?;
 
     if !output.status.success() {
-        bail!("pm list packages failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("pm list packages failed: {}", terminal_safe(&output.stderr));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut apps: Vec<String> = stdout
         .lines()
         .filter_map(|line| line.strip_prefix("package:"))
-        .filter(|pkg| {
-            filter.map_or(true, |f| pkg.to_lowercase().contains(&f.to_lowercase()))
-        })
+        .filter(|pkg| filter.map_or(true, |f| pkg.to_lowercase().contains(&f.to_lowercase())))
         .map(|s| s.to_string())
         .collect();
 
@@ -660,7 +748,7 @@ pub fn list_apps(filter: Option<&str>, device: Option<&str>) -> Result<()> {
 
     println!("Installed apps ({}):", apps.len());
     for app in &apps {
-        println!("  {}", app);
+        println!("  {}", terminal_safe(app.as_bytes()));
     }
     Ok(())
 }
@@ -701,10 +789,19 @@ pub fn launch_app(package: &str, device: Option<&str>) -> Result<()> {
 
     if !output.status.success() {
         // Fallback to monkey if resolve-activity fails (older Android)
-        let fallback = adb_exec(device, &[
-            "shell", "monkey", "-p", package,
-            "-c", "android.intent.category.LAUNCHER", "1"
-        ], None)?;
+        let fallback = adb_exec(
+            device,
+            &[
+                "shell",
+                "monkey",
+                "-p",
+                package,
+                "-c",
+                "android.intent.category.LAUNCHER",
+                "1",
+            ],
+            None,
+        )?;
 
         if !fallback.status.success() {
             bail!("Failed to launch {}", package);
@@ -726,7 +823,11 @@ pub fn stop_app(package: &str, device: Option<&str>) -> Result<()> {
     let output = adb_exec(device, &["shell", &cmd], None)?;
 
     if !output.status.success() {
-        bail!("Failed to stop {}: {}", package, String::from_utf8_lossy(&output.stderr));
+        bail!(
+            "Failed to stop {}: {}",
+            package,
+            terminal_safe(&output.stderr)
+        );
     }
 
     println!("Stopped: {}", package);
@@ -735,15 +836,15 @@ pub fn stop_app(package: &str, device: Option<&str>) -> Result<()> {
 
 /// Install an APK
 pub fn install_app(path: &str, device: Option<&str>) -> Result<()> {
-    println!("Installing {}...", path);
+    println!("Installing {}...", terminal_safe(path.as_bytes()));
 
     let output = adb_exec(device, &["install", "-r", path], None)?;
 
     if !output.status.success() {
-        bail!("Failed to install: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("Failed to install: {}", terminal_safe(&output.stderr));
     }
 
-    println!("Installed: {}", path);
+    println!("Installed: {}", terminal_safe(path.as_bytes()));
     Ok(())
 }
 
@@ -754,7 +855,7 @@ pub fn uninstall_app(package: &str, device: Option<&str>) -> Result<()> {
     let output = adb_exec(device, &["uninstall", package], None)?;
 
     if !output.status.success() {
-        bail!("Failed to uninstall: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("Failed to uninstall: {}", terminal_safe(&output.stderr));
     }
 
     println!("Uninstalled: {}", package);
@@ -768,7 +869,7 @@ pub fn clear_logs(device: Option<&str>) -> Result<()> {
     let output = adb_exec(device, &["logcat", "-c"], None)?;
 
     if !output.status.success() {
-        bail!("logcat clear failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("logcat clear failed: {}", terminal_safe(&output.stderr));
     }
 
     println!("Logs cleared");
@@ -795,7 +896,8 @@ pub fn get_system_info(device: Option<&str>) -> Result<()> {
                 "4" => "Not charging",
                 "5" => "Full",
                 _ => status_code,
-            }.to_string();
+            }
+            .to_string();
         }
     }
 
@@ -814,7 +916,10 @@ pub fn get_system_info(device: Option<&str>) -> Result<()> {
 
     println!("System Info:");
     println!("  Battery: {}% ({})", battery_level, battery_status);
-    println!("  Memory: {} kB available / {} kB total", mem_available, mem_total);
+    println!(
+        "  Memory: {} kB available / {} kB total",
+        mem_available, mem_total
+    );
 
     Ok(())
 }
@@ -826,7 +931,7 @@ pub fn get_current_activity(device: Option<&str>) -> Result<()> {
 
     for line in out.lines() {
         if line.contains("mCurrentFocus") || line.contains("mFocusedApp") {
-            println!("{}", line.trim());
+            println!("{}", terminal_safe(line.trim().as_bytes()));
         }
     }
 
@@ -846,10 +951,10 @@ pub fn get_logs(filter: Option<&str>, lines: usize, device: Option<&str>) -> Res
     let output = adb_exec(device, &args, None)?;
 
     if !output.status.success() {
-        bail!("logcat failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("logcat failed: {}", terminal_safe(&output.stderr));
     }
 
-    print!("{}", String::from_utf8_lossy(&output.stdout));
+    print!("{}", terminal_safe(&output.stdout));
     Ok(())
 }
 
@@ -859,7 +964,7 @@ pub fn reboot(device: Option<&str>) -> Result<()> {
     let output = adb_exec(device, &["reboot"], None)?;
 
     if !output.status.success() {
-        bail!("Failed to reboot: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("Failed to reboot: {}", terminal_safe(&output.stderr));
     }
 
     println!("Reboot initiated");
@@ -872,16 +977,24 @@ pub fn screen_power(on: bool, device: Option<&str>) -> Result<()> {
     let output = adb_exec(device, &["shell", "dumpsys", "power"], None)?;
     let power_out = String::from_utf8_lossy(&output.stdout);
 
-    let is_screen_on = power_out.contains("mWakefulness=Awake") ||
-                       power_out.contains("Display Power: state=ON");
+    let is_screen_on =
+        power_out.contains("mWakefulness=Awake") || power_out.contains("Display Power: state=ON");
 
     if on && !is_screen_on {
         // Turn screen on
-        adb_exec(device, &["shell", "input", "keyevent", "KEYCODE_WAKEUP"], None)?;
+        adb_exec(
+            device,
+            &["shell", "input", "keyevent", "KEYCODE_WAKEUP"],
+            None,
+        )?;
         println!("Screen turned ON");
     } else if !on && is_screen_on {
         // Turn screen off
-        adb_exec(device, &["shell", "input", "keyevent", "KEYCODE_SLEEP"], None)?;
+        adb_exec(
+            device,
+            &["shell", "input", "keyevent", "KEYCODE_SLEEP"],
+            None,
+        )?;
         println!("Screen turned OFF");
     } else {
         println!("Screen is already {}", if on { "ON" } else { "OFF" });
@@ -901,8 +1014,11 @@ pub fn get_screen_size(device: Option<&str>) -> Result<(u32, u32)> {
             if let Some(size) = line.split(':').nth(1) {
                 let parts: Vec<&str> = size.trim().split('x').collect();
                 if parts.len() == 2 {
-                    let w: u32 = parts[0].parse().unwrap_or(1080);
-                    let h: u32 = parts[1].parse().unwrap_or(1920);
+                    let w: u32 = parts[0].parse().context("Invalid Android screen width")?;
+                    let h: u32 = parts[1].parse().context("Invalid Android screen height")?;
+                    if w == 0 || h == 0 {
+                        bail!("Android screen size must be positive");
+                    }
                     return Ok((w, h));
                 }
             }
@@ -956,7 +1072,10 @@ pub fn analyze_screen(device: Option<&str>) -> Result<()> {
             analysis.inputs.push(info);
         } else if class_lower.contains("textview") || class_lower.contains("text") {
             analysis.texts.push(info);
-        } else if class_lower.contains("scroll") || class_lower.contains("recycler") || class_lower.contains("listview") {
+        } else if class_lower.contains("scroll")
+            || class_lower.contains("recycler")
+            || class_lower.contains("listview")
+        {
             analysis.scrollable.push(info);
         } else if class_lower.contains("image") {
             analysis.images.push(info);
@@ -979,7 +1098,11 @@ pub fn find_and_tap(description: &str, min_confidence: u32, device: Option<&str>
         let mut score: u32 = 0;
         let text_lower = elem.text.to_lowercase();
         let content_lower = elem.content_desc.to_lowercase();
-        let res_lower = elem.resource_id.to_lowercase().replace('_', " ").replace('/', " ");
+        let res_lower = elem
+            .resource_id
+            .to_lowercase()
+            .replace('_', " ")
+            .replace('/', " ");
 
         // Exact text match
         if text_lower == desc_lower {
@@ -1031,16 +1154,24 @@ pub fn find_and_tap(description: &str, min_confidence: u32, device: Option<&str>
         }
     }
 
-    bail!("No element matching '{}' found with confidence >= {}%", description, min_confidence);
+    bail!(
+        "No element matching '{}' found with confidence >= {}%",
+        description,
+        min_confidence
+    );
 }
 
 /// Push file to device
 pub fn push_file(local: &str, remote: &str, device: Option<&str>) -> Result<()> {
     let output = adb_exec(device, &["push", local, remote], None)?;
     if !output.status.success() {
-        bail!("adb push failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("adb push failed: {}", terminal_safe(&output.stderr));
     }
-    println!("Pushed {} -> {}", local, remote);
+    println!(
+        "Pushed {} -> {}",
+        terminal_safe(local.as_bytes()),
+        terminal_safe(remote.as_bytes())
+    );
     Ok(())
 }
 
@@ -1048,25 +1179,41 @@ pub fn push_file(local: &str, remote: &str, device: Option<&str>) -> Result<()> 
 pub fn pull_file(remote: &str, local: &str, device: Option<&str>) -> Result<()> {
     let output = adb_exec(device, &["pull", remote, local], None)?;
     if !output.status.success() {
-        bail!("adb pull failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("adb pull failed: {}", terminal_safe(&output.stderr));
     }
-    println!("Pulled {} -> {}", remote, local);
+    println!(
+        "Pulled {} -> {}",
+        terminal_safe(remote.as_bytes()),
+        terminal_safe(local.as_bytes())
+    );
     Ok(())
 }
 
 /// Get clipboard content
 pub fn get_clipboard(device: Option<&str>) -> Result<()> {
-    let output = adb_exec(device, &["shell", "service", "call", "clipboard", "2", "s16", "com.android.shell"], None)?;
+    let output = adb_exec(
+        device,
+        &[
+            "shell",
+            "service",
+            "call",
+            "clipboard",
+            "2",
+            "s16",
+            "com.android.shell",
+        ],
+        None,
+    )?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Parse parcel response - extract string between single quotes
     if let Some(start) = stdout.find('\'') {
-        if let Some(end) = stdout[start+1..].find('\'') {
-            let text = &stdout[start+1..start+1+end];
-            println!("{}", text.replace("\\n", "\n"));
+        if let Some(end) = stdout[start + 1..].find('\'') {
+            let text = &stdout[start + 1..start + 1 + end];
+            println!("{}", terminal_safe(text.replace("\\n", "\n").as_bytes()));
             return Ok(());
         }
     }
-    println!("{}", stdout);
+    println!("{}", terminal_safe(stdout.as_bytes()));
     Ok(())
 }
 
@@ -1084,7 +1231,21 @@ pub fn set_clipboard(text: &str, device: Option<&str>) -> Result<()> {
     let output = adb_exec(device, &["shell", &cmd], None)?;
     if !output.status.success() {
         // Fallback: try input method
-        let _ = adb_exec(device, &["shell", "service", "call", "clipboard", "1", "s16", "com.android.shell", "s16", text], None)?;
+        let _ = adb_exec(
+            device,
+            &[
+                "shell",
+                "service",
+                "call",
+                "clipboard",
+                "1",
+                "s16",
+                "com.android.shell",
+                "s16",
+                text,
+            ],
+            None,
+        )?;
     }
     println!("Clipboard set");
     Ok(())
@@ -1150,14 +1311,23 @@ pub fn compact_ui_from_xml(xml: &str) -> String {
 
 /// Set mock GPS location on emulator or physical device.
 /// On emulator: uses `emu geo fix`. On physical device: broadcasts a mock location.
-pub fn sensor_location(latitude: f64, longitude: f64, altitude: f64, device: Option<&str>) -> Result<()> {
+pub fn sensor_location(
+    latitude: f64,
+    longitude: f64,
+    altitude: f64,
+    device: Option<&str>,
+) -> Result<()> {
     // Detect if this is an emulator by checking the device serial prefix
     let is_emulator = device
         .map(|d| d.starts_with("emulator-"))
         .unwrap_or_else(|| {
-            adb_exec(device, &["shell", "getprop", "ro.build.characteristics"], None)
-                .map(|o| String::from_utf8_lossy(&o.stdout).contains("emulator"))
-                .unwrap_or(false)
+            adb_exec(
+                device,
+                &["shell", "getprop", "ro.build.characteristics"],
+                None,
+            )
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("emulator"))
+            .unwrap_or(false)
         });
 
     if is_emulator {
@@ -1173,7 +1343,7 @@ pub fn sensor_location(latitude: f64, longitude: f64, altitude: f64, device: Opt
             .render();
         let output = adb_exec(device, &["shell", &cmd], None)?;
         if !output.status.success() {
-            bail!("emu geo fix failed: {}", String::from_utf8_lossy(&output.stderr));
+            bail!("emu geo fix failed: {}", terminal_safe(&output.stderr));
         }
     } else {
         // Broadcast a mock location to any registered listener.
@@ -1194,11 +1364,17 @@ pub fn sensor_location(latitude: f64, longitude: f64, altitude: f64, device: Opt
             .render();
         let output = adb_exec(device, &["shell", &cmd], None)?;
         if !output.status.success() {
-            bail!("Mock location broadcast failed: {}", String::from_utf8_lossy(&output.stderr));
+            bail!(
+                "Mock location broadcast failed: {}",
+                terminal_safe(&output.stderr)
+            );
         }
     }
 
-    println!("Location set: lat={}, lon={}, alt={}", latitude, longitude, altitude);
+    println!(
+        "Location set: lat={}, lon={}, alt={}",
+        latitude, longitude, altitude
+    );
     Ok(())
 }
 
@@ -1213,7 +1389,7 @@ pub fn sensor_battery(
     if reset {
         let output = adb_exec(device, &["shell", "dumpsys", "battery", "reset"], None)?;
         if !output.status.success() {
-            bail!("Battery reset failed: {}", String::from_utf8_lossy(&output.stderr));
+            bail!("Battery reset failed: {}", terminal_safe(&output.stderr));
         }
         println!("Battery state reset");
         return Ok(());
@@ -1223,9 +1399,23 @@ pub fn sensor_battery(
         if lvl > 100 {
             bail!("Battery level must be 0-100, got {}", lvl);
         }
-        let output = adb_exec(device, &["shell", "dumpsys", "battery", "set", "level", &lvl.to_string()], None)?;
+        let output = adb_exec(
+            device,
+            &[
+                "shell",
+                "dumpsys",
+                "battery",
+                "set",
+                "level",
+                &lvl.to_string(),
+            ],
+            None,
+        )?;
         if !output.status.success() {
-            bail!("Failed to set battery level: {}", String::from_utf8_lossy(&output.stderr));
+            bail!(
+                "Failed to set battery level: {}",
+                terminal_safe(&output.stderr)
+            );
         }
         println!("Battery level set to {}%", lvl);
     }
@@ -1241,9 +1431,16 @@ pub fn sensor_battery(
             "full" => "5",
             other => other,
         };
-        let output = adb_exec(device, &["shell", "dumpsys", "battery", "set", "status", code], None)?;
+        let output = adb_exec(
+            device,
+            &["shell", "dumpsys", "battery", "set", "status", code],
+            None,
+        )?;
         if !output.status.success() {
-            bail!("Failed to set battery status: {}", String::from_utf8_lossy(&output.stderr));
+            bail!(
+                "Failed to set battery status: {}",
+                terminal_safe(&output.stderr)
+            );
         }
         println!("Battery status set to {}", s);
     }
@@ -1258,9 +1455,16 @@ pub fn sensor_battery(
             "wireless" => "4",
             other => other,
         };
-        let output = adb_exec(device, &["shell", "dumpsys", "battery", "set", "ac", code], None)?;
+        let output = adb_exec(
+            device,
+            &["shell", "dumpsys", "battery", "set", "ac", code],
+            None,
+        )?;
         if !output.status.success() {
-            bail!("Failed to set battery plugged state: {}", String::from_utf8_lossy(&output.stderr));
+            bail!(
+                "Failed to set battery plugged state: {}",
+                terminal_safe(&output.stderr)
+            );
         }
         println!("Battery plugged set to {}", p);
     }
@@ -1270,9 +1474,16 @@ pub fn sensor_battery(
 
 /// Read active notifications from `dumpsys notification --noredact`.
 pub fn sensor_notifications(package: Option<&str>, device: Option<&str>) -> Result<()> {
-    let output = adb_exec(device, &["shell", "dumpsys", "notification", "--noredact"], None)?;
+    let output = adb_exec(
+        device,
+        &["shell", "dumpsys", "notification", "--noredact"],
+        None,
+    )?;
     if !output.status.success() {
-        bail!("dumpsys notification failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!(
+            "dumpsys notification failed: {}",
+            terminal_safe(&output.stderr)
+        );
     }
 
     let text = String::from_utf8_lossy(&output.stdout);
@@ -1288,9 +1499,13 @@ pub fn sensor_notifications(package: Option<&str>, device: Option<&str>) -> Resu
     let mut channel = String::new();
 
     let flush_record = |notifications: &mut Vec<serde_json::Value>,
-                         pkg: &str, notif_id: &str, tag: &str,
-                         title: &str, body: &str, channel: &str,
-                         filter: Option<&str>| {
+                        pkg: &str,
+                        notif_id: &str,
+                        tag: &str,
+                        title: &str,
+                        body: &str,
+                        channel: &str,
+                        filter: Option<&str>| {
         if !pkg.is_empty() && filter.map_or(true, |f| pkg == f) {
             notifications.push(serde_json::json!({
                 "package": pkg,
@@ -1307,7 +1522,16 @@ pub fn sensor_notifications(package: Option<&str>, device: Option<&str>) -> Resu
         let trimmed = line.trim();
         if trimmed.starts_with("NotificationRecord(") {
             if in_record {
-                flush_record(&mut notifications, &pkg, &notif_id, &tag, &title, &body, &channel, package);
+                flush_record(
+                    &mut notifications,
+                    &pkg,
+                    &notif_id,
+                    &tag,
+                    &title,
+                    &body,
+                    &channel,
+                    package,
+                );
             }
             in_record = true;
             pkg.clear();
@@ -1324,24 +1548,54 @@ pub fn sensor_notifications(package: Option<&str>, device: Option<&str>) -> Resu
         if trimmed.starts_with("pkg=") {
             pkg = trimmed.trim_start_matches("pkg=").trim().to_string();
         } else if trimmed.starts_with("id=") {
-            notif_id = trimmed.trim_start_matches("id=").split_whitespace().next()
-                .unwrap_or("").to_string();
+            notif_id = trimmed
+                .trim_start_matches("id=")
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_string();
         } else if trimmed.starts_with("tag=") {
-            tag = trimmed.trim_start_matches("tag=").trim().trim_matches('"').to_string();
+            tag = trimmed
+                .trim_start_matches("tag=")
+                .trim()
+                .trim_matches('"')
+                .to_string();
         } else if trimmed.contains("android.title=") {
-            title = trimmed.split("android.title=").nth(1).unwrap_or("").trim().to_string();
+            title = trimmed
+                .split("android.title=")
+                .nth(1)
+                .unwrap_or("")
+                .trim()
+                .to_string();
         } else if trimmed.contains("android.text=") {
-            body = trimmed.split("android.text=").nth(1).unwrap_or("").trim().to_string();
+            body = trimmed
+                .split("android.text=")
+                .nth(1)
+                .unwrap_or("")
+                .trim()
+                .to_string();
         } else if trimmed.starts_with("channel=Channel{") {
             channel = trimmed
-                .split("id=").nth(1)
+                .split("id=")
+                .nth(1)
                 .and_then(|s| s.split(',').next())
-                .unwrap_or("").trim().to_string();
+                .unwrap_or("")
+                .trim()
+                .to_string();
         }
     }
 
     if in_record {
-        flush_record(&mut notifications, &pkg, &notif_id, &tag, &title, &body, &channel, package);
+        flush_record(
+            &mut notifications,
+            &pkg,
+            &notif_id,
+            &tag,
+            &title,
+            &body,
+            &channel,
+            package,
+        );
     }
 
     println!("{}", serde_json::to_string_pretty(&notifications)?);
@@ -1353,7 +1607,7 @@ pub fn sensor_thermal(status: Option<&str>, reset: bool, device: Option<&str>) -
     if reset {
         let output = adb_exec(device, &["shell", "cmd", "thermalservice", "reset"], None)?;
         if !output.status.success() {
-            bail!("Thermal reset failed: {}", String::from_utf8_lossy(&output.stderr));
+            bail!("Thermal reset failed: {}", terminal_safe(&output.stderr));
         }
         println!("Thermal status reset");
         return Ok(());
@@ -1374,9 +1628,13 @@ pub fn sensor_thermal(status: Option<&str>, reset: bool, device: Option<&str>) -
         other => other,
     };
 
-    let output = adb_exec(device, &["shell", "cmd", "thermalservice", "override-status", code], None)?;
+    let output = adb_exec(
+        device,
+        &["shell", "cmd", "thermalservice", "override-status", code],
+        None,
+    )?;
     if !output.status.success() {
-        bail!("Thermal override failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("Thermal override failed: {}", terminal_safe(&output.stderr));
     }
 
     println!("Thermal status set to {}", s);
@@ -1399,7 +1657,11 @@ pub fn network_traffic(package: Option<&str>, device: Option<&str>) -> Result<()
             .find_map(|line| {
                 let trimmed = line.trim();
                 if trimmed.starts_with("userId=") {
-                    trimmed.trim_start_matches("userId=").split_whitespace().next().map(|s| s.to_string())
+                    trimmed
+                        .trim_start_matches("userId=")
+                        .split_whitespace()
+                        .next()
+                        .map(|s| s.to_string())
                 } else {
                     None
                 }
@@ -1407,7 +1669,11 @@ pub fn network_traffic(package: Option<&str>, device: Option<&str>) -> Result<()
             .ok_or_else(|| anyhow::anyhow!("Could not determine UID for package '{}'", pkg))?;
 
         // Read xt_qtaguid stats and sum rx/tx bytes for the matching uid
-        let stats_out = adb_exec(device, &["shell", "cat", "/proc/net/xt_qtaguid/stats"], None)?;
+        let stats_out = adb_exec(
+            device,
+            &["shell", "cat", "/proc/net/xt_qtaguid/stats"],
+            None,
+        )?;
         let stats_text = String::from_utf8_lossy(&stats_out.stdout);
 
         let mut rx_bytes: u64 = 0;
@@ -1419,14 +1685,37 @@ pub fn network_traffic(package: Option<&str>, device: Option<&str>) -> Result<()
             // Format: idx iface acct_tag_hex uid_tag_int cnt_set rx_bytes rx_packets tx_bytes tx_packets ...
             let cols: Vec<&str> = line.split_whitespace().collect();
             if cols.len() >= 9 {
-                let row_uid: u64 = cols[3].parse().unwrap_or(0);
+                let Ok(row_uid) = cols[3].parse::<u64>() else {
+                    continue;
+                };
                 // uid_tag_int encodes uid in upper 32 bits when tag != 0
-                let actual_uid: u64 = if row_uid > 100_000 { row_uid >> 32 } else { row_uid };
+                let actual_uid: u64 = if row_uid > 100_000 {
+                    row_uid >> 32
+                } else {
+                    row_uid
+                };
                 if actual_uid.to_string() == uid {
-                    rx_bytes += cols[5].parse::<u64>().unwrap_or(0);
-                    rx_packets += cols[6].parse::<u64>().unwrap_or(0);
-                    tx_bytes += cols[7].parse::<u64>().unwrap_or(0);
-                    tx_packets += cols[8].parse::<u64>().unwrap_or(0);
+                    let values = (
+                        cols[5].parse::<u64>(),
+                        cols[6].parse::<u64>(),
+                        cols[7].parse::<u64>(),
+                        cols[8].parse::<u64>(),
+                    );
+                    let (Ok(rx_b), Ok(rx_p), Ok(tx_b), Ok(tx_p)) = values else {
+                        continue;
+                    };
+                    rx_bytes = rx_bytes
+                        .checked_add(rx_b)
+                        .context("Android RX byte count overflow")?;
+                    rx_packets = rx_packets
+                        .checked_add(rx_p)
+                        .context("Android RX packet count overflow")?;
+                    tx_bytes = tx_bytes
+                        .checked_add(tx_b)
+                        .context("Android TX byte count overflow")?;
+                    tx_packets = tx_packets
+                        .checked_add(tx_p)
+                        .context("Android TX packet count overflow")?;
                 }
             }
         }
@@ -1447,9 +1736,9 @@ pub fn network_traffic(package: Option<&str>, device: Option<&str>) -> Result<()
         // Global stats from netstats
         let output = adb_exec(device, &["shell", "dumpsys", "netstats", "--detail"], None)?;
         if !output.status.success() {
-            bail!("netstats failed: {}", String::from_utf8_lossy(&output.stderr));
+            bail!("netstats failed: {}", terminal_safe(&output.stderr));
         }
-        print!("{}", String::from_utf8_lossy(&output.stdout));
+        print!("{}", terminal_safe(&output.stdout));
     }
 
     Ok(())
@@ -1471,7 +1760,10 @@ pub fn network_connectivity(device: Option<&str>) -> Result<()> {
     for line in conn_text.lines() {
         let t = line.trim();
         if t.starts_with("Active default network:") {
-            active_network = t.trim_start_matches("Active default network:").trim().to_string();
+            active_network = t
+                .trim_start_matches("Active default network:")
+                .trim()
+                .to_string();
         }
         if t.contains("MOBILE") && t.contains("state:") {
             mobile_state = t.to_string();
@@ -1485,7 +1777,13 @@ pub fn network_connectivity(device: Option<&str>) -> Result<()> {
         }
         if t.contains("SSID:") {
             if let Some(ssid) = t.split("SSID:").nth(1) {
-                wifi_ssid = ssid.split(',').next().unwrap_or("").trim().trim_matches('"').to_string();
+                wifi_ssid = ssid
+                    .split(',')
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .trim_matches('"')
+                    .to_string();
             }
         }
     }
@@ -1509,9 +1807,13 @@ pub fn network_proxy(
     device: Option<&str>,
 ) -> Result<()> {
     if clear {
-        let output = adb_exec(device, &["shell", "settings", "put", "global", "http_proxy", ":0"], None)?;
+        let output = adb_exec(
+            device,
+            &["shell", "settings", "put", "global", "http_proxy", ":0"],
+            None,
+        )?;
         if !output.status.success() {
-            bail!("Failed to clear proxy: {}", String::from_utf8_lossy(&output.stderr));
+            bail!("Failed to clear proxy: {}", terminal_safe(&output.stderr));
         }
         println!("HTTP proxy cleared");
         return Ok(());
@@ -1519,11 +1821,19 @@ pub fn network_proxy(
 
     if host.is_none() && port.is_none() {
         // Read current proxy
-        let output = adb_exec(device, &["shell", "settings", "get", "global", "http_proxy"], None)?;
+        let output = adb_exec(
+            device,
+            &["shell", "settings", "get", "global", "http_proxy"],
+            None,
+        )?;
         let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
         println!(
             "Current HTTP proxy: {}",
-            if value.is_empty() || value == "null" { "(none)".to_string() } else { value }
+            if value.is_empty() || value == "null" {
+                "(none)".to_string()
+            } else {
+                value
+            }
         );
         return Ok(());
     }
@@ -1532,9 +1842,20 @@ pub fn network_proxy(
     let p = port.ok_or_else(|| anyhow::anyhow!("--port is required when setting proxy"))?;
     let proxy_value = format!("{}:{}", h, p);
 
-    let output = adb_exec(device, &["shell", "settings", "put", "global", "http_proxy", &proxy_value], None)?;
+    let output = adb_exec(
+        device,
+        &[
+            "shell",
+            "settings",
+            "put",
+            "global",
+            "http_proxy",
+            &proxy_value,
+        ],
+        None,
+    )?;
     if !output.status.success() {
-        bail!("Failed to set proxy: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("Failed to set proxy: {}", terminal_safe(&output.stderr));
     }
 
     println!("HTTP proxy set to {}", proxy_value);
@@ -1546,22 +1867,51 @@ pub fn network_airplane(enabled: bool, device: Option<&str>) -> Result<()> {
     let value = if enabled { "1" } else { "0" };
 
     // Set the global setting
-    let out1 = adb_exec(device, &["shell", "settings", "put", "global", "airplane_mode_on", value], None)?;
+    let out1 = adb_exec(
+        device,
+        &[
+            "shell",
+            "settings",
+            "put",
+            "global",
+            "airplane_mode_on",
+            value,
+        ],
+        None,
+    )?;
     if !out1.status.success() {
-        bail!("Failed to set airplane_mode_on: {}", String::from_utf8_lossy(&out1.stderr));
+        bail!(
+            "Failed to set airplane_mode_on: {}",
+            terminal_safe(&out1.stderr)
+        );
     }
 
     // Broadcast the change so Android applies it immediately
-    let out2 = adb_exec(device, &[
-        "shell", "am", "broadcast",
-        "-a", "android.intent.action.AIRPLANE_MODE",
-        "--ez", "state", if enabled { "true" } else { "false" },
-    ], None)?;
+    let out2 = adb_exec(
+        device,
+        &[
+            "shell",
+            "am",
+            "broadcast",
+            "-a",
+            "android.intent.action.AIRPLANE_MODE",
+            "--ez",
+            "state",
+            if enabled { "true" } else { "false" },
+        ],
+        None,
+    )?;
     if !out2.status.success() {
-        bail!("Airplane mode broadcast failed: {}", String::from_utf8_lossy(&out2.stderr));
+        bail!(
+            "Airplane mode broadcast failed: {}",
+            terminal_safe(&out2.stderr)
+        );
     }
 
-    println!("Airplane mode {}", if enabled { "enabled" } else { "disabled" });
+    println!(
+        "Airplane mode {}",
+        if enabled { "enabled" } else { "disabled" }
+    );
     Ok(())
 }
 
@@ -1578,7 +1928,7 @@ pub fn permission_grant(package: &str, permission: &str, device: Option<&str>) -
         .validated(permission, validate_permission_name)?
         .render();
     let output = adb_exec(device, &["shell", &cmd], None)?;
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = terminal_safe(&output.stderr);
     if !output.status.success() {
         bail!("pm grant failed: {}", stderr);
     }
@@ -1600,7 +1950,7 @@ pub fn permission_revoke(package: &str, permission: &str, device: Option<&str>) 
         .validated(permission, validate_permission_name)?
         .render();
     let output = adb_exec(device, &["shell", &cmd], None)?;
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = terminal_safe(&output.stderr);
     if !output.status.success() {
         bail!("pm revoke failed: {}", stderr);
     }
@@ -1621,7 +1971,10 @@ pub fn permission_reset(package: &str, device: Option<&str>) -> Result<()> {
         .render();
     let output = adb_exec(device, &["shell", &cmd], None)?;
     if !output.status.success() {
-        bail!("pm reset-permissions failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!(
+            "pm reset-permissions failed: {}",
+            terminal_safe(&output.stderr)
+        );
     }
     println!("Permissions reset for {}", package);
     Ok(())
@@ -1668,16 +2021,16 @@ pub fn intent_start(
 
     let rendered = cmd.render();
     let output = adb_exec(device, &["shell", &rendered], None)?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
     if !output.status.success() {
-        bail!("am start failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("Android intent start failed");
     }
-    if stdout.to_lowercase().contains("error:") {
-        bail!("am start error: {}", stdout);
+    if String::from_utf8_lossy(&output.stdout)
+        .to_ascii_lowercase()
+        .contains("error:")
+    {
+        bail!("Android intent start failed");
     }
-
-    print!("{}", stdout);
+    println!("Intent started");
     Ok(())
 }
 
@@ -1709,12 +2062,10 @@ pub fn intent_broadcast(
 
     let rendered = cmd.render();
     let output = adb_exec(device, &["shell", &rendered], None)?;
-
     if !output.status.success() {
-        bail!("am broadcast failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!("Android broadcast failed");
     }
-
-    print!("{}", String::from_utf8_lossy(&output.stdout));
+    println!("Broadcast sent");
     Ok(())
 }
 
@@ -1735,16 +2086,14 @@ pub fn intent_deeplink(uri: &str, package: Option<&str>, device: Option<&str>) -
 
     let rendered = cmd.render();
     let output = adb_exec(device, &["shell", &rendered], None)?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    if !output.status.success() {
-        bail!("Deep-link failed: {}", String::from_utf8_lossy(&output.stderr));
+    if !output.status.success()
+        || String::from_utf8_lossy(&output.stdout)
+            .to_ascii_lowercase()
+            .contains("error:")
+    {
+        bail!("Android deep-link failed");
     }
-    if stdout.to_lowercase().contains("error:") {
-        bail!("Deep-link error: {}", stdout);
-    }
-
-    println!("Opened deep-link: {}", uri);
+    println!("Deep-link opened");
     Ok(())
 }
 
@@ -1761,7 +2110,10 @@ pub fn intent_services(package: Option<&str>, device: Option<&str>) -> Result<()
     let rendered = cmd.render();
     let output = adb_exec(device, &["shell", &rendered], None)?;
     if !output.status.success() {
-        bail!("dumpsys activity services failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!(
+            "dumpsys activity services failed: {}",
+            terminal_safe(&output.stderr)
+        );
     }
 
     let text = String::from_utf8_lossy(&output.stdout);
@@ -1786,7 +2138,7 @@ pub fn intent_services(package: Option<&str>, device: Option<&str>) -> Result<()
     }
 
     if services.is_empty() {
-        print!("{}", text);
+        print!("{}", terminal_safe(text.as_bytes()));
     } else {
         println!("{}", serde_json::to_string_pretty(&services)?);
     }
@@ -1820,13 +2172,13 @@ pub fn sandbox_prefs_read(package: &str, file: Option<&str>, device: Option<&str
         .render();
     let output = adb_exec(device, &["shell", &cmd], None)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = terminal_safe(&output.stderr);
 
     if !output.status.success() || stderr.contains("Permission denied") {
         bail!("sandbox prefs read failed: {}", stderr);
     }
 
-    print!("{}", stdout);
+    print!("{}", terminal_safe(stdout.as_bytes()));
     Ok(())
 }
 
@@ -1874,7 +2226,9 @@ pub fn sandbox_prefs_write(
     } else {
         format!(
             r#"s|<{t} name="{k}" value="[^"]*" />|<{t} name="{k}" value="{v}" />|g"#,
-            t = type_tag, k = key, v = value
+            t = type_tag,
+            k = key,
+            v = value
         )
     };
 
@@ -1889,13 +2243,16 @@ pub fn sandbox_prefs_write(
         .render();
 
     let output = adb_exec(device, &["shell", &cmd], None)?;
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = terminal_safe(&output.stderr);
 
     if !output.status.success() || stderr.contains("Permission denied") {
-        bail!("sandbox prefs write failed: {}", stderr);
+        bail!("sandbox prefs write failed");
     }
 
-    println!("Updated {}.{} = {} (type: {})", xml_file, key, value, type_tag);
+    println!(
+        "Preference updated: {}.{} (type: {})",
+        xml_file, key, type_tag
+    );
     Ok(())
 }
 
@@ -1922,12 +2279,34 @@ pub fn sandbox_sqlite_query(
         for b in database.bytes() {
             let bad = matches!(
                 b,
-                b';' | b'&' | b'|' | b'<' | b'>' | b'$' | b'(' | b')' | b'{' | b'}'
-                | b'*' | b'?' | b'[' | b']' | b'\\' | b'\'' | b'"' | b'`'
-                | b'\n' | b'\r' | b'\t' | b' ' | 0
+                b';' | b'&'
+                    | b'|'
+                    | b'<'
+                    | b'>'
+                    | b'$'
+                    | b'('
+                    | b')'
+                    | b'{'
+                    | b'}'
+                    | b'*'
+                    | b'?'
+                    | b'['
+                    | b']'
+                    | b'\\'
+                    | b'\''
+                    | b'"'
+                    | b'`'
+                    | b'\n'
+                    | b'\r'
+                    | b'\t'
+                    | b' '
+                    | 0
             );
             if bad {
-                bail!("Database path '{}' contains a disallowed character", database);
+                bail!(
+                    "Database path '{}' contains a disallowed character",
+                    database
+                );
             }
         }
         if database.split('/').any(|seg| seg == "..") {
@@ -1952,13 +2331,13 @@ pub fn sandbox_sqlite_query(
 
     let output = adb_exec(device, &["shell", &cmd], None)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = terminal_safe(&output.stderr);
 
     if !output.status.success() || stderr.contains("Permission denied") {
         bail!("sqlite query failed: {}", stderr);
     }
 
-    print!("{}", stdout);
+    print!("{}", terminal_safe(stdout.as_bytes()));
     Ok(())
 }
 
@@ -1980,13 +2359,13 @@ pub fn sandbox_file_list(package: &str, path: Option<&str>, device: Option<&str>
 
     let output = adb_exec(device, &["shell", &cmd], None)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = terminal_safe(&output.stderr);
 
     if !output.status.success() || stderr.contains("Permission denied") {
         bail!("sandbox file list failed: {}", stderr);
     }
 
-    print!("{}", stdout);
+    print!("{}", terminal_safe(stdout.as_bytes()));
     Ok(())
 }
 
@@ -2033,96 +2412,100 @@ pub fn sandbox_file_read(
 
     let output = adb_exec(device, &["shell", &cmd], None)?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = terminal_safe(&output.stderr);
 
     if !output.status.success() || stderr.contains("Permission denied") {
         bail!("sandbox file read failed: {}", stderr);
     }
 
-    print!("{}", stdout);
+    print!("{}", terminal_safe(stdout.as_bytes()));
     Ok(())
 }
 
 // ============== Performance Commands ==============
 
 /// Parse total PSS (kB) from `dumpsys meminfo <pkg>` output.
-fn parse_total_pss(meminfo: &str) -> u64 {
-    // Look for "TOTAL PSS:" or "TOTAL:" line depending on Android version
+fn parse_total_pss(meminfo: &str) -> Option<u64> {
     for line in meminfo.lines() {
-        let t = line.trim();
-        if t.starts_with("TOTAL PSS:") || t.starts_with("TOTAL:") {
-            // e.g. "TOTAL PSS:   52,345  ..."  or  "TOTAL          123456   ..."
-            let col = t.split_whitespace().nth(2).or_else(|| t.split_whitespace().nth(1));
-            if let Some(v) = col {
-                let clean: String = v.chars().filter(|c| c.is_ascii_digit()).collect();
-                if let Ok(n) = clean.parse::<u64>() {
-                    return n;
+        let trimmed = line.trim();
+        if trimmed.starts_with("TOTAL PSS:") || trimmed.starts_with("TOTAL:") {
+            let column = trimmed
+                .split_whitespace()
+                .nth(2)
+                .or_else(|| trimmed.split_whitespace().nth(1));
+            if let Some(value) = column {
+                let digits: String = value.chars().filter(char::is_ascii_digit).collect();
+                if let Ok(parsed) = digits.parse::<u64>() {
+                    return Some(parsed);
                 }
             }
         }
-        // Alternative: "TOTAL HEAP:" summary line
-        if t.contains("TOTAL HEAP:") {
-            if let Some(v) = t.split_whitespace().nth(2) {
-                let clean: String = v.chars().filter(|c| c.is_ascii_digit()).collect();
-                if let Ok(n) = clean.parse::<u64>() {
-                    return n;
+        if trimmed.contains("TOTAL HEAP:") {
+            if let Some(value) = trimmed.split_whitespace().nth(2) {
+                let digits: String = value.chars().filter(char::is_ascii_digit).collect();
+                if let Ok(parsed) = digits.parse::<u64>() {
+                    return Some(parsed);
                 }
             }
         }
     }
-    // Fallback: sum "Native Heap" + "Dalvik Heap" PSS columns.
-    // dumpsys meminfo rows look like: "Native Heap   12288   ..."
-    // "Native Heap" is 2 words, so the first numeric column is at index 2.
-    let mut sum: u64 = 0;
+
+    let mut sum = 0_u64;
+    let mut found_heap = false;
     for line in meminfo.lines() {
-        let t = line.trim();
-        if t.starts_with("Native Heap") || t.starts_with("Dalvik Heap") {
-            // Find the first token that is entirely digits
-            if let Some(v) = t.split_whitespace().find(|tok| tok.chars().all(|c| c.is_ascii_digit()) && !tok.is_empty()) {
-                sum += v.parse::<u64>().unwrap_or(0);
+        let trimmed = line.trim();
+        if trimmed.starts_with("Native Heap") || trimmed.starts_with("Dalvik Heap") {
+            if let Some(value) = trimmed
+                .split_whitespace()
+                .find(|token| !token.is_empty() && token.chars().all(|char| char.is_ascii_digit()))
+            {
+                if let Ok(parsed) = value.parse::<u64>() {
+                    sum = sum.saturating_add(parsed);
+                    found_heap = true;
+                }
             }
         }
     }
-    sum
+    found_heap.then_some(sum)
 }
 
 /// Parse top-level memory MB from `dumpsys meminfo <pkg>`.
-/// Returns `(memory_mb, total_pss_kb)`.
-fn parse_meminfo(meminfo: &str) -> (f64, u64) {
-    let total_pss = parse_total_pss(meminfo);
-    let memory_mb = total_pss as f64 / 1024.0;
-    (memory_mb, total_pss)
+fn parse_meminfo(meminfo: &str) -> Option<(f64, u64)> {
+    let total_pss = parse_total_pss(meminfo)?;
+    Some((total_pss as f64 / 1024.0, total_pss))
 }
 
 /// Parse CPU percent for a package from `dumpsys cpuinfo` output.
-fn parse_cpu_percent(cpuinfo: &str, package: &str) -> f64 {
+fn parse_cpu_percent(cpuinfo: &str, package: &str) -> Option<f64> {
     for line in cpuinfo.lines() {
         if line.contains(package) {
-            // Format: "  15% 1234/com.example.app: ..."
-            if let Some(pct_str) = line.trim().split('%').next() {
-                let clean: String = pct_str.trim().chars().filter(|c| c.is_ascii_digit() || *c == '.').collect();
-                if let Ok(v) = clean.parse::<f64>() {
-                    return v;
+            if let Some(percent) = line.trim().split('%').next() {
+                let numeric: String = percent
+                    .trim()
+                    .chars()
+                    .filter(|char| char.is_ascii_digit() || *char == '.')
+                    .collect();
+                if let Ok(value) = numeric.parse::<f64>() {
+                    return value.is_finite().then_some(value);
                 }
             }
         }
     }
-    0.0
+    None
 }
 
-/// Parse battery charge level from `dumpsys batterystats --charged <pkg>`.
-fn parse_battery_level(battery: &str) -> u8 {
+/// Parse battery charge level from `dumpsys battery`.
+fn parse_battery_level(battery: &str) -> Option<u8> {
     for line in battery.lines() {
-        let t = line.trim();
-        if t.starts_with("level:") {
-            if let Some(v) = t.split(':').nth(1) {
-                if let Ok(n) = v.trim().parse::<u8>() {
-                    return n;
-                }
-            }
+        let trimmed = line.trim();
+        if trimmed.starts_with("level:") {
+            return trimmed
+                .split_once(':')
+                .and_then(|(_, value)| value.trim().parse::<u8>().ok())
+                .filter(|level| *level <= 100);
         }
     }
-    0
+    None
 }
 
 /// Collect a single performance snapshot for a package.
@@ -2140,33 +2523,33 @@ fn collect_perf_snapshot_value(package: &str, device: Option<&str>) -> Result<se
     let battery_text = String::from_utf8_lossy(&battery_out.stdout);
     let gfxinfo_text = String::from_utf8_lossy(&gfxinfo_out.stdout);
 
-    let (memory_mb, total_pss) = parse_meminfo(&meminfo_text);
-    let cpu_percent = parse_cpu_percent(&cpuinfo_text, package);
-    let battery_level = parse_battery_level(&battery_text);
+    let (memory_mb, total_pss) =
+        parse_meminfo(&meminfo_text).context("Android memory metrics are unavailable")?;
+    let cpu_percent = parse_cpu_percent(&cpuinfo_text, package)
+        .context("Android CPU metrics are unavailable for the package")?;
+    let battery_level =
+        parse_battery_level(&battery_text).context("Android battery metrics are unavailable")?;
 
-    // Parse janky frames from gfxinfo
-    let mut total_frames: u64 = 0;
-    let mut janky_frames: u64 = 0;
+    let mut total_frames = None;
+    let mut janky_frames = None;
     for line in gfxinfo_text.lines() {
-        let t = line.trim();
-        if t.starts_with("Total frames rendered:") {
-            if let Some(v) = t.split(':').nth(1) {
-                total_frames = v.trim().parse().unwrap_or(0);
-            }
+        let trimmed = line.trim();
+        if let Some(value) = trimmed.strip_prefix("Total frames rendered:") {
+            total_frames = value.trim().parse::<u64>().ok();
         }
-        if t.starts_with("Janky frames:") {
-            if let Some(v) = t.split(':').nth(1) {
-                // "Janky frames: 123 (45.67%)"
-                janky_frames = v.trim().split_whitespace().next().unwrap_or("0")
-                    .parse().unwrap_or(0);
-            }
+        if let Some(value) = trimmed.strip_prefix("Janky frames:") {
+            janky_frames = value
+                .split_whitespace()
+                .next()
+                .and_then(|count| count.parse::<u64>().ok());
         }
     }
-
-    let janky_percent = if total_frames > 0 {
-        (janky_frames as f64 / total_frames as f64) * 100.0
-    } else {
+    let total_frames = total_frames.context("Android total frame count is unavailable")?;
+    let janky_frames = janky_frames.context("Android janky frame count is unavailable")?;
+    let janky_percent = if total_frames == 0 {
         0.0
+    } else {
+        (janky_frames as f64 / total_frames as f64) * 100.0
     };
 
     Ok(serde_json::json!({
@@ -2190,61 +2573,57 @@ pub fn perf_snapshot(package: &str, device: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Save a perf-snapshot as a named baseline JSON file under /tmp.
+/// Save a perf snapshot as a named baseline in private user state.
 pub fn perf_baseline(package: &str, name: &str, device: Option<&str>) -> Result<()> {
     validate_package_name(package)?;
-
-    if name.is_empty() {
-        bail!("Baseline name cannot be empty");
-    }
-    // Sanitise name to prevent path traversal: only alnum, dash, underscore allowed
-    if !name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
-        bail!("Baseline name '{}' must contain only alphanumerics, dashes, and underscores", name);
-    }
-
     let snapshot = collect_perf_snapshot_value(package, device)?;
-    let path = format!("/tmp/claude-mobile-baseline-{}.json", name);
-    let json_str = serde_json::to_string_pretty(&snapshot)?;
-    std::fs::write(&path, &json_str)?;
+    let path = state_file("performance-baselines", name, "json")?;
+    let json = serde_json::to_vec_pretty(&snapshot)?;
+    atomic_write(&path, &json)?;
 
-    println!("Baseline '{}' saved to {}", name, path);
-    println!("{}", json_str);
+    println!(
+        "Baseline '{}' saved to {}",
+        terminal_safe(name.as_bytes()),
+        terminal_safe(path.display().to_string().as_bytes())
+    );
+    println!("{}", String::from_utf8_lossy(&json));
     Ok(())
+}
+
+fn required_metric(value: &serde_json::Value, label: &str) -> Result<f64> {
+    let parsed = match value {
+        serde_json::Value::Number(number) => number.as_f64(),
+        serde_json::Value::String(text) => text.parse::<f64>().ok(),
+        _ => None,
+    };
+    parsed
+        .filter(|metric| metric.is_finite())
+        .ok_or_else(|| anyhow::anyhow!("Performance metric '{label}' is missing or invalid"))
 }
 
 /// Compare current perf metrics against a saved baseline, reporting deltas.
 pub fn perf_compare(package: &str, name: &str, device: Option<&str>) -> Result<()> {
     validate_package_name(package)?;
-
-    if !name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
-        bail!("Baseline name '{}' contains invalid characters", name);
-    }
-
-    let path = format!("/tmp/claude-mobile-baseline-{}.json", name);
-    let baseline_str = std::fs::read_to_string(&path)
-        .map_err(|e| anyhow::anyhow!("Baseline '{}' not found at {}: {}", name, path, e))?;
-    let baseline: serde_json::Value = serde_json::from_str(&baseline_str)
-        .map_err(|e| anyhow::anyhow!("Failed to parse baseline JSON: {}", e))?;
+    let path = state_file("performance-baselines", name, "json")?;
+    let baseline: serde_json::Value = read_json_file(&path, 64 * 1024, "performance baseline")
+        .map_err(|_| anyhow::anyhow!("Baseline '{}' not found or is invalid", name))?;
 
     let current = collect_perf_snapshot_value(package, device)?;
 
-    // Helper: parse f64 from either string or number JSON value
-    let to_f64 = |v: &serde_json::Value| -> f64 {
-        match v {
-            serde_json::Value::Number(n) => n.as_f64().unwrap_or(0.0),
-            serde_json::Value::String(s) => s.parse::<f64>().unwrap_or(0.0),
-            _ => 0.0,
-        }
-    };
-
-    let baseline_mem  = to_f64(&baseline["memoryMb"]);
-    let current_mem   = to_f64(&current["memoryMb"]);
-    let baseline_cpu  = to_f64(&baseline["cpuPercent"]);
-    let current_cpu   = to_f64(&current["cpuPercent"]);
-    let baseline_pss  = to_f64(&baseline["totalPssKb"]);
-    let current_pss   = to_f64(&current["totalPssKb"]);
-    let baseline_janky = to_f64(&baseline["framestats"]["jankyPercent"]);
-    let current_janky  = to_f64(&current["framestats"]["jankyPercent"]);
+    let baseline_mem = required_metric(&baseline["memoryMb"], "baseline.memoryMb")?;
+    let current_mem = required_metric(&current["memoryMb"], "current.memoryMb")?;
+    let baseline_cpu = required_metric(&baseline["cpuPercent"], "baseline.cpuPercent")?;
+    let current_cpu = required_metric(&current["cpuPercent"], "current.cpuPercent")?;
+    let baseline_pss = required_metric(&baseline["totalPssKb"], "baseline.totalPssKb")?;
+    let current_pss = required_metric(&current["totalPssKb"], "current.totalPssKb")?;
+    let baseline_janky = required_metric(
+        &baseline["framestats"]["jankyPercent"],
+        "baseline.framestats.jankyPercent",
+    )?;
+    let current_janky = required_metric(
+        &current["framestats"]["jankyPercent"],
+        "current.framestats.jankyPercent",
+    )?;
 
     // >20% regression threshold
     let regression_threshold = 0.20_f64;
@@ -2265,13 +2644,15 @@ pub fn perf_compare(package: &str, name: &str, device: Option<&str>) -> Result<(
     };
 
     let metrics = vec![
-        check_metric("memoryMb",       baseline_mem,   current_mem),
-        check_metric("totalPssKb",     baseline_pss,   current_pss),
-        check_metric("cpuPercent",     baseline_cpu,   current_cpu),
-        check_metric("jankyPercent",   baseline_janky, current_janky),
+        check_metric("memoryMb", baseline_mem, current_mem),
+        check_metric("totalPssKb", baseline_pss, current_pss),
+        check_metric("cpuPercent", baseline_cpu, current_cpu),
+        check_metric("jankyPercent", baseline_janky, current_janky),
     ];
 
-    let overall_pass = metrics.iter().all(|m| m["pass"].as_bool().unwrap_or(true));
+    let overall_pass = metrics
+        .iter()
+        .all(|metric| metric["pass"].as_bool().unwrap_or(false));
 
     let result = serde_json::json!({
         "package": package,
@@ -2303,7 +2684,10 @@ pub fn perf_monitor(
     let mut cpu_samples: Vec<f64> = Vec::with_capacity(count as usize);
     let mut pss_samples: Vec<f64> = Vec::with_capacity(count as usize);
 
-    eprintln!("Collecting {} samples for {} (interval {}ms)...", count, package, interval_ms);
+    eprintln!(
+        "Collecting {} samples for {} (interval {}ms)...",
+        count, package, interval_ms
+    );
 
     for i in 0..count {
         if i > 0 && interval_ms > 0 {
@@ -2316,14 +2700,22 @@ pub fn perf_monitor(
         let meminfo_text = String::from_utf8_lossy(&meminfo_out.stdout);
         let cpuinfo_text = String::from_utf8_lossy(&cpuinfo_out.stdout);
 
-        let (mem_mb, total_pss) = parse_meminfo(&meminfo_text);
-        let cpu = parse_cpu_percent(&cpuinfo_text, package);
+        let (mem_mb, total_pss) =
+            parse_meminfo(&meminfo_text).context("Memory metrics were unavailable")?;
+        let cpu =
+            parse_cpu_percent(&cpuinfo_text, package).context("CPU metrics were unavailable")?;
 
         mem_samples.push(mem_mb);
         cpu_samples.push(cpu);
         pss_samples.push(total_pss as f64);
 
-        eprintln!("  sample {}/{}: mem={:.1}MB cpu={:.1}%", i + 1, count, mem_mb, cpu);
+        eprintln!(
+            "  sample {}/{}: mem={:.1}MB cpu={:.1}%",
+            i + 1,
+            count,
+            mem_mb,
+            cpu
+        );
     }
 
     let stats = |samples: &[f64]| -> serde_json::Value {
@@ -2430,9 +2822,16 @@ pub fn perf_crashes(package: Option<&str>, lines: usize, device: Option<&str>) -
 pub fn perf_framestats(package: &str, device: Option<&str>) -> Result<()> {
     validate_package_name(package)?;
 
-    let output = adb_exec(device, &["shell", "dumpsys", "gfxinfo", package, "framestats"], None)?;
+    let output = adb_exec(
+        device,
+        &["shell", "dumpsys", "gfxinfo", package, "framestats"],
+        None,
+    )?;
     if !output.status.success() {
-        bail!("gfxinfo framestats failed: {}", String::from_utf8_lossy(&output.stderr));
+        bail!(
+            "gfxinfo framestats failed: {}",
+            terminal_safe(&output.stderr)
+        );
     }
 
     let text = String::from_utf8_lossy(&output.stdout);
@@ -2462,25 +2861,38 @@ pub fn perf_framestats(package: &str, device: Option<&str>) -> Result<()> {
             }
         } else if t.starts_with("Janky frames:") {
             if let Some(v) = t.split(':').nth(1) {
-                janky_frames = v.trim().split_whitespace().next().unwrap_or("0")
-                    .parse().unwrap_or(0);
+                janky_frames = v
+                    .trim()
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("0")
+                    .parse()
+                    .unwrap_or(0);
             }
         } else if t.starts_with("50th percentile:") {
-            p50_ms = t.split(':').nth(1).and_then(|s| {
-                s.trim().trim_end_matches("ms").trim().parse::<f64>().ok()
-            }).unwrap_or(0.0);
+            p50_ms = t
+                .split(':')
+                .nth(1)
+                .and_then(|s| s.trim().trim_end_matches("ms").trim().parse::<f64>().ok())
+                .unwrap_or(0.0);
         } else if t.starts_with("90th percentile:") {
-            p90_ms = t.split(':').nth(1).and_then(|s| {
-                s.trim().trim_end_matches("ms").trim().parse::<f64>().ok()
-            }).unwrap_or(0.0);
+            p90_ms = t
+                .split(':')
+                .nth(1)
+                .and_then(|s| s.trim().trim_end_matches("ms").trim().parse::<f64>().ok())
+                .unwrap_or(0.0);
         } else if t.starts_with("95th percentile:") {
-            p95_ms = t.split(':').nth(1).and_then(|s| {
-                s.trim().trim_end_matches("ms").trim().parse::<f64>().ok()
-            }).unwrap_or(0.0);
+            p95_ms = t
+                .split(':')
+                .nth(1)
+                .and_then(|s| s.trim().trim_end_matches("ms").trim().parse::<f64>().ok())
+                .unwrap_or(0.0);
         } else if t.starts_with("99th percentile:") {
-            p99_ms = t.split(':').nth(1).and_then(|s| {
-                s.trim().trim_end_matches("ms").trim().parse::<f64>().ok()
-            }).unwrap_or(0.0);
+            p99_ms = t
+                .split(':')
+                .nth(1)
+                .and_then(|s| s.trim().trim_end_matches("ms").trim().parse::<f64>().ok())
+                .unwrap_or(0.0);
         }
 
         // Detect CSV header row: "INTENDED_VSYNC,VSYNC,..."
@@ -2574,10 +2986,7 @@ fn append_extras_to_cmd(mut cmd: DeviceShellCmd, extras_json: &str) -> Result<De
                 cmd = cmd.literal("--es").user_input(k).user_input(s);
             }
             serde_json::Value::Bool(b) => {
-                cmd = cmd
-                    .literal("--ez")
-                    .user_input(k)
-                    .user_input(&b.to_string());
+                cmd = cmd.literal("--ez").user_input(k).user_input(&b.to_string());
             }
             serde_json::Value::Number(n) => {
                 cmd = if n.is_i64() {
@@ -2588,10 +2997,7 @@ fn append_extras_to_cmd(mut cmd: DeviceShellCmd, extras_json: &str) -> Result<De
                 cmd = cmd.user_input(k).user_input(&n.to_string());
             }
             _ => {
-                cmd = cmd
-                    .literal("--es")
-                    .user_input(k)
-                    .user_input(&v.to_string());
+                cmd = cmd.literal("--es").user_input(k).user_input(&v.to_string());
             }
         }
     }
@@ -2650,60 +3056,59 @@ mod tests {
     #[test]
     fn test_parse_total_pss_total_pss_line() {
         let meminfo = "TOTAL PSS:   51200  kB\nNative Heap   12000\nDalvik Heap   8000";
-        // TOTAL PSS: col[2] = "kB" which has no digits — fallback to col[1] = "51200"
-        // The implementation tries col[2] first, then col[1], so 51200 should be found
-        let pss = parse_total_pss(meminfo);
-        assert!(pss > 0, "Expected non-zero PSS from TOTAL PSS line");
+        let pss = parse_total_pss(meminfo).expect("PSS");
+        assert_eq!(pss, 51200);
     }
 
     #[test]
     fn test_parse_total_pss_fallback_heap_sum() {
         let meminfo = "Native Heap   12288\nDalvik Heap   8192\nOther Heap   1024";
-        let pss = parse_total_pss(meminfo);
-        // Should sum Native Heap + Dalvik Heap = 12288 + 8192 = 20480
-        assert_eq!(pss, 20480);
+        assert_eq!(parse_total_pss(meminfo), Some(20480));
     }
 
     #[test]
     fn test_parse_total_pss_empty() {
-        let pss = parse_total_pss("");
-        assert_eq!(pss, 0);
+        assert_eq!(parse_total_pss(""), None);
     }
 
     #[test]
     fn test_parse_meminfo_returns_mb() {
         let meminfo = "Native Heap   10240\nDalvik Heap   10240";
-        let (mem_mb, total_pss) = parse_meminfo(meminfo);
+        let (mem_mb, total_pss) = parse_meminfo(meminfo).expect("memory metrics");
         assert_eq!(total_pss, 20480);
-        assert!((mem_mb - 20.0_f64).abs() < 0.01, "Expected ~20 MB, got {}", mem_mb);
+        assert!((mem_mb - 20.0_f64).abs() < 0.01);
     }
 
     #[test]
     fn test_parse_cpu_percent_found() {
-        let cpuinfo = "  15% 1234/com.example.app: 10% user + 5% kernel\n  5% 999/system: 5% user\n";
-        let pct = parse_cpu_percent(cpuinfo, "com.example.app");
-        assert!((pct - 15.0).abs() < 0.01, "Expected 15.0%, got {}", pct);
+        let cpuinfo =
+            "  15% 1234/com.example.app: 10% user + 5% kernel\n  5% 999/system: 5% user\n";
+        let percent = parse_cpu_percent(cpuinfo, "com.example.app").expect("CPU percent");
+        assert!((percent - 15.0).abs() < 0.01);
     }
 
     #[test]
     fn test_parse_cpu_percent_not_found() {
         let cpuinfo = "  10% 999/other.app: 10% user\n";
-        let pct = parse_cpu_percent(cpuinfo, "com.example.app");
-        assert_eq!(pct, 0.0);
+        assert_eq!(parse_cpu_percent(cpuinfo, "com.example.app"), None);
     }
 
     #[test]
     fn test_parse_battery_level() {
-        let battery = "Current Battery Service state:\n  AC powered: false\n  level: 87\n  scale: 100\n";
-        let level = parse_battery_level(battery);
-        assert_eq!(level, 87);
+        let battery =
+            "Current Battery Service state:\n  AC powered: false\n  level: 87\n  scale: 100\n";
+        assert_eq!(parse_battery_level(battery), Some(87));
     }
 
     #[test]
     fn test_parse_battery_level_missing() {
-        let battery = "no battery info here";
-        let level = parse_battery_level(battery);
-        assert_eq!(level, 0);
+        assert_eq!(parse_battery_level("no battery info here"), None);
+    }
+
+    #[test]
+    fn invalid_performance_metric_is_rejected() {
+        assert!(required_metric(&serde_json::Value::Null, "memory").is_err());
+        assert!(required_metric(&serde_json::json!("NaN"), "memory").is_err());
     }
 
     #[test]

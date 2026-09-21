@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { JdwpWriter, type IdSizes } from "./packet.js";
+import { JdwpWriter } from "./packet.js";
+import type { IdSizes } from "./packet.js";
 import {
   decodeByTag,
   prettyTypeSignature,

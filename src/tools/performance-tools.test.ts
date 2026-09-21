@@ -102,6 +102,12 @@ Janky frames: 4 (1.40%)
   it("returns null for empty output", () => {
     expect(parseFpsFromGfxinfo("no gfx info")).toBeNull();
   });
+
+  it("does not invent FPS when frame timing is absent", () => {
+    expect(
+      parseFpsFromGfxinfo("Total frames rendered: 285\nJanky frames: 4 (1.40%)"),
+    ).toBeNull();
+  });
 });
 
 describe("parseBatteryFromDumpsys", () => {

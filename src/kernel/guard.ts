@@ -1,8 +1,5 @@
-import {
-  CapabilityMissingError,
-  type Capability,
-  type SourcePlugin,
-} from "@mcp-devices/plugin-api";
+import { CapabilityMissingError } from "@mcp-devices/plugin-api";
+import type { Capability, SourcePlugin } from "@mcp-devices/plugin-api";
 
 export function requireCapability(plugin: SourcePlugin, cap: Capability): void {
   if (!plugin.manifest.capabilities.includes(cap)) {

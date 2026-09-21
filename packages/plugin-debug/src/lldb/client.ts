@@ -8,12 +8,30 @@
  * never from args/env override (invariant 5).
  */
 
-import { spawn, execFile, type ChildProcess } from "node:child_process";
+import { spawn, execFile } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { z } from "zod";
+
 
 const pexec = promisify(execFile);
+const RPC_TIMEOUT_MS = 30_000;
+const MAX_RPC_MESSAGE_BYTES = 8 * 1024 * 1024;
+const MAX_RPC_REQUEST_BYTES = 1024 * 1024;
+const MAX_PENDING_REQUESTS = 128;
+const STOP_TIMEOUT_MS = 2_000;
+const lldbResponseSchema = z.object({
+  id: z.number().int().safe().optional(),
+  ok: z.boolean(),
+  result: z.unknown().optional(),
+}).passthrough();
+const lldbPingResultSchema = z.object({
+  lldb: z.boolean(),
+}).passthrough();
+
+
 
 interface RpcPending {
   resolve: (result: unknown) => void;
@@ -25,6 +43,7 @@ export class LldbClient {
   private nextId = 1;
   private pending = new Map<number, RpcPending>();
   private stdoutBuf = "";
+  private stdoutBytes = 0;
   private starting?: Promise<void>;
   private exitHook?: () => void;
 
@@ -46,6 +65,9 @@ export class LldbClient {
     this.starting = this.doStart();
     try {
       await this.starting;
+    } catch (error: unknown) {
+      await this.stop();
+      throw error;
     } finally {
       this.starting = undefined;
     }
@@ -58,7 +80,11 @@ export class LldbClient {
       );
     }
     // Xcode's python must import lldb; PYTHONPATH comes from `xcrun lldb -P`.
-    const { stdout } = await pexec("xcrun", ["lldb", "-P"]);
+    const { stdout } = await pexec("xcrun", ["lldb", "-P"], {
+      encoding: "utf8",
+      timeout: 5_000,
+      maxBuffer: 1024 * 1024,
+    });
     const pythonPath = stdout.trim();
 
     // SECURITY: spawn only the fixed package-relative path — no env override.
@@ -71,8 +97,14 @@ export class LldbClient {
 
     proc.stdout!.setEncoding("utf8");
     proc.stdout!.on("data", (chunk: string) => this.onStdout(chunk));
-    proc.on("exit", () => this.failAll(new Error("LLDB daemon exited")));
-    proc.on("error", (e) => this.failAll(e));
+    // Drain LLDB chatter continuously; an unread pipe can block the daemon.
+    proc.stderr!.resume();
+    proc.on("exit", () => {
+      if (this.proc === proc) this.failAll(new Error("LLDB daemon exited"));
+    });
+    proc.on("error", () => {
+      if (this.proc === proc) this.failAll(new Error("LLDB daemon failed"));
+    });
 
     // Never orphan the python daemon (and its debugserver / suspended app) if
     // the Node process goes away.
@@ -82,47 +114,51 @@ export class LldbClient {
     }
 
     // Sanity ping so start() rejects fast if lldb bindings are missing.
-    const pong = (await this.rpc("ping", {})) as { lldb?: unknown } | null;
-    if (!pong?.lldb) throw new Error("LLDB daemon did not report working lldb bindings");
+    const pong = lldbPingResultSchema.parse(await this.rpc("ping", {}));
+    if (!pong.lldb) throw new Error("LLDB daemon did not report working lldb bindings");
   }
 
   private onStdout(chunk: string): void {
+    this.stdoutBytes += Buffer.byteLength(chunk, "utf8");
+    if (this.stdoutBytes > MAX_RPC_MESSAGE_BYTES) {
+      const proc = this.proc;
+      this.failAll(new Error("LLDB daemon response exceeded the size limit"));
+      if (proc) void this.terminate(proc);
+      return;
+    }
     this.stdoutBuf += chunk;
     let nl: number;
     while ((nl = this.stdoutBuf.indexOf("\n")) >= 0) {
       const line = this.stdoutBuf.slice(0, nl).trim();
+      this.stdoutBytes -= Buffer.byteLength(this.stdoutBuf.slice(0, nl + 1), "utf8");
       this.stdoutBuf = this.stdoutBuf.slice(nl + 1);
       if (!line) continue;
-      interface DaemonMsg {
-        id?: number;
-        ok?: boolean;
-        result?: unknown;
-        error?: string;
-      }
-      let msg: DaemonMsg | null = null;
+      let parsed: unknown;
       try {
-        msg = JSON.parse(line) as DaemonMsg;
+        parsed = JSON.parse(line);
       } catch {
-        continue; // ignore non-JSON noise (LLDB chatter should go to stderr)
-      }
-      if (!msg) continue;
-      // A fatal daemon error (e.g. lldb bindings unavailable) has no id — it is
-      // a broadcast; surface it to every waiter instead of dropping it.
-      if (msg.id == null) {
-        if (msg.ok === false && msg.error) this.failAll(new Error(msg.error));
         continue;
       }
-      const p = this.pending.get(msg.id);
-      if (!p) continue;
-      this.pending.delete(msg.id);
-      if (msg.ok) p.resolve(msg.result);
-      else p.reject(new Error(msg.error ?? "LLDB daemon error"));
+      const result = lldbResponseSchema.safeParse(parsed);
+      if (!result.success) continue;
+      const response = result.data;
+      if (response.id === undefined) {
+        if (!response.ok) this.failAll(new Error("LLDB daemon reported a fatal error"));
+        continue;
+      }
+      const pending = this.pending.get(response.id);
+      if (!pending) continue;
+      this.pending.delete(response.id);
+      if (response.ok) pending.resolve(response.result);
+      else pending.reject(new Error("LLDB daemon request failed"));
     }
   }
 
-  private failAll(err: Error): void {
-    for (const p of this.pending.values()) p.reject(err);
+  private failAll(error: Error): void {
+    for (const pending of this.pending.values()) pending.reject(error);
     this.pending.clear();
+    this.stdoutBuf = "";
+    this.stdoutBytes = 0;
     this.proc = undefined;
   }
 
@@ -130,30 +166,45 @@ export class LldbClient {
    * Send a JSON-RPC request and await the result (rejects on timeout so a
    * wedged daemon can never hang the caller forever).
    */
-  rpc(method: string, params: Record<string, unknown>, timeoutMs = 30_000): Promise<unknown> {
-    if (!this.proc) return Promise.reject(new Error("LLDB daemon not started"));
+  rpc(method: string, params: Record<string, unknown>, timeoutMs = RPC_TIMEOUT_MS): Promise<unknown> {
+    const proc = this.proc;
+    const stdin = proc?.stdin;
+    if (!proc || !stdin) return Promise.reject(new Error("LLDB daemon not started"));
+    if (!/^[A-Za-z][A-Za-z0-9]{0,63}$/.test(method)) {
+      return Promise.reject(new Error("Invalid LLDB RPC method"));
+    }
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 300_000) {
+      return Promise.reject(new Error("Invalid LLDB RPC timeout"));
+    }
+    if (this.pending.size >= MAX_PENDING_REQUESTS) {
+      return Promise.reject(new Error("Too many pending LLDB RPC requests"));
+    }
     const id = this.nextId++;
+    const payload = `${JSON.stringify({ id, method, params })}\n`;
+    if (Buffer.byteLength(payload) > MAX_RPC_REQUEST_BYTES) {
+      return Promise.reject(new Error("LLDB daemon request exceeded the size limit"));
+    }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        if (this.pending.delete(id)) {
-          reject(new Error(`LLDB daemon RPC '${method}' timed out after ${timeoutMs}ms`));
-        }
+        if (!this.pending.has(id)) return;
+        this.failAll(new Error("LLDB daemon RPC timed out"));
+        void this.terminate(proc);
       }, timeoutMs);
       const settle: RpcPending = {
-        resolve: (r) => {
+        resolve: (result) => {
           clearTimeout(timer);
-          resolve(r);
+          resolve(result);
         },
-        reject: (e) => {
+        reject: (error) => {
           clearTimeout(timer);
-          reject(e);
+          reject(error);
         },
       };
       this.pending.set(id, settle);
-      this.proc!.stdin!.write(JSON.stringify({ id, method, params }) + "\n", (err) => {
-        if (err && this.pending.delete(id)) {
+      stdin.write(payload, (error) => {
+        if (error && this.pending.delete(id)) {
           clearTimeout(timer);
-          reject(err);
+          reject(new Error("Failed to write LLDB daemon request"));
         }
       });
     });
@@ -169,11 +220,25 @@ export class LldbClient {
     try {
       await this.rpc("shutdown", {}, 3000);
     } catch {
-      /* forcing down anyway */
+      // The process is terminated below even when graceful shutdown fails.
     }
-    proc.kill();
-    // Reap a daemon wedged in a native LLDB call if it ignores SIGTERM.
-    setTimeout(() => proc.kill("SIGKILL"), 2000).unref?.();
-    this.proc = undefined;
+    await this.terminate(proc);
+    if (this.proc === proc) this.failAll(new Error("LLDB daemon stopped"));
+  }
+
+  private async terminate(proc: ChildProcess): Promise<void> {
+    if (proc.exitCode !== null || proc.signalCode !== null) return;
+    const waitForExit = new Promise<void>((resolve) => proc.once("exit", () => resolve()));
+    try { proc.kill("SIGTERM"); } catch { return; }
+    await Promise.race([
+      waitForExit,
+      new Promise((resolve) => setTimeout(resolve, STOP_TIMEOUT_MS)),
+    ]);
+    if (proc.exitCode !== null || proc.signalCode !== null) return;
+    try { proc.kill("SIGKILL"); } catch { return; }
+    await Promise.race([
+      waitForExit,
+      new Promise((resolve) => setTimeout(resolve, STOP_TIMEOUT_MS)),
+    ]);
   }
 }

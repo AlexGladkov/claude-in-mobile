@@ -1,10 +1,16 @@
-import { validatePackageName, validatePath, sanitizeForShell } from "../../utils/sanitize.js";
+import { validatePackageName } from "../../utils/sanitize.js";
+import { buildDeviceShellCommand } from "../../utils/device-shell.js";
 import { truncateOutput } from "../../utils/truncate.js";
 import { defineTool, z } from "../define-tool.js";
 import { deviceIdField } from "../common-schema.js";
 import { parseCommonArgs } from "../../utils/parse-common-args.js";
 import { textResult, errorResult } from "../../utils/tool-result.js";
-import { androidPlatformEnum, isRunAsFailure, runAsUnavailableHint } from "./helpers.js";
+import {
+  androidPlatformEnum,
+  isRunAsFailure,
+  runAsUnavailableHint,
+  validatePreferenceName,
+} from "./helpers.js";
 
 export const sandboxPrefsReadTool = defineTool({
   name: "sandbox_prefs_read",
@@ -38,11 +44,15 @@ export const sandboxPrefsReadTool = defineTool({
     if (!args.file) {
       let listOutput: string;
       try {
-        listOutput = ctx.deviceManager.shell(`run-as ${pkg} ls shared_prefs/`, "android", deviceId);
+        listOutput = ctx.deviceManager.shell(
+          buildDeviceShellCommand(["run-as", pkg, "ls", "shared_prefs/"]),
+          "android",
+          deviceId,
+        );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         if (isRunAsFailure(msg)) return errorResult(runAsUnavailableHint(pkg));
-        return errorResult(`Failed to list shared_prefs: ${msg}`);
+        return errorResult("Failed to list SharedPreferences files.");
       }
 
       if (isRunAsFailure(listOutput)) return errorResult(runAsUnavailableHint(pkg));
@@ -63,26 +73,25 @@ export const sandboxPrefsReadTool = defineTool({
       );
     }
 
-    // Validate and sanitize the file name.
-    const rawFile = args.file;
-    validatePath(rawFile, "file");
-    const safeFile = sanitizeForShell(rawFile);
-    if (safeFile.length === 0) {
-      return errorResult("Invalid file name after sanitization.");
-    }
+    const file = args.file;
+    validatePreferenceName(file);
 
     let xmlContent: string;
     try {
-      xmlContent = ctx.deviceManager.shell(`run-as ${pkg} cat shared_prefs/${safeFile}.xml`, "android", deviceId);
+      xmlContent = ctx.deviceManager.shell(
+        buildDeviceShellCommand(["run-as", pkg, "cat", `shared_prefs/${file}.xml`]),
+        "android",
+        deviceId,
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (isRunAsFailure(msg)) return errorResult(runAsUnavailableHint(pkg));
-      return errorResult(`Failed to read preferences: ${msg}`);
+      return errorResult("Failed to read SharedPreferences.");
     }
 
     if (isRunAsFailure(xmlContent)) return errorResult(runAsUnavailableHint(pkg));
     if (!xmlContent || xmlContent.trim().length === 0) {
-      return textResult(`File "shared_prefs/${safeFile}.xml" is empty or does not exist.`);
+      return textResult(`SharedPreferences file is empty or does not exist.`);
     }
 
     // Parse key-value pairs from Android SharedPreferences XML.
@@ -117,12 +126,12 @@ export const sandboxPrefsReadTool = defineTool({
     if (entries.length === 0) {
       // Return raw XML if parsing yielded nothing (unusual format).
       return textResult(
-        `No parseable entries found in "${safeFile}.xml". Raw content:\n\n${truncateOutput(xmlContent, { maxChars: 5000 })}`,
+        `No parseable entries found. Raw XML:\n\n${truncateOutput(xmlContent, { maxChars: 5000 })}`,
       );
     }
 
     return textResult(
-      `SharedPreferences: "${pkg}" / "${safeFile}.xml"\n` +
+      `SharedPreferences: "${pkg}" / "${file}.xml"\n` +
         `${entries.length} entries:\n\n` +
         entries.join("\n"),
     );

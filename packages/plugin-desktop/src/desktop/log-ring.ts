@@ -10,44 +10,52 @@
 import type { LogEntry, LogOptions, LogType } from "./types.js";
 
 export class LogRing {
-  private entries: LogEntry[] = [];
+  private static readonly MAX_MESSAGE_CHARS = 16 * 1024;
+  private entries: Array<LogEntry | undefined>;
+  private start = 0;
+  private length = 0;
 
-  constructor(private readonly maxEntries: number = 10_000) {}
+  constructor(private readonly maxEntries: number = 1000) {
+    if (!Number.isSafeInteger(maxEntries) || maxEntries <= 0 || maxEntries > 2000) {
+      throw new Error("Log capacity must be a safe integer between 1 and 2000.");
+    }
+    this.entries = new Array<LogEntry | undefined>(maxEntries);
+  }
 
-  /** Append a new log line. Evicts the oldest entry once the buffer is full. */
+  /** Append a bounded log entry, overwriting the oldest entry at capacity. */
   push(type: LogType, message: string): void {
-    this.entries.push({
+    const entry: LogEntry = {
       timestamp: Date.now(),
       type,
-      message,
-    });
-
-    if (this.entries.length > this.maxEntries) {
-      this.entries.shift();
+      message: message.slice(-LogRing.MAX_MESSAGE_CHARS),
+    };
+    if (this.length < this.maxEntries) {
+      this.entries[(this.start + this.length) % this.maxEntries] = entry;
+      this.length++;
+      return;
     }
+    this.entries[this.start] = entry;
+    this.start = (this.start + 1) % this.maxEntries;
   }
 
   /** Return a copy of the buffer, optionally filtered by type/since/limit. */
   query(options?: LogOptions): LogEntry[] {
-    let result = [...this.entries];
-
-    if (options?.type) {
-      result = result.filter(log => log.type === options.type);
+    const result: LogEntry[] = [];
+    for (let offset = 0; offset < this.length; offset++) {
+      const entry = this.entries[(this.start + offset) % this.maxEntries];
+      if (!entry) continue;
+      if (options?.type && entry.type !== options.type) continue;
+      if (options?.since !== undefined && entry.timestamp < options.since) continue;
+      result.push(entry);
     }
-
-    if (options?.since) {
-      result = result.filter(log => log.timestamp >= options.since!);
-    }
-
-    if (options?.limit) {
-      result = result.slice(-options.limit);
-    }
-
+    if (options?.limit !== undefined) return result.slice(-options.limit);
     return result;
   }
 
   /** Drop every buffered entry. */
   clear(): void {
-    this.entries = [];
+    this.entries = new Array<LogEntry | undefined>(this.maxEntries);
+    this.start = 0;
+    this.length = 0;
   }
 }

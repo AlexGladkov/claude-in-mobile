@@ -1,6 +1,6 @@
 {
   "name": "@mcp-devices/plugin-harmony",
-  "version": "4.3.0",
+  "version": "4.4.1",
   "description": "HarmonyOS Next platform plugin for mcp-devices (HDC and ArkXTest).",
   "type": "module",
   "main": "dist/index.js",
@@ -32,7 +32,8 @@
   ],
   "dependencies": {
     "@mcp-devices/plugin-api": "1.0.0",
-    "mcp-devices": "*"
+    "mcp-devices": "*",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

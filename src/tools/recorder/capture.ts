@@ -28,7 +28,7 @@ export function captureStep(action: string, args: Record<string, unknown>, depth
   const activeRecording = getActive();
   if (!activeRecording) return;
   if (depth !== 0) return;
-  if (RECORDING_BLOCKLIST.has(action)) return;
+  if (Object.hasOwn(RECORDING_BLOCKLIST, action)) return;
   if (activeRecording.steps.length >= MAX_STEPS_PER_SCENARIO) return;
 
   const now = Date.now();

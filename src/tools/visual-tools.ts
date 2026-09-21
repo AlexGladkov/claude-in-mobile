@@ -15,7 +15,8 @@ import { createLazySingleton } from "../utils/lazy.js";
 import { ValidationError } from "../errors.js";
 import { sleep } from "../utils/sleep.js";
 import { SCREEN } from "../constants/timeouts.js";
-import { textResult, errorResult, type ToolResult } from "../utils/tool-result.js";
+import { textResult, errorResult } from "../utils/tool-result.js";
+import type { ToolResult } from "../utils/tool-result.js";
 
 const getStore = createLazySingleton(() => new BaselineStore());
 

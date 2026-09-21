@@ -1,6 +1,9 @@
 import { Jimp } from "jimp";
 import { tryLoadSharp } from "./backend.js";
-import { DEFAULT_COMPRESS_OPTIONS, type CompressOptions, type CompressResult } from "./types.js";
+import type { SharpFactory } from "./backend.js";
+import { validatePngForDecode } from "./input.js";
+import { DEFAULT_COMPRESS_OPTIONS } from "./types.js";
+import type { CompressOptions, CompressResult } from "./types.js";
 
 /**
  * Compress PNG image buffer.
@@ -19,7 +22,8 @@ export async function compressScreenshot(
     );
   }
 
-  const opts = { ...DEFAULT_COMPRESS_OPTIONS, ...options };
+  validatePngForDecode(pngBuffer);
+  const opts = resolveCompressOptions(options);
 
   if (opts.turbo) {
     const sharp = await tryLoadSharp();
@@ -47,6 +51,17 @@ interface ResolvedOpts {
   maxHeight: number;
   quality: number;
   maxSizeBytes: number;
+}
+function resolveCompressOptions(options: CompressOptions): ResolvedOpts & { turbo?: boolean } {
+  const opts = { ...DEFAULT_COMPRESS_OPTIONS, ...options };
+  if (!Number.isInteger(opts.maxWidth) || opts.maxWidth < 1 || opts.maxWidth > 32_768
+    || !Number.isInteger(opts.maxHeight) || opts.maxHeight < 1 || opts.maxHeight > 32_768
+    || !Number.isInteger(opts.quality) || opts.quality < 1 || opts.quality > 100
+    || !Number.isInteger(opts.maxSizeBytes) || opts.maxSizeBytes < 1_024
+    || opts.maxSizeBytes > 16 * 1024 * 1024) {
+    throw new Error("Invalid screenshot compression options");
+  }
+  return opts;
 }
 
 async function compressWithJimp(pngBuffer: Buffer, opts: ResolvedOpts): Promise<CompressResult> {
@@ -102,13 +117,9 @@ async function compressWithJimp(pngBuffer: Buffer, opts: ResolvedOpts): Promise<
   };
 }
 
-/**
- * Compress using Sharp (native libvips) — turbo fast path.
- * `sharp` is typed as `any` because it is an optional dependency.
- */
+/** Compress using Sharp (native libvips) — turbo fast path. */
 async function compressWithSharp(
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  sharp: (input: Buffer) => any,
+  sharp: SharpFactory,
   pngBuffer: Buffer,
   opts: ResolvedOpts,
 ): Promise<CompressResult> {

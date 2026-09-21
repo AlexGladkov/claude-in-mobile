@@ -1,11 +1,11 @@
 import type { Platform } from "../device-manager.js";
 import type { DeviceManager } from "../device-manager.js";
-import {
-  requirePerformanceTrace,
-  type PerformanceTraceHandle,
-  type PerformanceTraceStartOptions,
+import { requirePerformanceTrace } from "../adapters/platform-adapter.js";
+import type {
+  PerformanceTraceAdapter,
+  PerformanceTraceHandle,
+  PerformanceTraceStartOptions,
 } from "../adapters/platform-adapter.js";
-import type { PerformanceTraceAdapter } from "../adapters/platform-adapter.js";
 import { MobileError, ValidationError } from "../errors.js";
 import type { PerformanceTraceArtifact, PerformanceTraceStatus } from "./types.js";
 import { TraceArtifactStore } from "./trace-artifact-store.js";

@@ -20,7 +20,8 @@ import { stat } from "fs/promises";
 import { IpaValidationError, MobileError } from "../../errors.js";
 import { validatePath } from "../../utils/sanitize.js";
 import { XCODE } from "../../constants/timeouts.js";
-import { runTool, type ToolResult } from "./exec.js";
+import { runTool } from "./exec.js";
+import type { ToolResult } from "./exec.js";
 import { bundleRejectHint, classifyXcodeError, redactSigningInfo } from "./classify-build-error.js";
 
 const CREDENTIAL_RE = /^[A-Za-z0-9-]+$/;

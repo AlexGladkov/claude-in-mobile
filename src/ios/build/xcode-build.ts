@@ -6,14 +6,15 @@
  * 200 chars of the REDACTED stderr (see classify-build-error.ts).
  */
 
-import { readdir } from "fs/promises";
+import { opendir } from "fs/promises";
 import { join } from "path";
 import { MobileError } from "../../errors.js";
 import { validatePath } from "../../utils/sanitize.js";
 import { XCODE } from "../../constants/timeouts.js";
 import { runTool } from "./exec.js";
 import { classifyXcodeError } from "./classify-build-error.js";
-import { xcodeTargetArgs, type ProjectInfo } from "./project-detector.js";
+import { xcodeTargetArgs } from "./project-detector.js";
+import type { ProjectInfo } from "./project-detector.js";
 
 export interface AscApiAuth {
   /** App Store Connect API key ID (e.g. "AB12CD34EF"). */
@@ -49,8 +50,22 @@ function authArgs(auth: AscApiAuth): string[] {
 
 async function findIpa(dir: string): Promise<string | undefined> {
   try {
-    const entries = await readdir(dir);
-    const ipa = entries.filter((name) => name.endsWith(".ipa")).sort()[0];
+    const directory = await opendir(dir);
+    const ipaNames: string[] = [];
+    let scanned = 0;
+    for await (const entry of directory) {
+      scanned += 1;
+      if (scanned > 1000) return undefined;
+      if (
+        entry.isFile()
+        && entry.name.length <= 255
+        && !/[\u0000-\u001f\u007f]/.test(entry.name)
+        && entry.name.endsWith(".ipa")
+      ) {
+        ipaNames.push(entry.name);
+      }
+    }
+    const ipa = ipaNames.sort()[0];
     return ipa ? join(dir, ipa) : undefined;
   } catch {
     return undefined;

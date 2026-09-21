@@ -3,11 +3,13 @@
 use std::collections::BTreeSet;
 use std::env;
 use std::ffi::OsStr;
-use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
+use crate::utils::device_shell::DeviceShellCmd;
+use crate::utils::private_state::{private_temp_dir, read_bounded_file};
+use crate::utils::process::{run_with_limits, terminal_safe};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -67,14 +69,7 @@ fn checked_output(action: &str, output: Output) -> Result<String> {
     if output.status.success() {
         return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
     }
-
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    let detail = if stderr.is_empty() { stdout } else { stderr };
-    if detail.is_empty() {
-        bail!("HDC {action} failed with {}", output.status);
-    }
-    bail!("HDC {action} failed: {detail}");
+    bail!("HDC {action} failed")
 }
 
 fn execute<I, S>(device: Option<&str>, args: I, action: &str) -> Result<String>
@@ -82,28 +77,42 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let output = hdc_command(device).args(args).output().with_context(|| {
-        format!(
-            "failed to execute HDC at {} while attempting to {action}",
-            hdc_binary().display()
-        )
-    })?;
+    let mut command = hdc_command(device);
+    command.args(args);
+    let output = run_with_limits(
+        &mut command,
+        Duration::from_secs(120),
+        64 * 1024 * 1024,
+        "HDC command",
+    )?;
     checked_output(action, output)
 }
 
-fn generated_paths(kind: &str, extension: &str) -> (String, PathBuf) {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let name = format!(
-        "mcp-devices-cli-{kind}-{}-{nonce}.{extension}",
-        std::process::id()
-    );
-    (
-        format!("/data/local/tmp/{name}"),
-        env::temp_dir().join(name),
-    )
+fn execute_shell<I, S>(device: Option<&str>, args: I, action: &str) -> Result<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut command = DeviceShellCmd::new();
+    for arg in args {
+        command = command.user_input(arg.as_ref());
+    }
+    let rendered = command.render();
+    execute(device, ["shell", rendered.as_str()], action)
+}
+
+fn execute_sandbox_shell(
+    device: Option<&str>,
+    bundle: &str,
+    args: &[&str],
+    action: &str,
+) -> Result<String> {
+    let mut command = DeviceShellCmd::new();
+    for arg in args {
+        command = command.user_input(arg);
+    }
+    let rendered = command.render();
+    execute(device, ["shell", "-b", bundle, rendered.as_str()], action)
 }
 
 fn transfer_generated_file(
@@ -112,7 +121,15 @@ fn transfer_generated_file(
     extension: &str,
     create_args: &[&str],
 ) -> Result<Vec<u8>> {
-    let (remote, local) = generated_paths(kind, extension);
+    let temp_dir = private_temp_dir(kind)?;
+    let nonce = temp_dir
+        .path()
+        .file_name()
+        .and_then(|value| value.to_str())
+        .context("temporary HDC directory name is not valid UTF-8")?;
+    let name = format!("mcp-devices-cli-{kind}-{nonce}.{extension}");
+    let remote = format!("/data/local/tmp/{name}");
+    let local = temp_dir.path().join(&name);
     let local_text = local.to_string_lossy().into_owned();
 
     let result = (|| -> Result<Vec<u8>> {
@@ -121,21 +138,21 @@ fn transfer_generated_file(
             .map(|value| (*value).to_owned())
             .collect::<Vec<_>>();
         args.push(remote.clone());
-        execute(device, args, kind)?;
+        execute_shell(device, args, kind)?;
         execute(
             device,
             ["file", "recv", remote.as_str(), local_text.as_str()],
             &format!("receive {kind}"),
         )?;
-        fs::read(&local).with_context(|| format!("failed to read {}", local.display()))
+        read_bounded_file(&local, 50 * 1024 * 1024, "generated HDC file")
+            .with_context(|| format!("failed to read {}", local.display()))
     })();
 
-    let _ = execute(
+    let _ = execute_shell(
         device,
-        ["shell", "rm", "-f", remote.as_str()],
+        ["rm", "-f", remote.as_str()],
         "remove temporary file",
     );
-    let _ = fs::remove_file(local);
     result
 }
 
@@ -310,35 +327,22 @@ pub fn print_devices() -> Result<()> {
 }
 
 pub fn screenshot(device: Option<&str>) -> Result<Vec<u8>> {
-    transfer_generated_file(
-        device,
-        "screenshot",
-        "png",
-        &["shell", "uitest", "screenCap", "-p"],
-    )
+    transfer_generated_file(device, "screenshot", "png", &["uitest", "screenCap", "-p"])
 }
 
 pub fn tap(x: i32, y: i32, device: Option<&str>) -> Result<()> {
-    execute(
+    execute_shell(
         device,
-        [
-            "shell",
-            "uitest",
-            "uiInput",
-            "click",
-            &x.to_string(),
-            &y.to_string(),
-        ],
+        ["uitest", "uiInput", "click", &x.to_string(), &y.to_string()],
         "tap screen",
     )?;
     Ok(())
 }
 
 pub fn long_press(x: i32, y: i32, duration_ms: u64, device: Option<&str>) -> Result<()> {
-    execute(
+    execute_shell(
         device,
         [
-            "shell",
             "uitest",
             "uiInput",
             "longClick",
@@ -364,10 +368,9 @@ pub fn swipe(
     let velocity = (distance * 1000.0 / duration)
         .round()
         .clamp(200.0, 40_000.0) as u64;
-    execute(
+    execute_shell(
         device,
         [
-            "shell",
             "uitest",
             "uiInput",
             "swipe",
@@ -383,11 +386,7 @@ pub fn swipe(
 }
 
 pub fn input_text(text: &str, device: Option<&str>) -> Result<()> {
-    execute(
-        device,
-        ["shell", "uitest", "uiInput", "text", text],
-        "input text",
-    )?;
+    execute_shell(device, ["uitest", "uiInput", "text", text], "input text")?;
     Ok(())
 }
 
@@ -408,9 +407,9 @@ fn key_code(key: &str) -> Result<&str> {
 }
 
 pub fn press_key(key: &str, device: Option<&str>) -> Result<()> {
-    execute(
+    execute_shell(
         device,
-        ["shell", "uitest", "uiInput", "keyEvent", key_code(key)?],
+        ["uitest", "uiInput", "keyEvent", key_code(key)?],
         "press key",
     )?;
     Ok(())
@@ -420,12 +419,7 @@ pub fn ui_dump(format: &str, device: Option<&str>) -> Result<String> {
     if format != "json" {
         bail!("HarmonyOS UI dump supports only json format");
     }
-    let bytes = transfer_generated_file(
-        device,
-        "layout",
-        "json",
-        &["shell", "uitest", "dumpLayout", "-p"],
-    )?;
+    let bytes = transfer_generated_file(device, "layout", "json", &["uitest", "dumpLayout", "-p"])?;
     String::from_utf8(bytes).context("HarmonyOS UI dump is not valid UTF-8")
 }
 
@@ -444,11 +438,18 @@ pub fn find_element(query: &str, device: Option<&str>) -> Result<Option<(i32, i3
         let center = element.center();
         println!(
             "Found: text=\"{}\" resource_id=\"{}\" content_desc=\"{}\" at ({}, {})",
-            element.text, element.resource_id, element.content_desc, center.0, center.1
+            terminal_safe(element.text.as_bytes()),
+            terminal_safe(element.resource_id.as_bytes()),
+            terminal_safe(element.content_desc.as_bytes()),
+            center.0,
+            center.1,
         );
         Ok(Some(center))
     } else {
-        println!("Element with '{query}' not found");
+        println!(
+            "Element with '{}' not found",
+            terminal_safe(query.as_bytes())
+        );
         Ok(None)
     }
 }
@@ -479,18 +480,18 @@ pub fn find_ui_element(
         let center = element.center();
         format!(
             "type=\"{}\" label=\"{}\" resource_id=\"{}\" at ({}, {})",
-            element.class,
-            element.label(),
-            element.resource_id,
+            terminal_safe(element.class.as_bytes()),
+            terminal_safe(element.label().as_bytes()),
+            terminal_safe(element.resource_id.as_bytes()),
             center.0,
-            center.1
+            center.1,
         )
     }))
 }
 
 pub fn tap_element(query: &str, device: Option<&str>) -> Result<()> {
     let Some((x, y)) = find_element(query, device)? else {
-        bail!("Element '{query}' not found");
+        bail!("Element '{}' not found", terminal_safe(query.as_bytes()));
     };
     tap(x, y, device)
 }
@@ -504,24 +505,18 @@ pub fn screen_size(device: Option<&str>) -> Result<(u32, u32)> {
 
 pub fn shell(command: &str, device: Option<&str>) -> Result<String> {
     let output = execute(device, ["shell", command], "run shell command")?;
-    print!("{output}");
-    Ok(output)
+    let safe_output = terminal_safe(output.as_bytes());
+    print!("{safe_output}");
+    Ok(safe_output)
 }
 
 pub fn open_url(url: &str, device: Option<&str>) -> Result<()> {
-    execute(
+    execute_shell(
         device,
-        [
-            "shell",
-            "aa",
-            "start",
-            "-A",
-            "ohos.want.action.viewData",
-            "-U",
-            url,
-        ],
+        ["aa", "start", "-A", "ohos.want.action.viewData", "-U", url],
         "open URL",
     )?;
+    println!("URL opened");
     Ok(())
 }
 
@@ -553,7 +548,6 @@ pub fn launch_app(
     checked_identifier(ability, "Ability name")?;
 
     let mut args = vec![
-        "shell".to_owned(),
         "aa".to_owned(),
         "start".to_owned(),
         "-b".to_owned(),
@@ -565,7 +559,7 @@ pub fn launch_app(
         args.push("-m".to_owned());
         args.push(checked_identifier(module, "module name")?.to_owned());
     }
-    execute(device, args, "launch app")?;
+    execute_shell(device, args, "launch app")?;
     Ok(())
 }
 
@@ -574,7 +568,7 @@ pub fn stop_app(package: &str, device: Option<&str>) -> Result<()> {
         .split_once('/')
         .map_or(package, |(bundle, _)| bundle);
     checked_identifier(bundle, "bundle name")?;
-    execute(device, ["shell", "aa", "force-stop", bundle], "stop app")?;
+    execute_shell(device, ["aa", "force-stop", bundle], "stop app")?;
     Ok(())
 }
 
@@ -600,7 +594,7 @@ pub fn pull_file(remote: &str, local: &str, device: Option<&str>) -> Result<()> 
 }
 
 pub fn list_apps(filter: Option<&str>, device: Option<&str>) -> Result<()> {
-    let output = execute(device, ["shell", "bm", "dump", "-a"], "list apps")?;
+    let output = execute_shell(device, ["bm", "dump", "-a"], "list apps")?;
     let mut apps = BTreeSet::new();
     for line in output.lines().map(str::trim) {
         let candidate = line
@@ -622,7 +616,7 @@ pub fn list_apps(filter: Option<&str>, device: Option<&str>) -> Result<()> {
 }
 
 pub fn logs(lines: usize, filter: Option<&str>, device: Option<&str>) -> Result<()> {
-    let output = execute(device, ["hilog", "-x"], "read logs")?;
+    let output = terminal_safe(execute(device, ["hilog", "-x"], "read logs")?.as_bytes());
     let selected = output
         .lines()
         .filter(|line| filter.map_or(true, |needle| line.contains(needle)))
@@ -634,20 +628,20 @@ pub fn logs(lines: usize, filter: Option<&str>, device: Option<&str>) -> Result<
 }
 
 pub fn clear_logs(device: Option<&str>) -> Result<()> {
-    execute(device, ["shell", "hilog", "-r"], "clear logs")?;
+    execute_shell(device, ["hilog", "-r"], "clear logs")?;
     Ok(())
 }
 
 pub fn system_info(device: Option<&str>) -> Result<()> {
-    let output = execute(device, ["shell", "param", "get"], "read system information")?;
-    print!("{output}");
+    let output = execute_shell(device, ["param", "get"], "read system information")?;
+    print!("{}", terminal_safe(output.as_bytes()));
     Ok(())
 }
 fn token_id(bundle: &str, device: Option<&str>) -> Result<String> {
     checked_identifier(bundle, "bundle name")?;
-    let output = execute(
+    let output = execute_shell(
         device,
-        ["shell", "atm", "dump", "-t", "-b", bundle],
+        ["atm", "dump", "-t", "-b", bundle],
         "query access token",
     )?;
     let marker = output
@@ -668,9 +662,9 @@ fn token_id(bundle: &str, device: Option<&str>) -> Result<String> {
 pub fn permission_grant(bundle: &str, permission: &str, device: Option<&str>) -> Result<()> {
     checked_identifier(permission, "permission name")?;
     let token = token_id(bundle, device)?;
-    execute(
+    execute_shell(
         device,
-        ["shell", "atm", "perm", "-g", "-i", &token, "-p", permission],
+        ["atm", "perm", "-g", "-i", &token, "-p", permission],
         "grant permission",
     )?;
     println!("Granted {permission} to {bundle}");
@@ -680,9 +674,9 @@ pub fn permission_grant(bundle: &str, permission: &str, device: Option<&str>) ->
 pub fn permission_revoke(bundle: &str, permission: &str, device: Option<&str>) -> Result<()> {
     checked_identifier(permission, "permission name")?;
     let token = token_id(bundle, device)?;
-    execute(
+    execute_shell(
         device,
-        ["shell", "atm", "perm", "-c", "-i", &token, "-p", permission],
+        ["atm", "perm", "-c", "-i", &token, "-p", permission],
         "revoke permission",
     )?;
     println!("Revoked {permission} from {bundle}");
@@ -706,27 +700,18 @@ fn granted_permissions(output: &str) -> Vec<String> {
 
 pub fn permission_reset(bundle: &str, device: Option<&str>) -> Result<()> {
     let token = token_id(bundle, device)?;
-    let output = execute(
+    let output = execute_shell(
         device,
-        ["shell", "atm", "dump", "-t", "-i", &token],
+        ["atm", "dump", "-t", "-i", &token],
         "query granted permissions",
     )?;
     let permissions = granted_permissions(&output);
     let mut failures = Vec::new();
     let mut revoked = 0usize;
     for permission in permissions {
-        match execute(
+        match execute_shell(
             device,
-            [
-                "shell",
-                "atm",
-                "perm",
-                "-c",
-                "-i",
-                &token,
-                "-p",
-                &permission,
-            ],
+            ["atm", "perm", "-c", "-i", &token, "-p", &permission],
             "reset permission",
         ) {
             Ok(_) => revoked += 1,
@@ -762,12 +747,8 @@ fn checked_sandbox_path<'a>(path: &'a str, label: &str) -> Result<&'a str> {
 pub fn sandbox_file_list(bundle: &str, path: Option<&str>, device: Option<&str>) -> Result<()> {
     checked_identifier(bundle, "bundle name")?;
     let path = checked_sandbox_path(path.unwrap_or("."), "path")?;
-    let output = execute(
-        device,
-        ["shell", "-b", bundle, "ls", "-la", path],
-        "list sandbox files",
-    )?;
-    print!("{output}");
+    let output = execute_sandbox_shell(device, bundle, &["ls", "-la", path], "list sandbox files")?;
+    print!("{}", terminal_safe(output.as_bytes()));
     Ok(())
 }
 
@@ -779,16 +760,12 @@ pub fn sandbox_file_read(
 ) -> Result<()> {
     checked_identifier(bundle, "bundle name")?;
     let path = checked_sandbox_path(path, "path")?;
-    let output = execute(
-        device,
-        ["shell", "-b", bundle, "cat", path],
-        "read sandbox file",
-    )?;
+    let output = execute_sandbox_shell(device, bundle, &["cat", path], "read sandbox file")?;
     let bytes = output.as_bytes();
     let limit = max_bytes
         .and_then(|limit| usize::try_from(limit).ok())
         .map_or(bytes.len(), |limit| limit.min(bytes.len()));
-    print!("{}", String::from_utf8_lossy(&bytes[..limit]));
+    print!("{}", terminal_safe(&bytes[..limit]));
     Ok(())
 }
 
@@ -837,9 +814,9 @@ fn checked_arkweb_socket(socket: &str) -> Result<&str> {
 }
 
 pub fn arkweb_sockets(device: Option<&str>) -> Result<Vec<String>> {
-    let output = execute(
+    let output = execute_shell(
         device,
-        ["shell", "cat", "/proc/net/unix"],
+        ["cat", "/proc/net/unix"],
         "discover ArkWeb DevTools sockets",
     )?;
     let sockets = output
@@ -893,7 +870,7 @@ pub fn arkweb_inspect(socket: Option<&str>, port: u16, device: Option<&str>) -> 
         });
     match targets {
         Ok(targets) => {
-            println!("{targets}");
+            println!("{}", terminal_safe(targets.as_bytes()));
             Ok(())
         }
         Err(error) => {
@@ -947,7 +924,6 @@ pub fn run_tests(
     checked_identifier(module, "module name")?;
     let runner = checked_sandbox_path(runner, "test runner")?;
     let mut args = vec![
-        "shell".to_owned(),
         "aa".to_owned(),
         "test".to_owned(),
         "-b".to_owned(),
@@ -977,8 +953,8 @@ pub fn run_tests(
     if dry_run {
         args.extend(["-s".to_owned(), "dryRun".to_owned(), "true".to_owned()]);
     }
-    let output = execute(device, args, "run HarmonyOS tests")?;
-    print!("{output}");
+    let output = execute_shell(device, args, "run HarmonyOS tests")?;
+    print!("{}", terminal_safe(output.as_bytes()));
     Ok(())
 }
 

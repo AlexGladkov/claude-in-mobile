@@ -1,16 +1,31 @@
+import { z } from "zod";
 import type { Bounds, UiElement } from "./types.js";
 
 interface JsonObject {
   [key: string]: unknown;
 }
 
-function isObject(value: unknown): value is JsonObject {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+const harmonyObjectSchema = z.record(z.string().max(256), z.unknown());
+const harmonyHierarchyRootSchema = z.union([
+  harmonyObjectSchema,
+  z.array(z.unknown()).max(50_000),
+]);
+
+const HARMONY_CHILD_KEYS: Readonly<Record<string, true>> = Object.freeze({
+  children: true,
+  child: true,
+  nodes: true,
+  windows: true,
+});
+function parseHarmonyObject(value: unknown): JsonObject | undefined {
+  const result = harmonyObjectSchema.safeParse(value);
+  return result.success ? value as JsonObject : undefined;
 }
 
 function stringValue(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value).replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 4096);
+  }
   return "";
 }
 
@@ -41,13 +56,16 @@ function parseBounds(value: unknown): Bounds {
       };
     }
   }
-  if (isObject(value)) {
-    const x1 = numberValue(value.left ?? value.x1 ?? value.x);
-    const y1 = numberValue(value.top ?? value.y1 ?? value.y);
-    const width = numberValue(value.width);
-    const height = numberValue(value.height);
-    const x2 = numberValue(value.right ?? value.x2) ?? (x1 !== undefined && width !== undefined ? x1 + width : undefined);
-    const y2 = numberValue(value.bottom ?? value.y2) ?? (y1 !== undefined && height !== undefined ? y1 + height : undefined);
+  const object = parseHarmonyObject(value);
+  if (object) {
+    const x1 = numberValue(object.left ?? object.x1 ?? object.x);
+    const y1 = numberValue(object.top ?? object.y1 ?? object.y);
+    const width = numberValue(object.width);
+    const height = numberValue(object.height);
+    const x2 = numberValue(object.right ?? object.x2)
+      ?? (x1 !== undefined && width !== undefined ? x1 + width : undefined);
+    const y2 = numberValue(object.bottom ?? object.y2)
+      ?? (y1 !== undefined && height !== undefined ? y1 + height : undefined);
     if (x1 !== undefined && y1 !== undefined && x2 !== undefined && y2 !== undefined) {
       return { x1, y1, x2, y2 };
     }
@@ -65,24 +83,51 @@ function firstString(source: JsonObject, keys: readonly string[]): string {
 
 /** Convert ArkXTest `uitest dumpLayout` JSON into the shared UiElement model. */
 export function harmonyHierarchyToUiElements(raw: string | unknown): UiElement[] {
-  const root = typeof raw === "string" ? JSON.parse(raw) : raw;
+  let parsed: unknown;
+  try {
+    parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+  } catch {
+    throw new Error("HarmonyOS UI hierarchy is not valid JSON.");
+  }
+  const rootResult = harmonyHierarchyRootSchema.safeParse(parsed);
+  if (!rootResult.success) {
+    throw new Error("HarmonyOS UI hierarchy has an invalid root.");
+  }
+
   const elements: UiElement[] = [];
   const seen = new Set<JsonObject>();
+  const stack: Array<{ value: unknown; depth: number }> = [{ value: parsed, depth: 0 }];
+  let visited = 0;
 
-  const visit = (value: unknown): void => {
-    if (Array.isArray(value)) {
-      for (const child of value) visit(child);
-      return;
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    if (++visited > 50_000 || current.depth > 64) {
+      throw new Error("HarmonyOS UI hierarchy exceeds the complexity limit.");
     }
-    if (!isObject(value) || seen.has(value)) return;
+    if (Array.isArray(current.value)) {
+      if (current.value.length > 50_000) {
+        throw new Error("HarmonyOS UI hierarchy exceeds the array limit.");
+      }
+      for (let index = current.value.length - 1; index >= 0; index -= 1) {
+        stack.push({ value: current.value[index], depth: current.depth + 1 });
+      }
+      continue;
+    }
+
+    const value = parseHarmonyObject(current.value);
+    if (!value || seen.has(value)) continue;
     seen.add(value);
 
-    const attributes = isObject(value.attributes) ? value.attributes : value;
-    const isNode = isObject(value.attributes)
+    const parsedAttributes = parseHarmonyObject(value.attributes);
+    const attributes = parsedAttributes ?? value;
+    const isNode = parsedAttributes !== undefined
       || "bounds" in attributes
       || "type" in attributes
       || "id" in attributes;
     if (isNode) {
+      if (elements.length >= 50_000) {
+        throw new Error("HarmonyOS UI hierarchy exceeds the element limit.");
+      }
       const bounds = parseBounds(attributes.bounds ?? value.bounds);
       const width = Math.max(0, bounds.x2 - bounds.x1);
       const height = Math.max(0, bounds.y2 - bounds.y1);
@@ -111,19 +156,18 @@ export function harmonyHierarchyToUiElements(raw: string | unknown): UiElement[]
       });
     }
 
-    const childKeys = ["children", "child", "nodes", "windows"] as const;
     let foundChildren = false;
-    for (const key of childKeys) {
+    for (const key in HARMONY_CHILD_KEYS) {
       if (value[key] !== undefined) {
         foundChildren = true;
-        visit(value[key]);
+        stack.push({ value: value[key], depth: current.depth + 1 });
       }
     }
     if (!isNode && !foundChildren) {
-      for (const child of Object.values(value)) visit(child);
+      for (const child of Object.values(value)) {
+        stack.push({ value: child, depth: current.depth + 1 });
+      }
     }
-  };
-
-  visit(root);
+  }
   return elements;
 }

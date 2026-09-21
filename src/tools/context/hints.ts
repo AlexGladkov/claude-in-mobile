@@ -35,9 +35,8 @@ export function createGenerateActionHints(deviceManager: DeviceManager, options?
     let afterElements: UiElement[] = [];
     try {
       afterElements = await fetchUiElements(deviceManager, currentPlatform, turbo);
-    } catch (hintError: any) {
-      const reason = hintError?.message ?? "unknown error";
-      return `\n--- Hints ---\nUnable to fetch UI state for hints: ${reason}`;
+    } catch {
+      return "\n--- Hints ---\nUnable to fetch UI state for hints.";
     }
 
     // Turbo adaptive retry: if UI tree unchanged, wait 100ms and retry once

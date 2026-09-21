@@ -1,45 +1,97 @@
 import { ValidationError } from "../../errors.js";
 import { z } from "../define-tool.js";
 
-/** Validates a database filename: only alphanumeric, dots, hyphens, underscores. */
+/** Validates a database filename. */
 export function validateDatabaseName(db: string): void {
-  if (!/^[a-zA-Z0-9._\-]+$/.test(db)) {
-    throw new ValidationError(
-      `Invalid database name: "${db}". Use alphanumeric characters, dots, hyphens, or underscores only.`,
-    );
+  if (
+    db.length > 255 ||
+    db === "." ||
+    db === ".." ||
+    !/^[a-zA-Z0-9._-]+$/.test(db)
+  ) {
+    throw new ValidationError("Invalid database name.");
   }
 }
 
-/** Validates a SQL query — only SELECT, PRAGMA, .tables, .schema are allowed. */
+const READ_ONLY_PRAGMAS: Readonly<Record<string, true>> = {
+  collation_list: true,
+  compile_options: true,
+  database_list: true,
+  foreign_key_check: true,
+  foreign_key_list: true,
+  freelist_count: true,
+  index_info: true,
+  index_list: true,
+  index_xinfo: true,
+  page_size: true,
+  integrity_check: true,
+  page_count: true,
+  quick_check: true,
+  schema_version: true,
+  table_info: true,
+  table_list: true,
+  table_xinfo: true,
+  user_version: true,
+};
+
+/** Validates a single read-only SQLite CLI query. */
 export function validateSqlQuery(query: string): void {
-  const trimmed = query.trim();
-
-  // Block multi-statement SQL (semicolon followed by non-whitespace)
-  if (/;[^\s]/.test(trimmed) || /;\s+\S/.test(trimmed)) {
-    throw new ValidationError(
-      "SQL multi-statement queries are not allowed. Use a single SELECT/PRAGMA statement.",
-    );
+  if (query.length === 0 || query.length > 8192 || query.includes("\0")) {
+    throw new ValidationError("Invalid SQL query.");
   }
+  const statement = query.trim().replace(/;$/, "").trim();
+  if (statement.includes(";")) {
+    throw new ValidationError("SQL multi-statement queries are not allowed.");
+  }
+  if (/\b(?:load_extension|readfile|writefile)\s*\(/i.test(statement)) {
+    throw new ValidationError("Unsafe SQLite functions are not allowed.");
+  }
+  if (/^SELECT(?:\s|$)/i.test(statement)) return;
+  if (/^\.(?:tables|schema|indexes)(?:\s+[A-Za-z0-9_.-]+)?$/i.test(statement)) return;
 
-  // Allow only safe read-only operations
-  const upper = trimmed.toUpperCase();
-  const allowed =
-    upper.startsWith("SELECT ") ||
-    upper.startsWith("SELECT\t") ||
-    upper.startsWith("SELECT\n") ||
-    upper === "SELECT" ||
-    upper.startsWith("PRAGMA ") ||
-    upper.startsWith("PRAGMA\t") ||
-    upper === "PRAGMA" ||
-    trimmed.startsWith(".tables") ||
-    trimmed.startsWith(".schema") ||
-    trimmed.startsWith(".indexes") ||
-    trimmed.startsWith(".dump");
+  const pragma = statement.match(
+    /^PRAGMA\s+(?:[A-Za-z_][A-Za-z0-9_]*\.)?([A-Za-z_][A-Za-z0-9_]*)(?:\s*\([^;]*\))?$/i,
+  );
+  if (pragma?.[1] && Object.hasOwn(READ_ONLY_PRAGMAS, pragma[1].toLowerCase())) return;
+  throw new ValidationError("Only read-only SELECT, PRAGMA, and schema queries are allowed.");
+}
 
-  if (!allowed) {
-    throw new ValidationError(
-      "Only SELECT and PRAGMA queries are allowed for safety. Write operations are not supported.",
-    );
+export function validatePreferenceName(value: string): void {
+  if (
+    value.length === 0 ||
+    value.length > 128 ||
+    value === "." ||
+    value === ".." ||
+    !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(value)
+  ) {
+    throw new ValidationError("Invalid SharedPreferences file name.");
+  }
+}
+
+export function validatePreferenceKey(value: string): void {
+  if (value.length > 256 || !/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(value)) {
+    throw new ValidationError("Invalid SharedPreferences key.");
+  }
+}
+
+export function validatePreferenceValue(
+  value: string,
+  type: "string" | "int" | "bool" | "float" | "long",
+): void {
+  if (
+    value.length > 16_384 ||
+    /[\u0000-\u001f\u007f]/.test(value)
+  ) {
+    throw new ValidationError("Invalid SharedPreferences value.");
+  }
+  if (type === "bool" && value !== "true" && value !== "false") {
+    throw new ValidationError("Boolean preference values must be true or false.");
+  }
+  if ((type === "int" || type === "long") && !/^-?\d+$/.test(value)) {
+    throw new ValidationError("Integer preference value is invalid.");
+  }
+  if (type === "float" && !/^-?(?:\d+(?:\.\d*)?|\.\d+)$/.test(value)) {
+    throw new ValidationError("Float preference value is invalid.");
   }
 }
 

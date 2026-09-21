@@ -2,12 +2,14 @@
 
 use std::env;
 use std::ffi::OsString;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
 use crate::cli::SetupCommands;
+use crate::utils::private_state::read_bounded_file;
 
 const SKILL_NAME: &str = "mcp-devices";
 const SKILL_MD: &str = include_str!("../../plugin/skills/mcp-devices/SKILL.md");
@@ -260,15 +262,28 @@ fn install_skill(target_dir: &Path, force: bool) -> Result<()> {
 }
 
 fn write_file_if_needed(path: &Path, content: &str, force: bool) -> Result<()> {
-    if let Ok(existing) = fs::read_to_string(path) {
-        if existing == content {
-            return Ok(());
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                bail!("Refusing to overwrite non-regular file: {}", path.display());
+            }
+            if metadata.len() <= content.len() as u64
+                && read_bounded_file(path, content.len() as u64 + 1, "setup target")?
+                    == content.as_bytes()
+            {
+                return Ok(());
+            }
+            if !force {
+                bail!(
+                    "Refusing to overwrite existing file: {}. Re-run with --force to replace it.",
+                    path.display()
+                );
+            }
         }
-        if !force {
-            bail!(
-                "Refusing to overwrite existing file: {}. Re-run with --force to replace it.",
-                path.display()
-            );
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Failed to inspect file: {}", path.display()));
         }
     }
 
@@ -276,9 +291,25 @@ fn write_file_if_needed(path: &Path, content: &str, force: bool) -> Result<()> {
         fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
     }
-
-    fs::write(path, content)
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW).mode(0o644);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        options.custom_flags(0x0020_0000);
+    }
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("Failed to safely open file: {}", path.display()))?;
+    file.write_all(content.as_bytes())
         .with_context(|| format!("Failed to write file: {}", path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("Failed to persist file: {}", path.display()))?;
     Ok(())
 }
 
@@ -320,4 +351,24 @@ fn env_var_path(name: &str) -> Option<PathBuf> {
     env::var_os(name)
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn forced_setup_write_refuses_symlink_targets() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target.md");
+        let link = directory.path().join("SKILL.md");
+        fs::write(&target, "keep").unwrap();
+        symlink(&target, &link).unwrap();
+
+        assert!(write_file_if_needed(&link, "replace", true).is_err());
+        assert_eq!(fs::read_to_string(target).unwrap(), "keep");
+    }
 }

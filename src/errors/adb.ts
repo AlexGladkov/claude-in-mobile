@@ -34,12 +34,12 @@ export function classifyAdbError(stderr: string, command: string): MobileError {
     return new DeviceOfflineError(command.match(/-s (\S+)/)?.[1] ?? "unknown");
   }
   if (msg.includes("permission denied") || msg.includes("insufficient permissions")) {
-    return new PermissionDeniedError(stderr.trim());
+    return new PermissionDeniedError("ADB operation");
   }
   if (msg.includes("timeout") || msg.includes("timed out")) {
     return new CommandTimeoutError(command, 0);
   }
 
   const cmdType = command.replace(/^adb\s+(-s\s+\S+\s+)?/, "").split(/\s+/)[0] ?? "unknown";
-  return new MobileError(`ADB ${cmdType} failed: ${stderr.trim().slice(0, 200)}`, "ADB_ERROR");
+  return new MobileError(`ADB ${cmdType} failed.`, "ADB_ERROR");
 }

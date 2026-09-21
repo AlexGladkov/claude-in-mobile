@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm } from "fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 import { createHash } from "crypto";
@@ -119,9 +119,8 @@ describe("get", () => {
     await store.save(scenario);
 
     // Tamper with file
-    const { writeFile } = await import("fs/promises");
     const filePath = join(tempDir, ".test-scenarios", "android", "login.json");
-    const raw = JSON.parse(await (await import("fs/promises")).readFile(filePath, "utf-8"));
+    const raw = JSON.parse(await readFile(filePath, "utf-8"));
     raw.steps[0].action = "TAMPERED";
     await writeFile(filePath, JSON.stringify(raw, null, 2));
 

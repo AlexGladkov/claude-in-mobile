@@ -19,8 +19,18 @@ class ScreenCapture {
     companion object {
         // API limit for many-image requests
         const val MAX_DIMENSION = 2000
+        private const val MAX_SOURCE_DIMENSION = 32_768
+        private const val MAX_SOURCE_PIXELS = 40_000_000L
     }
     private val robot = Robot()
+
+    private fun validateCaptureBounds(bounds: Rectangle) {
+        require(
+            bounds.width in 1..MAX_SOURCE_DIMENSION &&
+                bounds.height in 1..MAX_SOURCE_DIMENSION &&
+                bounds.width.toLong() * bounds.height.toLong() <= MAX_SOURCE_PIXELS
+        ) { "Capture bounds exceed the image safety limit" }
+    }
 
     /**
      * Get the current scale factor
@@ -40,6 +50,7 @@ class ScreenCapture {
      * Capture screenshot of a specific window or the entire screen
      */
     fun capture(windowId: String? = null, quality: Int = 80, monitorIndex: Int? = null): ScreenshotResult {
+        require(quality in 1..100) { "JPEG quality must be between 1 and 100" }
         val ge = GraphicsEnvironment.getLocalGraphicsEnvironment()
         val scaleFactor = getScaleFactor()
 
@@ -50,10 +61,11 @@ class ScreenCapture {
             // Multi-monitor support
             val devices = ge.screenDevices
             when {
-                monitorIndex != null && monitorIndex < devices.size -> {
+                monitorIndex != null && monitorIndex in devices.indices -> {
                     // Capture specific monitor
                     devices[monitorIndex].defaultConfiguration.bounds
                 }
+                monitorIndex != null -> throw IllegalArgumentException("Monitor index is out of range")
                 devices.size == 1 -> {
                     // Single monitor - use simple bounds
                     devices[0].defaultConfiguration.bounds
@@ -75,6 +87,7 @@ class ScreenCapture {
                 }
             }
         }
+        validateCaptureBounds(bounds)
 
         // Capture image
         var image = robot.createScreenCapture(bounds)
@@ -100,6 +113,7 @@ class ScreenCapture {
      * Capture a specific rectangular region
      */
     fun captureRegion(x: Int, y: Int, width: Int, height: Int, quality: Int = 80): ScreenshotResult {
+        require(quality in 1..100) { "JPEG quality must be between 1 and 100" }
         val scaleFactor = getScaleFactor()
 
         // Convert logical coordinates to physical
@@ -109,6 +123,7 @@ class ScreenCapture {
             (width * scaleFactor).toInt(),
             (height * scaleFactor).toInt()
         )
+        validateCaptureBounds(physicalBounds)
 
         var image = robot.createScreenCapture(physicalBounds)
 

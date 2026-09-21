@@ -18,20 +18,21 @@ import type { DebugController } from "./controller.js";
 /** Hard cap on eval/local value length returned to the model (invariant 4). */
 const MAX_VALUE_LEN = 512;
 
-/** Patterns that look like secrets — redacted before sending to the model. */
-const SECRET_PATTERNS = [
-  /(?:password|passwd|secret|token|api.?key|auth.?key|bearer|credential|private.?key|access.?key)/i,
+const SECRET_NAME_PATTERN =
+  /(?:password|passwd|secret|token|api.?key|auth.?key|bearer|credential|private.?key|access.?key)/i;
+const SECRET_VALUE_PATTERNS = [
   /^[A-Za-z0-9+/]{40,}={0,2}$/, // base64-like long strings (keys, JWTs)
   /^[0-9a-fA-F]{32,}$/, // hex strings (tokens/hashes)
   /eyJ[A-Za-z0-9._-]{20,}/, // JWT prefix
 ];
+const debugSessionIdSchema = z.string().min(1).max(128);
+const debugThreadIdSchema = z.string().min(1).max(32).regex(/^\d+$/);
+const debugIdentifierSchema = z.string().min(1).max(256);
+const debugExpressionSchema = z.string().min(1).max(64 * 1024);
 
 function isSecretLike(name: string, value: string): boolean {
-  if (SECRET_PATTERNS.slice(0, 1).some((re) => re.test(name))) return true;
-  if (typeof value === "string" && SECRET_PATTERNS.slice(1).some((re) => re.test(value.trim()))) {
-    return true;
-  }
-  return false;
+  if (SECRET_NAME_PATTERN.test(name)) return true;
+  return SECRET_VALUE_PATTERNS.some((pattern) => pattern.test(value.trim()));
 }
 
 function sanitizeValue(name: string, value: unknown): unknown {
@@ -43,21 +44,49 @@ function sanitizeValue(name: string, value: unknown): unknown {
 
 /**
  * Sanitize a pauseState / eval result object before returning it to the model.
- * Mutates a deep-copy (does not modify the original).
+ * The traversal is bounded independently from the sidecar's transport limit.
  */
-function sanitizeResult(data: unknown): unknown {
+function sanitizeResult(
+  data: unknown,
+  depth = 0,
+  budget = { remaining: 10_000 },
+): unknown {
+  if (typeof data === "string") return sanitizeValue("", data);
   if (data == null || typeof data !== "object") return data;
-  if (Array.isArray(data)) return data.map((item) => sanitizeResult(item));
+  if (depth >= 8 || budget.remaining-- <= 0) return "[truncated]";
+  if (Array.isArray(data)) {
+    const length = Math.min(data.length, 256);
+    const out: unknown[] = [];
+    for (let index = 0; index < length; index += 1) {
+      out.push(sanitizeResult(data[index], depth + 1, budget));
+    }
+    if (data.length > length) out.push("[truncated]");
+    return out;
+  }
 
   const obj = data as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (typeof v === "string") {
-      out[k] = sanitizeValue(k, v);
-    } else if (typeof v === "object" && v !== null) {
-      out[k] = sanitizeResult(v);
+  let semanticName: string | undefined;
+  for (const key of ["name", "expression", "variableName", "fieldName", "key"]) {
+    if (typeof obj[key] === "string") {
+      semanticName = obj[key];
+      break;
+    }
+  }
+  const out: Record<string, unknown> = Object.create(null);
+  let count = 0;
+  for (const key in obj) {
+    if (!Object.hasOwn(obj, key)) continue;
+    if (count++ >= 256) {
+      out["truncated"] = true;
+      break;
+    }
+    const safeKey = key.slice(0, 256);
+    const value = obj[key];
+    if (typeof value === "string") {
+      const effectiveName = key === "value" && semanticName ? semanticName : key;
+      out[safeKey] = sanitizeValue(effectiveName, value);
     } else {
-      out[k] = v;
+      out[safeKey] = sanitizeResult(value, depth + 1, budget);
     }
   }
   return out;
@@ -104,13 +133,15 @@ const attachToolFactory = makeTool({
     "Attach the runtime debugger to a DEBUGGABLE running app. Android (JDWP): the package must have android:debuggable=true. iOS (LLDB Simulator): requires macOS + Xcode. Returns a sessionId for all subsequent debug calls.",
   schema: z.object({
     platform: z.enum(["android", "ios"]).describe("android (JDWP) or ios (LLDB, Simulator)."),
-    app: z.string().describe("Android package name (e.g. com.app.debug) or iOS bundle id."),
+    app: z.string().min(1).max(255).describe("Android package name (e.g. com.app.debug) or iOS bundle id."),
     launch: z
       .boolean()
       .default(true)
       .describe("iOS: launch the app suspended before attaching (default true)."),
     deviceId: z
       .string()
+      .min(1)
+      .max(255)
       .optional()
       .describe("Android device/emulator serial (optional; uses default device if omitted)."),
   }),
@@ -129,17 +160,21 @@ const breakToolFactory = makeTool({
   description:
     "Set a breakpoint. Android: {className, line} or {className, method} (method-entry, robust without line info). iOS: {file, line} or {method}. Returns { id, verified }. verified=false means the class is not yet loaded — the breakpoint will arm on CLASS_PREPARE.",
   schema: z.object({
-    sessionId: z.string().describe("Session id from debug_attach."),
+    sessionId: debugSessionIdSchema.describe("Session id from debug_attach."),
     className: z
       .string()
+      .min(1)
+      .max(1024)
       .optional()
       .describe("Android: dotted class name, e.g. com.app.MainActivity."),
     method: z
       .string()
+      .min(1)
+      .max(4096)
       .optional()
       .describe("Android: method name for a method-entry breakpoint. iOS: function symbol."),
-    file: z.string().optional().describe("iOS: source file name, e.g. ContentView.swift."),
-    line: z.number().optional().describe("Source line number."),
+    file: z.string().min(1).max(4096).optional().describe("iOS: source file name, e.g. ContentView.swift."),
+    line: z.number().int().min(1).max(10_000_000).optional().describe("Source line number."),
   }),
   handler: async (args, ctrl) => {
     return ctrl.setBreakpoint(args.sessionId, {
@@ -155,8 +190,8 @@ const removeBreakToolFactory = makeTool({
   name: "debug_remove_break",
   description: "Remove a breakpoint by its id (returned by debug_break).",
   schema: z.object({
-    sessionId: z.string(),
-    breakpointId: z.string().describe("Breakpoint id from debug_break."),
+    sessionId: debugSessionIdSchema,
+    breakpointId: z.string().min(1).max(128).describe("Breakpoint id from debug_break."),
   }),
   handler: async (args, ctrl) => {
     await ctrl.removeBreakpoint(args.sessionId, args.breakpointId);
@@ -169,8 +204,8 @@ const pollToolFactory = makeTool({
   description:
     "Poll the event queue for hits (BREAKPOINT_HIT / STEP_HIT / EXCEPTION_HIT / CLASS_PREPARE / VM_DEATH). Never blocks. Start cursor at 0, advance nextCursor on each call. If the queue is empty, ask the user to interact with the app, then poll again.",
   schema: z.object({
-    sessionId: z.string(),
-    cursor: z.number().default(0).describe("Cursor from the previous poll (start at 0)."),
+    sessionId: debugSessionIdSchema,
+    cursor: z.number().int().safe().nonnegative().default(0).describe("Cursor from the previous poll (start at 0)."),
   }),
   handler: async (args, ctrl) => {
     return ctrl.poll(args.sessionId, args.cursor);
@@ -182,9 +217,8 @@ const pauseStateToolFactory = makeTool({
   description:
     "Inspect a paused thread: call stack frames (class, method, line) and the top frame's locals (name / type / value; objectId for object-typed locals). Thread must be suspended (use debug_poll to confirm BREAKPOINT_HIT/STEP_HIT first).",
   schema: z.object({
-    sessionId: z.string(),
-    threadId: z
-      .string()
+    sessionId: debugSessionIdSchema,
+    threadId: debugThreadIdSchema
       .describe("Thread id (decimal string from debug_poll or debug_threads)."),
   }),
   handler: async (args, ctrl) => {
@@ -199,7 +233,7 @@ const threadsToolFactory = makeTool({
   description:
     "List threads of the debugged VM with ids and names (Android). Use an id with debug_pause_state / debug_step to target a specific thread.",
   schema: z.object({
-    sessionId: z.string(),
+    sessionId: debugSessionIdSchema,
   }),
   handler: async (args, ctrl) => {
     return ctrl.threads(args.sessionId);
@@ -211,13 +245,11 @@ const evalToolFactory = makeTool({
   description:
     "Evaluate an expression on a paused thread. Android: a local name, `name.field`, or `name.method(args)` with literal args (int/long/float/bool/null/\"str\"); `this` is a valid receiver. iOS: full LLDB expression eval. Thread must be suspended.",
   schema: z.object({
-    sessionId: z.string(),
-    threadId: z.string().describe("Thread id (decimal string)."),
-    expr: z
-      .string()
-      .describe(
-        "Expression: a local name, name.field, or name.method(literal_args). E.g. `count`, `user.name`, `list.size()`.",
-      ),
+    sessionId: debugSessionIdSchema,
+    threadId: debugThreadIdSchema.describe("Thread id (decimal string)."),
+    expr: debugExpressionSchema.describe(
+      "Expression: a local name, name.field, or name.method(literal_args). E.g. `count`, `user.name`, `list.size()`.",
+    ),
   }),
   handler: async (args, ctrl) => {
     // SECURITY I4: sanitize eval result — never raw heap bytes to the model.
@@ -231,11 +263,12 @@ const setVarToolFactory = makeTool({
   description:
     "Mutate a local variable on a paused thread. Android: primitives (int/long/bool/float/…), null, and strings; the value is coerced to the local's declared type. iOS: LLDB set / expression assignment. Thread must be suspended.",
   schema: z.object({
-    sessionId: z.string(),
-    threadId: z.string(),
-    name: z.string().describe("Local variable name (must be in scope at the top frame)."),
+    sessionId: debugSessionIdSchema,
+    threadId: debugThreadIdSchema,
+    name: debugIdentifierSchema.describe("Local variable name (must be in scope at the top frame)."),
     value: z
       .string()
+      .max(64 * 1024)
       .describe("New value as a string; coerced to the variable's declared type."),
   }),
   handler: async (args, ctrl) => {
@@ -248,8 +281,8 @@ const stepToolFactory = makeTool({
   description:
     "Step the paused thread: OVER (next line), INTO (into call), or OUT (out of current method). Issues the step and resumes the thread; poll for STEP_HIT to see where execution landed.",
   schema: z.object({
-    sessionId: z.string(),
-    threadId: z.string(),
+    sessionId: debugSessionIdSchema,
+    threadId: debugThreadIdSchema,
     action: z
       .enum(["OVER", "INTO", "OUT"])
       .default("OVER")
@@ -266,7 +299,7 @@ const resumeToolFactory = makeTool({
   description:
     "Resume all threads in the debugged VM/process. Use after inspecting a paused state to let the app continue running.",
   schema: z.object({
-    sessionId: z.string(),
+    sessionId: debugSessionIdSchema,
   }),
   handler: async (args, ctrl) => {
     await ctrl.resume(args.sessionId);
@@ -279,7 +312,7 @@ const detachToolFactory = makeTool({
   description:
     "Detach the debugger and end the session (the app keeps running). Also tears down the adb forward / LLDB daemon for this session.",
   schema: z.object({
-    sessionId: z.string(),
+    sessionId: debugSessionIdSchema,
   }),
   handler: async (args, ctrl) => {
     await ctrl.detach(args.sessionId);

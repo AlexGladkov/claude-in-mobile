@@ -7,8 +7,8 @@ import {
   PluginContractError,
   hasCapability,
   isCapability,
-  type PluginManifest,
 } from "./index.js";
+import type { PluginManifest } from "./index.js";
 
 describe("plugin-api v1 contract", () => {
   it("exposes apiVersion === '1'", () => {

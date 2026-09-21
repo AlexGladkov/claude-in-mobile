@@ -15,6 +15,7 @@ import {
 import { detectClient } from "../client-adapter.js";
 import { MobileError, isRetryable, getRecoveryHints } from "../errors.js";
 import { detectAntiPattern } from "../utils/anti-patterns.js";
+import { sanitizeErrorMessage } from "../utils/sanitize.js";
 
 export interface McpServerDeps {
   name: string;
@@ -135,6 +136,7 @@ export function createMcpServer(deps: McpServerDeps): McpServerHandle {
       const handlerIsError = typeof result === "object" && result !== null && "isError" in result
         ? (result as { isError?: boolean }).isError === true
         : false;
+      text = sanitizeErrorMessage(text);
 
       // Global safety net: truncate oversized text responses
       const MAX_RESPONSE_CHARS = 20_000;
@@ -155,13 +157,17 @@ export function createMcpServer(deps: McpServerDeps): McpServerHandle {
       };
     } catch (error: unknown) {
       const code = error instanceof MobileError ? error.code : "UNKNOWN";
-      const message = error instanceof Error ? error.message : String(error);
+      const message = sanitizeErrorMessage(
+        error instanceof Error ? error.message : String(error),
+      ).slice(0, 4_000);
       const retryHint = isRetryable(error) ? "\nRetry: yes" : "";
       const recoveryHints = getRecoveryHints(error);
       const recoveryBlock = recoveryHints.length > 0
         ? `\n[RECOVERY: ${JSON.stringify(recoveryHints)}]`
         : "";
-      const retryInfo = error instanceof MobileError && error.retryInfo ? `\n${error.retryInfo}` : "";
+      const retryInfo = error instanceof MobileError && error.retryInfo
+        ? `\n${sanitizeErrorMessage(error.retryInfo).slice(0, 1_000)}`
+        : "";
       return {
         content: [
           { type: "text", text: `[${code}] ${message}${retryHint}${retryInfo}${recoveryBlock}` },

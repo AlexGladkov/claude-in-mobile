@@ -1,4 +1,11 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "fs";
 import { tmpdir } from "os";
 import { basename, join } from "path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -88,6 +95,24 @@ describe("SessionManager profile ownership", () => {
     expect(token).not.toBe("stale");
     sessions.releaseLock("stale", token);
   });
+  it.skipIf(process.platform === "win32")(
+    "replaces a symlinked pid record without overwriting its target",
+    () => {
+      const sessions = manager();
+      const token = sessions.acquireLock("pid-symlink");
+      const pidPath = join(sessions.getProfileDir("pid-symlink"), ".chrome-pid");
+      const targetPath = join(sessions.profileBaseDir, "pid-target");
+      writeFileSync(targetPath, "untouched");
+      symlinkSync(targetPath, pidPath);
+
+      sessions.writePidFile("pid-symlink", 99_999, token);
+
+      expect(readFileSync(targetPath, "utf8")).toBe("untouched");
+      expect(sessions.readPidFile("pid-symlink")).toEqual({ pid: 99_999, token });
+      sessions.releaseLock("pid-symlink", token);
+    },
+  );
+
 
 
   it("recovers a reclaim directory stranded by a crashed process", () => {

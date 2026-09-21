@@ -7,11 +7,13 @@ use std::process::{Command, Output};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::utils::process::{ensure_success, run_with_limits};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
 const MAX_TRACE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_HEAP_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_COMMAND_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 
 #[allow(clippy::too_many_arguments)]
 pub fn trace(
@@ -293,10 +295,9 @@ fn ios_xctrace(
                 .to_str()
                 .ok_or_else(|| anyhow::anyhow!("Invalid output path"))?,
         ]);
-        checked(
-            Command::new("/usr/bin/ditto").args(&ditto).output(),
-            "ditto",
-        )?;
+        let mut ditto_command = Command::new("/usr/bin/ditto");
+        ditto_command.args(&ditto);
+        checked(&mut ditto_command, "ditto")?;
         secure_and_limit(output, max_bytes)?;
         Ok(json!({
             "platform": "ios",
@@ -322,12 +323,14 @@ fn analyze_perfetto(path: &Path, package: &str) -> Value {
         "SELECT (SELECT COUNT(*) FROM slice) AS slice_count, (SELECT COUNT(*) FROM sched) AS sched_slice_count, (SELECT ROUND(COALESCE(SUM(s.dur), 0) / 1000000.0, 1) FROM sched s JOIN thread t USING (utid) LEFT JOIN process p USING (upid) WHERE p.name = '{0}' OR p.cmdline LIKE '{0}%') AS cpu_time_ms;",
         package
     );
-    match Command::new(&binary)
-        .arg("query")
-        .arg(path)
-        .arg(sql)
-        .output()
-    {
+    let mut command = Command::new(&binary);
+    command.arg("query").arg(path).arg(sql);
+    match run_with_limits(
+        &mut command,
+        Duration::from_secs(120),
+        MAX_COMMAND_OUTPUT_BYTES,
+        "Perfetto trace analysis",
+    ) {
         Ok(output) if output.status.success() => {
             let text = String::from_utf8_lossy(&output.stdout);
             let lines: Vec<&str> = text
@@ -345,15 +348,18 @@ fn analyze_perfetto(path: &Path, package: &str) -> Value {
             }
             json!({"tool": "failed", "warning": "Trace Processor returned no query row"})
         }
-        Ok(output) => json!({
-            "tool": "failed",
-            "warning": String::from_utf8_lossy(&output.stderr).trim().chars().take(300).collect::<String>(),
-        }),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({
-            "tool": "unavailable",
-            "warning": "Install trace_processor or set PERFETTO_TRACE_PROCESSOR_PATH",
-        }),
-        Err(error) => json!({"tool": "failed", "warning": error.to_string()}),
+        Ok(_) => json!({"tool": "failed", "warning": "Trace Processor query failed"}),
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|cause| cause.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            json!({
+                "tool": "unavailable",
+                "warning": "Install trace_processor or set PERFETTO_TRACE_PROCESSOR_PATH",
+            })
+        }
+        Err(_) => json!({"tool": "failed", "warning": "Trace Processor query failed"}),
     }
 }
 
@@ -400,31 +406,35 @@ fn adb_checked(device: Option<&str>, args: &[String]) -> Result<Output> {
     if let Some(serial) = device {
         command.arg("-s").arg(serial);
     }
-    checked(command.args(args).output(), "adb")
+    command.args(args);
+    checked(&mut command, "adb")
 }
 
 fn xcrun_checked(args: &[String]) -> Result<Output> {
-    checked(Command::new("xcrun").args(args).output(), "xcrun")
+    let mut command = Command::new("xcrun");
+    command.args(args);
+    checked(&mut command, "xcrun")
 }
 
-fn checked(result: std::io::Result<Output>, program: &str) -> Result<Output> {
-    let output = result.with_context(|| format!("Failed to execute {program}"))?;
-    if !output.status.success() {
-        bail!(
-            "{program} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
+fn checked(command: &mut Command, action: &str) -> Result<Output> {
+    let output = run_with_limits(
+        command,
+        Duration::from_secs(120),
+        MAX_COMMAND_OUTPUT_BYTES,
+        action,
+    )?;
+    ensure_success(&output, action)?;
     Ok(output)
 }
 
 fn validate_identifier(value: &str, label: &str) -> Result<()> {
     if value.is_empty()
+        || value.len() > 255
         || !value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
     {
-        bail!("Invalid {label} '{value}'");
+        bail!("Invalid {label}");
     }
     Ok(())
 }

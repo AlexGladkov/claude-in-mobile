@@ -36,5 +36,5 @@ export function classifySimctlError(stderr: string, command: string): MobileErro
   }
 
   const cmdType = command.replace(/^xcrun\s+simctl\s+/, "").split(/\s+/)[0] ?? "unknown";
-  return new MobileError(`simctl ${cmdType} failed: ${stderr.trim().slice(0, 200)}`, "SIMCTL_ERROR");
+  return new MobileError(`simctl ${cmdType} failed.`, "SIMCTL_ERROR");
 }

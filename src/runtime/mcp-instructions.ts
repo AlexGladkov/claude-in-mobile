@@ -1,4 +1,5 @@
-import { PROFILE_VISIBLE, ALL_HIDEABLE_MODULES, type MobileProfile } from "../profiles.js";
+import { PROFILE_VISIBLE, ALL_HIDEABLE_MODULES } from "../profiles.js";
+import type { MobileProfile } from "../profiles.js";
 
 /** Build dynamic MCP instructions based on active profile and turbo setting */
 export function buildInstructions(profile: MobileProfile, turbo: boolean): string {

@@ -31,15 +31,27 @@ pub enum Commands {
         compress: bool,
 
         /// Max width for compression (default: 540)
-        #[arg(long, default_value = "540")]
+        #[arg(
+            long,
+            default_value = "540",
+            value_parser = clap::value_parser!(u32).range(1..=32_768)
+        )]
         max_width: u32,
 
         /// Max height for compression (default: 960)
-        #[arg(long, default_value = "960")]
-        max_height: Option<u32>,
+        #[arg(
+            long,
+            default_value = "960",
+            value_parser = clap::value_parser!(u32).range(1..=32_768)
+        )]
+        max_height: u32,
 
         /// JPEG quality for compression (1-100, default: 55)
-        #[arg(long, default_value = "55")]
+        #[arg(
+            long,
+            default_value = "55",
+            value_parser = clap::value_parser!(u8).range(1..=100)
+        )]
         quality: u8,
 
         /// iOS Simulator name (default: booted)

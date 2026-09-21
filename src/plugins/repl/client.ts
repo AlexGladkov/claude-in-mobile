@@ -6,8 +6,24 @@
  * by `id`. The supervisor process is killed on `dispose()` and on Node exit.
  */
 
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createInterface, type Interface } from "node:readline";
+import { spawn } from "node:child_process";
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
+import { z } from "zod";
+import { sanitizeErrorMessage } from "../../utils/sanitize.js";
+
+const MAX_RPC_MESSAGE_BYTES = 8 * 1024 * 1024;
+const MAX_RPC_REQUEST_BYTES = 4 * 1024 * 1024;
+const MAX_PENDING_REQUESTS = 128;
+const MAX_TIMEOUT_MS = 5 * 60_000;
+const replReadyMessageSchema = z.object({
+  event: z.literal("ready"),
+}).passthrough();
+const replResponseMessageSchema = z.object({
+  id: z.string().regex(/^[A-Za-z0-9-]{1,64}$/),
+  error: z.string().max(64 * 1024).optional(),
+  result: z.unknown().optional(),
+}).passthrough();
 
 export interface ReplBridgeOptions {
   /** Path to the native CLI. Defaults to MCP_DEVICES_BIN or "mcp-devices-cli". */
@@ -39,7 +55,9 @@ export class ReplBridgeError extends Error {
 
 export class ReplBridgeClient {
   private child?: ChildProcessWithoutNullStreams;
-  private rl?: Interface;
+  private stdoutBuffer = "";
+  private readonly stdoutDecoder = new StringDecoder("utf8");
+  private stdoutBytes = 0;
   private nextId = 1;
   private pending = new Map<string, PendingRequest>();
   private readyPromise?: Promise<void>;
@@ -54,9 +72,36 @@ export class ReplBridgeClient {
       opts.binaryPath ??
       process.env.MCP_DEVICES_BIN ??
       "mcp-devices-cli";
+    if (
+      this.binaryPath.length === 0
+      || this.binaryPath.length > 4096
+      || this.binaryPath.includes("\0")
+    ) {
+      throw new ReplBridgeError("invalid supervisor binary path");
+    }
     this.env = opts.env ?? minimalEnv();
+    if (
+      Object.keys(this.env).length > 256
+      || Object.entries(this.env).some(
+        ([key, value]) =>
+          !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(key)
+          || (value !== undefined && value.length > 64 * 1024),
+      )
+    ) {
+      throw new ReplBridgeError("invalid supervisor environment");
+    }
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 30_000;
     this.startTimeoutMs = opts.startTimeoutMs ?? 10_000;
+    if (
+      !Number.isSafeInteger(this.requestTimeoutMs)
+      || this.requestTimeoutMs < 1
+      || this.requestTimeoutMs > MAX_TIMEOUT_MS
+      || !Number.isSafeInteger(this.startTimeoutMs)
+      || this.startTimeoutMs < 1
+      || this.startTimeoutMs > MAX_TIMEOUT_MS
+    ) {
+      throw new ReplBridgeError("invalid supervisor timeout");
+    }
   }
 
   async start(): Promise<void> {
@@ -89,12 +134,8 @@ export class ReplBridgeClient {
           env: this.env,
           stdio: ["pipe", "pipe", "pipe"],
         });
-      } catch (e) {
-        settleReject(
-          new ReplBridgeError(
-            `failed to spawn ${this.binaryPath}: ${(e as Error).message}`
-          )
-        );
+      } catch {
+        settleReject(new ReplBridgeError("failed to spawn REPL supervisor"));
         return;
       }
       this.child = child;
@@ -122,21 +163,42 @@ export class ReplBridgeClient {
         // for now silently drop to avoid mixing into MCP stdout framing.
         void chunk;
       });
-      child.on("error", (err) => {
-        this.failAllPending(err);
-        settleReject(
-          new ReplBridgeError(`supervisor process error: ${err.message}`)
-        );
+      child.on("error", () => {
+        const error = new ReplBridgeError("supervisor process error");
+        this.failAllPending(error);
+        settleReject(error);
       });
       child.on("exit", (code, signal) => {
         const reason = `supervisor exited (code=${code}, signal=${signal})`;
         this.failAllPending(new ReplBridgeError(reason));
         this.child = undefined;
-        // Unblock a start() that was still waiting for `ready`.
+        this.readyPromise = undefined;
+        this.stdoutBuffer = "";
+        this.stdoutDecoder.end();
+        this.stdoutBytes = 0;
+        if (this.exitHandler) {
+          process.removeListener("exit", this.exitHandler);
+          this.exitHandler = undefined;
+        }
         settleReject(new ReplBridgeError(reason));
       });
-      this.rl = createInterface({ input: child.stdout });
-      this.rl.on("line", (line) => this.onLine(line, settleResolve));
+      child.stdout.on("data", (chunk: Buffer) => {
+        this.stdoutBytes += chunk.byteLength;
+        this.stdoutBuffer += this.stdoutDecoder.write(chunk);
+        if (this.stdoutBytes > MAX_RPC_MESSAGE_BYTES) {
+          child.kill("SIGKILL");
+          this.failAllPending(new ReplBridgeError("supervisor response exceeded the size limit"));
+          return;
+        }
+        while (true) {
+          const newline = this.stdoutBuffer.indexOf("\n");
+          if (newline < 0) break;
+          const line = this.stdoutBuffer.slice(0, newline);
+          this.stdoutBuffer = this.stdoutBuffer.slice(newline + 1);
+          this.onLine(line, settleResolve);
+        }
+        this.stdoutBytes = Buffer.byteLength(this.stdoutBuffer, "utf8");
+      });
       this.exitHandler = () => {
         try {
           child.kill("SIGTERM");
@@ -167,33 +229,51 @@ export class ReplBridgeClient {
     params: unknown = {},
     timeoutMs?: number
   ): Promise<T> {
+    if (!/^[a-z][a-z0-9_.-]{0,63}$/.test(method)) {
+      throw new ReplBridgeError("invalid supervisor method");
+    }
     await this.start();
     const child = this.child;
     if (!child || child.stdin.destroyed) {
       throw new ReplBridgeError("supervisor not running");
     }
+    if (this.pending.size >= MAX_PENDING_REQUESTS) {
+      throw new ReplBridgeError("too many pending supervisor requests");
+    }
     const effectiveTimeout = timeoutMs ?? this.requestTimeoutMs;
+    if (
+      !Number.isSafeInteger(effectiveTimeout)
+      || effectiveTimeout < 1
+      || effectiveTimeout > MAX_TIMEOUT_MS
+    ) {
+      throw new ReplBridgeError("invalid request timeout");
+    }
+    if (this.nextId >= Number.MAX_SAFE_INTEGER) this.nextId = 1;
     const id = `r${this.nextId++}`;
     const payload = JSON.stringify({ id, method, params }) + "\n";
+    if (Buffer.byteLength(payload, "utf8") > MAX_RPC_REQUEST_BYTES) {
+      throw new ReplBridgeError("supervisor request exceeded the size limit");
+    }
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(
-          new ReplBridgeError(
-            `request ${method} timed out after ${effectiveTimeout}ms`
-          )
+        const error = new ReplBridgeError(
+          `request ${method} timed out after ${effectiveTimeout}ms`
         );
+        child.kill("SIGKILL");
+        this.child = undefined;
+        this.readyPromise = undefined;
+        this.failAllPending(error);
       }, effectiveTimeout);
       this.pending.set(id, {
         resolve: (v) => resolve(v as T),
         reject,
         timer,
       });
-      child.stdin.write(payload, (err) => {
-        if (err) {
+      child.stdin.write(payload, (error) => {
+        if (error) {
           this.pending.delete(id);
           clearTimeout(timer);
-          reject(new ReplBridgeError(`write failed: ${err.message}`));
+          reject(new ReplBridgeError("failed to write to REPL supervisor"));
         }
       });
     });
@@ -208,6 +288,10 @@ export class ReplBridgeClient {
     }
     this.child?.kill("SIGTERM");
     this.child = undefined;
+    this.readyPromise = undefined;
+    this.stdoutBuffer = "";
+    this.stdoutBytes = 0;
+    this.stdoutDecoder.end();
     if (this.exitHandler) {
       process.removeListener("exit", this.exitHandler);
       this.exitHandler = undefined;
@@ -217,26 +301,28 @@ export class ReplBridgeClient {
 
   private onLine(line: string, onReady: () => void): void {
     if (!line.trim()) return;
-    let msg: Record<string, unknown>;
+    let parsed: unknown;
     try {
-      msg = JSON.parse(line);
+      parsed = JSON.parse(line);
     } catch {
       return;
     }
-    if (msg.event === "ready") {
+    if (replReadyMessageSchema.safeParse(parsed).success) {
       onReady();
       return;
     }
-    const id = typeof msg.id === "string" ? msg.id : null;
-    if (!id) return;
-    const pending = this.pending.get(id);
+    const result = replResponseMessageSchema.safeParse(parsed);
+    if (!result.success) return;
+    const pending = this.pending.get(result.data.id);
     if (!pending) return;
-    this.pending.delete(id);
+    this.pending.delete(result.data.id);
     clearTimeout(pending.timer);
-    if (typeof msg.error === "string") {
-      pending.reject(new ReplBridgeError(msg.error));
+    if (result.data.error !== undefined) {
+      pending.reject(new ReplBridgeError(
+        sanitizeErrorMessage(result.data.error).slice(0, 1000),
+      ));
     } else {
-      pending.resolve(msg.result);
+      pending.resolve(result.data.result);
     }
   }
 

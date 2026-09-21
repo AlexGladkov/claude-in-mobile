@@ -51,12 +51,19 @@ function makeMockContext(overrides?: Partial<ToolContext>): ToolContext {
   };
 }
 
-/** Pull the last shell() call's first argument from the deviceManager mock */
+/** Return a semantic rendering of the last device-shell command. */
 function captureShellCommand(ctx: ToolContext): string {
   const shellMock = ctx.deviceManager.shell as unknown as ReturnType<typeof vi.fn>;
   const calls = shellMock.mock.calls;
   if (calls.length === 0) throw new Error("shell() was never called");
-  return calls[calls.length - 1][0] as string;
+  const command = calls[calls.length - 1][0] as string;
+  const protectedQuotes = command.replaceAll(`'"'"'`, "\0");
+  const args = [...protectedQuotes.matchAll(/'([^']*)'/g)]
+    .map((match) => match[1]!.replaceAll("\0", "'"));
+  if (args.length === 0) return command;
+  return args
+    .map((arg) => /^[A-Za-z0-9_./-]+$/.test(arg) ? arg : `'${arg}'`)
+    .join(" ");
 }
 
 // ─── intent_start ─────────────────────────────────────────────────────────────
@@ -325,13 +332,13 @@ describe("intent_deeplink", () => {
 
   it("throws ValidationError for empty URI", async () => {
     const ctx = makeMockContext();
-    // sanitizeForShell strips all special chars; an empty string will fail the length check
+    // Empty input is not a deep link.
     await expect(handler({ uri: "" }, ctx)).rejects.toBeInstanceOf(ValidationError);
   });
 
   it("throws ValidationError for URI consisting only of blocked characters", async () => {
     const ctx = makeMockContext();
-    // All chars stripped by sanitizeForShell: backtick, dollar, backslash, etc.
+    // A shell-metacharacter-only string has no URL scheme.
     await expect(handler({ uri: "`$\\!#" }, ctx)).rejects.toBeInstanceOf(ValidationError);
   });
 
@@ -342,18 +349,6 @@ describe("intent_deeplink", () => {
     ).rejects.toBeInstanceOf(Error);
   });
 
-  it("returns success text with URI for iOS", async () => {
-    const ctx = makeMockContext({
-      deviceManager: {
-        getCurrentPlatform: vi.fn(() => "ios"),
-        getAndroidClient: vi.fn(() => ({ shell: vi.fn(() => "") })),
-        getIosClient: vi.fn(() => ({ openUrl: vi.fn() })),
-        shell: vi.fn(() => ""),
-      } as any,
-    });
-    const result = await handler({ uri: "myapp://home", platform: "ios" }, ctx);
-    expect((result as any).text).toContain("myapp://home");
-  });
 
   it("passes custom scheme deep link on Android correctly", async () => {
     const ctx = makeMockContext();

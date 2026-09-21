@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { resolveElementCoordinates, applyScale } from "./resolve-element.js";
 import type { ToolContext } from "../context.js";
+import type { UiElement } from "../../ui-tree/ui-parser.js";
 import { ElementNotFoundError } from "../../errors.js";
 
 // ─────────────────────────────────────────────────────────────
@@ -13,8 +14,8 @@ function makeCtx(overrides: {
     findElement: (...args: any[]) => Promise<any>;
     getElementRect: (...args: any[]) => Promise<any>;
   };
-  getCachedElements?: (platform: string) => import("../../ui-tree/ui-parser.js").UiElement[];
-  setCachedElements?: (platform: string, elements: import("../../ui-tree/ui-parser.js").UiElement[]) => void;
+  getCachedElements?: (platform: string) => UiElement[];
+  setCachedElements?: (platform: string, elements: UiElement[]) => void;
   getUiHierarchyAsync?: (platform: string) => Promise<string>;
 } = {}): ToolContext {
   return {
@@ -42,8 +43,8 @@ function makeCtx(overrides: {
 
 /** Minimal UiElement factory — only the fields resolveElementCoordinates actually reads. */
 function makeUiElement(
-  overrides: Partial<import("../../ui-tree/ui-parser.js").UiElement> = {},
-): import("../../ui-tree/ui-parser.js").UiElement {
+  overrides: Partial<UiElement> = {},
+): UiElement {
   return {
     index: 0,
     resourceId: "",

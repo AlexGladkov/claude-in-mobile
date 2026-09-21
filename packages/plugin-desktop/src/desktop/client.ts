@@ -2,21 +2,25 @@
  * Desktop Client - communicates with Kotlin companion app via JSON-RPC
  */
 
-import { ChildProcess, spawn, execFileSync } from "child_process";
+import { spawn, execFileSync } from "child_process";
+import type { ChildProcess } from "child_process";
 import { EventEmitter } from "events";
-import * as readline from "readline";
+import { StringDecoder } from "string_decoder";
+import { z } from "zod";
+
 import { GradleLauncher } from "./gradle.js";
 import { findCompanionAppPath } from "./permission-allowlist.js";
 import { LogRing } from "./log-ring.js";
 import { normalizeLaunchOptions } from "./launch-options.js";
 import { DESKTOP } from "mcp-devices/constants/timeouts";
+import { sanitizeErrorMessage } from "mcp-devices/utils/sanitize";
 import {
   AttachLauncher,
   BundleAppLauncher,
   GradleAppLauncher,
   NoOpLauncher,
-  type AppLaunchStrategy,
 } from "./launchers.js";
+import type { AppLaunchStrategy } from "./launchers.js";
 
 // Re-export module-scoped helpers so existing imports of `src/desktop/client.js` keep working.
 export {
@@ -39,15 +43,10 @@ export {
 } from "./launchers.js";
 import type {
   JsonRpcRequest,
-  JsonRpcResponse,
   LaunchOptions,
   RawLaunchOptions,
-  LaunchMode,
-  LogType,
   ScreenshotOptions,
   ScreenshotResult,
-  SwipeOptions,
-  KeyEventOptions,
   UiHierarchy,
   WindowInfo,
   DesktopWindow,
@@ -59,11 +58,139 @@ import type {
   DesktopUiElement,
   PermissionStatus,
   MonitorInfo,
-  MonitorsResult,
   TapByTextResult,
 } from "./types.js";
 
 const MAX_RESTARTS = 3;
+const MAX_RPC_MESSAGE_BYTES = 8 * 1024 * 1024;
+const MAX_PENDING_REQUESTS = 128;
+const safeRpcTextSchema = z.string().max(64 * 1024);
+const finiteNumberSchema = z.number().finite();
+const boundsSchema = z.object({
+  x: finiteNumberSchema,
+  y: finiteNumberSchema,
+  width: finiteNumberSchema.nonnegative(),
+  height: finiteNumberSchema.nonnegative(),
+}).strict();
+const desktopWindowSchema = z.object({
+  id: z.string().min(1).max(4096),
+  title: safeRpcTextSchema,
+  bounds: boundsSchema,
+  focused: z.boolean(),
+  minimized: z.boolean(),
+  fullscreen: z.boolean(),
+  processId: z.number().int().safe().nonnegative().optional(),
+  ownerName: safeRpcTextSchema.optional(),
+}).strict();
+const desktopUiElementSchema: z.ZodType<DesktopUiElement> = z.lazy(() => z.object({
+  index: z.number().int().safe().nonnegative(),
+  id: z.string().max(4096).optional(),
+  text: safeRpcTextSchema.optional(),
+  contentDescription: safeRpcTextSchema.optional(),
+  className: z.string().min(1).max(4096),
+  role: z.string().max(4096).optional(),
+  bounds: boundsSchema,
+  clickable: z.boolean(),
+  enabled: z.boolean(),
+  focused: z.boolean(),
+  focusable: z.boolean(),
+  children: z.array(desktopUiElementSchema).max(1000),
+  centerX: finiteNumberSchema,
+  centerY: finiteNumberSchema,
+}).strict());
+const screenshotResultSchema = z.object({
+  base64: z.string().max(MAX_RPC_MESSAGE_BYTES).regex(/^[A-Za-z0-9+/]*={0,2}$/),
+  width: z.number().int().positive().max(32_768),
+  height: z.number().int().positive().max(32_768),
+  scaleFactor: finiteNumberSchema.positive().max(16),
+  mimeType: z.literal("image/jpeg"),
+}).strict().refine(
+  (value) => value.width * value.height <= 40_000_000,
+  "desktop screenshot exceeds pixel limit",
+);
+const tapByTextResultSchema = z.object({
+  success: z.boolean(),
+  elementRole: z.string().max(4096).optional(),
+  error: safeRpcTextSchema.optional(),
+}).strict();
+const uiHierarchySchema = z.object({
+  windows: z.array(desktopWindowSchema).max(1000),
+  elements: z.array(desktopUiElementSchema).max(10_000),
+  scaleFactor: finiteNumberSchema.positive().max(16),
+}).strict();
+const windowInfoSchema = z.object({
+  windows: z.array(desktopWindowSchema).max(1000),
+  activeWindowId: z.string().max(4096).nullable(),
+}).strict();
+const clipboardResultSchema = z.object({
+  text: z.string().max(1024 * 1024),
+}).strict();
+const permissionStatusSchema = z.object({
+  granted: z.boolean(),
+  instructions: z.array(safeRpcTextSchema).max(100).optional(),
+}).strict();
+const performanceMetricsSchema = z.object({
+  fps: finiteNumberSchema.nonnegative().optional(),
+  memoryUsageMb: finiteNumberSchema.nonnegative(),
+  cpuPercent: finiteNumberSchema.nonnegative().optional(),
+}).strict();
+const monitorInfoSchema = z.object({
+  index: z.number().int().safe().nonnegative(),
+  name: z.string().max(4096),
+  x: finiteNumberSchema,
+  y: finiteNumberSchema,
+  width: finiteNumberSchema.positive(),
+  height: finiteNumberSchema.positive(),
+  isPrimary: z.boolean(),
+}).strict();
+const monitorsResultSchema = z.object({
+  monitors: z.array(monitorInfoSchema).max(100),
+}).strict();
+const rpcResponseSchema = z.object({
+  jsonrpc: z.literal("2.0"),
+  id: z.number().int().safe(),
+  result: z.unknown().optional(),
+  error: z.object({
+    code: z.number().int().safe(),
+  }).passthrough().optional(),
+}).strict();
+
+interface RpcResponseEnvelope {
+  id: number;
+  result?: unknown;
+  errorCode?: number;
+}
+
+function parseRpcResponse(value: unknown): RpcResponseEnvelope | null {
+  const parsed = rpcResponseSchema.safeParse(value);
+  if (!parsed.success) return null;
+  return parsed.data.error
+    ? { id: parsed.data.id, errorCode: parsed.data.error.code }
+    : { id: parsed.data.id, result: parsed.data.result };
+}
+function exceedsJsonDepth(text: string, maxDepth: number): boolean {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (const character of text) {
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === "\"") inString = false;
+      continue;
+    }
+    if (character === "\"") {
+      inString = true;
+    } else if (character === "{" || character === "[") {
+      depth += 1;
+      if (depth > maxDepth) return true;
+    } else if (character === "}" || character === "]") {
+      depth -= 1;
+      if (depth < 0) return true;
+    }
+  }
+  return depth !== 0 || inString;
+}
 
 interface PendingRequest {
   resolve: (value: unknown) => void;
@@ -77,14 +204,15 @@ export class DesktopClient extends EventEmitter {
   private gradleLauncher: GradleLauncher;
   private requestId = 0;
   private pendingRequests = new Map<number, PendingRequest>();
-  private readonly logRing = new LogRing(10_000);
+  private readonly logRing = new LogRing();
   private state: DesktopState = {
     status: "stopped",
     crashCount: 0,
     targetPid: null,
   };
   private lastLaunchOptions: RawLaunchOptions | null = null;
-  private readline: readline.Interface | null = null;
+  private stdoutBuffer = "";
+  private stdoutDecoder: StringDecoder | null = null;
   private lifecycleQueue: Promise<void> = Promise.resolve();
   private lifecycleEpoch = 0;
   private restartTimer?: NodeJS.Timeout;
@@ -158,10 +286,18 @@ export class DesktopClient extends EventEmitter {
           JAVA_HOME: process.env.JAVA_HOME || (() => {
             if (process.platform !== "darwin") return "";
             try {
-              return execFileSync("/usr/libexec/java_home", ["-v", "21"], { encoding: "utf-8", timeout: 3000 }).trim();
+              return execFileSync("/usr/libexec/java_home", ["-v", "21"], {
+                encoding: "utf-8",
+                timeout: 3000,
+                maxBuffer: 64 * 1024,
+              }).trim();
             } catch {
               try {
-                return execFileSync("/usr/libexec/java_home", [], { encoding: "utf-8", timeout: 3000 }).trim();
+                return execFileSync("/usr/libexec/java_home", [], {
+                  encoding: "utf-8",
+                  timeout: 3000,
+                  maxBuffer: 64 * 1024,
+                }).trim();
               } catch { return ""; }
             }
           })(),
@@ -171,10 +307,26 @@ export class DesktopClient extends EventEmitter {
       this.state.pid = child.pid;
 
       if (child.stdout) {
-        const lines = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
-        this.readline = lines;
-        lines.on("line", (line) => {
-          if (this.process === child && epoch === this.lifecycleEpoch) this.handleLine(line);
+        const decoder = new StringDecoder("utf8");
+        this.stdoutDecoder = decoder;
+        child.stdout.on("data", (data: Buffer) => {
+          if (this.process !== child || epoch !== this.lifecycleEpoch) return;
+          const chunk = decoder.write(data);
+          if (this.stdoutBuffer.length + chunk.length > MAX_RPC_MESSAGE_BYTES) {
+            this.handleProcessFailure(
+              child,
+              epoch,
+              new Error("Desktop companion response exceeded the size limit"),
+            );
+            return;
+          }
+          this.stdoutBuffer += chunk;
+          let newline: number;
+          while ((newline = this.stdoutBuffer.indexOf("\n")) >= 0) {
+            const line = this.stdoutBuffer.slice(0, newline);
+            this.stdoutBuffer = this.stdoutBuffer.slice(newline + 1);
+            this.handleLine(line);
+          }
         });
       }
       child.stderr?.on("data", (data: Buffer) => {
@@ -357,14 +509,16 @@ export class DesktopClient extends EventEmitter {
     const trimmed = line.trim();
     if (!trimmed) return;
 
-    // Try to parse as JSON-RPC response
     if (trimmed.startsWith("{")) {
       try {
-        const response: JsonRpcResponse = JSON.parse(trimmed);
-        this.handleResponse(response);
-        return;
+        if (exceedsJsonDepth(trimmed, 64)) return;
+        const response = parseRpcResponse(JSON.parse(trimmed));
+        if (response) {
+          this.handleResponse(response);
+          return;
+        }
       } catch {
-        // Not JSON, treat as log
+        // Non-JSON output is retained only as a bounded log entry.
       }
     }
 
@@ -375,17 +529,15 @@ export class DesktopClient extends EventEmitter {
   /**
    * Handle JSON-RPC response
    */
-  private handleResponse(response: JsonRpcResponse): void {
+  private handleResponse(response: RpcResponseEnvelope): void {
     const pending = this.pendingRequests.get(response.id);
-    if (!pending) {
-      return; // Unknown response
-    }
+    if (!pending) return;
 
     this.pendingRequests.delete(response.id);
     clearTimeout(pending.timeout);
 
-    if (response.error) {
-      pending.reject(new Error(`${response.error.message} (code: ${response.error.code})`));
+    if (response.errorCode !== undefined) {
+      pending.reject(new Error(`Desktop companion request failed (code: ${response.errorCode})`));
     } else {
       pending.resolve(response.result);
     }
@@ -483,8 +635,7 @@ export class DesktopClient extends EventEmitter {
           this.restartTimer = undefined;
           if (epoch !== this.lifecycleEpoch || this.lastLaunchOptions !== options) return;
           this.launch(options).catch((restartError: unknown) => {
-            const message = restartError instanceof Error ? restartError.message : String(restartError);
-            console.error(`Failed to restart: ${message}`);
+            console.error(`Failed to restart: ${sanitizeErrorMessage(restartError)}`);
           });
         }, 1_000);
       } else {
@@ -495,11 +646,11 @@ export class DesktopClient extends EventEmitter {
 
   private async detachProcess(child: ChildProcess, terminate: boolean): Promise<void> {
     if (this.process !== child) return;
-    if (this.readline) {
-      this.readline.removeAllListeners();
-      this.readline.close();
-      this.readline = null;
+    if (this.stdoutDecoder) {
+      this.stdoutDecoder.end();
+      this.stdoutDecoder = null;
     }
+    this.stdoutBuffer = "";
     child.stdout?.removeAllListeners();
     child.stderr?.removeAllListeners();
     child.stdin?.removeAllListeners();
@@ -525,11 +676,14 @@ export class DesktopClient extends EventEmitter {
   /**
    * Send JSON-RPC request
    */
-  private async sendRequest<T>(method: string, params?: Record<string, unknown>): Promise<T> {
+  private async sendRequest(method: string, params?: Record<string, unknown>): Promise<unknown> {
     const child = this.process;
     const stdin = child?.stdin;
     if (!this.isRunning() || !child || !stdin) {
       throw new Error("Desktop app is not running");
+    }
+    if (this.pendingRequests.size >= MAX_PENDING_REQUESTS) {
+      throw new Error("Desktop companion has too many pending requests");
     }
 
     const id = ++this.requestId;
@@ -539,8 +693,12 @@ export class DesktopClient extends EventEmitter {
       method,
       params,
     };
+    const payload = `${JSON.stringify(request)}\n`;
+    if (Buffer.byteLength(payload) > MAX_RPC_MESSAGE_BYTES) {
+      throw new Error("Desktop request exceeded the size limit");
+    }
 
-    return new Promise<T>((resolve, reject) => {
+    return new Promise<unknown>((resolve, reject) => {
       const fail = (error: Error) => {
         const pending = this.pendingRequests.get(id);
         if (!pending) return;
@@ -553,13 +711,13 @@ export class DesktopClient extends EventEmitter {
         reject(new Error(`Request timeout: ${method}`));
       }, DESKTOP.RPC_TIMEOUT_MS);
       this.pendingRequests.set(id, {
-        resolve: resolve as (value: unknown) => void,
+        resolve,
         reject,
         timeout,
       });
 
       try {
-        stdin.write(`${JSON.stringify(request)}\n`, (error) => {
+        stdin.write(payload, (error) => {
           if (error) fail(new Error(`Desktop request write failed: ${error.message}`));
         });
       } catch (error) {
@@ -581,7 +739,9 @@ export class DesktopClient extends EventEmitter {
    * Take screenshot
    */
   async screenshotRaw(options?: ScreenshotOptions): Promise<Buffer> {
-    const result = await this.sendRequest<ScreenshotResult>("screenshot", options as Record<string, unknown>);
+    const result = screenshotResultSchema.parse(
+      await this.sendRequest("screenshot", options ? { ...options } : undefined),
+    );
     return Buffer.from(result.base64, "base64");
   }
 
@@ -589,7 +749,9 @@ export class DesktopClient extends EventEmitter {
    * Take screenshot and return base64
    */
   async screenshot(options?: ScreenshotOptions): Promise<string> {
-    const result = await this.sendRequest<ScreenshotResult>("screenshot", options as Record<string, unknown>);
+    const result = screenshotResultSchema.parse(
+      await this.sendRequest("screenshot", options ? { ...options } : undefined),
+    );
     return result.base64;
   }
 
@@ -597,7 +759,9 @@ export class DesktopClient extends EventEmitter {
    * Get screenshot with metadata
    */
   async screenshotWithMeta(options?: ScreenshotOptions): Promise<ScreenshotResult> {
-    return this.sendRequest<ScreenshotResult>("screenshot", options as Record<string, unknown>);
+    return screenshotResultSchema.parse(
+      await this.sendRequest("screenshot", options ? { ...options } : undefined),
+    );
   }
 
   /**
@@ -620,7 +784,9 @@ export class DesktopClient extends EventEmitter {
     if (resolvedPid === undefined) {
       throw new Error("No target PID. Launch a native app (bundleId/appPath) or pass pid explicitly.");
     }
-    return this.sendRequest<TapByTextResult>("tap_by_text", { text, pid: resolvedPid, exactMatch });
+    return tapByTextResultSchema.parse(
+      await this.sendRequest("tap_by_text", { text, pid: resolvedPid, exactMatch }),
+    );
   }
 
   /**
@@ -673,7 +839,9 @@ export class DesktopClient extends EventEmitter {
    * Get UI hierarchy
    */
   async getUiHierarchy(windowId?: string): Promise<UiHierarchy> {
-    return this.sendRequest<UiHierarchy>("get_ui_hierarchy", { windowId });
+    return uiHierarchySchema.parse(
+      await this.sendRequest("get_ui_hierarchy", { windowId }),
+    );
   }
 
   /**
@@ -688,7 +856,7 @@ export class DesktopClient extends EventEmitter {
    * Get window information
    */
   async getWindowInfo(): Promise<WindowInfo> {
-    return this.sendRequest<WindowInfo>("get_window_info");
+    return windowInfoSchema.parse(await this.sendRequest("get_window_info"));
   }
 
   /**
@@ -709,8 +877,8 @@ export class DesktopClient extends EventEmitter {
    * Get clipboard content
    */
   async getClipboard(): Promise<string> {
-    const result = await this.sendRequest<{ text: string }>("get_clipboard");
-    return result.text ?? "";
+    const result = clipboardResultSchema.parse(await this.sendRequest("get_clipboard"));
+    return result.text;
   }
 
   /**
@@ -724,7 +892,7 @@ export class DesktopClient extends EventEmitter {
    * Check accessibility permissions
    */
   async checkPermissions(): Promise<PermissionStatus> {
-    return this.sendRequest<PermissionStatus>("check_permissions");
+    return permissionStatusSchema.parse(await this.sendRequest("check_permissions"));
   }
 
   /**
@@ -745,7 +913,9 @@ export class DesktopClient extends EventEmitter {
    * Get performance metrics
    */
   async getPerformanceMetrics(): Promise<PerformanceMetrics> {
-    return this.sendRequest<PerformanceMetrics>("get_performance_metrics");
+    return performanceMetricsSchema.parse(
+      await this.sendRequest("get_performance_metrics"),
+    );
   }
 
   /**
@@ -767,7 +937,7 @@ export class DesktopClient extends EventEmitter {
    * Get list of connected monitors (multi-monitor support)
    */
   async getMonitors(): Promise<MonitorInfo[]> {
-    const result = await this.sendRequest<MonitorsResult>("get_monitors");
+    const result = monitorsResultSchema.parse(await this.sendRequest("get_monitors"));
     return result.monitors;
   }
 

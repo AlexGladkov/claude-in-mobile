@@ -31,10 +31,7 @@ pub fn validate_permission_name(s: &str) -> Result<()> {
         .bytes()
         .all(|b| matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_'));
     if !ok {
-        bail!(
-            "Invalid permission name '{}': only alphanumerics, dots, and underscores allowed",
-            s
-        );
+        bail!("Invalid permission name: use only alphanumerics, dots, and underscores");
     }
     Ok(())
 }
@@ -54,25 +51,40 @@ pub fn validate_relative_path(s: &str) -> Result<()> {
         bail!("Path too long (max 1024 chars)");
     }
     if s.starts_with('/') {
-        bail!("Path must be relative to the app sandbox (no leading '/'): '{}'", s);
+        bail!("Path must be relative to the app sandbox");
     }
     // Reject `..` as a path segment (allow filenames that merely contain ".." like "a..b" is also rejected
     // for safety — sandbox paths never need this).
     if s.split('/').any(|seg| seg == ".." || seg.contains("..")) {
-        bail!("Path traversal ('..') is not allowed: '{}'", s);
+        bail!("Path traversal is not allowed");
     }
     for b in s.bytes() {
         let bad = matches!(
             b,
-            b';' | b'&' | b'|' | b'<' | b'>' | b'$' | b'(' | b')' | b'{' | b'}'
-            | b'*' | b'?' | b'[' | b']' | b'\\' | b'\'' | b'"' | b'`'
-            | b'\n' | b'\r' | b'\t' | 0
+            b';' | b'&'
+                | b'|'
+                | b'<'
+                | b'>'
+                | b'$'
+                | b'('
+                | b')'
+                | b'{'
+                | b'}'
+                | b'*'
+                | b'?'
+                | b'['
+                | b']'
+                | b'\\'
+                | b'\''
+                | b'"'
+                | b'`'
+                | b'\n'
+                | b'\r'
+                | b'\t'
+                | 0
         );
         if bad || b == b' ' {
-            bail!(
-                "Path '{}' contains a disallowed character (0x{:02x})",
-                s, b
-            );
+            bail!("Path contains a disallowed character");
         }
     }
     Ok(())
@@ -95,10 +107,7 @@ pub fn validate_pref_key(s: &str) -> Result<()> {
         .bytes()
         .all(|b| matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'));
     if !ok {
-        bail!(
-            "Invalid preference key '{}': only alphanumerics, dots, underscores, and hyphens allowed",
-            s
-        );
+        bail!("Invalid preference key");
     }
     Ok(())
 }
@@ -116,16 +125,13 @@ pub fn validate_xml_filename(s: &str) -> Result<()> {
         bail!("XML filename too long (max 255 chars)");
     }
     if !s.ends_with(".xml") {
-        bail!("XML filename '{}' must end with '.xml'", s);
+        bail!("XML filename must end with '.xml'");
     }
     let ok = s
         .bytes()
         .all(|b| matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'));
     if !ok {
-        bail!(
-            "Invalid XML filename '{}': only alphanumerics, dots, underscores, and hyphens allowed",
-            s
-        );
+        bail!("Invalid XML filename");
     }
     Ok(())
 }
@@ -143,11 +149,24 @@ pub fn validate_sqlite_value(s: &str) -> Result<()> {
     for b in s.bytes() {
         let bad = matches!(
             b,
-            b';' | b'|' | b'&' | b'<' | b'>' | b'$' | b'(' | b')' | b'`'
-            | b'\\' | b'\'' | b'"' | b'\n' | b'\r' | b'\t' | 0
+            b';' | b'|'
+                | b'&'
+                | b'<'
+                | b'>'
+                | b'$'
+                | b'('
+                | b')'
+                | b'`'
+                | b'\\'
+                | b'\''
+                | b'"'
+                | b'\n'
+                | b'\r'
+                | b'\t'
+                | 0
         );
         if bad {
-            bail!("Value contains a disallowed character (0x{:02x})", b);
+            bail!("Value contains a disallowed character");
         }
     }
     Ok(())
@@ -168,10 +187,64 @@ pub fn validate_osascript_key(s: &str) -> Result<()> {
         .bytes()
         .all(|b| matches!(b, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'_'));
     if !ok {
-        bail!(
-            "Invalid key '{}': only alphanumerics and underscores allowed for AppleScript fallback",
-            s
-        );
+        bail!("Invalid key for AppleScript fallback");
+    }
+    Ok(())
+}
+
+/// Validate an Apple bundle identifier passed to `simctl`.
+pub fn validate_bundle_identifier(value: &str) -> Result<()> {
+    let mut segments = value.split('.');
+    if value.len() > 255
+        || segments.clone().count() < 2
+        || segments.any(|segment| {
+            !segment
+                .bytes()
+                .next()
+                .is_some_and(|byte| byte.is_ascii_alphanumeric())
+                || !segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        })
+    {
+        bail!("Invalid bundle identifier");
+    }
+    Ok(())
+}
+
+/// Validate a simulator privacy service name.
+pub fn validate_simulator_service(value: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphanumeric())
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        bail!("Invalid simulator privacy service");
+    }
+    Ok(())
+}
+
+/// Validate a custom or standard URL without reflecting it in diagnostics.
+pub fn validate_deep_link(value: &str) -> Result<()> {
+    let Some((scheme, _)) = value.split_once(':') else {
+        bail!("Invalid deep-link URL");
+    };
+    if value.len() > 8192
+        || !scheme
+            .bytes()
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphabetic())
+        || !scheme
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
+        || value.bytes().any(|byte| byte.is_ascii_control())
+    {
+        bail!("Invalid deep-link URL");
     }
     Ok(())
 }
@@ -252,5 +325,16 @@ mod tests {
         assert!(validate_osascript_key("").is_err());
         assert!(validate_osascript_key("a\" & (do shell script \"id\") & \"").is_err());
         assert!(validate_osascript_key("a b").is_err());
+    }
+
+    #[test]
+    fn simulator_identifiers_and_urls_reject_option_and_control_injection() {
+        assert!(validate_bundle_identifier("com.example.my-app").is_ok());
+        assert!(validate_bundle_identifier("--help").is_err());
+        assert!(validate_simulator_service("photos-add").is_ok());
+        assert!(validate_simulator_service("--help").is_err());
+        assert!(validate_deep_link("my-app://screen?id=1").is_ok());
+        assert!(validate_deep_link("--help").is_err());
+        assert!(validate_deep_link("my-app://screen\nsecret").is_err());
     }
 }

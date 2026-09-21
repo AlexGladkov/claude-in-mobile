@@ -76,6 +76,14 @@ def _validate_bundle_id(bundle_id):
 # SECURITY I4: Value sanitization — no raw heap bytes or secret-like values.
 # ---------------------------------------------------------------------------
 _MAX_VALUE_LEN = 512
+_MAX_REQUEST_BYTES = 1024 * 1024
+_MAX_EVENTS = 1024
+_MAX_OBJECTS = 4096
+_MAX_FRAMES = 32
+_MAX_LOCALS_PER_FRAME = 128
+_MAX_EXPRESSION_LEN = 64 * 1024
+_MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024
+_MAX_SESSIONS = 16
 _SECRET_NAME_RE = re.compile(
     r'(?:password|passwd|secret|token|api.?key|auth.?key|bearer|credential|private.?key|access.?key)',
     re.IGNORECASE
@@ -137,6 +145,46 @@ def log(*args):
     """Diagnostics go to stderr only — stdout is reserved for the protocol (I7)."""
     print("[ios-debug-daemon]", *args, file=sys.stderr, flush=True)
 
+def _run_bounded(command, label, merge_stderr=False):
+    """Run a fixed argv command with bounded output and a hard timeout."""
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT if merge_stderr else subprocess.DEVNULL,
+    )
+    output = bytearray()
+    exceeded = threading.Event()
+
+    def drain():
+        while True:
+            chunk = process.stdout.read(64 * 1024)
+            if not chunk:
+                return
+            remaining = _MAX_COMMAND_OUTPUT_BYTES - len(output)
+            if remaining > 0:
+                output.extend(chunk[:remaining])
+            if len(chunk) > remaining:
+                exceeded.set()
+                process.kill()
+                return
+
+    reader = threading.Thread(target=drain, name="bounded-command-output", daemon=True)
+    reader.start()
+    try:
+        return_code = process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        reader.join(timeout=1)
+        raise RpcError("%s timed out" % label)
+    reader.join(timeout=1)
+    if exceeded.is_set():
+        raise RpcError("%s output exceeded the size limit" % label)
+    text = bytes(output).decode("utf-8", errors="replace")
+    if return_code != 0:
+        raise RpcError("%s failed: %s" % (label, _sanitize_value("", text.strip())))
+    return text
+
 
 # ---------------------------------------------------------------------------
 # Exceptions carrying a client-facing message.
@@ -183,6 +231,8 @@ class Session:
     # -- object registry ---------------------------------------------------
     def register_object(self, sbvalue):
         """Assign and remember a stable objectId for an object-typed SBValue."""
+        if len(self._objects) >= _MAX_OBJECTS:
+            self._objects.pop(next(iter(self._objects)))
         oid = "obj-%d" % next(self._object_ids)
         self._objects[oid] = sbvalue
         return oid
@@ -198,6 +248,8 @@ class Session:
         with self._lock:
             cur = next(self._cursor)
             self._events.append((cur, event))
+            if len(self._events) > _MAX_EVENTS:
+                del self._events[:len(self._events) - _MAX_EVENTS]
 
     def drain(self, from_cursor):
         """Return events with cursor >= from_cursor and the next cursor value."""
@@ -341,9 +393,13 @@ class Daemon:
 
     @staticmethod
     def _thread_by_id(process, thread_id):
-        if thread_id is None:
-            raise RpcError("threadId is required")
-        t = process.GetThreadByID(int(thread_id))
+        try:
+            parsed_thread_id = int(thread_id)
+        except (TypeError, ValueError):
+            raise RpcError("threadId must be an integer")
+        if parsed_thread_id < 0:
+            raise RpcError("threadId must be non-negative")
+        t = process.GetThreadByID(parsed_thread_id)
         if not t or not t.IsValid():
             raise RpcError("no such thread: %s" % thread_id)
         return t
@@ -352,12 +408,11 @@ class Daemon:
     def _booted_pid_for_bundle(bundle_id):
         """Ask simctl for the pid of a running app on the booted simulator."""
         try:
-            out = subprocess.check_output(
+            out = _run_bounded(
                 ["xcrun", "simctl", "spawn", "booted", "launchctl", "list"],
-                stderr=subprocess.DEVNULL,
-                text=True,
+                "simctl launchctl list",
             )
-        except Exception:
+        except RpcError:
             out = ""
         # launchctl list lines: "<pid>\t<status>\tUIKitApplication:<bundle>[...]"
         # Anchor on the exact "UIKitApplication:<bundle>[" token so that
@@ -401,6 +456,8 @@ class Daemon:
         bundle_id = params.get("bundleId")
         # SECURITY I1: re-validate bundleId inside the daemon — independent trust boundary.
         _validate_bundle_id(bundle_id)
+        if len(self.sessions) >= _MAX_SESSIONS:
+            raise RpcError("too many active debug sessions")
 
         launch = bool(params.get("launch"))
         # `wait` only meaningful with launch; default True so we get the
@@ -413,14 +470,7 @@ class Daemon:
             if wait:
                 cmd.append("--wait-for-debugger")
             cmd += ["booted", bundle_id]
-            try:
-                out = subprocess.check_output(
-                    cmd, stderr=subprocess.STDOUT, text=True
-                )
-            except subprocess.CalledProcessError as exc:
-                raise RpcError(
-                    "simctl launch failed: %s" % (exc.output or exc).strip()
-                )
+            out = _run_bounded(cmd, "simctl launch", merge_stderr=True)
             # Output: "<bundle>: <pid>"
             pid = self._parse_launch_pid(out)
             if pid is None:
@@ -484,9 +534,9 @@ class Daemon:
         sess = self._session(params)
         file = params.get("file")
         line = params.get("line")
-        if not file or line is None:
-            raise RpcError("file and line are required")
-        bp = sess.target.BreakpointCreateByLocation(str(file), int(line))
+        if not isinstance(file, str) or not file or len(file) > 4096 or line is None:
+            raise RpcError("file and line are required and must be within limits")
+        bp = sess.target.BreakpointCreateByLocation(file, int(line))
         return {
             "breakpointId": bp.GetID(),
             "verified": bp.GetNumLocations() > 0,
@@ -495,9 +545,9 @@ class Daemon:
     def setFunctionBreakpoint(self, params):
         sess = self._session(params)
         symbol = params.get("symbol")
-        if not symbol:
-            raise RpcError("symbol is required")
-        bp = sess.target.BreakpointCreateByName(str(symbol))
+        if not isinstance(symbol, str) or not symbol or len(symbol) > 4096:
+            raise RpcError("symbol is required and must be within limits")
+        bp = sess.target.BreakpointCreateByName(symbol)
         return {
             "breakpointId": bp.GetID(),
             "verified": bp.GetNumLocations() > 0,
@@ -519,14 +569,23 @@ class Daemon:
         bp_id = params.get("breakpointId")
         if bp_id is None:
             raise RpcError("breakpointId is required")
-        ok = sess.target.BreakpointDelete(int(bp_id))
+        try:
+            parsed_bp_id = int(bp_id)
+        except (TypeError, ValueError):
+            raise RpcError("breakpointId must be an integer")
+        ok = sess.target.BreakpointDelete(parsed_bp_id)
         if not ok:
             raise RpcError("no breakpoint with id %s" % bp_id)
         return {}
 
     def poll(self, params):
         sess = self._session(params)
-        cursor = int(params.get("cursor", 1))
+        try:
+            cursor = int(params.get("cursor", 1))
+        except (TypeError, ValueError):
+            raise RpcError("cursor must be an integer")
+        if cursor < 0:
+            raise RpcError("cursor must be non-negative")
         events, next_cursor = sess.drain(cursor)
         return {"events": events, "nextCursor": next_cursor}
 
@@ -534,13 +593,13 @@ class Daemon:
         sess = self._session(params)
         thread = self._thread_by_id(sess.process, params.get("threadId"))
         frames = []
-        for i in range(thread.GetNumFrames()):
+        for i in range(min(thread.GetNumFrames(), _MAX_FRAMES)):
             frame = thread.GetFrameAtIndex(i)
             loc = Session._frame_location(frame)
             locals_out = []
             # arguments=True, locals=True, statics=False, in_scope_only=True
             variables = frame.GetVariables(True, True, False, True)
-            for j in range(variables.GetSize()):
+            for j in range(min(variables.GetSize(), _MAX_LOCALS_PER_FRAME)):
                 v = variables.GetValueAtIndex(j)
                 entry = {"name": v.GetName()}
                 entry.update(self._serialize_value(sess, v))
@@ -560,7 +619,12 @@ class Daemon:
     def inspect(self, params):
         sess = self._session(params)
         oid = params.get("objectId")
-        max_depth = int(params.get("maxDepth", 1))
+        try:
+            max_depth = int(params.get("maxDepth", 1))
+        except (TypeError, ValueError):
+            raise RpcError("maxDepth must be an integer")
+        if max_depth < 0 or max_depth > 4:
+            raise RpcError("maxDepth must be between 0 and 4")
         root = sess.resolve_object(oid)
         seen = set()
         result = self._inspect_value(sess, root, max_depth, seen)
@@ -598,12 +662,12 @@ class Daemon:
         sess = self._session(params)
         thread = self._thread_by_id(sess.process, params.get("threadId"))
         expr = params.get("expr")
-        if not expr:
-            raise RpcError("expr is required")
+        if not isinstance(expr, str) or not expr or len(expr) > _MAX_EXPRESSION_LEN:
+            raise RpcError("expr is required and must be within limits")
         frame = thread.GetSelectedFrame()
         if not frame or not frame.IsValid():
             frame = thread.GetFrameAtIndex(0)
-        val = frame.EvaluateExpression(str(expr))
+        val = frame.EvaluateExpression(expr)
         err = val.GetError()
         if err.Fail():
             raise RpcError("eval error: %s" % (err.GetCString() or "unknown"))
@@ -616,8 +680,11 @@ class Daemon:
         thread = self._thread_by_id(sess.process, params.get("threadId"))
         name = params.get("name")
         value = params.get("value")
-        if name is None or value is None:
-            raise RpcError("name and value are required")
+        if (
+            not isinstance(name, str) or not name or len(name) > 256
+            or not isinstance(value, str) or len(value) > _MAX_EXPRESSION_LEN
+        ):
+            raise RpcError("name and value are required and must be within limits")
         frame = thread.GetSelectedFrame()
         if not frame or not frame.IsValid():
             frame = thread.GetFrameAtIndex(0)
@@ -706,9 +773,11 @@ class Daemon:
     }
 
     def dispatch(self, method, params):
-        if method not in self._VERBS:
-            raise RpcError("unknown method: %s" % method)
-        return getattr(self, method)(params or {})
+        if not isinstance(method, str) or method not in self._VERBS:
+            raise RpcError("unknown method")
+        if not isinstance(params, dict):
+            raise RpcError("params must be an object")
+        return getattr(self, method)(params)
 
 
 # ---------------------------------------------------------------------------
@@ -718,14 +787,31 @@ def main():
     daemon = Daemon()
     log("ready — lldb", lldb.SBDebugger.GetVersionString())
 
-    for raw in sys.stdin:
-        line = raw.strip()
+    while True:
+        raw = sys.stdin.buffer.readline(_MAX_REQUEST_BYTES + 1)
+        if not raw:
+            break
+        if len(raw) > _MAX_REQUEST_BYTES:
+            if not raw.endswith(b"\n"):
+                while True:
+                    remainder = sys.stdin.buffer.readline(_MAX_REQUEST_BYTES + 1)
+                    if not remainder or remainder.endswith(b"\n"):
+                        break
+            _write_error(None, "request exceeds the 1 MiB limit")
+            continue
+        try:
+            line = raw.decode("utf-8").strip()
+        except UnicodeDecodeError:
+            _write_error(None, "request is not valid UTF-8")
+            continue
         if not line:
             continue
 
         req_id = None
         try:
             req = json.loads(line)
+            if not isinstance(req, dict):
+                raise RpcError("request must be an object")
             req_id = req.get("id")
             method = req.get("method")
             params = req.get("params") or {}
@@ -747,8 +833,9 @@ def main():
 
 
 def _write_error(req_id, message):
+    safe_message = _sanitize_value("", str(message))
     sys.stdout.write(
-        json.dumps({"id": req_id, "ok": False, "error": message}) + "\n"
+        json.dumps({"id": req_id, "ok": False, "error": safe_message}) + "\n"
     )
     sys.stdout.flush()
 

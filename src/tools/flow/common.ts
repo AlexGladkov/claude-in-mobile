@@ -7,10 +7,10 @@ import { FLOW } from "../../constants/timeouts.js";
 
 // Actions explicitly blocked from flow execution (security-sensitive).
 // Everything else registered in the registry is allowed.
-export const FLOW_BLOCKED_ACTIONS = new Set([
-  "system_shell",
-  "browser_evaluate",
-]);
+export const FLOW_BLOCKED_ACTIONS: Readonly<Record<string, true>> = {
+  system_shell: true,
+  browser_evaluate: true,
+};
 
 /**
  * Check whether an action is allowed in flow_batch / flow_run / flow_parallel.
@@ -21,7 +21,7 @@ export const FLOW_BLOCKED_ACTIONS = new Set([
  * new tool or alias.
  */
 export function isFlowActionAllowed(actionName: string): boolean {
-  if (FLOW_BLOCKED_ACTIONS.has(actionName)) return false;
+  if (Object.hasOwn(FLOW_BLOCKED_ACTIONS, actionName)) return false;
   return getRegisteredToolNames().has(actionName);
 }
 
@@ -91,28 +91,22 @@ const FAST_TRACK_KEYS: Record<string, number> = {
   DPAD_RIGHT: 22, DPAD_CENTER: 23, APP_SWITCH: 187, WAKEUP: 224,
 };
 
-/** Actions eligible for fast-track (canonical + common aliases) */
-const FAST_TRACK_TAP = new Set(["input_tap", "tap", "click"]);
-const FAST_TRACK_KEY = new Set(["input_key", "press_key", "press_button"]);
-const FAST_TRACK_TEXT = new Set(["input_text", "type_text", "type"]);
+/** Actions eligible for fast-track (canonical + common aliases). */
+const FAST_TRACK_ACTION_KIND: Readonly<Record<string, "tap" | "key" | "text">> = {
+  input_tap: "tap",
+  tap: "tap",
+  click: "tap",
+  input_key: "key",
+  press_key: "key",
+  press_button: "key",
+  input_text: "text",
+  type_text: "text",
+  type: "text",
+};
 
-/** Shell-escape text for ADB input (mirrors AdbClient.inputText logic) */
-function escapeAdbText(text: string): string {
-  return text
-    .replace(/[\n\r]/g, "")
-    .replace(/\\/g, "\\\\")
-    .replace(/"/g, '\\"')
-    .replace(/'/g, "\\'")
-    .replace(/`/g, "\\`")
-    .replace(/\$/g, "\\$")
-    .replace(/ /g, "%s")
-    .replace(/&/g, "\\&")
-    .replace(/\(/g, "\\(")
-    .replace(/\)/g, "\\)")
-    .replace(/</g, "\\<")
-    .replace(/>/g, "\\>")
-    .replace(/\|/g, "\\|")
-    .replace(/;/g, "\\;");
+/** Convert spaces to the encoding expected by Android's `input text`. */
+function encodeAdbText(text: string): string {
+  return text.replace(/[\n\r]/g, "").replace(/ /g, "%s");
 }
 
 export interface FastTrackResult {
@@ -133,40 +127,42 @@ export async function turboFastTrack(
   if (platform !== "android") return null;
 
   const action = step.action;
+  const actionKind = FAST_TRACK_ACTION_KIND[action];
   const args = step.args ?? {};
-  let shellCmd: string | null = null;
+  let actionArgs: string[] | null = null;
   let message = "";
 
   // input_tap — only raw x/y (no element resolution)
-  if (FAST_TRACK_TAP.has(action)
+  if (actionKind === "tap"
       && typeof args.x === "number" && typeof args.y === "number"
       && !args.text && !args.resourceId && !args.index && !args.label) {
-    const scaled = await applyScale(args.x as number, args.y as number, platform, ctx, deviceId);
-    shellCmd = `input tap ${scaled.x} ${scaled.y}`;
+    const scaled = await applyScale(args.x, args.y, platform, ctx, deviceId);
+    actionArgs = ["input", "tap", String(scaled.x), String(scaled.y)];
     message = `Tapped at (${scaled.x}, ${scaled.y})`;
   }
 
   // input_key
-  else if (FAST_TRACK_KEY.has(action) && args.key) {
-    const key = (args.key as string).toUpperCase();
-    const code = FAST_TRACK_KEYS[key] ?? parseInt(key);
-    if (isNaN(code)) return null;
-    shellCmd = `input keyevent ${code}`;
+  else if (actionKind === "key" && args.key) {
+    const key = String(args.key).toUpperCase();
+    const mapped = FAST_TRACK_KEYS[key];
+    const code = mapped ?? Number(key);
+    if (!Number.isSafeInteger(code) || code < 0) return null;
+    actionArgs = ["input", "keyevent", String(code)];
     message = `Pressed key: ${key}`;
   }
 
   // input_text
-  else if (FAST_TRACK_TEXT.has(action) && args.text) {
-    const escaped = escapeAdbText(args.text as string);
-    shellCmd = `input text "${escaped}"`;
-    message = `Entered text: "${(args.text as string).slice(0, 50)}"`;
+  else if (actionKind === "text" && args.text) {
+    const text = String(args.text);
+    actionArgs = ["input", "text", encodeAdbText(text)];
+    message = `Entered ${text.length} character(s)`;
   }
 
-  if (!shellCmd) return null;
+  if (!actionArgs) return null;
 
   try {
     const adb = ctx.deviceManager.getAndroidClient(deviceId);
-    const { uiXml } = await adb.execWithUiDump(shellCmd);
+    const { uiXml } = await adb.execWithUiDump(actionArgs);
 
     let uiCompact = "";
     if (uiXml) {
