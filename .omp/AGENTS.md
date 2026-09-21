@@ -39,9 +39,10 @@ Runtime assignments live in `.omp/config.yml`:
 
 | Tier | Model | Effort | Agents |
 |---|---|---|---|
-| critical review | `openai-codex/gpt-5.6-sol` | `xhigh` | `architect-reviewer`, `security-auditor`, `code-reviewer` |
-| implementation | `openai-codex/gpt-5.6-luna` | `max` | `mcp-developer`, language specialists, `security-engineer` |
-| support | `openai-codex/gpt-5.6-terra` | `high` | `devops-engineer`, `test-automator`, `performance-engineer` |
+| strategy | `openai-codex/gpt-5.6-sol` | `xhigh` | `architect-reviewer`, `research-analyst`, `project-manager`, `knowledge-synthesizer` |
+| execution | `openai-codex/gpt-5.6-luna` | `max` | `mcp-developer`, `typescript-pro`, `node-specialist`, `rust-engineer`, `swift-expert`, `kotlin-specialist`, `cli-developer`, `refactoring-specialist`, `documentation-engineer` |
+| review | `openai-codex/gpt-5.6-luna` | `max` | `code-reviewer`, `security-auditor`, `test-automator`, `performance-engineer`, `qa-expert`, `debugger`, `error-detective` |
+| devops | `openai-codex/gpt-5.6-luna` | `max` | all packaged infrastructure, deployment, build, incident-response, SRE, and Git workflow agents |
 
 Do not pass a task-level `effort` override unless the user explicitly requests a different effort for that dispatch.
 
