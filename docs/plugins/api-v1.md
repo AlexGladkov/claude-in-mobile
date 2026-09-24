@@ -1,8 +1,8 @@
 # Plugin API v1 — Reference
 
 Public contract between the claude-in-mobile microkernel and built-in /
-third-party plugins. The contract lives in the standalone package
-`@claude-in-mobile/plugin-api`, versioned independently of the product.
+external plugins. The contract lives in the standalone package
+`@mcp-devices/plugin-api`.
 
 Companion documents:
 
@@ -19,9 +19,10 @@ import type {
   EventBus,
   PluginContext,
   PluginManifest,
+  PluginPermission,
   SourcePlugin,
   ToolDefinition,
-} from "@claude-in-mobile/plugin-api";
+} from "@mcp-devices/plugin-api";
 ```
 
 ## `SourcePlugin`
@@ -39,13 +40,13 @@ fields beyond `manifest`, `init`, `dispose`.
 
 ## `PluginManifest`
 
-```ts
 interface PluginManifest {
   readonly id: string;            // /^[a-z0-9][a-z0-9._-]*$/
   readonly name: string;
   readonly version: string;       // plugin own semver
   readonly apiVersion: "1";       // contract major
   readonly capabilities: readonly Capability[];
+  readonly permissions?: readonly PluginPermission[];
   readonly tools?: readonly string[];
   readonly description?: string;
   readonly homepage?: string;
@@ -55,6 +56,24 @@ interface PluginManifest {
 Validation is performed by the registry on `register(plugin)`. A failure
 throws `PluginContractError` (or one of its subclasses
 `ApiVersionMismatchError`, `CapabilityMissingError`).
+
+
+### External plugin permissions
+
+`permissions` is a declaration, not a sandbox. The host refuses to load an
+external plugin unless every declared permission has an explicit user grant in
+`~/.mcp-devices/plugin-permissions.json` (or the path from
+`MCP_DEVICES_PLUGIN_PERMISSIONS`).
+
+| Permission | Intended use |
+|------------|--------------|
+| `device:read` | Read device state or screen data |
+| `device:write` | Send input or mutate device state |
+| `filesystem:read` | Read host files |
+| `filesystem:write` | Write host files |
+| `network` | Make network requests |
+| `subprocess` | Spawn host processes |
+| `credentials:read` | Read configured credentials |
 
 ## `PluginContext`
 
@@ -110,7 +129,7 @@ all other plugins running in the same kernel.
 
 ## Versioning rules
 
-- The package `@claude-in-mobile/plugin-api` follows semver independently of
+- The package `@mcp-devices/plugin-api` follows semver independently of
   the product.
 - Minor releases may add optional fields, capabilities, topics. Plugins
   written against an earlier minor continue to work.
@@ -118,12 +137,16 @@ all other plugins running in the same kernel.
 - Major bumps may remove or rename anything. The previous major is supported
   for at least one minor of the product following the bump.
 
-A plugin declares its target major via `manifest.apiVersion`. The kernel
-refuses to register plugins whose major does not match.
+## External plugin loading
+
+The host supports managed npm/local package installation through
+`mcp-devices plugin install`. Installation is script-free, records package
+metadata and a SHA-256 directory digest in `plugins.lock`, and requires
+explicit permission grants before loading. External loading is disabled unless
+`plugin external enable` or `MCP_DEVICES_EXTERNAL_PLUGINS=true` is set.
 
 ## Not in v1
 
-- Runtime loading of third-party plugins from arbitrary filesystem paths.
-- Sandboxing / capability-based permissions.
+- Process or VM sandboxing for plugin code.
 - Hot reload.
 - Bidirectional communication between plugin runtimes (Node ↔ Rust).

@@ -72,6 +72,7 @@ export interface ExpectOutcome {
 export interface SpawnArgs {
   id: string;
   cmd: string;
+  /** Defaults to the MCP server's current directory; relative paths resolve from it. */
   cwd?: string;
   env?: Record<string, string>;
   cols?: number;

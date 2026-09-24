@@ -1,0 +1,57 @@
+name: Bug report
+description: Report a reproducible problem in mcp-devices
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include credentials, private device data, or production screenshots.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: 4.4.1
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Android
+        - iOS
+        - Web
+        - Desktop
+        - Aurora OS
+        - HarmonyOS
+        - MCP server / CLI
+        - External plugin
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Include the smallest safe command or MCP call that reproduces the issue.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Node version, device/toolchain versions, and relevant configuration.
+    validations:
+      required: true

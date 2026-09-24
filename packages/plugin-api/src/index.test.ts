@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ALL_PLUGIN_PERMISSIONS,
   ALL_CAPABILITIES,
   ApiVersionMismatchError,
   CapabilityMissingError,
@@ -7,6 +8,7 @@ import {
   PluginContractError,
   hasCapability,
   isCapability,
+  isPluginPermission,
 } from "./index.js";
 import type { PluginManifest } from "./index.js";
 
@@ -26,6 +28,12 @@ describe("plugin-api v1 contract", () => {
     expect(isCapability("screen")).toBe(true);
     expect(isCapability("nope")).toBe(false);
     expect(isCapability(42)).toBe(false);
+  });
+
+  it("exposes bounded external plugin permissions", () => {
+    expect(new Set(ALL_PLUGIN_PERMISSIONS).size).toBe(ALL_PLUGIN_PERMISSIONS.length);
+    expect(isPluginPermission("network")).toBe(true);
+    expect(isPluginPermission("shell:root")).toBe(false);
   });
 
   it("hasCapability checks manifest declaration", () => {

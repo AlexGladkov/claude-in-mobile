@@ -31,7 +31,7 @@
     "dist"
   ],
   "dependencies": {
-    "@mcp-devices/plugin-api": "1.0.0",
+    "@mcp-devices/plugin-api": "1.1.0",
     "chrome-launcher": "^1.1.0",
     "chrome-remote-interface": "^0.33.0",
     "mcp-devices": "*",

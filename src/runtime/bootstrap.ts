@@ -12,6 +12,7 @@
 import { PluginContractError } from "@mcp-devices/plugin-api";
 import type {
   Logger,
+  PluginPermission,
   SourcePlugin,
   ToolDefinition,
 } from "@mcp-devices/plugin-api";
@@ -56,6 +57,10 @@ export interface BootstrapOptions {
   externalPlugins?: boolean | {
     additionalRoots?: ReadonlyArray<string>;
     supportedApiVersions?: ReadonlyArray<string>;
+    lockPath?: string;
+    requireLockfile?: boolean;
+    permissionGrants?: Readonly<Record<string, readonly PluginPermission[]>>;
+    enforcePermissions?: boolean;
   };
   /**
    * Which platform plugins to load. When omitted, resolved from
@@ -267,6 +272,7 @@ export async function bootstrapKernelAsync(options: BootstrapOptions = {}): Prom
       typeof options.externalPlugins === "object" ? options.externalPlugins : {};
     const loader = new ExternalPluginLoader({
       ...loaderOpts,
+      requireLockfile: loaderOpts.requireLockfile ?? true,
       logger: options.logger,
     });
     const discovered = await loader.discover();

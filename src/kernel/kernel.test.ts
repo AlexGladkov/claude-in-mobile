@@ -87,6 +87,20 @@ describe("InMemoryRegistry", () => {
     ).toThrow(PluginContractError);
   });
 
+  it("rejects unknown external permissions", () => {
+    const r = new InMemoryRegistry();
+    const plugin = makePlugin("a", ["screen"]);
+    Object.defineProperty(plugin.manifest, "permissions", { value: ["shell:root"] });
+    expect(() => r.register(plugin)).toThrow(PluginContractError);
+  });
+
+  it("rejects duplicate external permissions", () => {
+    const r = new InMemoryRegistry();
+    const plugin = makePlugin("a", ["screen"]);
+    Object.defineProperty(plugin.manifest, "permissions", { value: ["network", "network"] });
+    expect(() => r.register(plugin)).toThrow(PluginContractError);
+  });
+
   it("freeze blocks further registration", () => {
     const r = new InMemoryRegistry();
     r.freeze();

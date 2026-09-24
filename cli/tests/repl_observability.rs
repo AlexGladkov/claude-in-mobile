@@ -31,15 +31,21 @@ fn make_supervisor() -> Supervisor {
 }
 
 fn spawn_bash(sup: &Supervisor, id: &str, td: &TempDir) -> () {
+    let mut env = vec![
+        (
+            "PATH".into(),
+            std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into()),
+        ),
+        ("PS1".into(), "$ ".into()),
+    ];
+    if let Ok(home) = std::env::var("HOME") {
+        env.push(("HOME".into(), home));
+    }
     sup.spawn(SpawnRequest {
         id: id.into(),
         cmd: "bash --norc --noprofile".into(),
         cwd: None,
-        env: vec![
-            ("PATH".into(), std::env::var("PATH").unwrap_or_default()),
-            ("HOME".into(), std::env::var("HOME").unwrap_or_default()),
-            ("PS1".into(), "$ ".into()),
-        ],
+        env,
         cols: 80,
         rows: 24,
         prompt_regex: None,
@@ -582,4 +588,48 @@ fn spawn_without_record_has_no_cast_file() {
         "no record => cast_file must be absent"
     );
     sup.kill("no_cast_k").expect("kill");
+}
+
+#[test]
+fn failed_recording_spawn_cleans_cast_file_and_allows_same_id_retry() {
+    let temp = tempfile::tempdir().unwrap();
+    let cwd = temp.path().to_str().unwrap().to_string();
+    let cast_path = temp.path().join("record-retry.cast");
+    let env = vec![("PATH".into(), "/usr/bin:/bin".into())];
+    let sup = make_supervisor();
+
+    let failed = sup.spawn(SpawnRequest {
+        id: "record_retry".into(),
+        cmd: "missing-repl-executable-for-record-test".into(),
+        cwd: Some(cwd.clone()),
+        env: env.clone(),
+        cols: 80,
+        rows: 24,
+        prompt_regex: None,
+        shell: false,
+        cast_path: Some(cast_path.clone()),
+    });
+    assert!(failed.is_err());
+    assert!(!cast_path.exists(), "failed spawn left a stale cast file");
+
+    let spawned = sup
+        .spawn(SpawnRequest {
+            id: "record_retry".into(),
+            cmd: "/bin/sleep 30".into(),
+            cwd: Some(cwd),
+            env,
+            cols: 80,
+            rows: 24,
+            prompt_regex: None,
+            shell: false,
+            cast_path: Some(cast_path.clone()),
+        })
+        .expect("same session id and cast path should retry");
+    assert_eq!(
+        spawned.cast_file,
+        Some(cast_path.to_string_lossy().into_owned())
+    );
+    assert!(cast_path.exists());
+    sup.kill("record_retry").expect("kill retry session");
+    assert!(!cast_path.exists());
 }

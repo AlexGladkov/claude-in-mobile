@@ -1,0 +1,32 @@
+name: Feature request
+description: Propose a focused improvement to mcp-devices
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user or contributor problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Describe the smallest useful behavior and affected platform or API.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety and compatibility
+      options:
+        - label: I have considered credentials, device privacy, and arbitrary command execution.
+          required: true
+        - label: I have considered compatibility with existing plugins and CLI commands.
+          required: true

@@ -146,6 +146,7 @@ export class ReplPlugin implements SourcePlugin {
           "cmd is exec'd directly (argv split, no shell): env-var prefixes, " +
           "redirections (2>&1), pipes and globs are NOT interpreted — pass env via " +
           "the env param, or set shell:true to run cmd through /bin/sh -c. " +
+          "Relative executable paths with directory components resolve from cwd. " +
           "Set record:true to tee redacted PTY output to an asciicast v2 file " +
           "(returned as castFile); supply castPath to override the default temp location.",
         inputSchema: {
@@ -154,7 +155,12 @@ export class ReplPlugin implements SourcePlugin {
           properties: {
             id: { type: "string", description: "Session name (unique)" },
             cmd: { type: "string", description: "Command line to spawn" },
-            cwd: { type: "string" },
+            cwd: {
+              type: "string",
+              description:
+                "Working directory; defaults to the MCP server's current directory. " +
+                "Relative cwd values resolve from that directory.",
+            },
             env: { type: "object", additionalProperties: { type: "string" } },
             cols: {
               type: "integer",

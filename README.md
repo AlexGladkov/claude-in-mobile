@@ -64,6 +64,10 @@ mcp-devices-cli devices
 The separate name prevents a global npm install from shadowing the native CLI
 on `PATH`.
 
+The built-in REPL also needs this binary. Linux x86_64 release installation
+steps are in the [native CLI guide](./cli/README.md#from-release-binary); set
+`MCP_DEVICES_BIN` if the executable is outside `PATH`.
+
 ## Pick your platform
 
 Each platform is a separate package. Install the one(s) you need — full guide in
@@ -81,6 +85,25 @@ each doc:
 
 After installing a package, enable it: `mcp-devices install <name>` (or `all`),
 then restart.
+
+## External plugins (opt-in)
+
+Third-party plugins run as trusted JavaScript in the MCP server process. Install
+only packages you trust; permissions are load gates, not a sandbox:
+
+```sh
+mcp-devices plugin install <npm-package-or-local-path>
+mcp-devices plugin verify
+mcp-devices plugin grant <plugin-id> <declared-permission>...
+mcp-devices plugin external enable
+```
+
+Install records package metadata and a SHA-256 digest in
+`~/.mcp-devices/plugins.lock`. External loading is disabled until explicitly
+enabled, and a plugin declaring host permissions is skipped until every
+declared permission has been granted. See the
+[plugin authoring guide](./docs/plugins/authoring.md) and
+[security baseline](./docs/security.md).
 
 ## What it can do
 

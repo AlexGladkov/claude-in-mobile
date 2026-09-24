@@ -20,7 +20,7 @@ use std::collections::VecDeque;
 use std::io::{BufWriter, Write};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -190,6 +190,115 @@ fn open_cast_file(path: &PathBuf) -> Result<std::fs::File> {
         .with_context(|| format!("open cast file {}", path.display()))
 }
 
+fn resolve_working_directory(cwd: Option<&str>) -> Result<PathBuf> {
+    let server_cwd = std::env::current_dir().context("resolve REPL working directory")?;
+    let working_dir = match cwd {
+        Some("") => bail!("cwd must not be empty"),
+        Some(cwd) => {
+            let requested = PathBuf::from(cwd);
+            if requested.is_absolute() {
+                requested
+            } else {
+                server_cwd.join(requested)
+            }
+        }
+        None => server_cwd,
+    };
+    if !working_dir.is_dir() {
+        bail!("cwd is not a directory: {}", working_dir.display());
+    }
+    Ok(working_dir)
+}
+
+fn resolve_program(program: String, cwd: &Path) -> PathBuf {
+    let has_separator = program.contains(std::path::MAIN_SEPARATOR) || program.contains('/');
+    let program_path = Path::new(&program);
+    if program_path.is_relative() && has_separator {
+        cwd.join(program_path)
+    } else {
+        PathBuf::from(program)
+    }
+}
+
+struct CastFileCleanup {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl CastFileCleanup {
+    fn new(path: PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CastFileCleanup {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+type SpawnChild = Box<dyn portable_pty::Child + Send + Sync>;
+
+struct SpawnChildGuard {
+    child: Option<SpawnChild>,
+    #[cfg(unix)]
+    process_group_leader: Option<i32>,
+}
+
+impl SpawnChildGuard {
+    #[cfg(unix)]
+    fn new(child: SpawnChild, process_group_leader: Option<i32>) -> Self {
+        Self {
+            child: Some(child),
+            process_group_leader,
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn new(child: SpawnChild) -> Self {
+        Self { child: Some(child) }
+    }
+
+    fn take(&mut self) -> SpawnChild {
+        self.child
+            .take()
+            .expect("spawn child guard already consumed")
+    }
+}
+
+impl Drop for SpawnChildGuard {
+    fn drop(&mut self) {
+        let Some(child) = self.child.as_mut() else {
+            return;
+        };
+        #[cfg(unix)]
+        signal_process_group(self.process_group_leader, "-TERM");
+        let _ = child.kill();
+        let _ = child.wait();
+        #[cfg(unix)]
+        signal_process_group(self.process_group_leader, "-KILL");
+    }
+}
+
+#[cfg(unix)]
+fn signal_process_group(group: Option<i32>, signal: &str) {
+    let Some(group) = group.filter(|pid| *pid > 1) else {
+        return;
+    };
+    let group = format!("-{group}");
+    let _ = Command::new("/bin/kill")
+        .args([signal, "--", group.as_str()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
 // ---------------------------------------------------------------------------
 // Spawn options / PtySession
 // ---------------------------------------------------------------------------
@@ -197,6 +306,8 @@ fn open_cast_file(path: &PathBuf) -> Result<std::fs::File> {
 pub struct SpawnOptions<'a> {
     pub id: String,
     pub cmd: &'a str,
+    /// Child working directory. Relative paths resolve from the supervisor's
+    /// current directory; `None` inherits that directory.
     pub cwd: Option<&'a str>,
     pub env: &'a [(String, String)],
     pub cols: u16,
@@ -247,9 +358,12 @@ impl PtySession {
         generation_exited: Arc<AtomicBool>,
         on_exit: Option<ExitCallback>,
     ) -> Result<Self> {
+        let working_dir = resolve_working_directory(opts.cwd)?;
         // Validate cast_path BEFORE opening any PTY (fail fast, no side effects).
-        let cast_file_opt: Option<(PathBuf, std::fs::File)> = if let Some(ref p) = opts.cast_path {
+        let mut cast_file_cleanup = None;
+        let cast_file_opt: Option<(PathBuf, std::fs::File)> = if let Some(p) = &opts.cast_path {
             let f = open_cast_file(p)?;
+            cast_file_cleanup = Some(CastFileCleanup::new(p.clone()));
             Some((p.clone(), f))
         } else {
             None
@@ -280,13 +394,12 @@ impl PtySession {
             }
             parse_cmd(opts.cmd)?
         };
+        let program = resolve_program(program, &working_dir);
         let mut builder = CommandBuilder::new(program);
         for a in args {
             builder.arg(a);
         }
-        if let Some(cwd) = opts.cwd {
-            builder.cwd(cwd);
-        }
+        builder.cwd(&working_dir);
         builder.env_clear();
         builder.env("TERM", "xterm-256color");
         builder.env("FORCE_COLOR", "1");
@@ -309,6 +422,10 @@ impl PtySession {
         // descendants that inherited the PTY.
         #[cfg(unix)]
         let process_group_leader = pair.master.process_group_leader().map(|pid| pid as i32);
+        #[cfg(unix)]
+        let mut child_guard = SpawnChildGuard::new(child, process_group_leader);
+        #[cfg(not(unix))]
+        let mut child_guard = SpawnChildGuard::new(child);
 
         let mut reader = pair
             .master
@@ -420,18 +537,22 @@ impl PtySession {
             })
             .context("spawn reader thread failed")?;
 
-        Ok(Self {
+        let session = Self {
             id: opts.id,
             cmd: opts.cmd.into(),
             state,
             writer,
             master: pair.master,
-            child,
+            child: child_guard.take(),
             #[cfg(unix)]
             process_group_leader,
             terminated: false,
             cast_path: cast_path_for_drop,
-        })
+        };
+        if let Some(cleanup) = cast_file_cleanup.as_mut() {
+            cleanup.disarm();
+        }
+        Ok(session)
     }
 
     /// Clone of the shared session state. Lets the supervisor read
@@ -542,23 +663,11 @@ impl PtySession {
         }
         self.terminated = true;
         #[cfg(unix)]
-        if let Some(group) = self.process_group_leader.filter(|pid| *pid > 1) {
-            let _ = Command::new("/bin/kill")
-                .args(["-TERM", "--", &format!("-{group}")])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        }
+        signal_process_group(self.process_group_leader, "-TERM");
         let _ = self.child.kill();
         let _ = self.child.wait();
         #[cfg(unix)]
-        if let Some(group) = self.process_group_leader.filter(|pid| *pid > 1) {
-            let _ = Command::new("/bin/kill")
-                .args(["-KILL", "--", &format!("-{group}")])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        }
+        signal_process_group(self.process_group_leader, "-KILL");
     }
 
     pub fn exit_code(&self) -> Option<i32> {
@@ -771,6 +880,101 @@ mod tests {
             Err(e) => e.to_string(),
         };
         assert!(err.contains("shell"), "unexpected error: {err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cwd_defaults_to_supervisor_working_directory() {
+        let expected = std::env::current_dir()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let env = [("PATH".into(), "/usr/bin:/bin".into())];
+        let opts = SpawnOptions {
+            id: "cwd_default".into(),
+            cmd: "pwd; sleep 5",
+            cwd: None,
+            env: &env,
+            cols: 80,
+            rows: 24,
+            shell: true,
+            cast_path: None,
+        };
+        let mut session = PtySession::spawn(opts).expect("spawn cwd probe");
+        let outcome = session
+            .wait_ready(&ExpectRules::new(None, 100, 2_000))
+            .unwrap();
+        assert_eq!(outcome, ExpectOutcome::Idle);
+        let screen = session.snapshot_text();
+        assert!(screen.contains(&expected), "screen: {screen}");
+        session.kill().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn invalid_cwd_is_rejected_before_recording_file_creation() {
+        let temp = tempfile::tempdir().unwrap();
+        let cwd = temp.path().join("missing").to_string_lossy().into_owned();
+        let cast_path = temp.path().join("must-not-exist.cast");
+        let opts = SpawnOptions {
+            id: "cwd_invalid".into(),
+            cmd: "/bin/true",
+            cwd: Some(&cwd),
+            env: &[],
+            cols: 80,
+            rows: 24,
+            shell: false,
+            cast_path: Some(cast_path.clone()),
+        };
+
+        let err = PtySession::spawn(opts)
+            .err()
+            .expect("invalid cwd must fail");
+        assert!(err.to_string().contains("cwd is not a directory"));
+        assert!(!cast_path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relative_executable_path_resolves_from_cwd() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let bin_dir = temp.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let executable = bin_dir.join("probe");
+        std::fs::write(
+            &executable,
+            "#!/bin/sh\nprintf 'relative-executable-ok\\n'\nsleep 5\n",
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&executable).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&executable, permissions).unwrap();
+
+        let cwd = temp.path().to_str().unwrap();
+        let env = [("PATH".into(), "/usr/bin:/bin".into())];
+        let opts = SpawnOptions {
+            id: "relative_program".into(),
+            cmd: "bin/probe",
+            cwd: Some(cwd),
+            env: &env,
+            cols: 80,
+            rows: 24,
+            shell: false,
+            cast_path: None,
+        };
+        let mut session = PtySession::spawn(opts).expect("spawn relative executable");
+        let outcome = session
+            .wait_ready(&ExpectRules::new(None, 100, 2_000))
+            .unwrap();
+        assert_eq!(outcome, ExpectOutcome::Idle);
+        let screen = session.snapshot_text();
+        assert!(
+            screen.contains("relative-executable-ok"),
+            "screen: {screen}"
+        );
+        session.kill().unwrap();
     }
 
     #[test]

@@ -34,7 +34,7 @@
     "bin"
   ],
   "dependencies": {
-    "@mcp-devices/plugin-api": "1.0.0",
+    "@mcp-devices/plugin-api": "1.1.0",
     "mcp-devices": "*",
     "zod": "^4.1.13"
   },

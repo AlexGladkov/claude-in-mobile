@@ -15,6 +15,7 @@ import {
 export interface RuntimeConfigFile {
   platforms?: unknown;
   tool_plugins?: unknown;
+  external_plugins?: unknown;
   [key: string]: unknown;
 }
 const runtimeConfigKeySchema = z.string().min(1).max(128).refine(

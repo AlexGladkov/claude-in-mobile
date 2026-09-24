@@ -8,10 +8,10 @@ on:
 permissions:
   contents: write
 
-# Single source of truth for build matrix. Adding a new platform = one edit
-# here (matrix include) + ensure update-homebrew Formula template supports it.
-# Downstream jobs (release, update-homebrew, verify-checksums) discover the
-# artifacts dynamically from the upload-artifact filenames.
+# The archive matrix is the source of truth for release artifacts.
+# Homebrew currently tracks the macOS targets; Linux archives are checked
+# against their published SHA256 sidecars.
+# Downstream jobs discover artifacts dynamically from upload-artifact filenames.
 
 jobs:
   # Classifies the tag: a version with a prerelease component (e.g. 4.0.0-dev,
@@ -53,16 +53,24 @@ jobs:
           - target: x86_64-apple-darwin
             platform: darwin-x86_64
             runner: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            platform: linux-x86_64
+            runner: ubuntu-22.04
     runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Extract version from tag
         id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: ${{ matrix.target }}
 
@@ -78,8 +86,13 @@ jobs:
           tar -czf "$ARCHIVE" -C "$BIN_DIR" mcp-devices mcp-devices-cli
           shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
 
+      - name: Attest packaged CLI archive
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: "claude-in-mobile-*.tar.gz"
+
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: build-${{ matrix.platform }}
           path: |
@@ -89,7 +102,7 @@ jobs:
   verify-plugin-versions:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Extract version from tag
         id: version
@@ -182,15 +195,17 @@ jobs:
 
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           merge-multiple: true
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           generate_release_notes: true
-          files: "*.tar.gz"
+          files: |
+            *.tar.gz
+            *.tar.gz.sha256
           # Prerelease tags (e.g. 4.0.0-dev) are flagged as pre-release and are
           # NOT promoted to "Latest" — the stable line keeps that badge.
           prerelease: ${{ needs.setup.outputs.prerelease == 'true' }}
@@ -206,13 +221,17 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          node-version: "20"
+          # npm Trusted Publishing requires Node >=22.14 and npm >=11.5.1.
+          node-version: "22.14.0"
           registry-url: "https://registry.npmjs.org"
-          cache: "npm"
+          package-manager-cache: false
+
+      - name: Install npm Trusted Publishing CLI
+        run: npm install --global npm@11.5.1
 
       - name: Install dependencies
         run: npm ci
@@ -231,28 +250,20 @@ jobs:
 
       - name: Publish to npm
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_TAG: ${{ needs.setup.outputs.npm_tag }}
-        # Prerelease versions go to a side dist-tag (e.g. `dev`); `latest` keeps
-        # pointing at the stable line so `npm i mcp-devices` is unaffected.
-        #
-        # Idempotent: a version already in the registry (e.g. re-running a tag,
-        # or a manually-published dev build) cannot be re-published — npm rejects
-        # it with 403. In that case just (re)point the dist-tag instead of failing.
+        # OIDC trusted publishing replaces long-lived NPM_TOKEN credentials.
+        # An already published version is left unchanged on a retry; the first
+        # successful publish has already assigned its dist-tag.
         run: |
           NAME=$(jq -r '.name' package.json)
           VERSION=$(jq -r '.version' package.json)
           if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
-            echo "${NAME}@${VERSION} already published — moving dist-tag '${NPM_TAG}'"
-            npm dist-tag add "${NAME}@${VERSION}" "${NPM_TAG}"
+            echo "${NAME}@${VERSION} already published — nothing to do"
           else
             npm publish --access public --provenance --tag "${NPM_TAG}"
           fi
 
       - name: Publish @mcp-devices/plugin-api
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        # Shared SDK/contract package that BOTH the root `mcp-devices` engine and
         # every platform plugin depend on. Versioned INDEPENDENTLY of the release
         # tag (its own semver), so it is published as-is and is a no-op when the
         # version is unchanged. Without it on the registry, `npm i mcp-devices`
@@ -269,15 +280,8 @@ jobs:
 
       - name: Publish scoped platform plugins
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_TAG: ${{ needs.setup.outputs.npm_tag }}
-        # Slim-base install model: `npm i mcp-devices` pulls only the kernel, and
-        # each platform is fetched on demand as `@mcp-devices/plugin-<x>`. Those
-        # packages must therefore be (re)published on every release at the SAME
-        # version as the tag (unlike plugin-api). plugin-all is the meta-package
-        # that depends on all six. Idempotent + prerelease dist-tag, like root.
-        # Ordered so dependents publish after their deps (an install-time nicety;
-        # `npm publish` itself never resolves dependencies).
+        # OIDC trusted publishing replaces the former long-lived NPM_TOKEN.
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           for p in plugin-android plugin-ios plugin-web plugin-desktop plugin-aurora plugin-harmony plugin-debug plugin-all; do
@@ -289,33 +293,24 @@ jobs:
               exit 1
             fi
             if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
-              echo "${NAME}@${VERSION} already published — moving dist-tag '${NPM_TAG}'"
-              npm dist-tag add "${NAME}@${VERSION}" "${NPM_TAG}"
+              echo "${NAME}@${VERSION} already published — nothing to do"
             else
               ( cd "$dir" && npm publish --access public --provenance --tag "${NPM_TAG}" )
             fi
           done
-
       - name: Publish claude-in-mobile compat shim
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_TAG: ${{ needs.setup.outputs.npm_tag }}
-        # `claude-in-mobile` is the all-in-one edition: it depends on both the
-        # `mcp-devices` engine and `@mcp-devices/plugin-all` (every platform), and
-        # its bin enables all platforms by default. Version + both deps are synced
-        # to the tag so `npm i -g claude-in-mobile@latest` always pulls the
-        # matching engine and platform set. Idempotent (dist-tag move if already
-        # published), like above.
+        # OIDC trusted publishing replaces the former long-lived NPM_TOKEN.
         working-directory: compat/claude-in-mobile
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           jq --arg v "$VERSION" '.version=$v | .dependencies["mcp-devices"]=$v | .dependencies["@mcp-devices/plugin-all"]=$v' package.json > package.json.tmp
           mv package.json.tmp package.json
           if npm view "claude-in-mobile@${VERSION}" version >/dev/null 2>&1; then
-            echo "claude-in-mobile@${VERSION} already published — moving dist-tag '${NPM_TAG}'"
-            npm dist-tag add "claude-in-mobile@${VERSION}" "${NPM_TAG}"
+            echo "claude-in-mobile@${VERSION} already published — nothing to do"
           else
-            npm publish --access public --tag "${NPM_TAG}"
+            npm publish --access public --provenance --tag "${NPM_TAG}"
           fi
 
   update-homebrew:
@@ -335,7 +330,7 @@ jobs:
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           merge-multiple: true
 
@@ -362,7 +357,7 @@ jobs:
           echo "Map: $MAP"
 
       - name: Checkout Homebrew tap
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: AlexGladkov/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -393,10 +388,9 @@ jobs:
           # command aliases but strip the invalid migration directive.
           content = re.sub(r'^\s*oldnames?\s+.*\n?', '', content, flags=re.MULTILINE)
 
-          # Replace shas in the order they appear in the Formula. The Formula
-          # template's order must match the (deterministic) platform order
-          # returned by the discovery step.
-          shas = [sha_map[p] for p in sorted(sha_map.keys())]
+          # Homebrew tracks only macOS archives. Linux is released separately
+          # and verified against its published SHA256 sidecar.
+          shas = [sha_map[p] for p in sorted(sha_map) if p.startswith("darwin-")]
           sha_iter = iter(shas)
           def replace_sha(m):
               try:
@@ -453,12 +447,11 @@ jobs:
         id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Download release assets and verify against formula
+      - name: Download release assets and verify checksums
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        # Loops over every release asset matching the version, so adding a
-        # platform to the build matrix automatically enrolls it in checksum
-        # verification with no further edits here.
+        # Every archive must match its published SHA256 sidecar. macOS archives
+        # must also match the Homebrew formula; Linux is distributed separately.
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           REPO="AlexGladkov/claude-in-mobile"
@@ -483,22 +476,32 @@ jobs:
             echo "::group::Verifying ${ASSET}"
             echo "Downloading ${URL}"
             curl -fsSL -o "${ASSET}" "${URL}"
+            curl -fsSL -o "${ASSET}.sha256" "${URL}.sha256"
 
             ACTUAL=$(shasum -a 256 "${ASSET}" | awk '{print $1}')
+            EXPECTED=$(awk 'NR == 1 { print $1 }' "${ASSET}.sha256")
             echo "Actual SHA256: ${ACTUAL}"
-
-            if ! grep -q "${ACTUAL}" formula.rb; then
-              echo "::error::Checksum mismatch for ${ASSET}! Formula does not contain ${ACTUAL}"
+            if [ "$ACTUAL" != "$EXPECTED" ]; then
+              echo "::error::Checksum mismatch for ${ASSET}.sha256"
               FAILED=1
             else
-              echo "Checksum verified for ${ASSET}"
+              echo "Checksum verified against the published sidecar"
+            fi
+
+            if [[ "$ASSET" == *-linux-*.tar.gz ]]; then
+              echo "Linux archive is not managed by the Homebrew formula"
+            elif grep -Fq -- "${ACTUAL}" formula.rb; then
+              echo "Checksum verified against the Homebrew formula"
+            else
+              echo "::error::Checksum mismatch for ${ASSET}! Formula does not contain ${ACTUAL}"
+              FAILED=1
             fi
             echo "::endgroup::"
           done <<< "$ASSETS"
 
           if [ "$FAILED" -ne 0 ]; then
-            echo "::error::Checksum verification failed! Release assets do not match the Homebrew formula."
-            echo "::error::This usually means release assets were manually replaced after CI updated the formula."
+            echo "::error::Release archive checksums do not match their sidecars or the Homebrew formula."
+            echo "::error::Check whether release archives were replaced after build or upload."
             exit 1
           fi
 

@@ -3,10 +3,12 @@ import {
   PLUGIN_API_VERSION,
   PluginContractError,
   isCapability,
+  isPluginPermission,
 } from "@mcp-devices/plugin-api";
 import type {
   Capability,
   PluginManifest,
+  PluginPermission,
   PluginState,
   SourcePlugin,
 } from "@mcp-devices/plugin-api";
@@ -62,6 +64,25 @@ function validateManifest(value: unknown): asserts value is PluginManifest {
       throw new PluginContractError(`duplicate capability: ${capability}`, id);
     }
     seen.add(capability);
+  }
+  if (
+    manifest.permissions !== undefined
+    && (
+      !Array.isArray(manifest.permissions)
+      || manifest.permissions.length > 32
+      || manifest.permissions.some((permission) => !isPluginPermission(permission))
+    )
+  ) {
+    throw new PluginContractError("manifest.permissions is invalid", id);
+  }
+  if (Array.isArray(manifest.permissions)) {
+    const permissions = new Set<PluginPermission>();
+    for (const permission of manifest.permissions) {
+      if (permissions.has(permission)) {
+        throw new PluginContractError(`duplicate permission: ${permission}`, id);
+      }
+      permissions.add(permission);
+    }
   }
   if (
     manifest.tools !== undefined

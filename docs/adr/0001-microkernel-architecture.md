@@ -34,10 +34,12 @@ Aurora) и планирует добавлять новые (REPL, SSH, custom d
 3. **Communication** — плагины не импортируют друг друга. Орчестрация (например
    `flow-tools`) идёт через типизированный event bus и capability resolver ядра.
 4. **Contract** — публичный API ядра вынесен в отдельный пакет
-   `@claude-in-mobile/plugin-api` с независимым semver. Breaking change в контракте =
+   `@mcp-devices/plugin-api` с независимым semver. Breaking change в контракте =
    мажорный bump пакета (см. ADR 0002).
-5. **Isolation** — для 3.11 плагины запускаются inline (in-tree only). Sandbox для
-   third-party — отдельная инициатива, не входит в скоуп этого релиза.
+5. **Isolation** — built-in plugins запускаются inline. External plugins также
+   выполняются в том же Node-процессе; lockfile integrity и declared
+   permissions являются trust/load gates, а не sandbox. Process isolation
+   остаётся отдельной инициативой.
 
 ## Consequences
 
@@ -70,7 +72,7 @@ Plugins (src/plugins/**)
 Kernel (src/kernel/**)
     │ зависит только от
     ▼
-@claude-in-mobile/plugin-api (packages/plugin-api)
+@mcp-devices/plugin-api (packages/plugin-api)
 ```
 
 Запрещено:

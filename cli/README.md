@@ -22,7 +22,14 @@ cp mcp-devices-cli /usr/local/bin/
 # macOS x86_64 (Intel)
 tar -xzf claude-in-mobile-VERSION-darwin-x86_64.tar.gz
 cp mcp-devices-cli /usr/local/bin/
+
+# Linux x86_64 (GNU/glibc)
+tar -xzf claude-in-mobile-VERSION-linux-x86_64.tar.gz
+sudo install -m 755 mcp-devices-cli /usr/local/bin/mcp-devices-cli
 ```
+
+Release binaries currently support Linux x86_64 (GNU/glibc). Build from source
+for other Linux architectures.
 
 ### From source
 

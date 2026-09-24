@@ -1,10 +1,10 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 
+import { CompatibleStdioServerTransport } from "./stdio-transport.js";
 import {
   registerAliases,
   registerAliasesWithDefaults,
@@ -178,7 +178,7 @@ export function createMcpServer(deps: McpServerDeps): McpServerHandle {
   });
 
   async function start(): Promise<void> {
-    const transport = new StdioServerTransport();
+    const transport = new CompatibleStdioServerTransport();
     await server.connect(transport);
     console.error("Claude Mobile MCP server running (Android + iOS + Desktop + Aurora + HarmonyOS + Browser)");
   }

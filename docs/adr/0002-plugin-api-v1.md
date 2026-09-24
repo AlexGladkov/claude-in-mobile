@@ -9,8 +9,9 @@
 ADR 0001 фиксирует microkernel-архитектуру. Этот документ закрепляет публичный
 контракт между ядром и плагинами.
 
-Контракт живёт в отдельном workspace-пакете `@claude-in-mobile/plugin-api`,
-версионируется независимо от продукта. Это даёт:
+Контракт живёт в отдельном workspace-пакете `@mcp-devices/plugin-api`,
+версионируется независимо от продукта. Текущая minor-линия `1.1.x` добавляет
+необязательные host-permission declarations. Это даёт:
 
 - стабильный API surface для авторов плагинов;
 - защиту от breaking change при минорных релизах продукта;
@@ -39,13 +40,13 @@ type Capability =
 
 ### Core types
 
-```ts
 interface PluginManifest {
   id: string;                       // "android", "repl", "ssh"
   name: string;
   version: string;                  // plugin own semver
   apiVersion: "1";                  // contract major
   capabilities: Capability[];
+  permissions?: PluginPermission[]; // host resource declarations for external plugins
   tools?: string[];                 // MCP tool ids exposed by plugin
 }
 
@@ -105,15 +106,14 @@ major не совпадает с поддерживаемыми.
 
 ### Что НЕ входит в v1
 
-- runtime-loading сторонних плагинов из произвольных путей (in-tree only);
-- sandbox/permissions модель (отложено до отдельного ADR);
-- hot reload (потенциально через `notifyToolListChanged`, но не в 3.11);
+- process/VM sandbox для external plugin code (permissions are load gates only);
+- hot reload;
 - кодогенерация tool-handler-ов из манифеста (manifest пока только метаданные).
 
 ## Consequences
 
 - Авторы плагинов (включая собственных) пишут против стабильного импорта
-  `@claude-in-mobile/plugin-api`, а не против внутренней структуры продукта.
+  `@mcp-devices/plugin-api`, а не против внутренней структуры продукта.
 - Внутренний рефакторинг ядра не ломает плагины, пока публичные типы стабильны.
 - Любая новая capability требует обсуждения и ADR-дополнения.
 

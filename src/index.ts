@@ -29,6 +29,8 @@ import { buildInstructions } from "./runtime/mcp-instructions.js";
 import { runCliIfRequested } from "./runtime/cli.js";
 import { runPlatformCommand } from "./runtime/platform-cli.js";
 import { runToolPluginCommand } from "./runtime/tool-plugin-cli.js";
+import { runExternalPluginCommand } from "./runtime/external-plugin-cli.js";
+import { resolveExternalPlugins } from "./runtime/external-plugin-config.js";
 import { createMcpServer } from "./runtime/mcp-server.js";
 import { readPrivateFileSync } from "./utils/private-storage.js";
 
@@ -118,16 +120,15 @@ const activeProfile: MobileProfile = VALID_PROFILES.includes(rawProfile as Mobil
   : "core";
 
 // Configuration commands short-circuit before any kernel/server boot.
+await runExternalPluginCommand(process.argv);
 runToolPluginCommand(process.argv);
 runPlatformCommand(process.argv);
 
-// Kernel bootstrap — see runtime/bootstrap.ts. `MCP_DEVICES_EXTERNAL_PLUGINS=1`
-// opts in to filesystem discovery from `~/.mcp-devices/plugins/`.
-const enableExternal = process.env.MCP_DEVICES_EXTERNAL_PLUGINS === "1";
-// Always async: enabled platforms shipped as separate packages
-// (e.g. @mcp-devices/plugin-aurora) are loaded via dynamic import.
+// Kernel bootstrap — see runtime/bootstrap.ts. External plugins require both
+// explicit opt-in and a managed lockfile.
+const enableExternal = resolveExternalPlugins();
 const kernel: KernelHandle = await bootstrapKernelAsync(
-  enableExternal ? { externalPlugins: true } : {}
+  enableExternal ? { externalPlugins: true } : {},
 );
 await kernel.initAll();
 

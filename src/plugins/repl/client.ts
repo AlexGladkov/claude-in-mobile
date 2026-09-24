@@ -8,6 +8,7 @@
 
 import { spawn } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { delimiter } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { z } from "zod";
 import { sanitizeErrorMessage } from "../../utils/sanitize.js";
@@ -134,11 +135,30 @@ export class ReplBridgeClient {
           env: this.env,
           stdio: ["pipe", "pipe", "pipe"],
         });
-      } catch {
-        settleReject(new ReplBridgeError("failed to spawn REPL supervisor"));
+      } catch (cause) {
+        settleReject(supervisorSpawnError(cause));
         return;
       }
       this.child = child;
+      const exitHandler = () => {
+        try {
+          child.kill("SIGTERM");
+        } catch {
+          /* ignore */
+        }
+      };
+      this.exitHandler = exitHandler;
+      process.once("exit", exitHandler);
+      const releaseChild = (): boolean => {
+        process.removeListener("exit", exitHandler);
+        if (this.child !== child) return false;
+        this.child = undefined;
+        this.stdoutBuffer = "";
+        this.stdoutDecoder.end();
+        this.stdoutBytes = 0;
+        if (this.exitHandler === exitHandler) this.exitHandler = undefined;
+        return true;
+      };
 
       startTimer = setTimeout(() => {
         try {
@@ -146,7 +166,7 @@ export class ReplBridgeClient {
         } catch {
           /* ignore */
         }
-        this.child = undefined;
+        releaseChild();
         settleReject(
           new ReplBridgeError(
             `supervisor did not emit ready within ${this.startTimeoutMs}ms — ` +
@@ -163,26 +183,21 @@ export class ReplBridgeClient {
         // for now silently drop to avoid mixing into MCP stdout framing.
         void chunk;
       });
-      child.on("error", () => {
-        const error = new ReplBridgeError("supervisor process error");
+      child.on("error", (cause: NodeJS.ErrnoException) => {
+        if (!releaseChild()) return;
+        const error = supervisorSpawnError(cause);
         this.failAllPending(error);
         settleReject(error);
       });
       child.on("exit", (code, signal) => {
+        if (!releaseChild()) return;
         const reason = `supervisor exited (code=${code}, signal=${signal})`;
         this.failAllPending(new ReplBridgeError(reason));
-        this.child = undefined;
         this.readyPromise = undefined;
-        this.stdoutBuffer = "";
-        this.stdoutDecoder.end();
-        this.stdoutBytes = 0;
-        if (this.exitHandler) {
-          process.removeListener("exit", this.exitHandler);
-          this.exitHandler = undefined;
-        }
         settleReject(new ReplBridgeError(reason));
       });
       child.stdout.on("data", (chunk: Buffer) => {
+        if (this.child !== child) return;
         this.stdoutBytes += chunk.byteLength;
         this.stdoutBuffer += this.stdoutDecoder.write(chunk);
         if (this.stdoutBytes > MAX_RPC_MESSAGE_BYTES) {
@@ -199,14 +214,6 @@ export class ReplBridgeClient {
         }
         this.stdoutBytes = Buffer.byteLength(this.stdoutBuffer, "utf8");
       });
-      this.exitHandler = () => {
-        try {
-          child.kill("SIGTERM");
-        } catch {
-          /* ignore */
-        }
-      };
-      process.once("exit", this.exitHandler);
     });
     // On failed startup, drop the cached promise so a later call() retries a
     // fresh supervisor instead of re-throwing the same dead-on-arrival error.
@@ -335,6 +342,23 @@ export class ReplBridgeClient {
   }
 }
 
+function supervisorSpawnError(cause: unknown): ReplBridgeError {
+  const code =
+    typeof cause === "object" && cause !== null && "code" in cause
+      ? cause.code
+      : undefined;
+  if (code === "ENOENT") {
+    return new ReplBridgeError(
+      "REPL native companion not found (ENOENT); install `mcp-devices-cli` or set `MCP_DEVICES_BIN`",
+    );
+  }
+  const suffix =
+    typeof code === "string" && /^[A-Z0-9_]{1,32}$/.test(code)
+      ? ` (${code})`
+      : "";
+  return new ReplBridgeError(`failed to spawn REPL supervisor${suffix}`);
+}
+
 function minimalEnv(): NodeJS.ProcessEnv {
   // Allowlist only what a PTY supervisor needs. Additional vars per session
   // are passed through `spawn.params.env`, not through the supervisor's own
@@ -344,6 +368,16 @@ function minimalEnv(): NodeJS.ProcessEnv {
   for (const key of allow) {
     const v = process.env[key];
     if (v !== undefined) out[key] = v;
+  }
+  if (process.platform === "linux") {
+    // GUI-launched MCP hosts often provide a reduced PATH. Preserve its order,
+    // then make the documented /usr/local/bin install and system commands
+    // available to both the native companion and its PTY children.
+    const paths = new Set(out.PATH ? out.PATH.split(delimiter) : []);
+    paths.add("/usr/local/bin");
+    paths.add("/usr/bin");
+    paths.add("/bin");
+    out.PATH = [...paths].join(delimiter);
   }
   return out;
 }

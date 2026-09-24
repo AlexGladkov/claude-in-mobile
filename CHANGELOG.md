@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added
+- `@mcp-devices/plugin-api` 1.1.0 adds optional external-plugin permission
+  declarations.
+- Managed external plugin lifecycle commands with lockfile integrity
+  verification, declared host permissions, explicit grants, and opt-in loading.
+- Published a Linux x86_64 GNU native CLI archive with a SHA256 sidecar.
+
+### Security
+- Added contributor/security policies, Dependabot, CodeQL, OpenSSF Scorecard,
+  pinned GitHub Actions, npm Trusted Publishing, and release artifact
+  attestations.
+
+### Fixed
+- MCP stdio transport now accepts legacy `Content-Length` framing used by OMP while preserving newline-delimited JSON clients.
+- REPL startup now preserves standard Linux executable paths, reports a missing
+  native companion clearly, and cleans up failed supervisor launches before retry.
+- REPL sessions now inherit the server working directory, resolve direct
+  relative executable paths against it, and clean up recordings after failed
+  spawns.
 
 ## [4.4.1] — 2026-09-13
 

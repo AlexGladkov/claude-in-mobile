@@ -1,10 +1,11 @@
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
 
 
-const ROOT = new URL("../", import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const jsonRecordSchema = z.record(z.string(), z.unknown());
 
 

@@ -31,15 +31,26 @@ Usage
                                  desktop | aurora | harmony | all
   mcp-devices uninstall <p>...
                                  disable platform(s)
-  mcp-devices doctor [p...] check external toolchains; exits nonzero when missing
-  mcp-devices plugins       list enabled + available tool plugins
+  mcp-devices plugin list
+                                 list enabled + available tool plugins
   mcp-devices plugin enable <p>...
                                  enable tool plugins: debug | all
   mcp-devices plugin disable <p>...
                                  disable tool plugins
-  mcp-devices --init <client>
-                                 print the configuration snippet for a
-                                 supported client (${INIT_CLIENTS.join(" | ")}) and exit
+  mcp-devices plugin external <action>
+                                 list | enable | disable | status
+  mcp-devices plugin install <package|path>
+                                 install and lock an external plugin
+  mcp-devices plugin update [id...]
+                                 update installed external plugins
+  mcp-devices plugin remove <id>...
+                                 remove external plugins
+  mcp-devices plugin verify [id...]
+                                 verify installed plugin integrity
+  mcp-devices plugin grant <id> <permission>...
+                                 grant declared external permissions
+  mcp-devices plugin revoke <id> [permission]...
+                                 revoke external permissions
   mcp-devices --version     print version and exit
   mcp-devices --help        print this message and exit
 
@@ -54,13 +65,17 @@ Platforms
 Environment
   MCP_DEVICES_PLATFORMS     csv / all / none — overrides enabled set
   MCP_DEVICES_TOOL_PLUGINS  csv / all / none — overrides enabled tool plugins
+  MCP_DEVICES_EXTERNAL_PLUGINS  1/true — enables managed external plugins
+  MCP_DEVICES_PLUGIN_ROOT   external plugin directory override
+  MCP_DEVICES_PLUGIN_LOCKFILE plugins.lock path override
+  MCP_DEVICES_PLUGIN_PERMISSIONS permission policy path override
   MOBILE_PROFILE                 minimal | core | android | web | full
-                                 (default: full)
+                                 (default: core)
   DEVICE_ID, ANDROID_SERIAL      preselect Android device
   IOS_DEVICE_ID                  preselect iOS Simulator
   HARMONY_DEVICE_ID              preselect HarmonyOS device
   HDC_PATH                       absolute path to the HDC executable
-  MCP_DEVICES_BIN           absolute path to the Rust companion binary
+  MCP_DEVICES_BIN                absolute path to the Rust companion binary
                                  (default: mcp-devices-cli)
 
 Docs

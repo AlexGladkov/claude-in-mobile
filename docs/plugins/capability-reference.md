@@ -9,7 +9,7 @@ Adding a new capability requires:
 1. Updating `ALL_CAPABILITIES` and the `Capability` enum on both sides
    (TypeScript and Rust mirror).
 2. Documenting the capability here.
-3. Bumping `@claude-in-mobile/plugin-api` by one minor.
+3. Bumping `@mcp-devices/plugin-api` by one minor.
 
 ## Capabilities
 
@@ -38,3 +38,10 @@ Adding a new capability requires:
 | repl     |        | ✓     |    |       |              |             |      | ✓        |            |
 
 `fileTransfer` is reserved for v3.12 (SSH / android push-pull plugins).
+
+## External plugin permissions
+
+Capabilities describe what a plugin exposes. External plugin permissions
+describe host resources it may need, and are enforced independently at load
+time. See [Plugin API v1](./api-v1.md#external-plugin-permissions) for the
+permission list and grant workflow.

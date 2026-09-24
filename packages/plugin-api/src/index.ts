@@ -41,12 +41,33 @@ export const ALL_CAPABILITIES: readonly Capability[] = [
   "meta-tools",
 ] as const;
 
+export type PluginPermission =
+  | "device:read"
+  | "device:write"
+  | "filesystem:read"
+  | "filesystem:write"
+  | "network"
+  | "subprocess"
+  | "credentials:read";
+
+export const ALL_PLUGIN_PERMISSIONS: readonly PluginPermission[] = [
+  "device:read",
+  "device:write",
+  "filesystem:read",
+  "filesystem:write",
+  "network",
+  "subprocess",
+  "credentials:read",
+] as const;
+
 export interface PluginManifest {
   readonly id: string;
   readonly name: string;
   readonly version: string;
   readonly apiVersion: PluginApiVersion;
   readonly capabilities: readonly Capability[];
+  /** Host-enforced trust declarations for external plugins. */
+  readonly permissions?: readonly PluginPermission[];
   readonly tools?: readonly string[];
   readonly description?: string;
   readonly homepage?: string;
@@ -149,6 +170,14 @@ export function isCapability(value: unknown): value is Capability {
     (ALL_CAPABILITIES as readonly string[]).includes(value)
   );
 }
+
+export function isPluginPermission(value: unknown): value is PluginPermission {
+  return (
+    typeof value === "string" &&
+    (ALL_PLUGIN_PERMISSIONS as readonly string[]).includes(value)
+  );
+}
+
 
 export function hasCapability(
   manifest: PluginManifest,

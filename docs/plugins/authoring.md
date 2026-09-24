@@ -1,10 +1,9 @@
 # Authoring a Plugin
 
 A plugin is a TypeScript class implementing
-[`SourcePlugin`](./api-v1.md#sourceplugin). For 3.11.0 plugins are built into
-the product (`src/plugins/<id>/`). Third-party loading from external
-directories is on the v4 roadmap; the v1 contract is designed so that the
-move requires no plugin code changes.
+[`SourcePlugin`](./api-v1.md#sourceplugin). Built-in plugins and external
+plugins use the same contract. External packages are installed and verified by
+the `mcp-devices plugin` lifecycle commands before the runtime imports them.
 
 This guide walks through writing a minimal plugin from scratch. The same
 shape applies whether the plugin wraps a CLI tool, a long-lived process, or
@@ -38,7 +37,7 @@ that import other plugins or the legacy `device-manager.ts`.
 ## 3. Write the manifest
 
 ```ts
-import type { PluginManifest, SourcePlugin, PluginContext } from "@claude-in-mobile/plugin-api";
+import type { PluginManifest, SourcePlugin, PluginContext } from "@mcp-devices/plugin-api";
 
 export const MY_PLUGIN_MANIFEST: PluginManifest = {
   id: "myplugin",
@@ -46,6 +45,7 @@ export const MY_PLUGIN_MANIFEST: PluginManifest = {
   version: "0.1.0",
   apiVersion: "1",
   capabilities: ["screen", "input"],
+  permissions: ["device:read"],
   tools: ["myplugin_action"],
 };
 
@@ -73,10 +73,18 @@ export function createMyPlugin(): SourcePlugin {
 
 `init` may be async; the kernel awaits it under a 10s timeout.
 
-## 4. Wire it into the bootstrap
+## 4. Package the plugin
 
-Open `src/runtime/bootstrap.ts` and append your factory to `DEFAULT_BUILTINS`.
-Order is observable in `device(list_modules)` but not significant.
+External plugins must publish a regular npm package or provide a local package
+directory with `main` or `module` pointing at the built entry. The entry must
+export `default: () => SourcePlugin` or `createPlugin`.
+
+The manifest id becomes the managed installation directory id. Keep it stable
+and lower-case. Declare every sensitive permission the plugin needs; undeclared
+permissions cannot be granted by the host.
+
+Built-in plugins are wired into `src/runtime/bootstrap.ts` instead. External
+plugins must not be added to the built-in bootstrap list.
 
 ## 5. Write the contract test
 
@@ -91,7 +99,21 @@ This automatically verifies manifest shape, lifecycle behavior, and tool
 registration. Add plugin-specific tests in the same file for behavior unique
 to your plugin.
 
-## 6. Respect the architecture rules
+## 6. Install and verify
+
+```sh
+npm run build
+node dist/index.js plugin install ./path/to/plugin
+node dist/index.js plugin verify
+node dist/index.js plugin grant myplugin device:read
+node dist/index.js plugin external enable
+```
+
+`plugin install` disables npm lifecycle scripts, validates the manifest, writes
+an integrity entry to `plugins.lock`, and leaves declared permissions denied
+until an explicit grant. `plugin verify` detects modified files or metadata.
+
+## 7. Respect the architecture rules
 
 The architecture test (`src/architecture.test.ts`) enforces:
 
@@ -103,7 +125,7 @@ The architecture test (`src/architecture.test.ts`) enforces:
 
 If you need a value from another plugin, use the [event bus](./api-v1.md#event-bus-coretopics).
 
-## 7. Run
+## 8. Run
 
 ```sh
 npm run test -- src/plugins/myplugin
