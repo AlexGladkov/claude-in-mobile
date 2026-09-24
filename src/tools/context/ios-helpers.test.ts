@@ -127,6 +127,63 @@ describe("unwrapWdaTree — trust boundary validation", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Root #3: WDA writes explicit JSON nulls for empty string fields. A schema
+// that only allowed `string | undefined` rejected the very first node, so a
+// perfectly healthy session was reported as a degraded one and every iOS
+// ui_tree / hints call failed. Shape below is copied from a real
+// `/session/:id/source?format=json` response (WDA 16.12.8, iOS 27 simulator).
+// ---------------------------------------------------------------------------
+
+/** A realistic source-format envelope: nulls where a field is empty. */
+function envelopeWithNullFields() {
+  return {
+    status: 0,
+    sessionId: "ABCDEF-0123",
+    value: {
+      type: "XCUIElementTypeApplication",
+      label: "Emori",
+      name: "Emori",
+      value: null,
+      customActions: null,
+      rawIdentifier: null,
+      rect: { x: 0, y: 0, width: 402, height: 874 },
+      children: [
+        {
+          type: "XCUIElementTypeButton",
+          label: "Settings",
+          name: "Settings",
+          value: null,
+          rect: { x: 340, y: 84, width: 48, height: 44 },
+          children: [],
+        },
+        {
+          type: "XCUIElementTypeOther",
+          label: null,
+          name: null,
+          value: null,
+          rect: { x: 0, y: 0, width: 402, height: 874 },
+          children: [],
+        },
+      ],
+    },
+  };
+}
+
+describe("unwrapWdaTree — WDA nulls are not a degraded session", () => {
+  it("accepts nodes whose empty string fields are explicit nulls", () => {
+    expect(() => unwrapWdaTree(envelopeWithNullFields())).not.toThrow();
+  });
+
+  it("emits the elements instead of reporting an empty tree", () => {
+    const elements = iosTreeToUiElements(envelopeWithNullFields());
+    expect(elements.map((el) => el.text)).toContain("Settings");
+    // A null label/value must degrade to "", never to the string "null".
+    expect(elements.every((el) => el.text !== "null")).toBe(true);
+    expect(elements.every((el) => el.contentDesc !== "null")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Root #5: password leak through the HINTS path (diff + suggestions).
 // The value is redacted in ui_tree formatters but the hints path prints
 // el.text directly — these guards ensure the SecureTextField value never
