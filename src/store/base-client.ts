@@ -7,6 +7,34 @@ const MAX_STORE_JSON_BYTES = 4 * 1024 * 1024;
  * and RuStoreClient. Each subclass provides its own auth header via `authHeader()`.
  */
 export abstract class AbstractStoreClient {
+  private readonly packageMutationTails = new Map<string, Promise<void>>();
+
+  /**
+   * Runs a package mutation after all earlier mutations for that package finish.
+   * The queue belongs to this client instance, so unrelated package names remain concurrent.
+   */
+  protected async withPackageMutation<T>(
+    packageName: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.packageMutationTails.get(packageName) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.packageMutationTails.set(packageName, current);
+
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.packageMutationTails.get(packageName) === current) {
+        this.packageMutationTails.delete(packageName);
+      }
+    }
+  }
+
   /**
    * Returns the HTTP header used for authentication.
    * Override to customize (e.g. "Public-Token" for RuStore vs "Authorization" for Google/Huawei).

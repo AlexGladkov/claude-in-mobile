@@ -6,6 +6,7 @@ import {
   validatePermission,
   validatePath,
   sanitizeErrorMessage,
+  sanitizeResourceUri,
   validateDeviceId,
   validateLogTag,
   validateLogTimestamp,
@@ -459,12 +460,51 @@ describe("sanitizeErrorMessage", () => {
     expect(sanitizeErrorMessage(msg)).toBe("Authorization: Bearer [REDACTED]");
     expect(sanitizeErrorMessage(msg)).not.toContain("eyJhbGci");
   });
+  it("redacts Authorization values without a Bearer or Basic scheme", () => {
+    const result = sanitizeErrorMessage("Authorization: opaque-secret");
+    expect(result).not.toContain("opaque-secret");
+    expect(result).toContain("[REDACTED]");
+  });
 
   it("redacts token= values (case-insensitive)", () => {
     expect(sanitizeErrorMessage("token=abc123def")).toBe("token=[REDACTED]");
     const result = sanitizeErrorMessage("Token: xyz789");
     expect(result).toContain("[REDACTED]");
     expect(result).not.toContain("xyz789");
+  });
+
+  it("redacts OTP, PIN, and verification codes without matching ordinary words", () => {
+    const result = sanitizeErrorMessage(
+      "otp=731904 pin_code=4821 one_time_code=639127 verificationCode: 294816 cvv=123 shipping=public mapping=visible",
+    );
+    expect(result).not.toMatch(/731904|4821|639127|294816|123/u);
+    expect(result).toContain("otp=[REDACTED]");
+    expect(result).toContain("pin_code=[REDACTED]");
+    expect(result).toContain("shipping=public");
+    expect(result).toContain("mapping=visible");
+  });
+
+  it("removes sensitive OTP/PIN URI parameters while preserving safe ones", () => {
+    const uri =
+      "https://example.com/path?otp=731904&pin=4821&verification_code=294816&shipping=public";
+    const resource = sanitizeResourceUri(uri) ?? "";
+    const error = sanitizeErrorMessage(uri);
+    expect(resource).not.toMatch(/731904|4821|294816/u);
+    expect(resource).not.toMatch(/[?&](?:otp|pin|verification_code)=/u);
+    expect(resource).toContain("shipping=public");
+    expect(error).not.toMatch(/731904|4821|294816/u);
+  });
+
+  it("removes OAuth code and state URI parameters", () => {
+    const uri =
+      "https://example.com/callback?code=auth-code-secret&state=oauth-state-secret&continue=%2Fhome";
+    const sanitized = sanitizeResourceUri(uri) ?? "";
+
+    expect(sanitized).not.toMatch(/auth-code-secret|oauth-state-secret/u);
+    expect(sanitized).toContain("continue=%2Fhome");
+    expect(sanitizeErrorMessage(uri)).not.toMatch(/auth-code-secret|oauth-state-secret/u);
+    expect(sanitizeErrorMessage("OAuth callback code=auth-code-secret state=oauth-state-secret"))
+      .not.toMatch(/auth-code-secret|oauth-state-secret/u);
   });
 
   it("redacts key= values (case-insensitive)", () => {
@@ -490,6 +530,59 @@ describe("sanitizeErrorMessage", () => {
     expect(result).not.toContain("tokenValue");
   });
 });
+
+describe("sanitizeErrorMessage bare credential families", () => {
+  it.each([
+    ["AWS access-key ID", "AKIAIOSFODNN7EXAMPLE"],
+    ["AWS ABIA access-key ID", "ABIAIOSFODNN7EXAMPLE"],
+    ["AWS A3T access-key ID", "A3TBIOSFODNN7EXAMPLE"],
+    ["AWS secret access key", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"],
+    ["GitHub classic token", "ghp_1234567890abcdefghijklmnopqrstuvwxyz"],
+    ["GitHub fine-grained token", "github_pat_11AAAAAA00000000000000_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"],
+    ["Anthropic token", "sk-ant-api03-1234567890abcdef"],
+    ["OpenAI token", "sk-1234567890abcdefghijklmnopqrstuv"],
+    ["Google API key", "AIzaSyA-1234567890abcdefghijkl"],
+    ["Slack token", "xoxb-test-token"],
+    ["Basic credentials", "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ=="],
+    ["JWT", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signaturepart"],
+    ["PEM key", "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----"],
+  ])("redacts a bare %s", (_label, credential) => {
+    const output = sanitizeErrorMessage(`plugin response: ${credential}`);
+    expect(output).not.toContain(credential);
+    expect(output).toContain("[REDACTED");
+  });
+  it("normalizes ANSI, C1, and OSC controls before secret redaction", () => {
+    const credential = "AKIAIOSFODNN7EXAMPLE";
+    const values = [
+      `prefix ${credential.slice(0, 8)}\u001b[31m${credential.slice(8)}`,
+      `prefix ${credential.slice(0, 8)}\u009b31m${credential.slice(8)}`,
+      `prefix ${credential.slice(0, 8)}\u001b]8;;https://example.test/\u0007${credential.slice(8)}`,
+    ];
+
+    for (const value of values) {
+      const output = sanitizeErrorMessage(value);
+      expect(output).not.toContain(credential);
+      expect(output).toContain("[REDACTED]");
+    }
+  });
+
+  it("removes Arabic Letter Mark and LRM/RLM from sanitized output", () => {
+    const sanitized = sanitizeErrorMessage("left\u061c\u200e\u200f\u202eRight");
+    expect(sanitized).not.toMatch(/[\u061c\u200e\u200f\u202e]/u);
+  });
+
+  it("normalizes terminal controls before scanning URI credential values", () => {
+    const credential = "AKIAIOSFODNN7EXAMPLE";
+    const uris = [
+      `https://example.test/resource?note=${credential.slice(0, 8)}\u001b[31m${credential.slice(8)}`,
+      `https://example.test/resource?note=${credential.slice(0, 8)}%1B%5B31m${credential.slice(8)}`,
+    ];
+    for (const uri of uris) {
+      expect(sanitizeResourceUri(uri)).not.toContain(credential);
+    }
+  });
+});
+
 
 // ──────────────────────────────────────────────
 // Shell command blocklist — dangerous commands

@@ -4,6 +4,7 @@
  */
 
 import { unlink } from "fs/promises";
+import { createHash } from "crypto";
 import { join, resolve } from "path";
 import { z } from "zod";
 import { validateBaselineName, validatePathContainment } from "./sanitize.js";
@@ -23,7 +24,12 @@ interface PerfBaselineEntry {
   name: string;
   platform: string;
   createdAt: string;
+  checksum?: string;
   updatedAt: string;
+}
+
+function computeBaselineChecksum(baseline: PerfBaseline): string {
+  return createHash("sha256").update(JSON.stringify(baseline), "utf8").digest("hex");
 }
 
 // ── Constants ──
@@ -75,6 +81,7 @@ const perfBaselineEntrySchema = z.object({
   platform: z.string().min(1).max(128),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
+  checksum: z.string().regex(/^[0-9a-f]{64}$/u).optional(),
 }).strict();
 const perfManifestSchema = z.object({
   version: z.literal(1),
@@ -156,6 +163,12 @@ export class PerfBaselineStore {
     if (!snapshotResult.success) {
       throw new MobileError("Performance snapshot is invalid.", "VALIDATION_ERROR");
     }
+    if (snapshotResult.data.platform !== platform) {
+      throw new MobileError(
+        "Performance snapshot platform does not match the baseline platform.",
+        "VALIDATION_ERROR",
+      );
+    }
 
     const manifest = await this.readManifest();
     const existing = this.findEntry(manifest, name, platform);
@@ -196,6 +209,7 @@ export class PerfBaselineStore {
       platform,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
+      checksum: computeBaselineChecksum(baseline),
     });
 
     if (existing) {
@@ -243,9 +257,17 @@ export class PerfBaselineStore {
       );
     }
     const result = perfBaselineSchema.safeParse(baseline);
-    if (!result.success) {
+    if (
+      !result.success
+      || result.data.name !== entry.name
+      || result.data.platform !== entry.platform
+      || result.data.snapshot.platform !== entry.platform
+      || result.data.createdAt !== entry.createdAt
+      || !entry.checksum
+      || computeBaselineChecksum(result.data) !== entry.checksum
+    ) {
       throw new MobileError(
-        `Performance baseline "${name}" has an invalid structure. Delete and recreate.`,
+        `Performance baseline "${name}" is invalid or does not match its manifest entry. Delete and recreate.`,
         "PERF_BASELINE_CORRUPTED",
       );
     }
@@ -276,8 +298,8 @@ export class PerfBaselineStore {
     const filePath = this.getBaselinePath(platform, name);
     try {
       await unlink(filePath);
-    } catch {
-      // File already gone — ok
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
 
     manifest.baselines = manifest.baselines.filter(

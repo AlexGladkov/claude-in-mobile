@@ -10,7 +10,16 @@ import {
   isCapability,
   isPluginPermission,
 } from "./index.js";
-import type { PluginManifest } from "./index.js";
+import type {
+  PluginAppLifecycleAdapter,
+  PluginFileTransferAdapter,
+  PluginLogsAdapter,
+  PluginPermissionsAdapter,
+  PluginShellAdapter,
+  PluginUiProvider,
+  PluginUrlAdapter,
+  PluginManifest,
+} from "./index.js";
 
 describe("plugin-api v1 contract", () => {
   it("exposes apiVersion === '1'", () => {
@@ -21,11 +30,13 @@ describe("plugin-api v1 contract", () => {
     expect(new Set(ALL_CAPABILITIES).size).toBe(ALL_CAPABILITIES.length);
     expect(ALL_CAPABILITIES).toContain("terminal");
     expect(ALL_CAPABILITIES).toContain("screen");
+    expect(ALL_CAPABILITIES).toContain("url");
   });
 
   it("isCapability accepts known strings", () => {
     expect(isCapability("terminal")).toBe(true);
     expect(isCapability("screen")).toBe(true);
+    expect(isCapability("url")).toBe(true);
     expect(isCapability("nope")).toBe(false);
     expect(isCapability(42)).toBe(false);
   });
@@ -47,6 +58,42 @@ describe("plugin-api v1 contract", () => {
     expect(hasCapability(m, "terminal")).toBe(true);
     expect(hasCapability(m, "screen")).toBe(false);
   });
+  it("exposes independently usable capability contracts", async () => {
+    const shell: PluginShellAdapter = { shell: () => "ok" };
+    const logs: PluginLogsAdapter = {
+      getLogs: () => "logs",
+      clearLogs: () => "cleared",
+    };
+    const apps: PluginAppLifecycleAdapter = {
+      launchApp: () => "launched",
+      stopApp: () => {},
+      installApp: () => "installed",
+    };
+    const permissions: PluginPermissionsAdapter = {
+      grantPermission: () => "granted",
+      revokePermission: () => "revoked",
+      resetPermissions: () => "reset",
+    };
+    const files: PluginFileTransferAdapter = {
+      pushFile: async () => "pushed",
+      pullFile: async () => "pulled",
+    };
+    const url: PluginUrlAdapter = { openUrl: () => "opened" };
+    const ui: PluginUiProvider = {
+      getUiElements: async () => [{ id: "button", role: "button", text: "OK" }],
+    };
+
+    expect(shell.shell("echo ok")).toBe("ok");
+    expect(logs.getLogs({})).toBe("logs");
+    expect(apps.launchApp("example")).toBe("launched");
+    expect(permissions.grantPermission("example", "camera")).toBe("granted");
+    await expect(files.pushFile("/tmp/a", "/data/a")).resolves.toBe("pushed");
+    expect(url.openUrl("https://example.com")).toBe("opened");
+    await expect(ui.getUiElements()).resolves.toEqual([
+      { id: "button", role: "button", text: "OK" },
+    ]);
+  });
+
 
   describe("errors", () => {
     it("PluginContractError prefixes plugin id", () => {

@@ -65,6 +65,7 @@ async function settleWithin(promise: Promise<unknown>, ms: number): Promise<void
 export class LifecycleOrchestrator {
   private readonly initOperations = new WeakMap<RegistryEntry, Promise<void>>();
   private readonly disposeOperations = new WeakMap<RegistryEntry, Promise<void>>();
+  private readonly pendingInitWork = new WeakMap<RegistryEntry, Promise<unknown>>();
   private readonly attempts = new WeakMap<RegistryEntry, InitAttempt>();
 
   constructor(private readonly deps: LifecycleDeps) {
@@ -133,6 +134,19 @@ export class LifecycleOrchestrator {
     const timeout = this.deps.initTimeoutMs ?? DEFAULT_INIT_TIMEOUT_MS;
     try {
       const initPromise = Promise.resolve().then(() => entry.plugin.init(context));
+      this.pendingInitWork.set(entry, initPromise);
+      void initPromise.then(
+        () => {
+          if (this.pendingInitWork.get(entry) === initPromise) {
+            this.pendingInitWork.delete(entry);
+          }
+        },
+        () => {
+          if (this.pendingInitWork.get(entry) === initPromise) {
+            this.pendingInitWork.delete(entry);
+          }
+        },
+      );
       await withTimeout(
         initPromise,
         timeout,
@@ -206,22 +220,33 @@ export class LifecycleOrchestrator {
 
   private async runDispose(entry: RegistryEntry): Promise<void> {
     const id = entry.plugin.manifest.id;
-    const initOperation = this.initOperations.get(entry);
-    if (initOperation) {
+    const initWork = this.pendingInitWork.get(entry);
+    if (initWork) {
       const grace = this.deps.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS;
-      await settleWithin(initOperation, grace);
+      await settleWithin(initWork, grace);
     }
     if (entry.state === "disposed" || entry.state === "unregistered") return;
 
     entry.state = "disposing";
     const timeout = this.deps.disposeTimeoutMs ?? DEFAULT_DISPOSE_TIMEOUT_MS;
     try {
-      if (entry.plugin.dispose) {
+      const pluginDispose = entry.plugin.dispose;
+      if (typeof pluginDispose === "function") {
         await withTimeout(
-          Promise.resolve().then(() => entry.plugin.dispose?.()),
+          Promise.resolve().then(() => pluginDispose.call(entry.plugin)),
           timeout,
           `plugin "${id}" dispose`,
         );
+      } else {
+        const adapter = entry.plugin.adapter;
+        const adapterDispose = adapter?.dispose;
+        if (adapter && typeof adapterDispose === "function") {
+          await withTimeout(
+            Promise.resolve().then(() => adapterDispose.call(adapter)),
+            timeout,
+            `plugin "${id}" adapter dispose`,
+          );
+        }
       }
     } catch (error) {
       this.deps.logger.warn("plugin dispose threw", {

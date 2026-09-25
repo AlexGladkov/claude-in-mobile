@@ -11,6 +11,7 @@
 
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
@@ -19,9 +20,93 @@ use anyhow::Result;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::expect::ExpectOutcome;
-use super::supervisor::{SnapshotMode, SpawnRequest, Supervisor};
+use super::expect::{
+    validate_expect_durations, ExpectOutcome, DEFAULT_EXPECT_IDLE_MS, DEFAULT_EXPECT_TIMEOUT_MS,
+};
+use super::supervisor::{
+    validate_byte_limit, validate_env_entry, validate_environment, validate_session_id,
+    SnapshotMode, SpawnRequest, Supervisor, MAX_CAST_PATH_BYTES, MAX_CMD_BYTES, MAX_CWD_BYTES,
+    MAX_ENV_ENTRIES, MAX_ENV_TOTAL_BYTES, MAX_KEY_BYTES, MAX_PROMPT_REGEX_BYTES, MAX_SEND_BYTES,
+    MAX_TERMINAL_DIMENSION, MIN_TERMINAL_DIMENSION,
+};
 use crate::utils::private_state::state_file;
+const MAX_REQUEST_LINE_BYTES: usize = 1024 * 1024;
+const MAX_IN_FLIGHT_REQUESTS: usize = 32;
+
+struct RequestPermit(Arc<AtomicUsize>);
+
+impl Drop for RequestPermit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
+    }
+}
+
+fn try_acquire_request_permit(in_flight: &Arc<AtomicUsize>) -> Option<RequestPermit> {
+    in_flight
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            (count < MAX_IN_FLIGHT_REQUESTS).then_some(count + 1)
+        })
+        .ok()
+        .map(|_| RequestPermit(Arc::clone(in_flight)))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum RequestLine {
+    Line,
+    TooLong,
+    Eof,
+}
+
+fn read_request_line<R: BufRead>(reader: &mut R, buffer: &mut Vec<u8>) -> io::Result<RequestLine> {
+    buffer.clear();
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(if buffer.is_empty() {
+                RequestLine::Eof
+            } else {
+                RequestLine::Line
+            });
+        }
+
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let content_len = newline.unwrap_or(available.len());
+        if buffer.len().saturating_add(content_len) > MAX_REQUEST_LINE_BYTES {
+            let consumed = newline.map_or(available.len(), |index| index + 1);
+            reader.consume(consumed);
+            if newline.is_none() {
+                discard_request_line(reader)?;
+            }
+            buffer.clear();
+            return Ok(RequestLine::TooLong);
+        }
+
+        buffer.extend_from_slice(&available[..content_len]);
+        let consumed = newline.map_or(available.len(), |index| index + 1);
+        reader.consume(consumed);
+        if newline.is_some() {
+            return Ok(RequestLine::Line);
+        }
+    }
+}
+
+fn discard_request_line<R: BufRead>(reader: &mut R) -> io::Result<()> {
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Ok(());
+        }
+        let consumed = match available.iter().position(|byte| *byte == b'\n') {
+            Some(index) => index + 1,
+            None => available.len(),
+        };
+        let complete = consumed < available.len() || available[consumed - 1] == b'\n';
+        reader.consume(consumed);
+        if complete {
+            return Ok(());
+        }
+    }
+}
 
 #[derive(Deserialize)]
 struct Request {
@@ -33,6 +118,7 @@ struct Request {
 
 pub fn run_supervisor_loop() -> Result<()> {
     let supervisor = Arc::new(Supervisor::new());
+    let in_flight = Arc::new(AtomicUsize::new(0));
     // Single writer owns stdout — concurrent request handlers send their
     // response lines here, so frames never interleave.
     let (tx, rx) = mpsc::channel::<String>();
@@ -51,16 +137,29 @@ pub fn run_supervisor_loop() -> Result<()> {
         })?;
 
     let stdin = io::stdin();
-    let reader = stdin.lock();
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
-        };
-        if line.trim().is_empty() {
+    let mut reader = stdin.lock();
+    let mut line = Vec::with_capacity(1024);
+    loop {
+        match read_request_line(&mut reader, &mut line)? {
+            RequestLine::Eof => break,
+            RequestLine::TooLong => {
+                let _ = tx.send(
+                    json!({
+                        "id": "",
+                        "error": format!(
+                            "request line exceeds the {MAX_REQUEST_LINE_BYTES}-byte limit"
+                        )
+                    })
+                    .to_string(),
+                );
+                continue;
+            }
+            RequestLine::Line => {}
+        }
+        if line.iter().all(|byte| byte.is_ascii_whitespace()) {
             continue;
         }
-        let req: Request = match serde_json::from_str(&line) {
+        let req: Request = match serde_json::from_slice(&line) {
             Ok(r) => r,
             Err(e) => {
                 let _ =
@@ -74,16 +173,38 @@ pub fn run_supervisor_loop() -> Result<()> {
             break;
         }
         // Handle each request on its own thread so a blocking `expect` on one
-        // session does not stall the read loop or other sessions.
+        // session does not stall the read loop or other sessions. Admission is
+        // capped so a client cannot exhaust resources with queued long waits.
+        let Some(permit) = try_acquire_request_permit(&in_flight) else {
+            let _ = tx.send(
+                json!({
+                    "id": req.id,
+                    "error": format!(
+                        "too many in-flight requests (maximum {MAX_IN_FLIGHT_REQUESTS})"
+                    )
+                })
+                .to_string(),
+            );
+            continue;
+        };
+        let request_id = req.id.clone();
         let sup = Arc::clone(&supervisor);
-        let tx = tx.clone();
-        thread::spawn(move || {
-            let envelope = match dispatch(&sup, &req.method, &req.params) {
-                Ok(value) => json!({"id":req.id,"result":value}),
-                Err(e) => json!({"id":req.id,"error":format!("{e}")}),
-            };
-            let _ = tx.send(envelope.to_string());
-        });
+        let thread_tx = tx.clone();
+        let spawned = thread::Builder::new()
+            .name("repl-bridge-request".into())
+            .spawn(move || {
+                let _permit = permit;
+                let envelope = match dispatch(&sup, &req.method, &req.params) {
+                    Ok(value) => json!({"id":req.id,"result":value}),
+                    Err(e) => json!({"id":req.id,"error":format!("{e}")}),
+                };
+                let _ = thread_tx.send(envelope.to_string());
+            });
+        if spawned.is_err() {
+            let _ = tx.send(
+                json!({"id":request_id,"error":"unable to start request worker"}).to_string(),
+            );
+        }
     }
     // Drop our sender; the writer drains and exits once every in-flight handler
     // has dropped its clone (graceful flush of pending responses).
@@ -95,36 +216,35 @@ pub fn run_supervisor_loop() -> Result<()> {
 fn dispatch(sup: &Supervisor, method: &str, params: &Value) -> Result<Value> {
     match method {
         "spawn" => {
-            let id = required_string(params, "id")?;
-            let cmd = required_string(params, "cmd")?;
-            let cwd = params.get("cwd").and_then(|v| v.as_str()).map(String::from);
+            let id_value = required_session_id(params)?;
+            let cmd_value = bounded_required_string(params, "cmd", MAX_CMD_BYTES)?;
+            let cwd = optional_bounded_string(params, "cwd", MAX_CWD_BYTES)?.map(String::from);
             // Clamp cols/rows to 1..=1000 using as_u64() BEFORE casting to u16.
             let cols = params
                 .get("cols")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(120)
-                .clamp(1, 1000) as u16;
+                .clamp(MIN_TERMINAL_DIMENSION as u64, MAX_TERMINAL_DIMENSION as u64)
+                as u16;
             let rows = params
                 .get("rows")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(40)
-                .clamp(1, 1000) as u16;
-            let prompt_regex = params
-                .get("promptRegex")
-                .and_then(|v| v.as_str())
-                .map(String::from);
+                .clamp(MIN_TERMINAL_DIMENSION as u64, MAX_TERMINAL_DIMENSION as u64)
+                as u16;
+            let prompt_regex =
+                optional_bounded_string(params, "promptRegex", MAX_PROMPT_REGEX_BYTES)?
+                    .map(String::from);
             let shell = params
                 .get("shell")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            let env = parse_env(params);
-
-            // Parse record / castPath.
-            let cast_path: Option<PathBuf> = parse_cast_path(params, &id)?;
+            let env = parse_env(params)?;
+            let cast_path = parse_cast_path(params, id_value)?;
 
             let result = sup.spawn(SpawnRequest {
-                id,
-                cmd,
+                id: id_value.to_owned(),
+                cmd: cmd_value.to_owned(),
                 cwd,
                 env,
                 cols,
@@ -136,27 +256,24 @@ fn dispatch(sup: &Supervisor, method: &str, params: &Value) -> Result<Value> {
             Ok(serde_json::to_value(&result)?)
         }
         "send" => {
-            let id = required_string(params, "id")?;
-            let text = required_string(params, "text")?;
+            let id = required_session_id(params)?;
+            let text = bounded_required_string(params, "text", MAX_SEND_BYTES)?;
             let with_newline = params
                 .get("newline")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
-            sup.send(&id, &text, with_newline)?;
+            sup.send(id, text, with_newline)?;
             Ok(json!({"ok": true}))
         }
         "key" => {
-            let id = required_string(params, "id")?;
-            let key = required_string(params, "key")?;
-            sup.send_key(&id, &key)?;
+            let id = required_session_id(params)?;
+            let key = bounded_required_string(params, "key", MAX_KEY_BYTES)?;
+            sup.send_key(id, key)?;
             Ok(json!({"ok": true}))
         }
         "expect" => {
-            let id = required_string(params, "id")?;
-            let regex = params
-                .get("regex")
-                .and_then(|v| v.as_str())
-                .map(String::from);
+            let id = required_session_id(params)?;
+            let regex = optional_bounded_string(params, "regex", MAX_PROMPT_REGEX_BYTES)?;
             // Hard caps prevent a caller from blocking the server for hours.
             //
             // Live / animated TUI programs (monet tui, top, htop, watch …) emit
@@ -165,21 +282,13 @@ fn dispatch(sup: &Supervisor, method: &str, params: &Value) -> Result<Value> {
             // such programs use `repl_snapshot` instead (instantaneous, never
             // blocks). Idle-based `expect` will always run to full `timeout` on
             // a non-stopping TUI, so keep `timeoutMs` small or use `snapshot`.
-            let idle = params
-                .get("idleMs")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(300)
-                .min(60_000); // hard cap: 60 s
-            let timeout = params
-                .get("timeoutMs")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(5_000)
-                .min(300_000); // hard cap: 5 min
-            let outcome = sup.expect(&id, regex.as_deref(), idle, timeout)?;
+            let idle = parse_expect_idle(params)?;
+            let timeout = parse_expect_timeout(params)?;
+            let outcome = sup.expect(id, regex, idle, timeout)?;
             Ok(serialize_outcome(&outcome))
         }
         "snapshot" => {
-            let id = required_string(params, "id")?;
+            let id = required_session_id(params)?;
 
             // Validate mode — reject invalid values with explicit error (S4).
             let mode_str = params
@@ -195,29 +304,31 @@ fn dispatch(sup: &Supervisor, method: &str, params: &Value) -> Result<Value> {
                 .get("tail")
                 .and_then(|v| v.as_u64())
                 .map(|n| n as usize);
-            let snap = sup.snapshot(&id, mode, history, tail)?;
+            let snap = sup.snapshot(id, mode, history, tail)?;
             Ok(serde_json::to_value(&snap)?)
         }
         "list" => Ok(serde_json::to_value(sup.list())?),
         "kill" => {
-            let id = required_string(params, "id")?;
-            sup.kill(&id)?;
+            let id = required_session_id(params)?;
+            sup.kill(id)?;
             Ok(json!({"ok": true}))
         }
         "resize" => {
-            let id = required_string(params, "id")?;
+            let id = required_session_id(params)?;
             // Clamp cols/rows to 1..=1000 using as_u64() BEFORE casting to u16 (R11, S19).
             let cols = params
                 .get("cols")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(80)
-                .clamp(1, 1000) as u16;
+                .clamp(MIN_TERMINAL_DIMENSION as u64, MAX_TERMINAL_DIMENSION as u64)
+                as u16;
             let rows = params
                 .get("rows")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(24)
-                .clamp(1, 1000) as u16;
-            sup.resize(&id, cols, rows)?;
+                .clamp(MIN_TERMINAL_DIMENSION as u64, MAX_TERMINAL_DIMENSION as u64)
+                as u16;
+            sup.resize(id, cols, rows)?;
             Ok(json!({"ok": true}))
         }
         other => anyhow::bail!("unknown method: {other}"),
@@ -225,15 +336,63 @@ fn dispatch(sup: &Supervisor, method: &str, params: &Value) -> Result<Value> {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn required_string(params: &Value, key: &str) -> Result<String> {
+fn required_string<'a>(params: &'a Value, key: &str) -> Result<&'a str> {
     params
         .get(key)
         .and_then(|v| v.as_str())
-        .map(String::from)
         .ok_or_else(|| anyhow::anyhow!("missing required string param: {key}"))
+}
+
+fn required_session_id(params: &Value) -> Result<&str> {
+    let id = required_string(params, "id")?;
+    validate_session_id(id)?;
+    Ok(id)
+}
+
+fn bounded_required_string<'a>(params: &'a Value, key: &str, max_bytes: usize) -> Result<&'a str> {
+    let value = required_string(params, key)?;
+    validate_byte_limit(key, value, max_bytes)?;
+    Ok(value)
+}
+
+fn optional_bounded_string<'a>(
+    params: &'a Value,
+    key: &str,
+    max_bytes: usize,
+) -> Result<Option<&'a str>> {
+    let Some(value) = params.get(key) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let value = value
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("param {key} must be a string"))?;
+    validate_byte_limit(key, value, max_bytes)?;
+    Ok(Some(value))
+}
+
+fn parse_expect_idle(params: &Value) -> Result<u64> {
+    let Some(value) = params.get("idleMs") else {
+        return Ok(DEFAULT_EXPECT_IDLE_MS);
+    };
+    let idle = value
+        .as_u64()
+        .ok_or_else(|| anyhow::anyhow!("idleMs must be a non-negative integer"))?;
+    validate_expect_durations(idle, DEFAULT_EXPECT_TIMEOUT_MS)?;
+    Ok(idle)
+}
+
+fn parse_expect_timeout(params: &Value) -> Result<u64> {
+    let Some(value) = params.get("timeoutMs") else {
+        return Ok(DEFAULT_EXPECT_TIMEOUT_MS);
+    };
+    let timeout = value
+        .as_u64()
+        .ok_or_else(|| anyhow::anyhow!("timeoutMs must be a non-negative integer"))?;
+    validate_expect_durations(DEFAULT_EXPECT_IDLE_MS, timeout)?;
+    Ok(timeout)
 }
 
 /// Base environment inherited by every PTY session. Keep this allowlist in
@@ -241,22 +400,40 @@ fn required_string(params: &Value, key: &str) -> Result<String> {
 /// intentionally prevented from forwarding arbitrary credentials.
 const SESSION_ENV_ALLOWLIST: [&str; 5] = ["PATH", "HOME", "LANG", "LC_ALL", "TZ"];
 
-fn parse_env(params: &Value) -> Vec<(String, String)> {
-    let explicit = params.get("env").and_then(|v| v.as_object());
-    let mut env =
-        Vec::with_capacity(SESSION_ENV_ALLOWLIST.len() + explicit.map_or(0, serde_json::Map::len));
+fn parse_env(params: &Value) -> Result<Vec<(String, String)>> {
+    let explicit = match params.get("env") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(obj)) => Some(obj),
+        Some(_) => anyhow::bail!("env must be an object of strings"),
+    };
+    if explicit.is_some_and(|obj| obj.len() > MAX_ENV_ENTRIES) {
+        anyhow::bail!("env exceeds the {MAX_ENV_ENTRIES}-entry limit");
+    }
 
+    let mut explicit_bytes = 0usize;
+    if let Some(obj) = explicit {
+        for (key, value) in obj {
+            let value = value
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("environment value for {key} must be a string"))?;
+            explicit_bytes = explicit_bytes.saturating_add(validate_env_entry(key, value)?);
+        }
+    }
+    if explicit_bytes > MAX_ENV_TOTAL_BYTES {
+        anyhow::bail!("env exceeds the {MAX_ENV_TOTAL_BYTES}-byte limit");
+    }
+
+    let mut env = Vec::with_capacity(super::supervisor::MAX_ENV_TOTAL_ENTRIES);
     for key in SESSION_ENV_ALLOWLIST {
         if let Ok(value) = std::env::var(key) {
+            validate_env_entry(key, &value)?;
             env.push((key.to_string(), value));
         }
     }
 
     if let Some(obj) = explicit {
         for (key, value) in obj {
-            let Some(value) = value.as_str() else {
-                continue;
-            };
+            let value = value.as_str().expect("validated above");
             if let Some((_, inherited)) = env
                 .iter_mut()
                 .find(|(name, _)| name.as_str() == key.as_str())
@@ -269,7 +446,8 @@ fn parse_env(params: &Value) -> Vec<(String, String)> {
         }
     }
 
-    env
+    validate_environment(&env)?;
+    Ok(env)
 }
 
 /// Parse `history` from params. Returns `None` when absent/false/0.
@@ -293,27 +471,35 @@ fn parse_history(params: &Value) -> Result<Option<usize>> {
 /// - `record: true` → a private per-user cast path
 /// - `record: "<path>"` → `Some(PathBuf::from(path))` (validated server-side)
 fn parse_cast_path(params: &Value, id: &str) -> Result<Option<PathBuf>> {
-    let record_v = params.get("record");
-    let Some(rv) = record_v else {
+    validate_session_id(id)?;
+    let record = params.get("record");
+    let Some(record) = record else {
         return Ok(None);
     };
-    if rv.as_bool() == Some(false) || rv.is_null() {
+    if record.as_bool() == Some(false) || record.is_null() {
         return Ok(None);
     }
-    // Explicit castPath override?
-    if let Some(path_str) = params.get("castPath").and_then(|v| v.as_str()) {
-        return Ok(Some(PathBuf::from(path_str)));
-    }
-    if rv.as_bool() == Some(true) {
-        return Ok(Some(state_file("repl-casts", id, "cast")?));
-    }
-    // record is a string path (as per TS type `boolean | string`).
-    if let Some(s) = rv.as_str() {
-        if !s.is_empty() {
-            return Ok(Some(PathBuf::from(s)));
+
+    if let Some(cast_path) = params.get("castPath") {
+        if !cast_path.is_null() {
+            let path = cast_path
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("castPath must be a string"))?;
+            validate_byte_limit("castPath", path, MAX_CAST_PATH_BYTES)?;
+            return Ok(Some(PathBuf::from(path)));
         }
     }
-    Ok(None)
+    if record.as_bool() == Some(true) {
+        return Ok(Some(state_file("repl-casts", id, "cast")?));
+    }
+    if let Some(path) = record.as_str() {
+        validate_byte_limit("record", path, MAX_CAST_PATH_BYTES)?;
+        if !path.is_empty() {
+            return Ok(Some(PathBuf::from(path)));
+        }
+        return Ok(None);
+    }
+    anyhow::bail!("record must be a boolean or string path")
 }
 
 fn serialize_outcome(outcome: &ExpectOutcome) -> Value {
@@ -334,6 +520,105 @@ mod tests {
         let p = json!({"id": "x"});
         assert_eq!(required_string(&p, "id").unwrap(), "x");
         assert!(required_string(&p, "missing").is_err());
+    }
+
+    #[test]
+    fn dispatch_rejects_oversized_inputs_before_supervisor_state_changes() {
+        let sup = Supervisor::new();
+
+        assert!(dispatch(&sup, "spawn", &json!({"id": "bad id", "cmd": "true"}),).is_err());
+
+        let long_command = "x".repeat(MAX_CMD_BYTES + 1);
+        assert!(dispatch(
+            &sup,
+            "spawn",
+            &json!({"id": "long-command", "cmd": long_command}),
+        )
+        .is_err());
+
+        assert!(dispatch(
+            &sup,
+            "send",
+            &json!({"id": "missing", "text": "x".repeat(MAX_SEND_BYTES + 1)}),
+        )
+        .is_err());
+
+        assert!(dispatch(
+            &sup,
+            "spawn",
+            &json!({"id": "bad-env", "cmd": "true", "env": {"BAD-KEY": "x"}}),
+        )
+        .is_err());
+
+        let mut oversized_env = serde_json::Map::new();
+        for index in 0..=MAX_ENV_ENTRIES {
+            oversized_env.insert(format!("VAR_{index}"), json!("x"));
+        }
+        assert!(dispatch(
+            &sup,
+            "spawn",
+            &json!({"id": "large-env", "cmd": "true", "env": oversized_env}),
+        )
+        .is_err());
+
+        assert!(dispatch(
+            &sup,
+            "spawn",
+            &json!({
+                "id": "large-record-path",
+                "cmd": "true",
+                "record": "x".repeat(MAX_CAST_PATH_BYTES + 1),
+            }),
+        )
+        .is_err());
+        assert!(sup.list().is_empty());
+    }
+
+    #[test]
+    fn oversized_request_frame_is_discarded_before_the_next_request() {
+        let mut input = vec![b'x'; MAX_REQUEST_LINE_BYTES + 1];
+        input.extend_from_slice(b"\n{\"id\":\"next\",\"method\":\"list\"}\n");
+        let mut reader = io::BufReader::new(input.as_slice());
+        let mut buffer = Vec::new();
+
+        assert_eq!(
+            read_request_line(&mut reader, &mut buffer).unwrap(),
+            RequestLine::TooLong
+        );
+        assert!(buffer.is_empty());
+        assert_eq!(
+            read_request_line(&mut reader, &mut buffer).unwrap(),
+            RequestLine::Line
+        );
+        assert_eq!(buffer, br#"{"id":"next","method":"list"}"#);
+        assert_eq!(
+            read_request_line(&mut reader, &mut buffer).unwrap(),
+            RequestLine::Eof
+        );
+    }
+
+    #[test]
+    fn request_admission_caps_concurrency_and_releases_slots() {
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let permits: Vec<_> = (0..MAX_IN_FLIGHT_REQUESTS)
+            .map(|_| try_acquire_request_permit(&in_flight).expect("slot should be available"))
+            .collect();
+
+        assert_eq!(in_flight.load(Ordering::Acquire), MAX_IN_FLIGHT_REQUESTS);
+        assert!(try_acquire_request_permit(&in_flight).is_none());
+
+        let mut permits = permits.into_iter();
+        drop(permits.next());
+        assert_eq!(
+            in_flight.load(Ordering::Acquire),
+            MAX_IN_FLIGHT_REQUESTS - 1
+        );
+        let replacement = try_acquire_request_permit(&in_flight).expect("released slot reused");
+        assert_eq!(in_flight.load(Ordering::Acquire), MAX_IN_FLIGHT_REQUESTS);
+
+        drop(permits);
+        drop(replacement);
+        assert_eq!(in_flight.load(Ordering::Acquire), 0);
     }
 
     #[test]
@@ -403,36 +688,83 @@ mod tests {
         assert_eq!(clamped_zero, 1u16);
     }
 
-    /// Verify that the timing clamps applied inside the "expect" arm are
-    /// correct — without running the full bridge loop.
     #[test]
-    fn expect_timing_clamps_values() {
-        // idleMs hard cap: 60_000 ms
-        let huge_idle: u64 = 999_999_999;
-        let clamped_idle = huge_idle.min(60_000);
-        assert_eq!(clamped_idle, 60_000u64, "idleMs must be capped at 60_000");
+    fn expect_idle_defaults_only_when_omitted() {
+        assert_eq!(
+            parse_expect_idle(&json!({})).unwrap(),
+            DEFAULT_EXPECT_IDLE_MS
+        );
+        assert!(parse_expect_idle(&json!({"idleMs": null})).is_err());
+    }
 
-        // timeoutMs hard cap: 300_000 ms
-        let huge_timeout: u64 = 10_000_000;
-        let clamped_timeout = huge_timeout.min(300_000);
+    #[test]
+    fn expect_timeout_defaults_only_when_omitted() {
         assert_eq!(
-            clamped_timeout, 300_000u64,
-            "timeoutMs must be capped at 300_000"
+            parse_expect_timeout(&json!({})).unwrap(),
+            DEFAULT_EXPECT_TIMEOUT_MS
         );
+        assert!(parse_expect_timeout(&json!({"timeoutMs": null})).is_err());
+    }
 
-        // Values below the cap must pass through unchanged.
-        let small_idle: u64 = 200;
-        assert_eq!(
-            small_idle.min(60_000),
-            200u64,
-            "values below cap must be unchanged"
-        );
-        let small_timeout: u64 = 5_000;
-        assert_eq!(
-            small_timeout.min(300_000),
-            5_000u64,
-            "values below cap must be unchanged"
-        );
+    #[test]
+    fn expect_idle_accepts_values_through_public_maximum() {
+        for idle in [0, 300, 60_000] {
+            assert_eq!(parse_expect_idle(&json!({"idleMs": idle})).unwrap(), idle);
+        }
+    }
+
+    #[test]
+    fn expect_idle_rejects_invalid_fractional_negative_and_out_of_range_values() {
+        for value in [
+            json!(-1),
+            json!(1.5),
+            json!(60_001),
+            json!("300"),
+            json!(true),
+        ] {
+            let result = dispatch(
+                &Supervisor::new(),
+                "expect",
+                &json!({"id": "missing", "idleMs": value}),
+            );
+            let error = result.expect_err("invalid idleMs must be rejected");
+            assert!(
+                error.to_string().contains("idleMs"),
+                "unexpected validation error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn expect_timeout_accepts_values_through_public_maximum() {
+        for timeout in [0, 295_000, 295_001, 300_000] {
+            assert_eq!(
+                parse_expect_timeout(&json!({"timeoutMs": timeout})).unwrap(),
+                timeout
+            );
+        }
+    }
+
+    #[test]
+    fn expect_timeout_rejects_invalid_fractional_negative_and_out_of_range_values() {
+        for value in [
+            json!(-1),
+            json!(1.5),
+            json!(300_001),
+            json!("5000"),
+            json!(true),
+        ] {
+            let result = dispatch(
+                &Supervisor::new(),
+                "expect",
+                &json!({"id": "missing", "timeoutMs": value}),
+            );
+            let error = result.expect_err("invalid timeoutMs must be rejected");
+            assert!(
+                error.to_string().contains("timeoutMs"),
+                "unexpected validation error: {error}"
+            );
+        }
     }
 
     #[cfg(unix)]

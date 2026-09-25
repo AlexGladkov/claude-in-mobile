@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm } from "fs/promises";
+import { mkdir, mkdtemp, rm } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 import { Jimp } from "jimp";
@@ -125,6 +125,16 @@ describe("delete", () => {
     await store.save("login", "android", png);
     await store.delete("login", "android");
     await expect(store.get("login", "android")).rejects.toThrow(BaselineNotFoundError);
+  });
+  it("propagates filesystem failures when deleting a baseline", async () => {
+    const png = await createTestPng(2, 2);
+    await store.save("blocked-delete", "android", png);
+    const filePath = join(tempDir, ".visual-baselines", "android", "blocked-delete.png");
+    await rm(filePath);
+    await mkdir(filePath);
+
+    await expect(store.delete("blocked-delete", "android")).rejects.toThrow();
+    await expect(store.list("android")).resolves.toHaveLength(1);
   });
 
   it("throws for non-existent baseline", async () => {

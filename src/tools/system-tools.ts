@@ -3,11 +3,14 @@ import { defineTool, z } from "./define-tool.js";
 import { platformEnum, deviceIdField } from "./common-schema.js";
 import { truncateOutput } from "../utils/truncate.js";
 import {
+  sanitizeResourceUri,
+  sanitizeErrorMessage,
   validatePath,
   validateShellCommand,
   validateUrl,
   validatePackageName,
 } from "../utils/sanitize.js";
+import { safeTerminalText } from "../utils/terminal-controls.js";
 import { parseCommonArgs } from "../utils/parse-common-args.js";
 import { textResult } from "../utils/tool-result.js";
 import { sleep } from "../utils/sleep.js";
@@ -19,6 +22,8 @@ const commonFields = {
   platform: platformEnum,
   deviceId: deviceIdField,
 } as const;
+const MAX_SEEN_LOG_LINES = 2048;
+const MAX_SEEN_LOG_CHARACTERS = 1_048_576;
 
 export const systemTools: ToolDefinition[] = [
   defineTool({
@@ -250,6 +255,7 @@ export const systemTools: ToolDefinition[] = [
           package: args.package,
         };
         const seen = new Set<string>();
+        let seenCharacters = 0;
         const start = Date.now();
         while (true) {
           let dump = "";
@@ -264,7 +270,16 @@ export const systemTools: ToolDefinition[] = [
           for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
             if (!line || seen.has(line)) continue;
-            seen.add(line);
+            if (line.length <= MAX_SEEN_LOG_CHARACTERS) {
+              seen.add(line);
+              seenCharacters += line.length;
+              while (seen.size > MAX_SEEN_LOG_LINES || seenCharacters > MAX_SEEN_LOG_CHARACTERS) {
+                const oldest = seen.values().next().value;
+                if (oldest === undefined) break;
+                seen.delete(oldest);
+                seenCharacters -= oldest.length;
+              }
+            }
             candidates.push(line);
             candidateIndexes.push(i);
           }
@@ -283,7 +298,7 @@ export const systemTools: ToolDefinition[] = [
           }
           if (Date.now() - start >= timeoutMs) {
             return textResult(
-              `Timeout after ${timeoutMs}ms — pattern not found. Scanned ${seen.size} unique lines.`,
+              `Timeout after ${timeoutMs}ms — pattern not found. Scanned logs; retaining ${seen.size} recent unique lines for deduplication.`,
             );
           }
           await sleep(pollIntervalMs);
@@ -365,17 +380,16 @@ export const systemTools: ToolDefinition[] = [
     description: "Inspect WebView via Chrome DevTools Protocol (Android only)",
     schema: z.object({ deviceId: deviceIdField }),
     handler: async (args, ctx) => {
-      const { platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
       if (platform !== "android") {
         return textResult("webview is only available for Android.");
       }
 
-      const inspector = ctx.deviceManager.getWebViewInspector();
+      const inspector = ctx.deviceManager.getWebViewInspector(deviceId);
       const result = await inspector.inspect();
 
       const lines = [
         `WebView sockets found: ${result.sockets.join(", ")}`,
-        `Forwarded to port: ${result.forwardedPort}`,
         "",
       ];
       let formattedChars = lines.reduce((total, line) => total + line.length + 1, 0);
@@ -386,9 +400,9 @@ export const systemTools: ToolDefinition[] = [
         for (let index = 0; index < result.targets.length; index++) {
           const target = result.targets[index];
           const entry = [
-            `  • [${target.type}] "${target.title}"`,
-            `    URL: ${target.url}`,
-            `    ID: ${target.id}`,
+            `  • [${target.type}] "${safeTerminalText(sanitizeErrorMessage(target.title))}"`,
+            `    URL: ${safeTerminalText(sanitizeResourceUri(target.url) ?? "[REDACTED]")}`,
+            `    ID: ${safeTerminalText(target.id)}`,
           ];
           const entryChars = entry.reduce((total, line) => total + line.length + 1, 0);
           if (formattedChars + entryChars > 12_000) {

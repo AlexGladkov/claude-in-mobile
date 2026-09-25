@@ -15,20 +15,31 @@
 //!   2. `rg '\.user_input\(' src/android.rs` lists every untrusted shell
 //!      segment. Each should be paired with a documented threat model.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use regex::Regex;
 use serde::Serialize;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, OnceLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::utils::device_shell::DeviceShellCmd;
-use crate::utils::private_state::{atomic_write, read_json_file, state_file};
-use crate::utils::process::{ensure_success, run_with_limits, terminal_safe};
+#[cfg(test)]
+use crate::utils::private_state::create_private_dir;
+use crate::utils::private_state::{
+    atomic_write, create_private_file_if_missing, read_bounded_legacy_file, read_json_file,
+    state_file, validate_identifier, validate_legacy_file_security,
+};
+use crate::utils::process::{ensure_success, run_with_limits, terminal_safe, terminal_safe_json};
 use crate::utils::validate::{
     validate_permission_name, validate_pref_key, validate_relative_path, validate_sqlite_value,
     validate_xml_filename,
 };
+
+#[cfg(test)]
+pub(crate) static LEGACY_STATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 // Compiled regexes (created once, reused)
 fn node_regex() -> &'static Regex {
@@ -69,6 +80,177 @@ fn bounds_string_regex() -> &'static Regex {
 fn clickable_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r#"clickable="([^"]*)""#).unwrap())
+}
+
+fn password_regex() -> &'static Regex {
+    static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"password="([^"]*)""#).unwrap());
+    &RE
+}
+
+fn is_text_entry_class(class: &str) -> bool {
+    let compact: String = class
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .map(|character| character.to_ascii_lowercase())
+        .collect();
+    [
+        "edittext",
+        "textfield",
+        "textinput",
+        "autocompletetextview",
+        "multiautocompletetextview",
+        "searchview",
+        "numberpicker",
+    ]
+    .iter()
+    .any(|marker| compact.contains(marker))
+}
+
+fn has_sensitive_ui_marker(value: &str) -> bool {
+    let words = value
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .map(str::to_ascii_lowercase);
+    if words.clone().any(|word| {
+        matches!(
+            word.as_str(),
+            "pin" | "otp" | "password" | "passwd" | "passcode" | "cvv" | "cvc"
+        )
+    }) {
+        return true;
+    }
+
+    let compact: String = value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .map(|character| character.to_ascii_lowercase())
+        .collect();
+    [
+        "onetimecode",
+        "verificationcode",
+        "securitycode",
+        "creditcard",
+        "cardnumber",
+        "ccnumber",
+        "ccsecuritycode",
+        "securetextfield",
+        "securetextinput",
+    ]
+    .iter()
+    .any(|marker| compact.contains(marker))
+}
+
+fn is_sensitive_ui_node(
+    class: &str,
+    text: &str,
+    resource_id: &str,
+    content_desc: &str,
+    password: bool,
+) -> bool {
+    password
+        || is_text_entry_class(class)
+        || has_sensitive_ui_marker(class)
+        || has_sensitive_ui_marker(text)
+        || has_sensitive_ui_marker(resource_id)
+        || has_sensitive_ui_marker(content_desc)
+}
+
+fn is_sensitive_android_ui_node(node: &str) -> bool {
+    let class = class_regex()
+        .captures(node)
+        .and_then(|capture| capture.get(1))
+        .map_or("", |matched| matched.as_str());
+    let text = text_regex()
+        .captures(node)
+        .and_then(|capture| capture.get(1))
+        .map_or("", |matched| matched.as_str());
+    let resource_id = resource_regex()
+        .captures(node)
+        .and_then(|capture| capture.get(1))
+        .map_or("", |matched| matched.as_str());
+    let content_desc = content_regex()
+        .captures(node)
+        .and_then(|capture| capture.get(1))
+        .map_or("", |matched| matched.as_str());
+    let password = password_regex()
+        .captures(node)
+        .and_then(|capture| capture.get(1))
+        .is_some_and(|matched| matched.as_str().eq_ignore_ascii_case("true"));
+
+    is_sensitive_ui_node(class, text, resource_id, content_desc, password)
+}
+
+fn redact_xml_attribute(node: &str, name: &str) -> String {
+    let needle = format!("{name}=\"");
+    let Some(attribute_start) = node.find(&needle) else {
+        return node.to_owned();
+    };
+    let value_start = attribute_start + needle.len();
+    let Some(value_end) = node[value_start..].find('"') else {
+        return node.to_owned();
+    };
+    let value_end = value_start + value_end;
+    if value_end == value_start {
+        return node.to_owned();
+    }
+
+    let mut redacted = String::with_capacity(node.len());
+    redacted.push_str(&node[..value_start]);
+    redacted.push_str("[REDACTED]");
+    redacted.push_str(&node[value_end..]);
+    redacted
+}
+
+fn next_node_start(xml: &str, from: usize) -> Option<usize> {
+    let mut search = from;
+    loop {
+        let start = search + xml.get(search..)?.find("<node")?;
+        let after_name = start + "<node".len();
+        let next = *xml.as_bytes().get(after_name)?;
+        if !next.is_ascii_whitespace() && next != b'>' && next != b'/' {
+            search = after_name;
+            continue;
+        }
+        return Some(start);
+    }
+}
+
+fn node_tag_end(xml: &str, start: usize) -> Option<usize> {
+    let bytes = xml.as_bytes();
+    let mut quote = None;
+    for (index, byte) in bytes.iter().enumerate().skip(start + "<node".len()) {
+        match quote {
+            Some(delimiter) if *byte == delimiter => quote = None,
+            None if *byte == b'"' || *byte == b'\'' => quote = Some(*byte),
+            None if *byte == b'>' => return Some(index + 1),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn sanitize_android_ui_xml(xml: &str) -> String {
+    let mut output = String::with_capacity(xml.len());
+    let mut cursor = 0;
+    while let Some(start) = next_node_start(xml, cursor) {
+        output.push_str(&xml[cursor..start]);
+        let Some(end) = node_tag_end(xml, start) else {
+            // A truncated tag is not safe to parse or display. Fail closed by
+            // dropping it and the remaining malformed XML.
+            return output;
+        };
+        let node = &xml[start..end];
+        if is_sensitive_android_ui_node(node) {
+            let redacted = redact_xml_attribute(node, "text");
+            let redacted = redact_xml_attribute(&redacted, "resource-id");
+            let redacted = redact_xml_attribute(&redacted, "content-desc");
+            output.push_str(&redacted);
+        } else {
+            output.push_str(node);
+        }
+        cursor = end;
+    }
+    output.push_str(&xml[cursor..]);
+    output
 }
 
 /// Build ADB command with optional device serial
@@ -166,14 +348,18 @@ pub fn open_url(url: &str, device: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Execute shell command on device
+/// Execute a shell command on the device.
 pub fn shell(command: &str, device: Option<&str>) -> Result<String> {
     let output = adb_exec(device, &["shell", command], None)?;
+    if !output.status.success() {
+        let stderr = terminal_safe(&output.stderr);
+        if stderr.is_empty() {
+            bail!("adb shell failed: command failed");
+        }
+        bail!("adb shell failed: {}", stderr);
+    }
 
     let stdout = terminal_safe(&output.stdout);
-    if !output.status.success() && !output.stderr.is_empty() {
-        eprintln!("{}", terminal_safe(&output.stderr));
-    }
     print!("{stdout}");
     Ok(stdout)
 }
@@ -234,29 +420,34 @@ pub fn input_text(text: &str, device: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+fn resolve_android_keycode(key: &str) -> Option<&'static str> {
+    match key.to_ascii_lowercase().as_str() {
+        "home" => Some("KEYCODE_HOME"),
+        "back" => Some("KEYCODE_BACK"),
+        "enter" | "return" => Some("KEYCODE_ENTER"),
+        "tab" => Some("KEYCODE_TAB"),
+        "delete" | "backspace" => Some("KEYCODE_DEL"),
+        "menu" => Some("KEYCODE_MENU"),
+        "power" => Some("KEYCODE_POWER"),
+        "volume_up" => Some("KEYCODE_VOLUME_UP"),
+        "volume_down" => Some("KEYCODE_VOLUME_DOWN"),
+        "camera" => Some("KEYCODE_CAMERA"),
+        "search" => Some("KEYCODE_SEARCH"),
+        "space" => Some("KEYCODE_SPACE"),
+        "escape" | "esc" => Some("KEYCODE_ESCAPE"),
+        "up" => Some("KEYCODE_DPAD_UP"),
+        "down" => Some("KEYCODE_DPAD_DOWN"),
+        "left" => Some("KEYCODE_DPAD_LEFT"),
+        "right" => Some("KEYCODE_DPAD_RIGHT"),
+        "app_switch" | "recent" => Some("KEYCODE_APP_SWITCH"),
+        _ => None,
+    }
+}
+
 /// Press a key
 pub fn press_key(key: &str, device: Option<&str>) -> Result<()> {
-    let keycode = match key.to_lowercase().as_str() {
-        "home" => "KEYCODE_HOME",
-        "back" => "KEYCODE_BACK",
-        "enter" | "return" => "KEYCODE_ENTER",
-        "tab" => "KEYCODE_TAB",
-        "delete" | "backspace" => "KEYCODE_DEL",
-        "menu" => "KEYCODE_MENU",
-        "power" => "KEYCODE_POWER",
-        "volume_up" => "KEYCODE_VOLUME_UP",
-        "volume_down" => "KEYCODE_VOLUME_DOWN",
-        "camera" => "KEYCODE_CAMERA",
-        "search" => "KEYCODE_SEARCH",
-        "space" => "KEYCODE_SPACE",
-        "escape" | "esc" => "KEYCODE_ESCAPE",
-        "up" => "KEYCODE_DPAD_UP",
-        "down" => "KEYCODE_DPAD_DOWN",
-        "left" => "KEYCODE_DPAD_LEFT",
-        "right" => "KEYCODE_DPAD_RIGHT",
-        "app_switch" | "recent" => "KEYCODE_APP_SWITCH",
-        _ => key,
-    };
+    let keycode = resolve_android_keycode(key)
+        .ok_or_else(|| anyhow!("Unsupported Android key: {}", terminal_safe(key.as_bytes())))?;
 
     let output = adb_exec(device, &["shell", "input", "keyevent", keycode], None)?;
 
@@ -264,19 +455,39 @@ pub fn press_key(key: &str, device: Option<&str>) -> Result<()> {
         bail!("adb keyevent failed: {}", terminal_safe(&output.stderr));
     }
 
-    println!("Pressed key: {} ({})", key, keycode);
+    println!(
+        "Pressed key: {} ({})",
+        terminal_safe(key.as_bytes()),
+        terminal_safe(keycode.as_bytes())
+    );
     Ok(())
 }
 
 // ============== UI Dump (shared implementation) ==============
 
-/// Get raw UI XML from device
-fn get_ui_xml(device: Option<&str>) -> Result<String> {
+static UI_DUMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn ui_dump_shell_command(path: &str) -> String {
+    let quoted_path = DeviceShellCmd::new().user_input(path).render();
+    format!(
+        "trap 'rm -f {quoted_path}' 0; uiautomator dump {quoted_path} >/dev/null 2>&1 && cat {quoted_path}"
+    )
+}
+
+/// Fetch unredacted UI XML for internal selector matching only.
+fn get_raw_ui_xml(device: Option<&str>) -> Result<String> {
     // Combined command: dump + cat + cleanup in one shell call
-    let output = adb_exec(device, &[
-        "shell",
-        "uiautomator dump /sdcard/ui.xml >/dev/null 2>&1 && cat /sdcard/ui.xml && rm /sdcard/ui.xml"
-    ], None)?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let counter = UI_DUMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path = format!(
+        "/data/local/tmp/mcp-devices-ui-{}-{timestamp}-{counter}.xml",
+        std::process::id()
+    );
+    let shell_command = ui_dump_shell_command(&path);
+    let output = adb_exec(device, &["shell", &shell_command], None)?;
 
     if !output.status.success() {
         bail!("Failed to get UI dump: {}", terminal_safe(&output.stderr));
@@ -288,6 +499,11 @@ fn get_ui_xml(device: Option<&str>) -> Result<String> {
     }
 
     Ok(xml)
+}
+
+/// Return only redacted UI XML to output-facing consumers.
+fn get_ui_xml(device: Option<&str>) -> Result<String> {
+    Ok(sanitize_android_ui_xml(&get_raw_ui_xml(device)?))
 }
 
 /// UI Element with parsed bounds
@@ -334,9 +550,10 @@ impl UiElement {
 
 /// Parse UI XML into elements
 fn parse_ui_elements(xml: &str) -> Vec<UiElement> {
+    let safe_xml = sanitize_android_ui_xml(xml);
     let mut elements = Vec::new();
 
-    for node in node_regex().find_iter(xml) {
+    for node in node_regex().find_iter(&safe_xml) {
         let node_str = node.as_str();
 
         let class = class_regex()
@@ -415,7 +632,8 @@ pub fn ui_dump(format: &str, device: Option<&str>) -> Result<()> {
     let xml = get_ui_xml(device)?;
 
     if format == "json" {
-        println!("{}", xml_to_json(&xml)?);
+        let json = xml_to_json(&xml)?;
+        println!("{}", terminal_safe(json.as_bytes()));
     } else {
         println!("{}", terminal_safe(xml.as_bytes()));
     }
@@ -425,6 +643,7 @@ pub fn ui_dump(format: &str, device: Option<&str>) -> Result<()> {
 
 /// Convert UI XML to simplified JSON
 fn xml_to_json(xml: &str) -> Result<String> {
+    let safe_xml = sanitize_android_ui_xml(xml);
     #[derive(Serialize)]
     struct UiElementJson {
         class: String,
@@ -440,7 +659,7 @@ fn xml_to_json(xml: &str) -> Result<String> {
 
     let mut elements = Vec::new();
 
-    for node in node_regex().find_iter(xml) {
+    for node in node_regex().find_iter(&safe_xml) {
         let node_str = node.as_str();
 
         let class = class_regex()
@@ -497,75 +716,190 @@ fn xml_to_json(xml: &str) -> Result<String> {
 // ============== Element Finding ==============
 
 /// Find element by text/resource-id and return center coordinates
-pub fn find_element(query: &str, device: Option<&str>) -> Result<Option<(i32, i32)>> {
-    let xml = get_ui_xml(device)?;
+struct AndroidUiElementMatch<'a> {
+    text: &'a str,
+    resource_id: &'a str,
+    content_desc: &'a str,
+    bounds: (i32, i32, i32, i32),
+    center: (i32, i32),
+    sensitive: bool,
+}
+
+fn find_element_in_xml<'a>(xml: &'a str, query: &str) -> Result<Option<AndroidUiElementMatch<'a>>> {
     let query_lower = query.to_lowercase();
-
-    for node in node_regex().find_iter(&xml) {
+    for node in node_regex().find_iter(xml) {
         let node_str = node.as_str();
-
         let text = text_regex()
             .captures(node_str)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str())
+            .and_then(|capture| capture.get(1))
+            .map(|matched| matched.as_str())
             .unwrap_or("");
-
         let resource_id = resource_regex()
             .captures(node_str)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str())
+            .and_then(|capture| capture.get(1))
+            .map(|matched| matched.as_str())
             .unwrap_or("");
-
         let content_desc = content_regex()
             .captures(node_str)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str())
+            .and_then(|capture| capture.get(1))
+            .map(|matched| matched.as_str())
             .unwrap_or("");
 
-        let matches = text.to_lowercase().contains(&query_lower)
-            || resource_id.to_lowercase().contains(&query_lower)
-            || content_desc.to_lowercase().contains(&query_lower);
-
-        if matches {
-            if let Some(caps) = bounds_regex().captures(node_str) {
-                let coordinates = (
-                    caps[1].parse::<i32>(),
-                    caps[2].parse::<i32>(),
-                    caps[3].parse::<i32>(),
-                    caps[4].parse::<i32>(),
-                );
-                let (Ok(x1), Ok(y1), Ok(x2), Ok(y2)) = coordinates else {
-                    continue;
-                };
-                if x2 < x1 || y2 < y1 {
-                    continue;
-                }
-                let center_x = i32::try_from((i64::from(x1) + i64::from(x2)) / 2)
-                    .context("Android element horizontal bounds overflow")?;
-                let center_y = i32::try_from((i64::from(y1) + i64::from(y2)) / 2)
-                    .context("Android element vertical bounds overflow")?;
-
-                println!(
-                    "Found: text=\"{}\" resource_id=\"{}\" content_desc=\"{}\"",
-                    terminal_safe(text.as_bytes()),
-                    terminal_safe(resource_id.as_bytes()),
-                    terminal_safe(content_desc.as_bytes())
-                );
-                println!(
-                    "Bounds: [{},{}][{},{}] -> center: ({}, {})",
-                    x1, y1, x2, y2, center_x, center_y
-                );
-
-                return Ok(Some((center_x, center_y)));
-            }
+        if !text.to_lowercase().contains(&query_lower)
+            && !resource_id.to_lowercase().contains(&query_lower)
+            && !content_desc.to_lowercase().contains(&query_lower)
+        {
+            continue;
         }
+
+        let Some(captures) = bounds_regex().captures(node_str) else {
+            continue;
+        };
+        let coordinates = (
+            captures[1].parse::<i32>(),
+            captures[2].parse::<i32>(),
+            captures[3].parse::<i32>(),
+            captures[4].parse::<i32>(),
+        );
+        let (Ok(x1), Ok(y1), Ok(x2), Ok(y2)) = coordinates else {
+            continue;
+        };
+        if x2 < x1 || y2 < y1 {
+            continue;
+        }
+        let center_x = i32::try_from((i64::from(x1) + i64::from(x2)) / 2)
+            .context("Android element horizontal bounds overflow")?;
+        let center_y = i32::try_from((i64::from(y1) + i64::from(y2)) / 2)
+            .context("Android element vertical bounds overflow")?;
+
+        return Ok(Some(AndroidUiElementMatch {
+            text,
+            resource_id,
+            content_desc,
+            bounds: (x1, y1, x2, y2),
+            center: (center_x, center_y),
+            sensitive: is_sensitive_android_ui_node(node_str),
+        }));
     }
+    Ok(None)
+}
+
+fn safe_android_ui_value(value: &str, sensitive: bool) -> &str {
+    if sensitive {
+        "[REDACTED]"
+    } else {
+        value
+    }
+}
+
+/// Find element by text/resource-id and return center coordinates
+pub fn find_element(query: &str, device: Option<&str>) -> Result<Option<(i32, i32)>> {
+    let xml = get_raw_ui_xml(device)?;
+    let Some(found) = find_element_in_xml(&xml, query)? else {
+        println!("Requested element was not found");
+        return Ok(None);
+    };
 
     println!(
-        "Element with '{}' not found",
-        terminal_safe(query.as_bytes())
+        "Found: text=\"{}\" resource_id=\"{}\" content_desc=\"{}\"",
+        terminal_safe(safe_android_ui_value(found.text, found.sensitive).as_bytes()),
+        terminal_safe(safe_android_ui_value(found.resource_id, found.sensitive).as_bytes()),
+        terminal_safe(safe_android_ui_value(found.content_desc, found.sensitive).as_bytes())
     );
-    Ok(None)
+    println!(
+        "Bounds: [{},{}][{},{}] -> center: ({}, {})",
+        found.bounds.0,
+        found.bounds.1,
+        found.bounds.2,
+        found.bounds.3,
+        found.center.0,
+        found.center.1
+    );
+    Ok(Some(found.center))
+}
+
+fn find_ui_element_in_xml(
+    xml: &str,
+    text: Option<&str>,
+    resource_id: Option<&str>,
+    class_name: Option<&str>,
+) -> Option<String> {
+    let text_query = text.map(str::to_lowercase);
+    let resource_query = resource_id.map(str::to_lowercase);
+    let class_query = class_name.map(str::to_lowercase);
+
+    for node in node_regex().find_iter(xml) {
+        let node_str = node.as_str();
+
+        if let Some(query) = text_query.as_deref() {
+            let element_text = text_regex()
+                .captures(node_str)
+                .and_then(|capture| capture.get(1))
+                .map(|matched| matched.as_str().to_lowercase())
+                .unwrap_or_default();
+            let element_desc = content_regex()
+                .captures(node_str)
+                .and_then(|capture| capture.get(1))
+                .map(|matched| matched.as_str().to_lowercase())
+                .unwrap_or_default();
+            if !element_text.contains(query) && !element_desc.contains(query) {
+                continue;
+            }
+        }
+
+        if let Some(query) = resource_query.as_deref() {
+            let element_resource_id = resource_regex()
+                .captures(node_str)
+                .and_then(|capture| capture.get(1))
+                .map(|matched| matched.as_str().to_lowercase())
+                .unwrap_or_default();
+            if !element_resource_id.contains(query) {
+                continue;
+            }
+        }
+
+        if let Some(query) = class_query.as_deref() {
+            let element_class = class_regex()
+                .captures(node_str)
+                .and_then(|capture| capture.get(1))
+                .map(|matched| matched.as_str().to_lowercase())
+                .unwrap_or_default();
+            if !element_class.contains(query) {
+                continue;
+            }
+        }
+
+        let element_text = text_regex()
+            .captures(node_str)
+            .and_then(|capture| capture.get(1))
+            .map(|matched| matched.as_str())
+            .unwrap_or("");
+        let element_resource_id = resource_regex()
+            .captures(node_str)
+            .and_then(|capture| capture.get(1))
+            .map(|matched| matched.as_str())
+            .unwrap_or("");
+        let element_class = class_regex()
+            .captures(node_str)
+            .and_then(|capture| capture.get(1))
+            .map(|matched| matched.as_str())
+            .unwrap_or("");
+        let element_bounds = bounds_string_regex()
+            .captures(node_str)
+            .and_then(|capture| capture.get(1))
+            .map(|matched| matched.as_str())
+            .unwrap_or("");
+        let sensitive = is_sensitive_android_ui_node(node_str);
+
+        return Some(format!(
+            "class=\"{}\" text=\"{}\" resource_id=\"{}\" bounds={}",
+            element_class,
+            safe_android_ui_value(element_text, sensitive),
+            safe_android_ui_value(element_resource_id, sensitive),
+            element_bounds,
+        ));
+    }
+    None
 }
 
 /// Find a UI element matching any of the supplied criteria.
@@ -582,83 +916,8 @@ pub fn find_ui_element(
     class_name: Option<&str>,
     device: Option<&str>,
 ) -> Result<Option<String>> {
-    let xml = get_ui_xml(device)?;
-
-    let text_q = text.map(|s| s.to_lowercase());
-    let res_q = resource_id.map(|s| s.to_lowercase());
-    let class_q = class_name.map(|s| s.to_lowercase());
-
-    for node in node_regex().find_iter(&xml) {
-        let node_str = node.as_str();
-
-        if let Some(ref q) = text_q {
-            let elem_text = text_regex()
-                .captures(node_str)
-                .and_then(|c| c.get(1))
-                .map(|m| m.as_str().to_lowercase())
-                .unwrap_or_default();
-            let elem_desc = content_regex()
-                .captures(node_str)
-                .and_then(|c| c.get(1))
-                .map(|m| m.as_str().to_lowercase())
-                .unwrap_or_default();
-            if !elem_text.contains(q.as_str()) && !elem_desc.contains(q.as_str()) {
-                continue;
-            }
-        }
-
-        if let Some(ref q) = res_q {
-            let elem_res = resource_regex()
-                .captures(node_str)
-                .and_then(|c| c.get(1))
-                .map(|m| m.as_str().to_lowercase())
-                .unwrap_or_default();
-            if !elem_res.contains(q.as_str()) {
-                continue;
-            }
-        }
-
-        if let Some(ref q) = class_q {
-            let elem_class = class_regex()
-                .captures(node_str)
-                .and_then(|c| c.get(1))
-                .map(|m| m.as_str().to_lowercase())
-                .unwrap_or_default();
-            if !elem_class.contains(q.as_str()) {
-                continue;
-            }
-        }
-
-        // All provided criteria matched — build a description string
-        let elem_text = text_regex()
-            .captures(node_str)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str())
-            .unwrap_or("");
-        let elem_res = resource_regex()
-            .captures(node_str)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str())
-            .unwrap_or("");
-        let elem_class = class_regex()
-            .captures(node_str)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str())
-            .unwrap_or("");
-        let elem_bounds = bounds_string_regex()
-            .captures(node_str)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str())
-            .unwrap_or("");
-
-        let desc = format!(
-            "class=\"{}\" text=\"{}\" resource_id=\"{}\" bounds={}",
-            elem_class, elem_text, elem_res, elem_bounds
-        );
-        return Ok(Some(desc));
-    }
-
-    Ok(None)
+    let xml = get_raw_ui_xml(device)?;
+    Ok(find_ui_element_in_xml(&xml, text, resource_id, class_name))
 }
 
 /// Tap element by text/resource-id
@@ -722,7 +981,7 @@ pub fn list_devices() -> Result<Vec<Device>> {
 pub fn print_devices() -> Result<()> {
     let devices = list_devices()?;
     println!("Android devices:");
-    println!("{}", serde_json::to_string_pretty(&devices)?);
+    println!("{}", terminal_safe_json(&devices)?);
     Ok(())
 }
 
@@ -850,7 +1109,8 @@ pub fn install_app(path: &str, device: Option<&str>) -> Result<()> {
 
 /// Uninstall an app
 pub fn uninstall_app(package: &str, device: Option<&str>) -> Result<()> {
-    println!("Uninstalling {}...", package);
+    validate_package_name(package)?;
+    println!("Uninstalling {}...", terminal_safe(package.as_bytes()));
 
     let output = adb_exec(device, &["uninstall", package], None)?;
 
@@ -858,7 +1118,7 @@ pub fn uninstall_app(package: &str, device: Option<&str>) -> Result<()> {
         bail!("Failed to uninstall: {}", terminal_safe(&output.stderr));
     }
 
-    println!("Uninstalled: {}", package);
+    println!("Uninstalled: {}", terminal_safe(package.as_bytes()));
     Ok(())
 }
 
@@ -1082,7 +1342,7 @@ pub fn analyze_screen(device: Option<&str>) -> Result<()> {
         }
     }
 
-    println!("{}", serde_json::to_string_pretty(&analysis)?);
+    println!("{}", terminal_safe_json(&analysis)?);
     Ok(())
 }
 
@@ -1148,7 +1408,11 @@ pub fn find_and_tap(description: &str, min_confidence: u32, device: Option<&str>
     if best_score >= min_confidence {
         if let Some(elem) = best_element {
             let (cx, cy) = elem.center();
-            println!("Found: \"{}\" (confidence: {}%)", elem.label(), best_score);
+            println!(
+                "Found: \"{}\" (confidence: {}%)",
+                terminal_safe_line(&elem.label()),
+                best_score
+            );
             tap(cx, cy, device)?;
             return Ok(());
         }
@@ -1156,7 +1420,7 @@ pub fn find_and_tap(description: &str, min_confidence: u32, device: Option<&str>
 
     bail!(
         "No element matching '{}' found with confidence >= {}%",
-        description,
+        terminal_safe_line(description),
         min_confidence
     );
 }
@@ -1230,57 +1494,79 @@ pub fn set_clipboard(text: &str, device: Option<&str>) -> Result<()> {
         .render();
     let output = adb_exec(device, &["shell", &cmd], None)?;
     if !output.status.success() {
-        // Fallback: try input method
-        let _ = adb_exec(
-            device,
-            &[
-                "shell",
-                "service",
-                "call",
-                "clipboard",
-                "1",
-                "s16",
-                "com.android.shell",
-                "s16",
-                text,
-            ],
-            None,
-        )?;
+        // Fallback: try input method, preserving its exit status and quoting
+        // free-form clipboard text as a device-shell argument.
+        let fallback_cmd = DeviceShellCmd::new()
+            .literal("service")
+            .literal("call")
+            .literal("clipboard")
+            .literal("1")
+            .literal("s16")
+            .literal("com.android.shell")
+            .literal("s16")
+            .user_input(text)
+            .render();
+        let fallback = adb_exec(device, &["shell", &fallback_cmd], None)?;
+        if !fallback.status.success() {
+            let stderr = terminal_safe(&fallback.stderr);
+            if stderr.is_empty() {
+                bail!("Failed to set clipboard: command failed");
+            }
+            bail!("Failed to set clipboard: {}", stderr);
+        }
     }
     println!("Clipboard set");
     Ok(())
 }
 
-/// Execute an action command + UI dump in a single adb shell invocation (turbo fast-track).
-/// Returns (action_output, ui_xml). ui_xml may be empty if dump failed.
+/// Compose the trusted shell fragment used by the turbo fast-track.
+///
+/// The action status is captured before the optional UI dump. The final exit
+/// status is always the action status, so a failed dump cannot make flow replay
+/// a successfully completed action, while a failed action remains an error.
+fn compose_ui_dump_command(shell_cmd: &str) -> String {
+    format!(
+        "{shell_cmd}; action_status=$?; if [ \"$action_status\" -eq 0 ]; then \
+         uiautomator dump /dev/tty; \
+         fi; exit \"$action_status\""
+    )
+}
+
+/// Execute an action command + UI dump in a single adb shell invocation.
+///
+/// Returns `(action_output, ui_xml)`. UI dump failures are non-fatal after a
+/// successful action; the action's nonzero exit status is always propagated.
 ///
 /// `shell_cmd` is a pre-composed, trusted shell fragment (produced by the
-/// turbo fast-track builders in `flow.rs`). It is joined with the literal
-/// `&& uiautomator dump /dev/tty` suffix via [`DeviceShellCmd::raw_trusted`]
-/// — DO NOT pass user input here.
+/// turbo fast-track builders in `flow.rs`). It is joined with a trusted UI
+/// dump suffix via [`DeviceShellCmd::raw_trusted`] — DO NOT pass user input.
 pub fn exec_with_ui_dump(shell_cmd: &str, device: Option<&str>) -> Result<(String, String)> {
     let combined = DeviceShellCmd::new()
-        .raw_trusted(shell_cmd.to_string())
-        .literal("&&")
-        .literal("uiautomator")
-        .literal("dump")
-        .literal("/dev/tty")
+        .raw_trusted(compose_ui_dump_command(shell_cmd))
         .render();
     let output = adb_exec(device, &["shell", &combined], None)?;
+    if !output.status.success() {
+        let stderr = terminal_safe(&output.stderr);
+        if stderr.is_empty() {
+            bail!("ADB action failed: command failed");
+        }
+        bail!("ADB action failed: {}", stderr);
+    }
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
 
-    // Split at XML boundary
+    // Split at XML boundary.
     let xml_start = stdout.find("<?xml").or_else(|| stdout.find("<hierarchy"));
     match xml_start {
         Some(idx) => {
             let action_output = stdout[..idx].trim().to_string();
             let mut ui_xml = stdout[idx..].to_string();
-            // Strip "UI hierachy dumped to: /dev/tty" prefix if present before <?xml
+            // Strip "UI hierarchy dumped to: /dev/tty" prefix if present.
             if let Some(xml_idx) = ui_xml.find("<?xml") {
                 if xml_idx > 0 {
                     ui_xml = ui_xml[xml_idx..].to_string();
                 }
             }
+            ui_xml = sanitize_android_ui_xml(&ui_xml);
             Ok((action_output, ui_xml))
         }
         None => Ok((stdout.trim().to_string(), String::new())),
@@ -1598,7 +1884,7 @@ pub fn sensor_notifications(package: Option<&str>, device: Option<&str>) -> Resu
         );
     }
 
-    println!("{}", serde_json::to_string_pretty(&notifications)?);
+    println!("{}", terminal_safe_json(&notifications)?);
     Ok(())
 }
 
@@ -1731,7 +2017,7 @@ pub fn network_traffic(package: Option<&str>, device: Option<&str>) -> Result<()
             "tx_mb": format!("{:.2}", tx_bytes as f64 / 1_048_576.0),
         });
 
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        println!("{}", terminal_safe_json(&result)?);
     } else {
         // Global stats from netstats
         let output = adb_exec(device, &["shell", "dumpsys", "netstats", "--detail"], None)?;
@@ -1795,7 +2081,7 @@ pub fn network_connectivity(device: Option<&str>) -> Result<()> {
         "mobile_state": mobile_state,
     });
 
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    println!("{}", terminal_safe_json(&result)?);
     Ok(())
 }
 
@@ -1827,14 +2113,12 @@ pub fn network_proxy(
             None,
         )?;
         let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        println!(
-            "Current HTTP proxy: {}",
-            if value.is_empty() || value == "null" {
-                "(none)".to_string()
-            } else {
-                value
-            }
-        );
+        let display_value = if value.is_empty() || value == "null" {
+            "(none)".to_string()
+        } else {
+            terminal_safe_line(&value)
+        };
+        println!("Current HTTP proxy: {display_value}");
         return Ok(());
     }
 
@@ -1858,7 +2142,7 @@ pub fn network_proxy(
         bail!("Failed to set proxy: {}", terminal_safe(&output.stderr));
     }
 
-    println!("HTTP proxy set to {}", proxy_value);
+    println!("HTTP proxy set to {}", terminal_safe_line(&proxy_value));
     Ok(())
 }
 
@@ -2140,7 +2424,7 @@ pub fn intent_services(package: Option<&str>, device: Option<&str>) -> Result<()
     if services.is_empty() {
         print!("{}", terminal_safe(text.as_bytes()));
     } else {
-        println!("{}", serde_json::to_string_pretty(&services)?);
+        println!("{}", terminal_safe_json(&services)?);
     }
 
     Ok(())
@@ -2569,7 +2853,80 @@ fn collect_perf_snapshot_value(package: &str, device: Option<&str>) -> Result<se
 /// Capture memory/CPU/battery/framestats snapshot for a package.
 pub fn perf_snapshot(package: &str, device: Option<&str>) -> Result<()> {
     let snapshot = collect_perf_snapshot_value(package, device)?;
-    println!("{}", serde_json::to_string_pretty(&snapshot)?);
+    println!("{}", terminal_safe_json(&snapshot)?);
+    Ok(())
+}
+
+const MAX_PERF_BASELINE_BYTES: u64 = 64 * 1024;
+const LEGACY_TMP_DIR_ENV: &str = "MCP_DEVICES_LEGACY_TMP_DIR";
+#[cfg(test)]
+const TEST_STATE_ROOT_ENV: &str = "MCP_DEVICES_TEST_STATE_ROOT";
+
+fn performance_baseline_path(name: &str) -> Result<PathBuf> {
+    validate_identifier(name, "baseline name")?;
+    #[cfg(test)]
+    if let Some(root) = std::env::var_os(TEST_STATE_ROOT_ENV) {
+        let directory = PathBuf::from(root).join("performance-baselines");
+        create_private_dir(&directory)?;
+        return Ok(directory.join(format!("{name}.json")));
+    }
+    state_file("performance-baselines", name, "json")
+}
+
+fn legacy_tmp_dir() -> PathBuf {
+    std::env::var_os(LEGACY_TMP_DIR_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+}
+
+fn legacy_baseline_path(name: &str) -> PathBuf {
+    legacy_tmp_dir().join(format!("claude-mobile-baseline-{name}.json"))
+}
+
+fn migrate_legacy_baseline(name: &str, destination: &Path) -> Result<()> {
+    validate_identifier(name, "baseline name")?;
+    match fs::symlink_metadata(destination) {
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Cannot inspect baseline {}", destination.display()));
+        }
+    }
+
+    let legacy = legacy_baseline_path(name);
+    let metadata = match fs::symlink_metadata(&legacy) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Cannot inspect legacy baseline {}", legacy.display()));
+        }
+    };
+    validate_legacy_file_security(&legacy, &metadata, "Legacy performance baseline")?;
+
+    let contents =
+        read_bounded_legacy_file(&legacy, MAX_PERF_BASELINE_BYTES, "performance baseline")?;
+    serde_json::from_slice::<serde_json::Value>(&contents).with_context(|| {
+        format!(
+            "Corrupt legacy performance baseline at {}",
+            legacy.display()
+        )
+    })?;
+    if create_private_file_if_missing(destination, &contents, "performance baseline")? {
+        match fs::remove_file(&legacy) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Cannot remove migrated performance baseline {}",
+                        legacy.display()
+                    )
+                });
+            }
+        }
+    }
     Ok(())
 }
 
@@ -2577,7 +2934,7 @@ pub fn perf_snapshot(package: &str, device: Option<&str>) -> Result<()> {
 pub fn perf_baseline(package: &str, name: &str, device: Option<&str>) -> Result<()> {
     validate_package_name(package)?;
     let snapshot = collect_perf_snapshot_value(package, device)?;
-    let path = state_file("performance-baselines", name, "json")?;
+    let path = performance_baseline_path(name)?;
     let json = serde_json::to_vec_pretty(&snapshot)?;
     atomic_write(&path, &json)?;
 
@@ -2604,9 +2961,11 @@ fn required_metric(value: &serde_json::Value, label: &str) -> Result<f64> {
 /// Compare current perf metrics against a saved baseline, reporting deltas.
 pub fn perf_compare(package: &str, name: &str, device: Option<&str>) -> Result<()> {
     validate_package_name(package)?;
-    let path = state_file("performance-baselines", name, "json")?;
-    let baseline: serde_json::Value = read_json_file(&path, 64 * 1024, "performance baseline")
-        .map_err(|_| anyhow::anyhow!("Baseline '{}' not found or is invalid", name))?;
+    let path = performance_baseline_path(name)?;
+    migrate_legacy_baseline(name, &path)?;
+    let baseline: serde_json::Value =
+        read_json_file(&path, MAX_PERF_BASELINE_BYTES, "performance baseline")
+            .map_err(|_| anyhow::anyhow!("Baseline '{}' not found or is invalid", name))?;
 
     let current = collect_perf_snapshot_value(package, device)?;
 
@@ -2663,7 +3022,7 @@ pub fn perf_compare(package: &str, name: &str, device: Option<&str>) -> Result<(
         "metrics": metrics,
     });
 
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    println!("{}", terminal_safe_json(&result)?);
     Ok(())
 }
 
@@ -2739,7 +3098,7 @@ pub fn perf_monitor(
         "totalPssKb": stats(&pss_samples),
     });
 
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    println!("{}", terminal_safe_json(&result)?);
     Ok(())
 }
 
@@ -2814,7 +3173,7 @@ pub fn perf_crashes(package: Option<&str>, lines: usize, device: Option<&str>) -
         "note": "ANR files under /data/anr/ require root or adb shell run-as access"
     });
 
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    println!("{}", terminal_safe_json(&result)?);
     Ok(())
 }
 
@@ -2946,11 +3305,16 @@ pub fn perf_framestats(package: &str, device: Option<&str>) -> Result<()> {
         "note": "Janky = frame > 16.67ms (< 60 fps). Run app activity before capturing."
     });
 
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    println!("{}", terminal_safe_json(&result)?);
     Ok(())
 }
 
 // ============== Shared Helpers ==============
+
+fn terminal_safe_line(text: &str) -> String {
+    let flattened = text.replace('\n', " ").replace('\t', " ");
+    terminal_safe(flattened.as_bytes())
+}
 
 /// Validate that a string looks like an Android package name (e.g. com.example.app).
 fn validate_package_name(package: &str) -> Result<()> {
@@ -2963,7 +3327,7 @@ fn validate_package_name(package: &str) -> Result<()> {
     if !valid {
         bail!(
             "Invalid package name '{}': only alphanumerics, dots, underscores, and hyphens allowed",
-            package
+            terminal_safe(package.as_bytes())
         );
     }
     Ok(())
@@ -3026,6 +3390,139 @@ mod tests {
     }
 
     #[test]
+    fn android_key_event_only_accepts_named_keys() {
+        assert_eq!(resolve_android_keycode("HOME"), Some("KEYCODE_HOME"));
+        assert_eq!(resolve_android_keycode("return"), Some("KEYCODE_ENTER"));
+        assert_eq!(
+            resolve_android_keycode("app_switch"),
+            Some("KEYCODE_APP_SWITCH")
+        );
+        assert_eq!(resolve_android_keycode("KEYCODE_HOME"), None);
+        assert_eq!(resolve_android_keycode("HOME;rm -rf /"), None);
+    }
+
+    #[test]
+    fn sensitive_android_ui_values_are_redacted_in_xml_and_structured_output() {
+        let xml = r#"<hierarchy>
+            <node class="android.widget.EditText" text="hunter2" resource-id="com.app:id/password" content-desc="Password" password="true" bounds="[0,0][100,50]" clickable="true"/>
+            <node class="android.widget.EditText" text="731904" resource-id="com.app:id/otp_input" content-desc="One-time code" password="false" bounds="[0,50][100,100]" clickable="true"/>
+            <node class="android.widget.TextView" text="Shipping details" resource-id="com.app:id/shipping" content-desc="Shipping status" password="false" bounds="[0,100][200,150]" clickable="false"/>
+        </hierarchy>"#;
+        let secrets = ["hunter2", "731904", "com.app:id/password", "otp_input"];
+
+        let sanitized_xml = sanitize_android_ui_xml(xml);
+        let parsed = parse_ui_elements(xml);
+        let json = xml_to_json(xml).expect("safe UI JSON");
+
+        for output in [&sanitized_xml, &json] {
+            for secret in secrets {
+                assert!(!output.contains(secret), "leaked {secret} in {output}");
+            }
+        }
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[0].text, "[REDACTED]");
+        assert_eq!(parsed[0].resource_id, "[REDACTED]");
+        assert_eq!(parsed[1].text, "[REDACTED]");
+        assert_eq!(parsed[1].content_desc, "[REDACTED]");
+        assert_eq!(parsed[2].text, "Shipping details");
+        assert!(sanitized_xml.contains("text=\"Shipping details\""));
+        assert!(json.contains("Shipping details"));
+    }
+
+    #[test]
+    fn android_ui_redaction_parses_node_attributes_containing_angle_brackets() {
+        let secret = "account>731904";
+        let xml = format!(
+            r#"<hierarchy><node text="{secret}" class="android.widget.EditText" resource-id="com.app:id/account" content-desc="" password="false" bounds="[0,0][100,50]"/></hierarchy>"#
+        );
+
+        let sanitized = sanitize_android_ui_xml(&xml);
+        let elements = parse_ui_elements(&xml);
+
+        assert!(!sanitized.contains(secret));
+        assert_eq!(elements.len(), 1);
+        assert_eq!(elements[0].text, "[REDACTED]");
+        assert_eq!(elements[0].class, "android.widget.EditText");
+    }
+
+    #[test]
+    fn empty_android_text_entry_redacts_identifier_and_accessibility_label() {
+        let xml = r#"<hierarchy><node class="android.widget.EditText" text="" resource-id="com.app:id/email" content-desc="Email address" password="false" bounds="[0,0][100,50]" clickable="false"/></hierarchy>"#;
+
+        let parsed = parse_ui_elements(xml);
+        let sanitized = sanitize_android_ui_xml(xml);
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].text, "");
+        assert_eq!(parsed[0].resource_id, "[REDACTED]");
+        assert_eq!(parsed[0].content_desc, "[REDACTED]");
+        assert!(!sanitized.contains("com.app:id/email"));
+        assert!(!sanitized.contains("Email address"));
+    }
+
+    #[test]
+    fn secure_android_ui_fields_remain_findable_but_never_appear_in_results() {
+        let xml = r#"<hierarchy>
+            <node class="android.widget.EditText" text="731904" resource-id="com.app:id/otp_input" content-desc="One-time code" password="false" bounds="[0,50][100,100]" clickable="true"/>
+        </hierarchy>"#;
+
+        let found = find_element_in_xml(xml, "731904")
+            .unwrap()
+            .expect("secure field should remain targetable");
+        assert_eq!(found.center, (50, 75));
+        assert!(found.sensitive);
+        assert_eq!(
+            safe_android_ui_value(found.text, found.sensitive),
+            "[REDACTED]"
+        );
+        assert_eq!(
+            safe_android_ui_value(found.resource_id, found.sensitive),
+            "[REDACTED]",
+        );
+
+        let description = find_ui_element_in_xml(xml, Some("731904"), Some("otp_input"), None)
+            .expect("secure field should remain discoverable by text and resource id");
+        assert!(!description.contains("731904"));
+        assert!(!description.contains("otp_input"));
+        assert!(description.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn turbo_command_preserves_action_status_for_ui_dump() {
+        let command = compose_ui_dump_command("input text 'safe'");
+        assert!(command.contains("action_status=$?"));
+        assert!(command.contains("if [ \"$action_status\" -eq 0 ]"));
+        assert!(command.contains("exit \"$action_status\""));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ui_dump_shell_command_removes_partial_output_after_dump_failure() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let fake_bin = temp.path().join("bin");
+        std::fs::create_dir(&fake_bin).unwrap();
+        let uiautomator = fake_bin.join("uiautomator");
+        std::fs::write(&uiautomator, "#!/bin/sh\nprintf secret > \"$2\"\nexit 1\n").unwrap();
+        let mut permissions = std::fs::metadata(&uiautomator).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&uiautomator, permissions).unwrap();
+
+        let dump_path = temp.path().join("ui.xml");
+        let command = ui_dump_shell_command(dump_path.to_str().unwrap());
+        let path = format!("{}:/bin:/usr/bin", fake_bin.display());
+        let output = Command::new("sh")
+            .args(["-c", &command])
+            .env("PATH", path)
+            .output()
+            .unwrap();
+
+        assert!(!output.status.success());
+        assert!(!dump_path.exists(), "partial UI dump was not cleaned up");
+    }
+
+    #[test]
     fn test_ui_element_label() {
         let elem = UiElement {
             class: "android.widget.Button".to_string(),
@@ -3049,6 +3546,7 @@ mod tests {
         let _ = content_regex();
         let _ = bounds_regex();
         let _ = clickable_regex();
+        let _ = password_regex();
     }
 
     // ===== Performance parsing tests =====
@@ -3122,5 +3620,125 @@ mod tests {
         assert!(validate_package_name("").is_err());
         assert!(validate_package_name("com.example/app").is_err());
         assert!(validate_package_name("../etc/passwd").is_err());
+    }
+
+    #[test]
+    fn uninstall_rejects_terminal_controls_before_adb() {
+        let error = uninstall_app("com.example\u{001b}[31m", None)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("Invalid package name"));
+        assert!(!error.contains('\u{001b}'));
+    }
+
+    #[test]
+    fn terminal_safe_line_removes_controls_and_line_breaks() {
+        assert_eq!(
+            terminal_safe_line("red\u{001b}[31m\nblue\u{061c}\u{202e}"),
+            "red[31m blue"
+        );
+    }
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &std::path::Path) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.previous {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_baseline_migrates_and_does_not_clobber_private_state() {
+        let _lock = LEGACY_STATE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let legacy_root = tempfile::tempdir().unwrap();
+        let state_root = tempfile::tempdir().unwrap();
+        let _legacy_env = EnvGuard::set(LEGACY_TMP_DIR_ENV, legacy_root.path());
+        let _state_env = EnvGuard::set(TEST_STATE_ROOT_ENV, state_root.path());
+
+        let name = "migration-baseline";
+        let legacy_path = legacy_root
+            .path()
+            .join(format!("claude-mobile-baseline-{name}.json"));
+        std::fs::write(
+            &legacy_path,
+            br#"{"memoryMb":"1","cpuPercent":"2","totalPssKb":3,"framestats":{"jankyPercent":"4"}}"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&legacy_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        let destination = performance_baseline_path(name).unwrap();
+        migrate_legacy_baseline(name, &destination).unwrap();
+        let migrated: serde_json::Value = read_json_file(
+            &destination,
+            MAX_PERF_BASELINE_BYTES,
+            "performance baseline",
+        )
+        .unwrap();
+        assert_eq!(migrated["memoryMb"], "1");
+
+        std::fs::write(
+            &legacy_path,
+            br#"{"memoryMb":"stale","cpuPercent":"stale","totalPssKb":0,"framestats":{"jankyPercent":"stale"}}"#,
+        )
+        .unwrap();
+        migrate_legacy_baseline(name, &destination).unwrap();
+        let retained: serde_json::Value = read_json_file(
+            &destination,
+            MAX_PERF_BASELINE_BYTES,
+            "performance baseline",
+        )
+        .unwrap();
+        assert_eq!(retained["memoryMb"], "1");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_baseline_rejects_group_writable_file_before_import() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _lock = LEGACY_STATE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let legacy_root = tempfile::tempdir().unwrap();
+        let state_root = tempfile::tempdir().unwrap();
+        let _legacy_env = EnvGuard::set(LEGACY_TMP_DIR_ENV, legacy_root.path());
+        let _state_env = EnvGuard::set(TEST_STATE_ROOT_ENV, state_root.path());
+
+        let name = "insecure-baseline";
+        let legacy_path = legacy_root
+            .path()
+            .join(format!("claude-mobile-baseline-{name}.json"));
+        std::fs::write(
+            &legacy_path,
+            br#"{"memoryMb":"1","cpuPercent":"2","totalPssKb":3,"framestats":{"jankyPercent":"4"}}"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&legacy_path, std::fs::Permissions::from_mode(0o666)).unwrap();
+
+        let destination = performance_baseline_path(name).unwrap();
+        let error = migrate_legacy_baseline(name, &destination).unwrap_err();
+        assert!(error.to_string().contains("group/world-writable"));
+        assert!(!destination.exists());
     }
 }

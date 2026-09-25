@@ -1,4 +1,4 @@
-import { getRegisteredToolNames } from "../registry.js";
+import { getRegisteredToolNames, resolveToolIdentity } from "../registry.js";
 import type { ToolContext } from "../context.js";
 import {
   ValidationError,
@@ -49,6 +49,8 @@ export interface SyncRunResult {
   results: Map<string, SyncStepResult[]>;
   barrierTimings: Array<{ name: string; role: string; waitedMs: number }>;
   success: boolean;
+  timedOut: boolean;
+  cancelled?: boolean;
 }
 
 // ── Constants ──
@@ -74,6 +76,8 @@ const SYNC_BLOCKED_ACTIONS: Readonly<Record<string, true>> = {
   system_shell: true,
   shell: true,
   browser_evaluate: true,
+  debug_eval: true,
+  debug_set_var: true,
   // Self-referential
   sync_create_group: true,
   sync_run: true,
@@ -95,7 +99,11 @@ const SYNC_BLOCKED_ACTIONS: Readonly<Record<string, true>> = {
   recorder_play: true,
   recorder: true,
   // Dangerous
+  app_install: true,
+  app_uninstall: true,
+  system_file_push: true,
   install_app: true,
+  uninstall_app: true,
   push_file: true,
 };
 
@@ -113,9 +121,19 @@ export function validateStepArgs(args: Record<string, unknown>): void {
   }
 }
 
-export function isSyncActionAllowed(actionName: string): boolean {
+export function isSyncActionAllowed(
+  actionName: string,
+  actionArgs: Record<string, unknown> = {},
+): boolean {
   if (Object.hasOwn(SYNC_BLOCKED_ACTIONS, actionName)) return false;
-  return getRegisteredToolNames().has(actionName);
+  if (!getRegisteredToolNames().has(actionName)) return false;
+
+  const identity = resolveToolIdentity(actionName, actionArgs);
+  if (!identity) return false;
+  if (Object.hasOwn(SYNC_BLOCKED_ACTIONS, identity.canonical)) return false;
+  const subAction = identity.args.action;
+  return typeof subAction !== "string"
+    || !Object.hasOwn(SYNC_BLOCKED_ACTIONS, `${identity.canonical}_${subAction}`);
 }
 
 export function getGroup(name: string): SyncGroup {
@@ -137,7 +155,89 @@ export function destroyGroupInternal(name: string): void {
   activeGroups.delete(name);
 }
 
-// ── Barrier implementation ──
+// ── Deadline and barrier helpers ──
+
+export class SyncTimeoutError extends Error {
+  constructor(message = "Max duration exceeded") {
+    super(message);
+    this.name = "SyncTimeoutError";
+  }
+}
+
+export class SyncCancellationError extends Error {
+  constructor() {
+    super("Sync run was cancelled.");
+    this.name = "SyncCancellationError";
+  }
+}
+
+/**
+ * Race a nested sync operation against the remaining run deadline or a
+ * cooperative cancellation signal.
+ *
+ * Once the deadline or cancellation wins, the nested promise is deliberately
+ * detached so the orchestrator can return promptly. Its rejection is still
+ * observed to avoid an unhandled rejection if the underlying handler
+ * eventually fails.
+ */
+export async function runWithSyncDeadline<T>(
+  operation: () => Promise<T>,
+  timeoutMs: number,
+  onTimeout: () => void,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (timeoutMs <= 0) {
+    onTimeout();
+    throw new SyncTimeoutError();
+  }
+  if (signal?.aborted) {
+    throw new SyncCancellationError();
+  }
+
+  let timeoutHandle: NodeJS.Timeout | undefined;
+  let timeoutTriggered = false;
+  let cancellationCleanup: (() => void) | undefined;
+  let cancellationPromise: Promise<never> | undefined;
+
+  if (signal) {
+    cancellationPromise = new Promise<never>((_, reject) => {
+      const onAbort = (): void => {
+        if (!timeoutTriggered) reject(new SyncCancellationError());
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      cancellationCleanup = () => signal.removeEventListener("abort", onAbort);
+    });
+  }
+
+  const operationPromise = Promise.resolve().then(() => {
+    if (signal?.aborted) throw new SyncCancellationError();
+    return operation();
+  });
+  // The operation may outlive this orchestration after timeout/cancellation.
+  void operationPromise.catch(() => undefined);
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      timeoutTriggered = true;
+      reject(new SyncTimeoutError());
+      onTimeout();
+    }, timeoutMs);
+  });
+
+  try {
+    return await (cancellationPromise
+      ? Promise.race([operationPromise, timeoutPromise, cancellationPromise])
+      : Promise.race([operationPromise, timeoutPromise]));
+  } catch (error: unknown) {
+    if (error instanceof SyncTimeoutError || error instanceof SyncCancellationError) {
+      void operationPromise.catch(() => undefined);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutHandle);
+    cancellationCleanup?.();
+  }
+}
 
 interface BarrierState {
   name: string;
@@ -145,7 +245,8 @@ interface BarrierState {
   arrivedCount: number;
   promise: Promise<void>;
   resolve: () => void;
-  timer: ReturnType<typeof setTimeout>;
+  reject: (error: Error) => void;
+  timer: NodeJS.Timeout;
 }
 
 function createBarrier(name: string, participantCount: number): BarrierState {
@@ -155,12 +256,15 @@ function createBarrier(name: string, participantCount: number): BarrierState {
     resolve = res;
     reject = rej;
   });
+  // A role may stop before reaching this barrier. Keep a rejection observer
+  // attached even when no role awaits the rejected barrier promise.
+  void promise.catch(() => undefined);
 
   const timer = setTimeout(() => {
     reject(new SyncBarrierTimeoutError(name, SYNC_BARRIER_TIMEOUT));
   }, SYNC_BARRIER_TIMEOUT);
 
-  return { name, expectedCount: participantCount, arrivedCount: 0, promise, resolve, timer };
+  return { name, expectedCount: participantCount, arrivedCount: 0, promise, resolve, reject, timer };
 }
 
 function arriveAtBarrier(barrier: BarrierState): void {
@@ -179,8 +283,10 @@ export async function executeSync(
   ctx: ToolContext,
   depth: number,
   maxDuration: number,
+  parentSignal: AbortSignal | undefined = ctx.signal,
 ): Promise<SyncRunResult> {
   const startTime = Date.now();
+  const deadline = startTime + Math.max(0, maxDuration);
   const results = new Map<string, SyncStepResult[]>();
   const barrierTimings: SyncRunResult["barrierTimings"] = [];
 
@@ -200,69 +306,120 @@ export async function executeSync(
     queue.push(step);
   }
 
-  // Pre-scan barriers: count participants per barrier
-  const barrierParticipants = new Map<string, Set<string>>();
-  for (const step of steps) {
-    if (step.barrier) {
-      if (!barrierParticipants.has(step.barrier)) {
-        barrierParticipants.set(step.barrier, new Set());
+  // Each barrier name may identify multiple phases. Match the nth occurrence
+  // within each role's queue so later phases do not reuse a resolved promise.
+  const barrierSpecs = new Map<string, { name: string; participants: Set<string> }>();
+  const barrierKeysByRole = new Map<string, string[]>();
+  for (const [roleName, queue] of roleQueues) {
+    const occurrences = new Map<string, number>();
+    const keys: string[] = [];
+    for (const step of queue) {
+      if (!step.barrier) {
+        keys.push("");
+        continue;
       }
-      barrierParticipants.get(step.barrier)!.add(step.role);
+      const occurrence = occurrences.get(step.barrier) ?? 0;
+      occurrences.set(step.barrier, occurrence + 1);
+      const key = JSON.stringify([step.barrier, occurrence]);
+      keys.push(key);
+      let spec = barrierSpecs.get(key);
+      if (!spec) {
+        spec = { name: step.barrier, participants: new Set() };
+        barrierSpecs.set(key, spec);
+      }
+      spec.participants.add(roleName);
     }
+    barrierKeysByRole.set(roleName, keys);
   }
 
-  // Create barriers
   const barriers = new Map<string, BarrierState>();
-  for (const [name, participants] of barrierParticipants) {
-    barriers.set(name, createBarrier(name, participants.size));
+  for (const [key, spec] of barrierSpecs) {
+    barriers.set(key, createBarrier(spec.name, spec.participants.size));
   }
 
   let globalFailed = false;
+  let runStopped = false;
+  let runTimedOut = false;
+  let runCancelled = false;
+  const runController = new AbortController();
+  const remainingMs = (): number => Math.max(0, deadline - Date.now());
+  const abortRun = (timedOut = true): void => {
+    runStopped = true;
+    runTimedOut ||= timedOut;
+    if (!runController.signal.aborted) runController.abort();
+    for (const barrier of barriers.values()) {
+      barrier.reject(timedOut ? new SyncTimeoutError() : new SyncCancellationError());
+    }
+  };
+  const abortFromParent = (): void => {
+    runCancelled = true;
+    abortRun(false);
+  };
+  parentSignal?.addEventListener("abort", abortFromParent, { once: true });
+  if (parentSignal?.aborted) abortFromParent();
+  const deadlineTimer = setTimeout(() => abortRun(), remainingMs());
+  const timeoutMessage = "Max duration exceeded";
+
+  const recordTimeout = (
+    roleName: string,
+    step: SyncStep,
+    stepIndex: number,
+    durationMs: number,
+  ): void => {
+    results.get(roleName)!.push({
+      role: roleName,
+      stepIndex,
+      action: step.action,
+      status: "FAIL",
+      message: timeoutMessage,
+      durationMs,
+    });
+  };
+
+  const isRunTimeout = (error: unknown): boolean =>
+    error instanceof SyncTimeoutError || runTimedOut || remainingMs() <= 0;
 
   // Execute per-role queues concurrently
   const rolePromises = Array.from(roleQueues.entries()).map(async ([roleName, queue]) => {
     const deviceId = getDeviceIdForRole(group, roleName);
-    let stepIndex = 0;
 
-    for (const step of queue) {
-      // Duration guard
-      if (Date.now() - startTime > maxDuration) {
-        results.get(roleName)!.push({
-          role: roleName,
-          stepIndex: ++stepIndex,
-          action: step.action,
-          status: "FAIL",
-          message: "Max duration exceeded",
-          durationMs: 0,
-        });
+    for (const [queueIndex, step] of queue.entries()) {
+      const stepIndex = queueIndex + 1;
+      // The run deadline is absolute: it also covers time spent in previous
+      // actions, retries, barriers, and waits.
+      if (runTimedOut || remainingMs() <= 0) {
+        abortRun();
+        recordTimeout(roleName, step, stepIndex, 0);
         break;
       }
-
-      if (globalFailed && step.on_error !== "skip") break;
+      if (runStopped || (globalFailed && step.on_error !== "skip")) break;
 
       const stepStart = Date.now();
-      stepIndex++;
+      let actionResult: unknown;
+      let actionSucceeded = false;
+      let retried = false;
 
       try {
-        const result = await ctx.handleTool(
-          step.action,
-          { ...(step.args ?? {}), deviceId },
-          depth + 1,
+        actionResult = await runWithSyncDeadline(
+          () => ctx.handleTool(
+            step.action,
+            { ...(step.args ?? {}), deviceId },
+            depth + 1,
+            runController.signal,
+          ),
+          remainingMs(),
+          abortRun,
+          runController.signal,
         );
+        actionSucceeded = true;
+      } catch (error: unknown) {
+        if (isRunTimeout(error)) {
+          abortRun();
+          recordTimeout(roleName, step, stepIndex, Date.now() - stepStart);
+          break;
+        }
+        if (runStopped) break;
 
-        const text = typeof result === "object" && result !== null && "text" in result
-          ? (result as { text: string }).text
-          : JSON.stringify(result);
-
-        results.get(roleName)!.push({
-          role: roleName,
-          stepIndex,
-          action: step.action,
-          status: "OK",
-          message: truncateOutput(text, { maxChars: 200, maxLines: 3 }),
-          durationMs: Date.now() - stepStart,
-        });
-      } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
         results.get(roleName)!.push({
           role: roleName,
@@ -272,86 +429,195 @@ export async function executeSync(
           message: truncateOutput(msg, { maxChars: 200, maxLines: 3 }),
           durationMs: Date.now() - stepStart,
         });
-
         if (step.on_error === "skip") continue;
         if (step.on_error === "retry") {
-          // Single retry attempt
-          try {
-            const retryResult = await ctx.handleTool(
-              step.action,
-              { ...(step.args ?? {}), deviceId },
-              depth + 1,
-            );
-            const text = typeof retryResult === "object" && retryResult !== null && "text" in retryResult
-              ? (retryResult as { text: string }).text
-              : JSON.stringify(retryResult);
-            // Replace last result
+          if (remainingMs() <= 0) {
+            abortRun();
             const arr = results.get(roleName)!;
             arr[arr.length - 1] = {
               role: roleName,
               stepIndex,
               action: step.action,
-              status: "OK",
-              message: `(retry) ${truncateOutput(text, { maxChars: 180, maxLines: 3 })}`,
+              status: "FAIL",
+              message: timeoutMessage,
               durationMs: Date.now() - stepStart,
             };
-            // Continue to barrier
-          } catch {
+            break;
+          }
+
+          retried = true;
+          try {
+            actionResult = await runWithSyncDeadline(
+              () => ctx.handleTool(
+                step.action,
+                { ...(step.args ?? {}), deviceId },
+                depth + 1,
+                runController.signal,
+              ),
+              remainingMs(),
+              abortRun,
+              runController.signal,
+            );
+            actionSucceeded = true;
+          } catch (retryError: unknown) {
+            if (isRunTimeout(retryError)) {
+              abortRun();
+              const arr = results.get(roleName)!;
+              arr[arr.length - 1] = {
+                role: roleName,
+                stepIndex,
+                action: step.action,
+                status: "FAIL",
+                message: timeoutMessage,
+                durationMs: Date.now() - stepStart,
+              };
+              break;
+            }
+            if (runStopped) break;
             globalFailed = true;
+            abortRun(false);
             break;
           }
         } else {
           globalFailed = true;
+          abortRun(false);
           break;
         }
       }
 
-      // Handle barrier after step execution
+      if (!actionSucceeded) break;
+      if (runTimedOut || remainingMs() <= 0) {
+        abortRun();
+        recordTimeout(roleName, step, stepIndex, Date.now() - stepStart);
+        break;
+      }
+
+      const text = typeof actionResult === "object" && actionResult !== null && "text" in actionResult && typeof actionResult.text === "string"
+        ? actionResult.text
+        : JSON.stringify(actionResult) ?? String(actionResult);
+      const actionRecord: SyncStepResult = {
+        role: roleName,
+        stepIndex,
+        action: step.action,
+        status: "OK",
+        message: retried
+          ? `(retry) ${truncateOutput(text, { maxChars: 180, maxLines: 3 })}`
+          : truncateOutput(text, { maxChars: 200, maxLines: 3 }),
+        durationMs: Date.now() - stepStart,
+      };
+      const roleResults = results.get(roleName)!;
+      if (retried) roleResults[roleResults.length - 1] = actionRecord;
+      else roleResults.push(actionRecord);
+      if (runStopped) break;
+
+      // Handle barrier after step execution. Barrier waiting is subject to the
+      // same absolute run deadline as the action itself.
       if (step.barrier) {
-        const barrier = barriers.get(step.barrier)!;
+        const barrierKey = barrierKeysByRole.get(roleName)![queueIndex]!;
+        const barrier = barriers.get(barrierKey)!;
         const barrierStart = Date.now();
-        arriveAtBarrier(barrier);
-        try {
-          await barrier.promise;
-        } catch (error) {
+        if (runTimedOut || remainingMs() <= 0) {
+          abortRun();
           results.get(roleName)!.push({
             role: roleName,
-            stepIndex: stepIndex,
+            stepIndex,
             action: `barrier:${step.barrier}`,
             status: "FAIL",
-            message: error instanceof Error ? error.message : String(error),
+            message: timeoutMessage,
+            durationMs: 0,
+          });
+          break;
+        }
+
+        arriveAtBarrier(barrier);
+        try {
+          await runWithSyncDeadline(
+            () => barrier.promise,
+            Math.min(SYNC_BARRIER_TIMEOUT, remainingMs()),
+            abortRun,
+            runController.signal,
+          );
+        } catch (error: unknown) {
+          const timeout = isRunTimeout(error);
+          results.get(roleName)!.push({
+            role: roleName,
+            stepIndex,
+            action: `barrier:${step.barrier}`,
+            status: "FAIL",
+            message: timeout
+              ? timeoutMessage
+              : error instanceof Error ? error.message : String(error),
+            durationMs: Date.now() - barrierStart,
+          });
+          // A barrier failure stops peer roles; only a run deadline is an
+          // incomplete run.
+          abortRun(timeout);
+          globalFailed = true;
+          break;
+        }
+        if (runTimedOut || remainingMs() <= 0) {
+          abortRun();
+          results.get(roleName)!.push({
+            role: roleName,
+            stepIndex,
+            action: `barrier:${step.barrier}`,
+            status: "FAIL",
+            message: timeoutMessage,
             durationMs: Date.now() - barrierStart,
           });
           globalFailed = true;
           break;
         }
+
         const waitedMs = Date.now() - barrierStart;
         barrierTimings.push({ name: step.barrier, role: roleName, waitedMs });
       }
     }
   });
 
-  await Promise.allSettled(rolePromises);
-
-  // Cleanup barrier timers
-  for (const barrier of barriers.values()) {
-    clearTimeout(barrier.timer);
+  try {
+    await Promise.allSettled(rolePromises);
+  } finally {
+    clearTimeout(deadlineTimer);
+    parentSignal?.removeEventListener("abort", abortFromParent);
+    // Cleanup barrier timers
+    for (const barrier of barriers.values()) {
+      clearTimeout(barrier.timer);
+    }
   }
 
   const totalMs = Date.now() - startTime;
   const allResults = Array.from(results.values()).flat();
-  const success = allResults.every(r => r.status === "OK" || r.status === "BARRIER");
+  const deadlineExpired = Date.now() >= deadline;
+  if (deadlineExpired) abortRun();
+  const success = !runCancelled && !runStopped && !runTimedOut && !deadlineExpired
+    && allResults.every(r => r.status === "OK" || r.status === "BARRIER");
 
-  const result: SyncRunResult = { groupName: group.name, totalMs, results, barrierTimings, success };
+  const result: SyncRunResult = {
+    groupName: group.name,
+    totalMs,
+    results,
+    barrierTimings,
+    success,
+    timedOut: runTimedOut || deadlineExpired,
+    cancelled: runCancelled,
+  };
   group.lastRun = result;
   return result;
 }
+
 
 export function formatSyncResult(result: SyncRunResult, group: SyncGroup): string {
   const allResults = Array.from(result.results.values()).flat();
   const okCount = allResults.filter(r => r.status === "OK").length;
   const totalSteps = allResults.filter(r => !r.action.startsWith("barrier:")).length;
-  const status = result.success ? "completed" : "PARTIAL FAILURE";
+  const status = result.success
+    ? "completed"
+    : result.timedOut
+      ? "INCOMPLETE (max duration exceeded)"
+      : result.cancelled === true
+        ? "CANCELLED"
+        : "PARTIAL FAILURE";
 
   const lines: string[] = [
     `Sync ${status}: "${result.groupName}" (${group.roles.length} devices, ${totalSteps} steps)`,

@@ -15,6 +15,7 @@ function makeCtx(overrides: {
     getElementRect: (...args: any[]) => Promise<any>;
   };
   getCachedElements?: (platform: string) => UiElement[];
+  isCachedElementsStale?: (platform: string, deviceId?: string) => boolean;
   setCachedElements?: (platform: string, elements: UiElement[]) => void;
   getUiHierarchyAsync?: (platform: string) => Promise<string>;
 } = {}): ToolContext {
@@ -27,6 +28,7 @@ function makeCtx(overrides: {
       getUiHierarchyAsync: overrides.getUiHierarchyAsync ?? (async () => "<hierarchy></hierarchy>"),
     } as any,
     getCachedElements: overrides.getCachedElements ?? (() => []),
+    isCachedElementsStale: overrides.isCachedElementsStale,
     setCachedElements: overrides.setCachedElements ?? (() => {}),
     lastScreenshotMap: new Map(),
     lastUiTreeMap: new Map(),
@@ -175,6 +177,26 @@ describe("resolveElementCoordinates — Android with index", () => {
     expect(result!.description).toBe("index 3");
     expect(result!.fromRawArgs).toBe(false);
     // Should NOT have fetched fresh UI hierarchy — cache was enough
+  });
+
+  it("forces a fresh successful read when indexed cache is marked stale", async () => {
+    const cached = vi.fn().mockReturnValue([makeUiElement({ index: 0, centerX: 999, centerY: 999 })]);
+    const isStale = vi.fn().mockReturnValue(true);
+    const getUiHierarchyAsync = vi.fn().mockResolvedValue(
+      makeAndroidXml("Fresh target", "[20,10][120,60]"),
+    );
+
+    const ctx = makeCtx({
+      getCachedElements: cached,
+      isCachedElementsStale: isStale,
+      getUiHierarchyAsync,
+    });
+    const result = await resolveElementCoordinates({ index: 0 }, ctx, "android");
+
+    expect(isStale).toHaveBeenCalledWith("android", undefined);
+    expect(cached).not.toHaveBeenCalled();
+    expect(getUiHierarchyAsync).toHaveBeenCalledWith("android", undefined);
+    expect(result).toMatchObject({ x: 70, y: 35 });
   });
 
   it("fetches UI hierarchy when cache is empty and finds element by index", async () => {

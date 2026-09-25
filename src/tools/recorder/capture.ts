@@ -1,11 +1,11 @@
 import type { ScenarioStep } from "../../utils/scenario-store.js";
 import { MAX_STEPS_PER_SCENARIO } from "../../utils/scenario-store.js";
 import { getDefaultRuntimeContext } from "../../runtime/runtime-context.js";
-import type { RecordingState } from "../recorder-state.js";
+import type { RecorderStopOutcome, RecordingState } from "../recorder-state.js";
 import {
-  RECORDING_BLOCKLIST,
   classifyStepType,
-  isSensitiveInput,
+  isRecordingBlockedAction,
+  redactSensitiveArgs,
 } from "./redaction.js";
 
 // ── Active recording accessors (delegated to RecorderState in RuntimeContext) ──
@@ -18,6 +18,30 @@ export function setActive(v: RecordingState | null): void {
   getDefaultRuntimeContext().recorder.set(v);
 }
 
+export function reserveStart(name: string): string | undefined {
+  return getDefaultRuntimeContext().recorder.reserveStart(name);
+}
+
+export function activateStart(recording: RecordingState): void {
+  getDefaultRuntimeContext().recorder.activateStart(recording);
+}
+
+export function cancelStart(name: string): void {
+  getDefaultRuntimeContext().recorder.cancelStart(name);
+}
+
+export function beginStop(): RecordingState | null {
+  return getDefaultRuntimeContext().recorder.beginStop();
+}
+
+export function finishStop(recording: RecordingState, outcome: RecorderStopOutcome): void {
+  getDefaultRuntimeContext().recorder.finishStop(recording, outcome);
+}
+
+export function isStopInProgress(): boolean {
+  return getDefaultRuntimeContext().recorder.isStopInProgress();
+}
+
 // ── Public recording API (called from index.ts handleTool) ──
 
 export function isRecording(): boolean {
@@ -25,10 +49,11 @@ export function isRecording(): boolean {
 }
 
 export function captureStep(action: string, args: Record<string, unknown>, depth: number): void {
-  const activeRecording = getActive();
-  if (!activeRecording) return;
+  const recorder = getDefaultRuntimeContext().recorder;
+  const activeRecording = recorder.get();
+  if (!activeRecording || recorder.isStopInProgress()) return;
   if (depth !== 0) return;
-  if (Object.hasOwn(RECORDING_BLOCKLIST, action)) return;
+  if (isRecordingBlockedAction(action, args)) return;
   if (activeRecording.steps.length >= MAX_STEPS_PER_SCENARIO) return;
 
   const now = Date.now();
@@ -36,14 +61,9 @@ export function captureStep(action: string, args: Record<string, unknown>, depth
     ? 0
     : now - activeRecording.lastStepAt;
 
-  const sensitive = isSensitiveInput(action, args);
-  const cleanArgs = { ...args };
+  const { args: cleanArgs, sensitive } = redactSensitiveArgs(action, args);
   // Remove platform — inherited from scenario
   delete cleanArgs.platform;
-  if (sensitive) {
-    if ("text" in cleanArgs) cleanArgs.text = "[REDACTED]";
-    if ("value" in cleanArgs) cleanArgs.value = "[REDACTED]";
-  }
 
   const step: ScenarioStep = {
     index: activeRecording.steps.length,

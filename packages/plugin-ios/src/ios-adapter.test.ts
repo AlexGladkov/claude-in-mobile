@@ -72,3 +72,36 @@ describe("iOS client ownership", () => {
     expect(adapter.dispose).toHaveBeenCalledOnce();
   });
 });
+
+describe("iOS log package filtering", () => {
+  const makeClient = () => {
+    const getLogs = vi.fn(() => "logs");
+    const client = {
+      getDeviceId: () => undefined,
+      getLogs,
+    } as unknown as IosClient;
+    return { client, getLogs };
+  };
+
+  it("passes a valid reverse-DNS package as one subsystem predicate", () => {
+    const { client, getLogs } = makeClient();
+    const adapter = new IosAdapter(client);
+
+    expect(adapter.getLogs({ package: "com.example.app" })).toBe("logs");
+    expect(getLogs).toHaveBeenCalledOnce();
+    expect(getLogs).toHaveBeenCalledWith({
+      level: undefined,
+      lines: undefined,
+      predicate: 'subsystem == "com.example.app"',
+    }, undefined);
+  });
+
+  it("rejects predicate injection before the client receives a log query", () => {
+    const { client, getLogs } = makeClient();
+    const adapter = new IosAdapter(client);
+    const maliciousPackage = 'foo" OR message CONTAINS[c] "secret';
+
+    expect(() => adapter.getLogs({ package: maliciousPackage })).toThrow();
+    expect(getLogs).not.toHaveBeenCalled();
+  });
+});

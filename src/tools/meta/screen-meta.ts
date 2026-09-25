@@ -1,5 +1,6 @@
 import { createMetaTool } from "./create-meta-tool.js";
 import { screenshotTools } from "../screenshot-tools.js";
+import { PLATFORM_JSON_SCHEMA } from "../common-schema.js";
 
 const { meta, aliases } = createMetaTool({
   name: "screen",
@@ -9,8 +10,7 @@ const { meta, aliases } = createMetaTool({
   prefix: "screen_",
   extraSchema: {
     platform: {
-      type: "string",
-      enum: ["android", "ios", "desktop", "aurora", "harmony", "browser"],
+      ...PLATFORM_JSON_SCHEMA,
       description: "Target platform. If not specified, uses the active target.",
     },
     preset: { type: "string", enum: ["low", "medium", "high"], description: "Quality preset: low (270x480 q40), medium (540x960 q55, default), high (810x1440 q70)" },

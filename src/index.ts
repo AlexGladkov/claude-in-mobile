@@ -15,6 +15,7 @@ import { createToolContext, MAX_RECURSION_DEPTH } from "./tools/context.js";
 import { MobileError } from "./errors.js";
 import { getGlobalMetrics } from "./utils/metrics.js";
 import { sanitizeErrorMessage } from "./utils/sanitize.js";
+import { waitForRetry } from "./utils/retry-delay.js";
 import { VALID_PROFILES } from "./profiles.js";
 import type { MobileProfile } from "./profiles.js";
 import { recordCall } from "./utils/anti-patterns.js";
@@ -56,9 +57,42 @@ const RETRY_CONFIG: Record<string, { maxAttempts: number; delayMs: number[] }> =
   SYNC_BARRIER_TIMEOUT: { maxAttempts: 2, delayMs: [500, 1500] },
 };
 
-async function handleTool(name: string, args: Record<string, unknown>, depth: number = 0): Promise<unknown> {
+function composeAbortSignals(
+  parent: AbortSignal | undefined,
+  child: AbortSignal | undefined,
+): { signal: AbortSignal | undefined; dispose: () => void } {
+  if (!parent) return { signal: child, dispose: () => {} };
+  if (!child || parent === child) return { signal: parent, dispose: () => {} };
+
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  parent.addEventListener("abort", abort, { once: true });
+  child.addEventListener("abort", abort, { once: true });
+  if (parent.aborted || child.aborted) abort();
+
+  const dispose = () => {
+    parent.removeEventListener("abort", abort);
+    child.removeEventListener("abort", abort);
+  };
+  controller.signal.addEventListener("abort", dispose, { once: true });
+
+  return {
+    signal: controller.signal,
+    dispose,
+  };
+}
+
+async function handleTool(
+  name: string,
+  args: Record<string, unknown>,
+  depth: number = 0,
+  signal?: AbortSignal,
+): Promise<unknown> {
   if (depth > MAX_RECURSION_DEPTH) {
     throw new MobileError(`Maximum recursion depth (${MAX_RECURSION_DEPTH}) exceeded.`, "MAX_RECURSION");
+  }
+  if (signal?.aborted) {
+    throw new MobileError("Tool operation was cancelled.", "REQUEST_CANCELLED");
   }
 
   // Record step if recording is active (no-op if idle, depth>0, or blocklisted)
@@ -72,16 +106,35 @@ async function handleTool(name: string, args: Record<string, unknown>, depth: nu
   if (!resolved) {
     throw new MobileError(`Unknown tool: ${name}`, "UNKNOWN_TOOL");
   }
+  const requestContext = signal
+    ? {
+        ...ctx,
+        signal,
+        handleTool: (
+          nestedName: string,
+          nestedArgs: Record<string, unknown>,
+          nestedDepth?: number,
+          nestedSignal?: AbortSignal,
+        ) => {
+          const combined = composeAbortSignals(signal, nestedSignal);
+          return handleTool(nestedName, nestedArgs, nestedDepth, combined.signal)
+            .finally(combined.dispose);
+        },
+      }
+    : ctx;
 
   let lastError: unknown;
   for (let attempt = 1; ; attempt++) {
     const start = Date.now();
     try {
-      const result = await resolved.handler(resolved.args, ctx, depth);
+      const result = await resolved.handler(resolved.args, requestContext, depth);
       getGlobalMetrics().record(name, Date.now() - start, false);
       return result;
     } catch (error) {
       getGlobalMetrics().record(name, Date.now() - start, true);
+      if (signal?.aborted) {
+        throw new MobileError("Tool operation was cancelled.", "REQUEST_CANCELLED");
+      }
       lastError = error;
 
       // Only retry at top level
@@ -98,7 +151,10 @@ async function handleTool(name: string, args: Record<string, unknown>, depth: nu
 
       const delay = config.delayMs[attempt - 1] ?? config.delayMs[config.delayMs.length - 1];
       console.error(`[retry] ${code} on ${name}, attempt ${attempt}/${config.maxAttempts}, waiting ${delay}ms`);
-      await new Promise(r => setTimeout(r, delay));
+      await waitForRetry(delay, signal);
+      if (signal?.aborted) {
+        throw new MobileError("Tool operation was cancelled.", "REQUEST_CANCELLED");
+      }
     }
   }
 }

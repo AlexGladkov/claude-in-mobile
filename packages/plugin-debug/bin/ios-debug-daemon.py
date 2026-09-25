@@ -586,8 +586,30 @@ class Daemon:
             raise RpcError("cursor must be an integer")
         if cursor < 0:
             raise RpcError("cursor must be non-negative")
-        events, next_cursor = sess.drain(cursor)
-        return {"events": events, "nextCursor": next_cursor}
+        process = sess.process
+        try:
+            state = process.GetState() if process and process.IsValid() else lldb.eStateInvalid
+            alive = state not in (
+                lldb.eStateInvalid,
+                lldb.eStateUnloaded,
+                lldb.eStateDetached,
+                lldb.eStateExited,
+            )
+        except Exception:
+            alive = False
+
+        if not alive:
+            try:
+                sess.close(detach=False)
+            finally:
+                self.sessions.pop(sess.id, None)
+            events, next_cursor = sess.drain(cursor)
+            if not any(event.get("kind") == "EXITED" for event in events):
+                sess._push_event({"kind": "EXITED", "threadId": None})
+                events, next_cursor = sess.drain(cursor)
+        else:
+            events, next_cursor = sess.drain(cursor)
+        return {"events": events, "nextCursor": next_cursor, "alive": alive}
 
     def pauseState(self, params):
         sess = self._session(params)

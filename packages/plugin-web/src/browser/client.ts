@@ -1,20 +1,46 @@
+import { createRequire } from "node:module";
 import { launch as launchChrome } from "chrome-launcher";
-// @ts-expect-error — chrome-remote-interface does not publish declarations.
-import createCdpClient from "chrome-remote-interface";
 import { z } from "zod";
 
 import type { BrowserSession, BrowserOpenOptions, BrowserClickOptions, BrowserFillOptions, BrowserNavigateOptions, LaunchedChrome } from "./types.js";
+import type { PluginUiElement } from "@mcp-devices/plugin-api";
 import type { CDPClientInterface } from "./cdp-types.js";
 import { ALLOWED_URL_PROTOCOLS, DEFAULT_SESSION } from "./types.js";
 import { SessionManager } from "./session-manager.js";
+import { PipeCdpClient } from "./pipe-transport.js";
 import { BrowserRefNotFoundError, BrowserSecurityError } from "mcp-devices/errors";
 import { validatePngForDecode } from "mcp-devices/utils/image/input";
 import { findNodeBySelector, findNodeByText, getCoordinates } from "./cdp-helpers.js";
-import { buildSnapshot } from "./snapshot-builder.js";
+import { buildSnapshot, buildUiElements, sanitizeBrowserUrl } from "./snapshot-builder.js";
 import { pressKeyOnCdp, formatEvaluateResult } from "./key-map.js";
 
-type CdpFactory = (opts: { port: number }) => Promise<CDPClientInterface>;
-const CDP = createCdpClient as unknown as CdpFactory;
+const nodeRequire = createRequire(import.meta.url);
+let chromeLauncherVersion: string | undefined;
+try {
+  const metadata = nodeRequire("chrome-launcher/package.json") as unknown;
+  if (
+    typeof metadata === "object" &&
+    metadata !== null &&
+    "version" in metadata &&
+    typeof metadata.version === "string"
+  ) {
+    chromeLauncherVersion = metadata.version;
+  }
+} catch {
+  // An unavailable package manifest is treated as unsupported below.
+}
+
+function requirePrivatePipeLauncher(): void {
+  const match = /^(\d+)\.(\d+)\./.exec(chromeLauncherVersion ?? "");
+  const major = match ? Number(match[1]) : -1;
+  const minor = match ? Number(match[2]) : -1;
+  if (!match || major < 1 || (major === 1 && minor < 2)) {
+    throw new Error(
+      `Secure Chrome DevTools pipe transport requires chrome-launcher >=1.2.0; refusing an unauthenticated TCP fallback (detected ${chromeLauncherVersion ?? "unknown"}).`,
+    );
+  }
+}
+
 const MAX_SCREENSHOT_BYTES = 50 * 1024 * 1024;
 const captureScreenshotResultSchema = z.object({
   data: z
@@ -45,17 +71,18 @@ export class BrowserClient {
     try {
       parsed = new URL(url);
     } catch {
-      throw new Error(`Invalid URL: ${url}`);
+      throw new Error(`Invalid URL: ${sanitizeBrowserUrl(url)}`);
     }
     // S2: fail-closed allowlist — only http/https may reach CDP Page.navigate.
     if (!Object.hasOwn(ALLOWED_URL_PROTOCOLS, parsed.protocol)) {
-      throw new BrowserSecurityError(url, parsed.protocol);
+      throw new BrowserSecurityError(sanitizeBrowserUrl(url), parsed.protocol);
     }
   }
 
   async launch(options: BrowserOpenOptions): Promise<BrowserSession> {
     const { url, session = DEFAULT_SESSION, headless = false } = options;
     this.validateUrl(url);
+    requirePrivatePipeLauncher();
     const lockToken = this.sessionManager.acquireLock(session);
     const profileDir = this.sessionManager.getProfileDir(session);
     let chrome: LaunchedChrome | undefined;
@@ -76,7 +103,7 @@ export class BrowserClient {
         "--disable-save-password-bubble",
         "--password-store=basic",
         `--user-data-dir=${profileDir}`,
-        "--remote-debugging-address=127.0.0.1",
+        "--remote-debugging-pipe",
       ];
       if (headless) chromeFlags.push("--headless=new");
       if (process.env.MCP_DEVICES_DISABLE_CHROME_SANDBOX === "1") {
@@ -101,7 +128,26 @@ export class BrowserClient {
       }
 
       this.sessionManager.writePidFile(session, chrome.process.pid ?? 0, lockToken);
-      cdp = await CDP({ port: chrome.port });
+      if (chrome.port !== 0) {
+        throw new Error(
+          "Secure Chrome DevTools pipe transport requires chrome-launcher to disable its TCP endpoint.",
+        );
+      }
+      const pipes = chrome.remoteDebuggingPipes;
+      if (
+        !pipes ||
+        typeof pipes.incoming?.on !== "function" ||
+        typeof pipes.incoming?.removeListener !== "function" ||
+        typeof pipes.outgoing?.on !== "function" ||
+        typeof pipes.outgoing?.removeListener !== "function" ||
+        typeof pipes.outgoing?.write !== "function" ||
+        typeof pipes.outgoing?.end !== "function"
+      ) {
+        throw new Error(
+          "Secure Chrome DevTools pipe transport is unavailable; refusing an unauthenticated TCP fallback.",
+        );
+      }
+      cdp = await PipeCdpClient.connect(pipes);
       const { Page, Runtime, DOM, Network } = cdp;
       await Promise.all([
         Page.enable(),
@@ -140,23 +186,45 @@ export class BrowserClient {
     }
   }
 
-  private async navigateToUrl(cdp: CDPClientInterface, url: string): Promise<void> {
-    const { Page } = cdp;
-    // One-shot promise form self-removes the underlying CDP listener once it
-    // resolves, so repeated navigations on a long-lived session don't leak
-    // handlers (issue M1). Start the wait before navigate() to avoid a race
-    // where the load event fires before we subscribe.
-    const loaded = Page.loadEventFired();
+  private async waitForLoadEvent(
+    page: CDPClientInterface["Page"],
+    action: () => Promise<unknown>,
+    timeoutMs: number,
+    timeoutError?: Error,
+  ): Promise<void> {
+    let unsubscribe: (() => void) | undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined;
-    const timed = new Promise<never>((_, reject) => {
-      timeout = setTimeout(() => reject(new Error(`Navigation timeout for ${url}`)), 30000);
+    let resolveLoaded!: () => void;
+    const loaded = new Promise<void>((resolve) => {
+      resolveLoaded = resolve;
     });
+
     try {
-      await Page.navigate({ url });
-      await Promise.race([loaded, timed]);
+      const subscription = page.loadEventFired(() => resolveLoaded());
+      unsubscribe = typeof subscription === "function" ? subscription : undefined;
+      const timed = new Promise<void>((resolve, reject) => {
+        timeout = setTimeout(() => {
+          if (timeoutError) {
+            reject(timeoutError);
+          } else {
+            resolve();
+          }
+        }, timeoutMs);
+      });
+      await Promise.race([Promise.all([action(), loaded]), timed]);
     } finally {
-      if (timeout) clearTimeout(timeout);
+      clearTimeout(timeout);
+      unsubscribe?.();
     }
+  }
+
+  private async navigateToUrl(cdp: CDPClientInterface, url: string): Promise<void> {
+    await this.waitForLoadEvent(
+      cdp.Page,
+      () => cdp.Page.navigate({ url }),
+      30_000,
+      new Error(`Navigation timeout for ${sanitizeBrowserUrl(url)}`),
+    );
   }
 
   async navigate(session: BrowserSession, options: BrowserNavigateOptions): Promise<void> {
@@ -170,19 +238,13 @@ export class BrowserClient {
       await cdp.Runtime.evaluate({ expression: "history.forward()" });
       await new Promise(r => setTimeout(r, 500));
     } else if (action === "reload") {
-      // One-shot promise form self-removes the CDP listener (issue M1). Subscribe
-      // before reload() so a fast load event isn't missed.
-      const loaded = cdp.Page.loadEventFired();
-      let timeout: ReturnType<typeof setTimeout> | undefined;
-      const timed = new Promise<void>((resolve) => {
-        timeout = setTimeout(resolve, 10000);
-      });
-      try {
-        await cdp.Page.reload();
-        await Promise.race([loaded, timed]);
-      } finally {
-        if (timeout) clearTimeout(timeout);
-      }
+      // Subscribe before reload() so a fast load event is not missed. The
+      // waiter always removes the callback and clears its timeout.
+      await this.waitForLoadEvent(
+        cdp.Page,
+        () => cdp.Page.reload(),
+        10_000,
+      );
     } else if (url) {
       this.validateUrl(url);
       await this.navigateToUrl(cdp, url);
@@ -196,7 +258,11 @@ export class BrowserClient {
     return buildSnapshot(session, session.cdp);
   }
 
-  async resolveRef(session: BrowserSession, ref: string): Promise<{ nodeId?: number; selector: string; label: string }> {
+  async getUiElements(session: BrowserSession): Promise<readonly PluginUiElement[]> {
+    return buildUiElements(session, session.cdp);
+  }
+
+  async resolveRef(session: BrowserSession, ref: string): Promise<{ nodeId?: number; coordinates?: { x: number; y: number }; selector: string; label: string }> {
     let entry = session.refMap.get(ref);
 
     // Level 2: stale refs from before navigation
@@ -231,7 +297,7 @@ export class BrowserClient {
       const coords = await findNodeByText(session.cdp, entry.textFingerprint);
       if (coords) {
         // Return selector-less result — caller will use coordinates from findNodeByText
-        return { selector: "", label: `${entry.label} (found by text)` };
+        return { coordinates: coords, selector: "", label: `${entry.label} (found by text)` };
       }
     }
 
@@ -250,6 +316,9 @@ export class BrowserClient {
         const coords = await getCoordinates(cdp, resolved.nodeId);
         x = coords.x;
         y = coords.y;
+      } else if (resolved.coordinates) {
+        x = resolved.coordinates.x;
+        y = resolved.coordinates.y;
       } else if (resolved.selector) {
         const nodeId = await findNodeBySelector(cdp, resolved.selector);
         if (!nodeId) throw new Error(`Element not found for selector: ${resolved.selector}`);

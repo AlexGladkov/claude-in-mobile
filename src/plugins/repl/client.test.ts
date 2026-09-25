@@ -49,6 +49,49 @@ describe("ReplBridgeClient construction", () => {
     }
   });
 
+  it("accepts the public expect maximum plus its bridge buffer", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "mcp-devices-cli-timeout-envelope-"));
+    const companion = join(dir, "mcp-devices-cli");
+    await writeFile(
+      companion,
+      [
+        `#!${process.execPath}`,
+        "process.stdout.write('{\"event\":\"ready\"}\\n');",
+        "let input = '';",
+        "process.stdin.setEncoding('utf8');",
+        "process.stdin.on('data', (chunk) => {",
+        "  input += chunk;",
+        "  while (true) {",
+        "    const newline = input.indexOf('\\n');",
+        "    if (newline < 0) break;",
+        "    const request = JSON.parse(input.slice(0, newline));",
+        "    input = input.slice(newline + 1);",
+        "    process.stdout.write(JSON.stringify({ id: request.id, result: 'ok' }) + '\\n');",
+        "  }",
+        "});",
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+
+    const client = new ReplBridgeClient({
+      binaryPath: companion,
+      requestTimeoutMs: 2_000,
+      startTimeoutMs: 2_000,
+    });
+
+    try {
+      for (const timeoutMs of [300_000, 300_001, 305_000]) {
+        await expect(client.call<string>("expect", {}, timeoutMs)).resolves.toBe("ok");
+      }
+      await expect(client.call("expect", {}, 305_001))
+        .rejects.toThrow("invalid request timeout");
+    } finally {
+      await client.dispose();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("preserves standard command paths when the Linux host omits PATH", async () => {
     if (process.platform !== "linux") return;
     const priorPath = process.env.PATH;

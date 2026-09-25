@@ -118,6 +118,41 @@ describe("generic system capabilities", () => {
   });
 });
 
+describe("system_webview device routing", () => {
+  it("inspects the explicitly requested Android device", async () => {
+    const inspector = {
+      inspect: vi.fn(async () => ({
+        sockets: ["webview_devtools_remote"],
+        targets: [{
+          description: "",
+          devtoolsFrontendUrl: "",
+          id: "target-id",
+          title: "OAuth https://example.com/callback?code=secret-code&state=secret-state",
+          type: "page",
+          url: "https://example.com/callback?code=secret-code&state=secret-state",
+          webSocketDebuggerUrl: "",
+        }],
+      })),
+      cleanup: vi.fn(),
+    };
+    const ctx = makeMockContext();
+    const getWebViewInspector = vi.fn(() => inspector);
+    ctx.deviceManager.getWebViewInspector = getWebViewInspector;
+
+    const result = await findHandler("system_webview")({
+      deviceId: "android-secondary",
+    }, ctx);
+
+    expect(getWebViewInspector).toHaveBeenCalledWith("android-secondary");
+    expect(inspector.inspect).toHaveBeenCalledOnce();
+    const text = (result as { text: string }).text;
+    expect(text).toContain("webview_devtools_remote");
+    expect(text).not.toContain("secret-code");
+    expect(text).not.toContain("secret-state");
+    expect(text).not.toContain("Forwarded to port");
+  });
+});
+
 // ──────────────────────────────────────────────
 // system_wait_log
 // ──────────────────────────────────────────────
@@ -214,6 +249,28 @@ describe("system_wait_log", () => {
     expect(text).toContain("Timeout after 300ms");
     expect(text).toContain("Scanned"); // mentions unique lines scanned
   });
+  
+  it("bounds the unique log-line deduplication cache", async () => {
+    let poll = 0;
+    const ctx = makeMockContext({
+      deviceManager: {
+        getCurrentPlatform: vi.fn(() => "android"),
+        getLogs: vi.fn(() => {
+          const currentPoll = poll++;
+          return Array.from({ length: 500 }, (_, i) => `entry-${currentPoll}-${i}`).join("\n");
+        }),
+        clearLogs: vi.fn(() => ""),
+      } as any,
+    });
+
+    const result = await handler({
+      pattern: "MATCH_NEVER_APPEARS",
+      timeoutMs: 500,
+      pollIntervalMs: 100,
+    }, ctx);
+    expect((result as { text: string }).text).toContain("retaining 2048 recent unique lines");
+  });
+
 
   it("calls clearLogs when clearFirst=true", async () => {
     const clearLogs = vi.fn(() => "cleared");

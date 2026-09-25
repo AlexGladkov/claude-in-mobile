@@ -16,21 +16,28 @@ import {
   TurboStepContext,
   captureTurboScreenshot,
   collectCompactUiTree,
+  linkFlowAbortController,
   collectFailureDiag,
   flowStepSchema,
   formatFlowResults,
   isFlowActionAllowed,
   platformEnum,
+  FlowTimeoutError,
+  runWithDeadline,
   turboFastTrack,
 } from "./common.js";
+import type { FastTrackResult } from "./common.js";
+import { deviceIdField } from "../common-schema.js";
 
 export const flowRun = defineTool({
   name: "flow_run",
-  description: "Multi-step automation flow with conditionals, loops, error handling. Use for E2E testing instead of calling tools one-by-one. Set turbo:true for UI context per step (experimental). Max 20 steps.",
+  description: "Multi-step automation flow with conditionals, loops, error handling. Use for E2E testing instead of calling tools one-by-one. Set turbo:true for UI context per step (experimental). Max 20 steps. Cancellation and time budgets are cooperative; non-cancellable operations may overrun or finish after cancellation.",
   schema: z.object({
     steps: z.array(flowStepSchema).optional().describe("Steps to execute sequentially"),
-    maxDuration: z.number().optional().describe("Max total duration in ms (default: 30000, max: 60000)"),
+    maxDuration: z.number().finite().min(1).max(FLOW_MAX_DURATION).optional()
+      .describe("Orchestration time budget in ms (default: 30000, max: 60000). Cancellation is cooperative; non-cancellable operations may overrun this budget or finish after timeout."),
     platform: platformEnum,
+    deviceId: deviceIdField,
     turbo: z
       .boolean()
       .optional()
@@ -40,8 +47,10 @@ export const flowRun = defineTool({
     if ((_depth ?? 0) > MAX_RECURSION_DEPTH) {
       throw new Error(`Maximum recursion depth (${MAX_RECURSION_DEPTH}) exceeded. Nested batch_commands/run_flow calls are limited to prevent stack overflow.`);
     }
+    const flowDepth = _depth ?? 0;
 
     const platform = args.platform as Platform | undefined;
+    const flowDeviceId = args.deviceId as string | undefined;
     const steps = args.steps as FlowStep[] | undefined;
     const maxDuration = Math.min((args.maxDuration as number) ?? 30000, FLOW_MAX_DURATION);
     const currentPlatform = (platform ?? ctx.deviceManager.getCurrentPlatform()) as string;
@@ -56,7 +65,7 @@ export const flowRun = defineTool({
 
     // Validate all actions are allowed
     for (const step of steps) {
-      if (!isFlowActionAllowed(step.action)) {
+      if (!isFlowActionAllowed(step.action, step.args ?? {})) {
         throw new MobileError(
           `Action "${step.action}" is not allowed in flows. Use only safe actions.`,
           "FLOW_SECURITY"
@@ -66,14 +75,43 @@ export const flowRun = defineTool({
 
     const flowStart = Date.now();
     const results: FlowStepResult[] = [];
+    const flowController = new AbortController();
+    const unlinkParentSignal = linkFlowAbortController(ctx.signal, flowController);
+    const flowSignal = flowController.signal;
+    try {
+    let flowTimedOut = false;
+    const abortFlow = (): void => {
+      flowTimedOut = true;
+      if (!flowController.signal.aborted) flowController.abort();
+    };
+    const remainingFlowMs = (): number => Math.max(0, maxDuration - (Date.now() - flowStart));
+    const waitWithinDeadline = (delayMs: number): Promise<void> =>
+      runWithDeadline(() => sleep(delayMs), remainingFlowMs(), abortFlow, flowSignal);
+    const runNestedTool = (
+      name: string,
+      toolArgs: Record<string, unknown>,
+      depth: number,
+    ): Promise<unknown> =>
+      runWithDeadline(
+        () => ctx.handleTool(name, toolArgs, depth, flowSignal),
+        remainingFlowMs(),
+        abortFlow,
+        flowSignal,
+      );
 
     // Turbo state
     const turboContexts = turbo ? new Map<number, TurboStepContext>() : undefined;
     const turboScreenshots: Array<{ data: string; mimeType: string }> = [];
     const TURBO_MAX_SCREENSHOTS = 5;
 
-    /** Collect turbo context for a step. Time spent here does NOT count against maxDuration. */
-    async function collectTurboContext(stepNum: number, stepSuccess: boolean): Promise<void> {
+    /** Collect optional turbo feedback without exceeding the flow deadline. */
+    async function collectTurboContext(
+      stepNum: number,
+      stepSuccess: boolean,
+      stepPlatform: string,
+      stepDeviceId: string | undefined,
+      parentDepth: number,
+    ): Promise<void> {
       if (!turbo || !turboContexts) return;
       if (turboContexts.has(stepNum)) return; // Already populated by fast-track
       const ctx_entry: TurboStepContext = {};
@@ -81,8 +119,15 @@ export const flowRun = defineTool({
       if (!stepSuccess && turboScreenshots.length < TURBO_MAX_SCREENSHOTS) {
         // Parallel: UI tree + screenshot simultaneously on failure
         const [uiTree, screenshot] = await Promise.all([
-          collectCompactUiTree(ctx, currentPlatform).catch(() => ""),
-          captureTurboScreenshot(ctx, currentPlatform),
+          collectCompactUiTree(ctx, stepPlatform, stepDeviceId, flowSignal).catch(() => ""),
+          captureTurboScreenshot(
+            ctx,
+            stepPlatform,
+            stepDeviceId,
+            flowSignal,
+            FLOW.UI_TREE_TIMEOUT_MS,
+            parentDepth,
+          ),
         ]);
         if (uiTree) ctx_entry.uiTree = uiTree;
         if (screenshot) {
@@ -92,7 +137,7 @@ export const flowRun = defineTool({
       } else {
         // Success: only UI tree (no screenshot needed)
         try {
-          const uiTree = await collectCompactUiTree(ctx, currentPlatform);
+          const uiTree = await collectCompactUiTree(ctx, stepPlatform, stepDeviceId, flowSignal);
           if (uiTree) ctx_entry.uiTree = uiTree;
         } catch { /* silently skip */ }
       }
@@ -100,9 +145,58 @@ export const flowRun = defineTool({
       turboContexts.set(stepNum, ctx_entry);
     }
 
+    async function collectTurboContextWithinDeadline(
+      stepNum: number,
+      stepSuccess: boolean,
+      stepPlatform: string,
+      stepDeviceId: string | undefined,
+      parentDepth: number,
+    ): Promise<boolean> {
+      try {
+        await runWithDeadline(
+          () => collectTurboContext(
+            stepNum,
+            stepSuccess,
+            stepPlatform,
+            stepDeviceId,
+            parentDepth,
+          ),
+          remainingFlowMs(),
+          abortFlow,
+          flowSignal,
+        );
+        return !flowTimedOut && !ctx.signal?.aborted;
+      } catch (error: unknown) {
+        if (error instanceof FlowTimeoutError || ctx.signal?.aborted) return false;
+        throw error;
+      }
+    }
+
+    async function collectFailureDiagWithinDeadline(
+      stepIndex: number,
+      stepPlatform: string,
+      stepDeviceId?: string,
+    ): Promise<string> {
+      try {
+        return await runWithDeadline(
+          () => collectFailureDiag(ctx, stepPlatform, stepIndex, stepDeviceId, flowSignal),
+          remainingFlowMs(),
+          abortFlow,
+          flowSignal,
+        );
+      } catch (error: unknown) {
+        if (error instanceof FlowTimeoutError || ctx.signal?.aborted) return "";
+        throw error;
+      }
+    }
+
     /** Build the final return value, factoring in turbo multi-content. */
-    function buildReturn(totalMs: number, diagBlock: string = "") {
-      const text = formatFlowResults(results, totalMs, diagBlock, turboContexts);
+    function buildReturn(
+      totalMs: number,
+      diagBlock: string = "",
+      incomplete = flowTimedOut || ctx.signal?.aborted === true,
+    ) {
+      const text = formatFlowResults(results, totalMs, diagBlock, turboContexts, incomplete);
       if (turbo && turboScreenshots.length > 0) {
         const content: ContentBlock[] = [{ type: "text", text }];
         for (const ss of turboScreenshots) {
@@ -114,22 +208,50 @@ export const flowRun = defineTool({
       }
       return textResult(text);
     }
+    function finishTimeout(step: FlowStep, durationMs: number) {
+      const timeoutResult: FlowStepResult = {
+        step: results.length + 1,
+        action: step.action,
+        label: step.label,
+        success: false,
+        message: "Flow timeout",
+        durationMs,
+      };
+      results.push(timeoutResult);
+      return turbo
+        ? buildReturn(Date.now() - flowStart, "", true)
+        : textResult(formatFlowResults(results, Date.now() - flowStart, "", undefined, true));
+    }
+    function finishCancelled(step: FlowStep, durationMs: number) {
+      results.push({
+        step: results.length + 1,
+        action: step.action,
+        label: step.label,
+        success: false,
+        message: "Flow cancelled",
+        durationMs,
+      });
+      return buildReturn(Date.now() - flowStart, "", true);
+    }
+
+    let lastStepPlatform = currentPlatform;
+    let lastStepDeviceId = flowDeviceId;
 
     for (let i = 0; i < steps.length; i++) {
-      if (Date.now() - flowStart > maxDuration) {
-        results.push({
-          step: i + 1,
-          action: steps[i].action,
-          label: steps[i].label,
-          success: false,
-          message: `Flow timeout (${maxDuration}ms exceeded)`,
-          durationMs: 0,
-        });
-        break;
+      if (flowTimedOut || remainingFlowMs() <= 0) {
+        return finishTimeout(steps[i], 0);
       }
+      if (ctx.signal?.aborted) return finishCancelled(steps[i], 0);
 
       const step = steps[i];
       const stepArgs = { platform: currentPlatform, ...step.args } as Record<string, unknown>;
+      if (flowDeviceId !== undefined && stepArgs.deviceId === undefined) {
+        stepArgs.deviceId = flowDeviceId;
+      }
+      const stepPlatform = typeof stepArgs.platform === "string" ? stepArgs.platform : currentPlatform;
+      const stepDeviceId = typeof stepArgs.deviceId === "string" ? stepArgs.deviceId : undefined;
+      lastStepPlatform = stepPlatform;
+      lastStepDeviceId = stepDeviceId;
       if (turbo && !("hints" in stepArgs)) {
         stepArgs.hints = false; // turbo collects UI tree itself via collectCompactUiTree, skip redundant hints
       }
@@ -144,45 +266,65 @@ export const flowRun = defineTool({
       let lastStepResult: FlowStepResult | null = null;
 
       for (let iter = 0; iter < maxIterations; iter++) {
-        if (Date.now() - flowStart > maxDuration) break;
+        if (flowTimedOut || remainingFlowMs() <= 0) {
+          return finishTimeout(step, 0);
+        }
+        if (ctx.signal?.aborted) return finishCancelled(step, 0);
 
         const stepStart = Date.now();
 
-        // Turbo fast-track: combine action + UI dump in 1 ADB call (~150-300ms saved per step)
-        // Only for simple Android actions without repeat/if_not_found
-        if (turbo && !hasRepeatCondition && repeatTimes === 1 && !step.if_not_found) {
-          const fastResult = await turboFastTrack(step, ctx, currentPlatform, stepArgs.deviceId as string | undefined);
-          if (fastResult) {
-            lastStepResult = {
-              step: i + 1, action: step.action, label: step.label,
-              success: true, message: fastResult.message.slice(0, 200),
-              durationMs: Date.now() - stepStart,
-            };
-            if (turboContexts) {
-              turboContexts.set(i + 1, { uiTree: fastResult.uiCompact });
-            }
-            break; // Exit repeat loop — fast-track always single iteration
-          }
-        }
-
         try {
-          const result = await ctx.handleTool(step.action, stepArgs, (_depth ?? 0) + 1);
-          const text = typeof result === "object" && result !== null && "text" in result
-            ? (result as { text: string }).text
-            : JSON.stringify(result);
+          // Turbo fast-track: execute the action and UI dump in one ADB call.
+          // Only simple Android actions without repeats or recovery steps qualify.
+          if (turbo && !hasRepeatCondition && repeatTimes === 1 && !step.if_not_found) {
+            const fastResult = await turboFastTrack(
+              step,
+              ctx,
+              stepPlatform,
+              stepDeviceId,
+              remainingFlowMs(),
+              abortFlow,
+              flowSignal,
+            );
+            if (flowTimedOut || remainingFlowMs() <= 0) {
+              return finishTimeout(step, Date.now() - stepStart);
+            }
+            if (ctx.signal?.aborted) return finishCancelled(step, Date.now() - stepStart);
+            if (fastResult) {
+              lastStepResult = {
+                step: i + 1, action: step.action, label: step.label,
+                success: true, message: "OK",
+                durationMs: Date.now() - stepStart,
+              };
+              if (turboContexts) {
+                turboContexts.set(i + 1, { uiTree: fastResult.uiCompact });
+              }
+              break;
+            }
+          }
+          await runNestedTool(step.action, stepArgs, (_depth ?? 0) + 1);
+          if (flowTimedOut || remainingFlowMs() <= 0) {
+            return finishTimeout(step, Date.now() - stepStart);
+          }
+          if (ctx.signal?.aborted) return finishCancelled(step, Date.now() - stepStart);
 
           lastStepResult = {
             step: i + 1,
             action: step.action,
             label: step.label,
             success: true,
-            message: text.slice(0, 200),
+            message: "OK",
             durationMs: Date.now() - stepStart,
           };
 
           if (hasRepeatCondition) {
             try {
-              const elements = await ctx.getElementsForPlatform(currentPlatform);
+              const elements = await runWithDeadline(
+                () => ctx.getElementsForPlatform(stepPlatform, stepDeviceId),
+                remainingFlowMs(),
+                abortFlow,
+                flowSignal,
+              );
               if (untilFound) {
                 const found = findElements(elements, { text: untilFound });
                 if (found.length > 0) break;
@@ -192,15 +334,22 @@ export const flowRun = defineTool({
                 if (found.length === 0) break;
               }
             } catch (condErr: unknown) {
+              if (condErr instanceof FlowTimeoutError) throw condErr;
               if (condErr instanceof DeviceNotFoundError || condErr instanceof DeviceOfflineError || condErr instanceof AdbNotInstalledError) {
                 throw condErr;
               }
             }
-            await sleep(turbo ? FLOW.STEP_DELAY_TURBO_MS : FLOW.STEP_DELAY_NORMAL_MS);
+            await waitWithinDeadline(
+              turbo ? FLOW.STEP_DELAY_TURBO_MS : FLOW.STEP_DELAY_NORMAL_MS,
+            );
           }
         } catch (error: unknown) {
           const durationMs = Date.now() - stepStart;
           const errorMessage = error instanceof Error ? error.message : String(error);
+          if (error instanceof FlowTimeoutError || flowTimedOut || remainingFlowMs() <= 0) {
+            return finishTimeout(step, durationMs);
+          }
+          if (ctx.signal?.aborted) return finishCancelled(step, durationMs);
           const isNotFound = errorMessage.includes("not found") || errorMessage.includes("No element");
 
           if (isNotFound && step.if_not_found) {
@@ -212,23 +361,39 @@ export const flowRun = defineTool({
               break;
             } else if (step.if_not_found === "scroll_down" || step.if_not_found === "scroll_up") {
               try {
-                await ctx.handleTool("swipe", { direction: step.if_not_found === "scroll_down" ? "up" : "down", platform: currentPlatform }, (_depth ?? 0) + 1);
-                await sleep(turbo ? FLOW.STEP_DELAY_TURBO_MS : FLOW.STEP_DELAY_NORMAL_MS);
-                const retryResult = await ctx.handleTool(step.action, stepArgs, (_depth ?? 0) + 1);
-                const retryText = typeof retryResult === "object" && retryResult !== null && "text" in retryResult
-                  ? (retryResult as { text: string }).text
-                  : JSON.stringify(retryResult);
+                await runNestedTool(
+                  "swipe",
+                  {
+                    direction: step.if_not_found === "scroll_down" ? "up" : "down",
+                    platform: stepPlatform,
+                    ...(stepDeviceId !== undefined ? { deviceId: stepDeviceId } : {}),
+                  },
+                  (_depth ?? 0) + 1,
+                );
+                await waitWithinDeadline(
+                  turbo ? FLOW.STEP_DELAY_TURBO_MS : FLOW.STEP_DELAY_NORMAL_MS,
+                );
+                await runNestedTool(step.action, stepArgs, (_depth ?? 0) + 1);
+                if (flowTimedOut || remainingFlowMs() <= 0) {
+                  return finishTimeout(step, Date.now() - stepStart);
+                }
+                if (ctx.signal?.aborted) {
+                  return finishCancelled(step, Date.now() - stepStart);
+                }
                 lastStepResult = {
                   step: i + 1, action: step.action, label: step.label,
-                  success: true, message: `${retryText.slice(0, 150)} (after ${step.if_not_found})`,
+                  success: true, message: `OK (after ${step.if_not_found})`,
                   durationMs: Date.now() - stepStart,
                 };
                 break;
               } catch (retryErr: unknown) {
-                const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+                if (retryErr instanceof FlowTimeoutError) {
+                  return finishTimeout(step, Date.now() - stepStart);
+                }
+                if (ctx.signal?.aborted) return finishCancelled(step, Date.now() - stepStart);
                 lastStepResult = {
                   step: i + 1, action: step.action, label: step.label,
-                  success: false, message: `${retryMsg} (after ${step.if_not_found})`,
+                  success: false, message: `Action failed (after ${step.if_not_found})`,
                   durationMs: Date.now() - stepStart,
                 };
                 if (onError === "stop") break;
@@ -237,30 +402,47 @@ export const flowRun = defineTool({
             } else {
               lastStepResult = {
                 step: i + 1, action: step.action, label: step.label,
-                success: false, message: errorMessage, durationMs,
+                success: false, message: "Action failed", durationMs,
               };
             }
             break;
           }
 
           if (onError === "retry" && iter < maxIterations - 1) {
-            await sleep(turbo ? FLOW.STEP_DELAY_TURBO_MS : FLOW.STEP_DELAY_NORMAL_MS);
-            if (Date.now() - flowStart > maxDuration) break;
+            try {
+              await waitWithinDeadline(
+                turbo ? FLOW.STEP_DELAY_TURBO_MS : FLOW.STEP_DELAY_NORMAL_MS,
+              );
+            } catch (error: unknown) {
+              if (error instanceof FlowTimeoutError) {
+                return finishTimeout(step, Date.now() - stepStart);
+              }
+              if (ctx.signal?.aborted) {
+                return finishCancelled(step, Date.now() - stepStart);
+              }
+              throw error;
+            }
             continue;
           }
 
           lastStepResult = {
             step: i + 1, action: step.action, label: step.label,
-            success: false, message: errorMessage, durationMs,
+            success: false, message: "Action failed", durationMs,
           };
 
           if (onError === "stop") {
             results.push(lastStepResult);
-            // Turbo context collected outside maxDuration timer
-            await collectTurboContext(i + 1, false);
+            const contextCollected = await collectTurboContextWithinDeadline(
+              i + 1,
+              false,
+              stepPlatform,
+              stepDeviceId,
+              flowDepth,
+            );
+            if (!contextCollected) return buildReturn(Date.now() - flowStart, "", true);
             if (!turbo) {
-              const diag = await collectFailureDiag(ctx, currentPlatform, i + 1);
-              return textResult(formatFlowResults(results, Date.now() - flowStart, diag));
+              const diag = await collectFailureDiagWithinDeadline(i + 1, stepPlatform, stepDeviceId);
+              return buildReturn(Date.now() - flowStart, diag);
             }
             return buildReturn(Date.now() - flowStart);
           }
@@ -270,13 +452,19 @@ export const flowRun = defineTool({
 
       if (lastStepResult) {
         results.push(lastStepResult);
-        // Turbo: collect UI context after each step (outside maxDuration timer)
-        await collectTurboContext(lastStepResult.step, lastStepResult.success);
+        const contextCollected = await collectTurboContextWithinDeadline(
+          lastStepResult.step,
+          lastStepResult.success,
+          stepPlatform,
+          stepDeviceId,
+          flowDepth,
+        );
+        if (!contextCollected) return buildReturn(Date.now() - flowStart, "", true);
 
         if (!lastStepResult.success && (step.on_error ?? "stop") === "stop") {
           if (!turbo) {
-            const diag = await collectFailureDiag(ctx, currentPlatform, i + 1);
-            return textResult(formatFlowResults(results, Date.now() - flowStart, diag));
+            const diag = await collectFailureDiagWithinDeadline(i + 1, stepPlatform, stepDeviceId);
+            return buildReturn(Date.now() - flowStart, diag);
           }
           return buildReturn(Date.now() - flowStart);
         }
@@ -285,9 +473,14 @@ export const flowRun = defineTool({
 
     if (!turbo) {
       const lastFailed = results.length > 0 && !results[results.length - 1].success;
-      const diag = lastFailed ? await collectFailureDiag(ctx, currentPlatform, results.length) : "";
-      return textResult(formatFlowResults(results, Date.now() - flowStart, diag));
+      const diag = lastFailed
+        ? await collectFailureDiagWithinDeadline(results.length, lastStepPlatform, lastStepDeviceId)
+        : "";
+      return buildReturn(Date.now() - flowStart, diag);
     }
     return buildReturn(Date.now() - flowStart);
+    } finally {
+      unlinkParentSignal();
+    }
   },
 });

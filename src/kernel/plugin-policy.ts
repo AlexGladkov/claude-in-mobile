@@ -12,11 +12,25 @@ import {
 
 const POLICY_VERSION = 1 as const;
 const MAX_POLICY_BYTES = 256 * 1024;
-const PLUGIN_ID_RE = /^[a-z0-9][a-z0-9._-]{0,127}$/;
+const PLUGIN_ID_RE = /^[a-z0-9][a-z0-9._-]{0,127}$/u;
+const SAFE_TEXT_RE = /^[^\u0000-\u001f\u007f]+$/u;
+const INTEGRITY_RE = /^sha256-[a-f0-9]{64}$/u;
+
+export interface PluginPermissionGrantIdentity {
+  readonly packageName: string;
+  readonly packageVersion: string;
+  readonly pluginVersion: string;
+  readonly apiVersion: "1";
+  readonly integrity: `sha256-${string}`;
+}
+
+export interface PluginPermissionGrant extends PluginPermissionGrantIdentity {
+  readonly permissions: readonly PluginPermission[];
+}
 
 export interface PluginPermissionPolicy {
   readonly version: typeof POLICY_VERSION;
-  readonly grants: Readonly<Record<string, readonly PluginPermission[]>>;
+  readonly grants: Readonly<Record<string, PluginPermissionGrant>>;
 }
 
 const permissionSchema = z.enum([
@@ -29,22 +43,29 @@ const permissionSchema = z.enum([
   "credentials:read",
 ]);
 
+const grantSchema = z.object({
+  permissions: z.array(permissionSchema).max(32),
+  packageName: z.string().min(1).max(512).regex(SAFE_TEXT_RE),
+  packageVersion: z.string().min(1).max(128).regex(SAFE_TEXT_RE),
+  pluginVersion: z.string().min(1).max(128).regex(SAFE_TEXT_RE),
+  apiVersion: z.literal("1"),
+  integrity: z.string().regex(INTEGRITY_RE),
+}).superRefine((grant, ctx) => {
+  if (new Set(grant.permissions).size !== grant.permissions.length) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "duplicate permissions for plugin grant",
+      path: ["permissions"],
+    });
+  }
+});
+
 const policySchema = z.object({
   version: z.literal(POLICY_VERSION),
   grants: z.record(
     z.string().regex(PLUGIN_ID_RE),
-    z.array(permissionSchema).max(32),
+    grantSchema,
   ),
-}).superRefine((policy, ctx) => {
-  for (const [id, permissions] of Object.entries(policy.grants)) {
-    if (new Set(permissions).size !== permissions.length) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `duplicate permissions for plugin ${id}`,
-        path: ["grants", id],
-      });
-    }
-  }
 });
 
 export class PluginPolicyError extends Error {
@@ -114,7 +135,37 @@ export function permissionsFor(
   policy: PluginPermissionPolicy,
   pluginId: string,
 ): readonly PluginPermission[] {
-  return policy.grants[pluginId] ?? [];
+  return Object.hasOwn(policy.grants, pluginId)
+    ? policy.grants[pluginId]?.permissions ?? []
+    : [];
+}
+
+export function grantMatchesIdentity(
+  grant: PluginPermissionGrant | undefined,
+  identity: PluginPermissionGrantIdentity,
+): boolean {
+  return Boolean(
+    grant
+    && grant.packageName === identity.packageName
+    && grant.packageVersion === identity.packageVersion
+    && grant.pluginVersion === identity.pluginVersion
+    && grant.apiVersion === identity.apiVersion
+    && grant.integrity === identity.integrity
+  );
+}
+
+export function grantForIdentity(
+  identity: PluginPermissionGrantIdentity,
+  permissions: readonly PluginPermission[],
+): PluginPermissionGrant {
+  return {
+    packageName: identity.packageName,
+    packageVersion: identity.packageVersion,
+    pluginVersion: identity.pluginVersion,
+    apiVersion: identity.apiVersion,
+    integrity: identity.integrity,
+    permissions: [...permissions],
+  };
 }
 
 export function missingPermissions(

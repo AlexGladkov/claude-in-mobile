@@ -1517,7 +1517,7 @@ pub enum FlowCommands {
         #[arg(long, default_value = "60000")]
         max_duration: u64,
 
-        /// Stop on first error (default: true, respects per-step on_error)
+        /// Stop on first error when enabled (default: true; per-step skip still continues)
         #[arg(long, default_value = "true")]
         stop_on_error: bool,
 
@@ -1547,9 +1547,13 @@ pub enum FlowCommands {
         #[arg(short, long)]
         file: Option<String>,
 
-        /// Stop execution on first error (default: true)
+        /// Stop execution on first error when enabled (default: true)
         #[arg(long, default_value = "true")]
         stop_on_error: bool,
+
+        /// Maximum total duration in milliseconds (default: 60000)
+        #[arg(long, default_value = "60000")]
+        max_duration: u64,
 
         /// Turbo mode: compact UI tree after each step, screenshot on fail
         #[arg(long, default_value = "false")]
@@ -1960,7 +1964,7 @@ pub enum RecorderCommands {
         #[arg(short, long, default_value = "android", value_parser = ["android", "ios", "harmony", "aurora", "desktop"])]
         platform: String,
 
-        /// Playback speed multiplier (default: 1.0)
+        /// Playback speed multiplier (must be finite and greater than 0; default: 1.0)
         #[arg(long, default_value = "1.0")]
         speed: f64,
 
@@ -2062,13 +2066,17 @@ pub enum SyncCommands {
         #[arg(long)]
         target_args: Option<String>,
 
-        /// Milliseconds to wait between source and target action
+        /// Milliseconds to wait between source and target (0-30000; omit for no delay)
         #[arg(long)]
         delay_ms: Option<u64>,
 
-        /// Number of retry attempts for the target action (default: 1)
+        /// Number of target action attempts (1-5; default: 1)
         #[arg(long, default_value = "1")]
         retries: u32,
+
+        /// Maximum total assertion duration in milliseconds (default: 60000)
+        #[arg(long, default_value = "60000")]
+        max_duration: u64,
     },
 
     /// Show group details and last run summary

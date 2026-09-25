@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { existsSync, mkdtempSync, rmSync, writeFileSync, chmodSync, unlinkSync } from "fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync, chmodSync, unlinkSync } from "fs";
 import { tmpdir, platform } from "os";
 import { delimiter, join } from "path";
 
@@ -29,24 +29,32 @@ describeUnix("IosClient — host-side injection regression (issue #40)", () => {
   let workDir: string;
   let proofFile: string;
   let savedPath: string | undefined;
+  let argsFile: string;
 
   beforeEach(() => {
     workDir = mkdtempSync(join(tmpdir(), "cim-sec-ios-"));
     const fakeXcrun = join(workDir, "xcrun");
     proofFile = join(workDir, "RCE_PROOF");
+    argsFile = join(workDir, "XCRUN_ARGS");
 
-    // Fake xcrun: exit 0, ignore args. Real xcrun would also exit 0 for many simctl commands
+    // Fake xcrun: record argv and exit 0. Real xcrun would also exit 0 for many simctl commands
     // against a booted simulator; we don't care about output here, only side-effects.
-    writeFileSync(fakeXcrun, "#!/bin/sh\nexit 0\n");
+    writeFileSync(
+      fakeXcrun,
+      "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$XCRUN_ARGS_FILE\"\nexit 0\n",
+    );
     chmodSync(fakeXcrun, 0o755);
 
+    process.env.XCRUN_ARGS_FILE = argsFile;
     savedPath = process.env.PATH;
     process.env.PATH = `${workDir}${delimiter}${savedPath ?? ""}`;
+
   });
 
   afterEach(() => {
     if (savedPath === undefined) delete process.env.PATH;
     else process.env.PATH = savedPath;
+    delete process.env.XCRUN_ARGS_FILE;
     try {
       if (existsSync(proofFile)) unlinkSync(proofFile);
     } catch {
@@ -111,4 +119,40 @@ describeUnix("IosClient — host-side injection regression (issue #40)", () => {
     expect(() => client.getAppLogs(`com.foo'; touch ${proofFile}; '`, 10)).toThrow();
     expect(existsSync(proofFile)).toBe(false);
   });
+  it("routes explicit device operations to the requested simulator", () => {
+    const client = new IosClient("selected-device");
+
+    client.installApp("/tmp/example.app", "target-device");
+    expect(readFileSync(argsFile, "utf8").trim().split(/\r?\n/)).toEqual([
+      "simctl",
+      "install",
+      "target-device",
+      "/tmp/example.app",
+    ]);
+    client.pressKey("enter", "target-device");
+    expect(readFileSync(argsFile, "utf8").trim().split(/\r?\n/)).toEqual([
+      "simctl",
+      "io",
+      "target-device",
+      "key",
+      "enter",
+    ]);
+
+
+    client.grantPermission("com.example.app", "camera", "target-device");
+    expect(readFileSync(argsFile, "utf8").trim().split(/\r?\n/)).toContain("target-device");
+
+    client.shell("ls /tmp", "target-device");
+    expect(readFileSync(argsFile, "utf8").trim().split(/\r?\n/)).toEqual([
+      "simctl",
+      "spawn",
+      "target-device",
+      "ls",
+      "/tmp",
+    ]);
+
+    client.getLogs({}, "target-device");
+    expect(readFileSync(argsFile, "utf8").trim().split(/\r?\n/)).toContain("target-device");
+  });
+
 });

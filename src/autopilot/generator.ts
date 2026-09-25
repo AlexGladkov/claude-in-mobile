@@ -11,9 +11,39 @@ import type {
   GeneratedTestSuite,
   TestStep,
   TestFormat,
+  ExplorationAction,
+  ScreenNode,
 } from "./types.js";
 import { NavigationGraph } from "./nav-graph.js";
+import { isSensitiveElement, REDACTED } from "../ui-tree/ui-parser/formatters/redact.js";
 import { TestGenerationError } from "../errors.js";
+
+function secureMarker(value: string): boolean {
+  const lower = value.toLowerCase();
+  const compact = lower.replace(/[^a-z0-9]/g, "");
+  return lower.includes("password")
+    || compact.includes("securetextfield")
+    || compact.includes("securetextbox")
+    || compact === "secure";
+}
+
+function isSecureAction(action: ExplorationAction, screen?: ScreenNode): boolean {
+  const source = screen?.elements.find((el) => el.index === action.elementIndex);
+  return Boolean(source && isSensitiveElement(source))
+    || secureMarker(`${action.elementClassName ?? ""} ${action.elementResourceId ?? ""}`);
+}
+
+function safeScreenTitle(screen?: ScreenNode): string | undefined {
+  if (!screen?.title) return screen?.title;
+  let title = screen.title;
+  for (const element of screen.elements) {
+    if (!isSensitiveElement(element)) continue;
+    for (const value of [element.text, element.contentDesc, element.resourceId]) {
+      if (value && value !== REDACTED) title = title.replaceAll(value, REDACTED);
+    }
+  }
+  return title;
+}
 
 /**
  * Generate test scenarios from exploration data.
@@ -36,8 +66,8 @@ export function generateTests(
     const startScreen = graph.getScreen(path[0]);
     const endScreen = graph.getScreen(path[path.length - 1]);
 
-    const startName = startScreen?.title ?? path[0];
-    const endName = endScreen?.title ?? path[path.length - 1];
+    const startName = safeScreenTitle(startScreen) ?? path[0];
+    const endName = safeScreenTitle(endScreen) ?? path[path.length - 1];
 
     return {
       id: `test_${idx}`,
@@ -75,8 +105,11 @@ function buildStepsForPath(
     if (!edge) continue;
 
     const action = edge.action;
+    const fromScreen = graph.getScreen(fromId);
+    const secure = isSecureAction(action, fromScreen);
+    const elementText = secure ? REDACTED : action.elementText;
+    const elementResourceId = secure ? REDACTED : action.elementResourceId;
     const toScreen = graph.getScreen(toId);
-
     if (format === "flow_run") {
       // flow_run format: action name + args compatible with flow(action:'run')
       const stepAction = action.type === "tap" ? "input_tap" : `input_${action.type}`;
@@ -91,35 +124,35 @@ function buildStepsForPath(
         args.direction = action.direction;
       }
 
-      const label = action.elementText
-        ? `Tap "${action.elementText}"`
-        : action.elementResourceId
-          ? `Tap ${action.elementResourceId}`
+      const label = elementText
+        ? `Tap "${elementText}"`
+        : elementResourceId
+          ? `Tap ${elementResourceId}`
           : `${action.type} @ (${action.x}, ${action.y})`;
 
       steps.push({
         action: stepAction,
         args,
-        expectedScreen: toScreen?.title ?? toId,
+        expectedScreen: safeScreenTitle(toScreen) ?? toId,
         label,
       });
     } else {
       // steps format: human-readable description
-      const label = action.elementText
-        ? `Tap "${action.elementText}"`
-        : action.elementResourceId
-          ? `Tap element ${action.elementResourceId}`
+      const label = elementText
+        ? `Tap "${elementText}"`
+        : elementResourceId
+          ? `Tap element ${elementResourceId}`
           : `${action.type} at (${action.x}, ${action.y})`;
 
       steps.push({
         action: action.type,
         args: {
-          elementText: action.elementText,
-          elementResourceId: action.elementResourceId,
+          elementText,
+          elementResourceId,
           x: action.x,
           y: action.y,
         },
-        expectedScreen: toScreen?.title ?? toId,
+        expectedScreen: safeScreenTitle(toScreen) ?? toId,
         label,
       });
     }

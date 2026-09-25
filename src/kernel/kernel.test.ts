@@ -44,12 +44,43 @@ function makePlugin(
   };
 }
 
+function makeAdapter(dispose: () => void): NonNullable<SourcePlugin["adapter"]> {
+  return {
+    platform: "test",
+    listDevices: () => [],
+    selectDevice: () => {},
+    getSelectedDeviceId: () => undefined,
+    autoDetectDevice: () => undefined,
+    tap: async () => {},
+    doubleTap: async () => {},
+    longPress: async () => {},
+    swipe: async () => {},
+    swipeDirection: async () => {},
+    inputText: async () => {},
+    pressKey: async () => {},
+    screenshotAsync: async () => ({ data: "", mimeType: "image/png" }),
+    getScreenshotBufferAsync: async () => Buffer.alloc(0),
+    getUiHierarchy: async () => "",
+    getSystemInfo: async () => "",
+    dispose,
+  };
+}
+
 describe("InMemoryRegistry", () => {
   it("registers a valid plugin", () => {
     const r = new InMemoryRegistry();
     r.register(makePlugin("android", ["screen"]));
     expect(r.get("android")?.state).toBe("registered");
     expect(r.list()).toHaveLength(1);
+  });
+  it("allows adapters without UI methods when they do not advertise UI", () => {
+    const registry = new InMemoryRegistry();
+    const adapter = makeAdapter(() => {});
+    delete adapter.getUiHierarchy;
+
+    registry.register(makePlugin("headless", ["screen", "input"], { adapter }));
+
+    expect(registry.get("headless")?.state).toBe("registered");
   });
 
   it("rejects duplicate id", () => {
@@ -244,6 +275,21 @@ describe("LifecycleOrchestrator", () => {
     expect(registry.get("a")?.state).toBe("disposed");
   });
 
+  it("falls back to adapter disposal when plugin dispose is absent", async () => {
+    let disposed = 0;
+    registry.register(makePlugin("adapter-only", ["screen"], {
+      adapter: makeAdapter(() => {
+        disposed += 1;
+      }),
+    }));
+
+    await orchestrator.initAll();
+    await orchestrator.disposeAll();
+
+    expect(disposed).toBe(1);
+    expect(registry.get("adapter-only")?.state).toBe("disposed");
+  });
+
   it("does not commit tools from a failed initialization", async () => {
     registry.register(makePlugin("bad-tools", ["screen"], {
       init: (ctx) => {
@@ -298,6 +344,29 @@ describe("LifecycleOrchestrator", () => {
     expect(tools).toEqual([]);
     expect(lateError).toBeInstanceOf(Error);
     expect(registry.get("late")?.state).toBe("failed");
+  });
+
+  it("waits for timed-out init work to settle before disposal", async () => {
+    vi.useFakeTimers();
+    let release!: () => void;
+    let disposed = false;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    registry.register(makePlugin("timed-out", ["screen"], {
+      init: () => gate,
+      dispose: () => { disposed = true; },
+    }));
+    const entry = registry.get("timed-out")!;
+    const initializing = orchestrator.initOne(entry);
+    await vi.advanceTimersByTimeAsync(201);
+    await initializing;
+
+    const disposing = orchestrator.disposeOne(entry);
+    await Promise.resolve();
+    expect(disposed).toBe(false);
+
+    release();
+    await disposing;
+    expect(disposed).toBe(true);
   });
 
   it("runs concurrent disposal once and in reverse registry order", async () => {

@@ -1,35 +1,161 @@
-import { getRegisteredToolNames } from "../registry.js";
-import type { ToolContext } from "../context.js";
+import { getRegisteredToolNames, resolveToolIdentity } from "../registry.js";
+import type { ResolvedToolIdentity } from "../registry.js";
 import { parseUiHierarchy, UiElement } from "../../ui-tree/ui-parser.js";
+import { isSecureElement } from "../../ui-tree/ui-parser/formatters/redact.js";
 import { applyScale } from "../helpers/resolve-element.js";
 import { z } from "../define-tool.js";
+export { platformEnum } from "../common-schema.js";
+import type { ToolContext } from "../context.js";
 import { FLOW } from "../../constants/timeouts.js";
 
-// Actions explicitly blocked from flow execution (security-sensitive).
-// Everything else registered in the registry is allowed.
+// Explicitly exclude shell-like and debugger code-execution/mutation tools.
+// Flow can still orchestrate the remaining registered actions.
 export const FLOW_BLOCKED_ACTIONS: Readonly<Record<string, true>> = {
   system_shell: true,
   browser_evaluate: true,
+  debug_eval: true,
+  debug_set_var: true,
+  // Installing/uninstalling packages and pushing files are persistent device mutations.
+  app_install: true,
+  app_uninstall: true,
+  system_file_push: true,
+  install_app: true,
+  uninstall_app: true,
+  push_file: true,
 };
+
+function isCanonicalBlocked(resolved: ResolvedToolIdentity): boolean {
+  if (Object.hasOwn(FLOW_BLOCKED_ACTIONS, resolved.canonical)) return true;
+
+  // Meta-tools dispatch by action (for example system + action:"shell").
+  // Derive the canonical leaf ID instead of adding every alias to a denylist.
+  const action = resolved.args.action;
+  return typeof action === "string"
+    && Object.hasOwn(FLOW_BLOCKED_ACTIONS, `${resolved.canonical}_${action}`);
+}
 
 /**
  * Check whether an action is allowed in flow_batch / flow_run / flow_parallel.
  *
- * Strategy: blocklist instead of allowlist. Any registered tool or alias is
- * allowed unless it is in FLOW_BLOCKED_ACTIONS. This eliminates the need
- * to maintain a 50+ entry hardcoded allowlist that goes stale with every
- * new tool or alias.
+ * Strategy: blocklist instead of allowlist. Resolve aliases to their concrete
+ * tool identity first, then apply the blocklist to that canonical identity.
+ * Any other registered tool or alias remains allowed.
  */
-export function isFlowActionAllowed(actionName: string): boolean {
+export function isFlowActionAllowed(
+  actionName: string,
+  actionArgs: Record<string, unknown> = {},
+): boolean {
   if (Object.hasOwn(FLOW_BLOCKED_ACTIONS, actionName)) return false;
-  return getRegisteredToolNames().has(actionName);
+  if (!getRegisteredToolNames().has(actionName)) return false;
+
+  const resolved = resolveToolIdentity(actionName, actionArgs);
+  return resolved ? !isCanonicalBlocked(resolved) : false;
 }
+
 
 export const FLOW_MAX_STEPS = FLOW.MAX_STEPS;
 export const BATCH_MAX_COMMANDS = 50;
 export const FLOW_MAX_DURATION = FLOW.MAX_DURATION_MS;
 export const FLOW_MAX_REPEAT = 10;
 export const PARALLEL_MAX_DEVICES = 10;
+export class FlowTimeoutError extends Error {
+  constructor(message = "Flow action timed out") {
+    super(message);
+    this.name = "FlowTimeoutError";
+  }
+}
+
+class FlowCancelledError extends Error {
+  constructor() {
+    super("Flow cancelled");
+    this.name = "FlowCancelledError";
+  }
+}
+
+export function linkFlowAbortController(
+  parentSignal: AbortSignal | undefined,
+  controller: AbortController,
+): () => void {
+  if (!parentSignal) return () => {};
+  if (parentSignal.aborted) {
+    controller.abort(parentSignal.reason);
+    return () => {};
+  }
+
+  let disposed = false;
+  let abortFromParent: () => void = () => {};
+  const unlink = (): void => {
+    if (disposed) return;
+    disposed = true;
+    parentSignal.removeEventListener("abort", abortFromParent);
+    controller.signal.removeEventListener("abort", unlink);
+  };
+  abortFromParent = () => {
+    if (!controller.signal.aborted) controller.abort(parentSignal.reason);
+  };
+
+  parentSignal.addEventListener("abort", abortFromParent, { once: true });
+  controller.signal.addEventListener("abort", unlink, { once: true });
+  if (parentSignal.aborted || controller.signal.aborted) {
+    abortFromParent();
+    unlink();
+  }
+  return unlink;
+}
+
+
+/**
+ * Race a nested flow operation against the remaining flow deadline.
+ * A timed-out operation is deliberately not awaited after the race: callers
+ * must stop the flow, while the optional signal gives cooperative handlers a
+ * chance to cancel their underlying work.
+ */
+export async function runWithDeadline<T>(
+  operation: () => Promise<T>,
+  timeoutMs: number,
+  onTimeout?: () => void,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (signal?.aborted) throw new FlowCancelledError();
+  if (timeoutMs <= 0) {
+    onTimeout?.();
+    throw new FlowTimeoutError();
+  }
+
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  let abortHandler: (() => void) | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => {
+      reject(new FlowTimeoutError());
+      onTimeout?.();
+    }, timeoutMs);
+  });
+  const operationPromise = Promise.resolve().then(() => {
+    if (signal?.aborted) throw new FlowCancelledError();
+    return operation();
+  });
+  // A deadline/cancellation race can detach an operation that later rejects.
+  void operationPromise.catch(() => {});
+
+  const cancellationPromise = signal
+    ? new Promise<never>((_, reject) => {
+      abortHandler = () => reject(new FlowCancelledError());
+      signal.addEventListener("abort", abortHandler, { once: true });
+      if (signal.aborted) abortHandler();
+    })
+    : undefined;
+
+  try {
+    return await Promise.race(
+      cancellationPromise
+        ? [operationPromise, timeoutPromise, cancellationPromise]
+        : [operationPromise, timeoutPromise],
+    );
+  } finally {
+    clearTimeout(timeoutHandle);
+    if (abortHandler) signal?.removeEventListener("abort", abortHandler);
+  }
+}
 
 export interface FlowStep {
   action: string;
@@ -61,13 +187,17 @@ export type ContentBlock =
 export async function collectCompactUiTree(
   ctx: ToolContext,
   platform: string,
+  deviceId?: string,
+  signal?: AbortSignal,
 ): Promise<string> {
-  const elements = await Promise.race([
-    ctx.getElementsForPlatform(platform),
-    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("ui tree timeout")), FLOW.UI_TREE_TIMEOUT_MS)),
-  ]);
+  const elements = await runWithDeadline(
+    () => ctx.getElementsForPlatform(platform, deviceId),
+    FLOW.UI_TREE_TIMEOUT_MS,
+    undefined,
+    signal,
+  );
   const interactive = elements.filter(
-    (el: UiElement) => !el.password && (el.clickable || el.scrollable || el.className.includes("EditText")),
+    (el: UiElement) => !isSecureElement(el) && (el.clickable || el.scrollable || el.className.includes("EditText")),
   );
   const limited = interactive.slice(0, 15);
   if (limited.length === 0) return "";
@@ -123,6 +253,9 @@ export async function turboFastTrack(
   ctx: ToolContext,
   platform: string,
   deviceId?: string,
+  timeoutMs?: number,
+  onTimeout?: () => void,
+  signal?: AbortSignal,
 ): Promise<FastTrackResult | null> {
   if (platform !== "android") return null;
 
@@ -160,31 +293,43 @@ export async function turboFastTrack(
 
   if (!actionArgs) return null;
 
+  let actionRequest: Promise<{ uiXml: string }> | undefined;
+  let uiXml: string;
   try {
     const adb = ctx.deviceManager.getAndroidClient(deviceId);
-    const { uiXml } = await adb.execWithUiDump(actionArgs);
-
-    let uiCompact = "";
-    if (uiXml) {
-      const elements = parseUiHierarchy(uiXml);
-      ctx.setCachedElements(platform, elements);
-      // Build compact tree inline (same logic as collectCompactUiTree but no extra call)
-      const interactive = elements.filter(
-        (el) => !el.password && (el.clickable || el.scrollable || el.className.includes("EditText")),
-      );
-      const limited = interactive.slice(0, 15);
-      uiCompact = limited.map((el) => {
-        const shortClass = el.className.split(".").pop() ?? "";
-        const isEditText = el.className.includes("EditText");
-        const label = isEditText ? "[input]" : (el.contentDesc || el.text || "");
-        return `${shortClass}${label ? ` "${label}"` : ""}`;
-      }).join(" | ");
-    }
-
-    return { message, uiCompact };
-  } catch {
-    return null; // Fast-track failed, fall through to normal path
+    const request = adb.execWithUiDump(actionArgs, undefined, signal);
+    actionRequest = request;
+    ({ uiXml } = await runWithDeadline(
+      () => request,
+      timeoutMs ?? FLOW.UI_TREE_TIMEOUT_MS,
+      onTimeout,
+      signal,
+    ));
+  } catch (error) {
+    // The flow deadline aborts the ADB child. Wait for it to close before
+    // returning so no timed-out action remains active after the flow result.
+    if (signal?.aborted && actionRequest) await actionRequest.catch(() => {});
+    throw error;
   }
+
+  let uiCompact = "";
+  if (uiXml) {
+    const elements = parseUiHierarchy(uiXml);
+    ctx.setCachedElements(platform, elements, deviceId);
+    // Build compact tree inline (same logic as collectCompactUiTree but no extra call)
+    const interactive = elements.filter(
+      (el) => !isSecureElement(el) && (el.clickable || el.scrollable || el.className.includes("EditText")),
+    );
+    const limited = interactive.slice(0, 15);
+    uiCompact = limited.map((el) => {
+      const shortClass = el.className.split(".").pop() ?? "";
+      const isEditText = el.className.includes("EditText");
+      const label = isEditText ? "[input]" : (el.contentDesc || el.text || "");
+      return `${shortClass}${label ? ` "${label}"` : ""}`;
+    }).join(" | ");
+  }
+
+  return { message, uiCompact };
 }
 
 /** Collect brief UI context for diagnostics on flow step failure */
@@ -192,9 +337,11 @@ export async function collectFailureDiag(
   ctx: ToolContext,
   platform: string,
   stepIndex: number,
+  deviceId?: string,
+  signal?: AbortSignal,
 ): Promise<string> {
   try {
-    const tree = await collectCompactUiTree(ctx, platform);
+    const tree = await collectCompactUiTree(ctx, platform, deviceId, signal);
     if (!tree) return "";
     return `\n[DIAG:step${stepIndex}] Available UI:\n  ${tree}`;
   } catch {
@@ -206,9 +353,19 @@ export async function collectFailureDiag(
 export async function captureTurboScreenshot(
   ctx: ToolContext,
   platform: string,
+  deviceId?: string,
+  signal?: AbortSignal,
+  timeoutMs: number = FLOW.UI_TREE_TIMEOUT_MS,
+  parentDepth: number = 0,
 ): Promise<{ data: string; mimeType: string } | null> {
   try {
-    const result = await ctx.handleTool("screen_capture", { platform, preset: "low", compress: true });
+    const screenArgs: Record<string, unknown> = { platform, preset: "low", compress: true };
+    if (deviceId !== undefined) screenArgs.deviceId = deviceId;
+    const nestedDepth = parentDepth + 1;
+    const invokeCapture = signal
+      ? () => ctx.handleTool("screen_capture", screenArgs, nestedDepth, signal)
+      : () => ctx.handleTool("screen_capture", screenArgs, nestedDepth);
+    const result = await runWithDeadline(invokeCapture, timeoutMs, undefined, signal);
     if (typeof result === "object" && result !== null && "image" in result) {
       const img = (result as { image: { data: string; mimeType: string } }).image;
       return { data: img.data, mimeType: img.mimeType };
@@ -229,12 +386,39 @@ export function formatFlowResults(
   totalMs: number,
   diagBlock: string = "",
   turboContexts?: Map<number, TurboStepContext>,
+  incomplete = false,
 ): string {
-  const lines: string[] = [`Flow completed (${totalMs}ms)`, ""];
+  const lines: string[] = [`Flow ${incomplete ? "incomplete" : "completed"} (${totalMs}ms)`, ""];
   for (const r of results) {
     const label = r.label ? ` (${r.label})` : "";
     const status = r.success ? "OK" : "FAIL";
-    lines.push(`${r.step}. ${r.action}${label}: ${status} — ${r.message} (${r.durationMs}ms)`);
+    let message: string;
+    switch (r.message) {
+      case "Skipped (element not found)":
+        message = "Skipped (element not found)";
+        break;
+      case "OK (after scroll_down)":
+        message = "OK (after scroll_down)";
+        break;
+      case "OK (after scroll_up)":
+        message = "OK (after scroll_up)";
+        break;
+      case "Action failed (after scroll_down)":
+        message = "Action failed (after scroll_down)";
+        break;
+      case "Action failed (after scroll_up)":
+        message = "Action failed (after scroll_up)";
+        break;
+      case "Flow timeout":
+        message = "Flow timeout";
+        break;
+      case "Flow cancelled":
+        message = "Flow cancelled";
+        break;
+      default:
+        message = r.success ? "OK" : "Action failed";
+    }
+    lines.push(`${r.step}. ${r.action}${label}: ${status} — ${message} (${r.durationMs}ms)`);
     const turbo = turboContexts?.get(r.step);
     if (turbo?.uiTree) {
       lines.push(`   [UI] ${turbo.uiTree}`);
@@ -244,13 +428,9 @@ export function formatFlowResults(
     }
   }
   return lines.join("\n") + diagBlock;
-}
 
+}
 // Zod schemas
-export const platformEnum = z
-  .enum(["android", "ios", "desktop", "aurora", "harmony", "browser"])
-  .optional()
-  .describe("Target platform. If not specified, uses the active target.");
 
 export const batchCommandSchema = z.object({
   name: z.string().describe("Tool name (e.g., 'input_tap', 'system_wait', 'input_text')"),
@@ -258,7 +438,7 @@ export const batchCommandSchema = z.object({
 });
 
 export const flowStepSchema = z.object({
-  action: z.string().describe("Any registered tool name except system_shell and browser_evaluate"),
+  action: z.string().describe("Any registered tool name except shell, browser-evaluation, and debugger-evaluation/mutation tools"),
   args: z.record(z.string(), z.unknown()).optional().describe("Tool arguments"),
   if_not_found: z
     .enum(["skip", "scroll_down", "scroll_up", "fail"])

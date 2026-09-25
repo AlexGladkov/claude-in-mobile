@@ -9,9 +9,10 @@ import {
 import type { UiElement } from "../../ui-tree/ui-parser.js";
 import { parseCommonArgs } from "../../utils/parse-common-args.js";
 import { textResult } from "../../utils/tool-result.js";
-import { TRUNCATION } from "../../constants/truncation.js";
-import { truncateOutput } from "../../utils/truncate.js";
 import type { ToolContext } from "../context.js";
+import { screenshotStateKey } from "../context/shared-state-class.js";
+import { isBuiltinPlatform } from "../../platform-types.js";
+import { getUiElements } from "../helpers/get-elements.js";
 
 /** Formatting/caching options shared by every platform that yields UiElement[]. */
 interface TreeFormatOptions {
@@ -34,8 +35,9 @@ function formatAndCacheTree(
   platform: string,
   elements: UiElement[],
   opts: TreeFormatOptions,
+  deviceId?: string,
 ): string {
-  ctx.setCachedElements(platform, elements);
+  ctx.setCachedElements(platform, elements, deviceId);
 
   if (opts.semantic) {
     // Semantic output is intentionally not dedup-cached (it is already the
@@ -45,7 +47,7 @@ function formatAndCacheTree(
 
   const tree = formatUiTree(elements, { showAll: opts.showAll, compact: opts.compact });
 
-  const cacheKey = `${platform}:${opts.showAll}:${opts.compact}`;
+  const cacheKey = `${screenshotStateKey(platform, deviceId)}:${opts.showAll}:${opts.compact}`;
   const cached = opts.fresh ? undefined : ctx.lastUiTreeMap.get(cacheKey);
   const now = Date.now();
   if (cached && cached.text === tree && now - cached.timestamp < 2000) {
@@ -98,7 +100,7 @@ export const uiTree = defineTool({
         // representation Android uses), so it can share the exact formatting
         // + caching path instead of its own bespoke dump.
         const elements = ctx.iosTreeToUiElements(tree);
-        return textResult(formatAndCacheTree(ctx, "ios", elements, opts));
+        return textResult(formatAndCacheTree(ctx, "ios", elements, opts, deviceId));
       } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : String(error);
         return textResult(
@@ -112,17 +114,22 @@ export const uiTree = defineTool({
     if (currentPlatform === "harmony") {
       const json = await ctx.deviceManager.getUiHierarchyAsync("harmony", deviceId);
       const elements = harmonyHierarchyToUiElements(json);
-      return textResult(formatAndCacheTree(ctx, "harmony", elements, opts));
+      return textResult(formatAndCacheTree(ctx, "harmony", elements, opts, deviceId));
     }
 
-    const xml = await ctx.deviceManager.getUiHierarchyAsync(platform, deviceId);
+    if (currentPlatform === "browser" || !isBuiltinPlatform(currentPlatform)) {
+      const { elements } = await getUiElements(ctx, currentPlatform, deviceId);
+      return textResult(formatAndCacheTree(ctx, currentPlatform, elements, opts, deviceId));
+    }
 
     if (currentPlatform === "desktop") {
-
-      return textResult(truncateOutput(xml, { maxChars: TRUNCATION.DEFAULT_MAX_CHARS }));
+      const { elements } = await getUiElements(ctx, currentPlatform, deviceId);
+      return textResult(formatAndCacheTree(ctx, currentPlatform, elements, opts, deviceId));
     }
 
+    const xml = await ctx.deviceManager.getUiHierarchyAsync(currentPlatform, deviceId);
+
     const parsedElements = parseUiHierarchy(xml);
-    return textResult(formatAndCacheTree(ctx, "android", parsedElements, opts));
+    return textResult(formatAndCacheTree(ctx, currentPlatform, parsedElements, opts, deviceId));
   },
 });

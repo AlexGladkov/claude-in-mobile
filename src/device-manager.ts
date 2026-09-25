@@ -1,28 +1,14 @@
 /**
- * DeviceManager -- thin orchestrator that delegates to platform adapters.
+ * DeviceManager -- delegates device routing to explicitly supplied adapters.
  *
- * D9.1 split: was a 688-LOC file that mixed routing, default adapter
- * factory, kernel↔adapter bridging, and device resolution. Now a pure
- * facade composing helpers from src/device/:
- *   - client-cache           — default 5-platform adapter factory
- *   - kernel-device-locator  — KernelHandleView bridge
- *   - device-resolver        — listDevices aggregation + deviceId lookup
+ * Adapters come from a caller-provided map or a bootstrapped plugin kernel.
+ * Plugin loading is asynchronous, so this module does not construct a
+ * synchronous implicit "full" manager.
  *
- * D9.1b split: ~25 thin delegation methods (tap/swipe/launchApp/perms/
- * logs/screenshot/...) extracted into capability proxies under
- * src/device/proxies/.
+ * Capability proxies live under `src/device/proxies/`; kernel bridging and
+ * device resolution live under `src/device/`.
  *
- * D9.1c split: desktop lifecycle and device selection extracted into
- *   - desktop-facade — launch/stop/getClient/isRunning + browser accessor
- *   - device-facade — listAll, setDevice, getActive, getTarget, target tracking
- * The orchestrator now only owns getAdapter() (with FIX #8 auto-detect)
- * and legacy raw client accessors.
- *
- * Public API of `DeviceManager` and re-exported types (`Platform`,
- * `BuiltinPlatform`, `Device`, `KernelHandleView`, …) is unchanged so
- * the ~125 existing import sites keep compiling.
- *
- * FIX #8: auto-detect device when no deviceId is selected -- see getAdapter().
+ * Platform types remain re-exported for the existing import sites.
  */
 
 import type { CorePlatformAdapter } from "./adapters/platform-adapter.js";
@@ -32,7 +18,6 @@ import type { CompressOptions } from "./utils/image.js";
 import type { DesktopClientLike, RawLaunchOptionsLike } from "./adapters/contracts.js";
 
 import type { Device, Platform } from "./platform-types.js";
-import { buildDefaultAdapters } from "./device/client-cache.js";
 import { adaptersFromKernel } from "./device/kernel-device-locator.js";
 import type { KernelHandleView } from "./device/kernel-device-locator.js";
 import { InputProxy } from "./device/proxies/input-proxy.js";
@@ -63,6 +48,16 @@ export interface DeviceManagerConfig {
   ownsAdapters?: boolean;
 }
 
+function defaultInitialTarget(
+  adapters: ReadonlyMap<Platform, CorePlatformAdapter>,
+): Platform {
+  for (const [platform, adapter] of adapters) {
+    if (adapter.getSelectedDeviceId()) return platform;
+  }
+  if (adapters.has("android")) return "android";
+  return adapters.keys().next().value ?? "android";
+}
+
 export class DeviceManager {
   private adapters: Map<Platform, CorePlatformAdapter>;
   private readonly ownsAdapters: boolean;
@@ -83,7 +78,7 @@ export class DeviceManager {
    */
   static fromKernel(
     handle: KernelHandleView,
-    activeTarget: Platform = "android",
+    activeTarget?: Platform,
   ): DeviceManager {
     return new DeviceManager({
       adapters: adaptersFromKernel(handle),
@@ -92,18 +87,10 @@ export class DeviceManager {
     });
   }
 
-  constructor(config?: DeviceManagerConfig) {
-    let initialTarget: Platform = "android";
-    if (config) {
-      this.adapters = config.adapters;
-      this.ownsAdapters = config.ownsAdapters ?? true;
-      initialTarget = config.activeTarget ?? "android";
-    } else {
-      const { adapters, envSeededTarget } = buildDefaultAdapters();
-      this.adapters = adapters;
-      this.ownsAdapters = true;
-      if (envSeededTarget) initialTarget = envSeededTarget;
-    }
+  constructor(config: DeviceManagerConfig = { adapters: new Map() }) {
+    this.adapters = config.adapters;
+    this.ownsAdapters = config.ownsAdapters ?? true;
+    const initialTarget = config.activeTarget ?? defaultInitialTarget(this.adapters);
 
     this.desktopFacade = new DesktopFacade(this.adapters);
     this.deviceFacade = new DeviceFacade(this.adapters, this.desktopFacade, initialTarget);
@@ -238,38 +225,79 @@ export class DeviceManager {
 
   // ============ Input ops (proxy) ============
 
-  async tap(x: number, y: number, platform?: Platform, targetPid?: number, deviceId?: string): Promise<void> {
-    return this.inputProxy.tap(x, y, platform, targetPid, deviceId);
+  async tap(
+    x: number,
+    y: number,
+    platform?: Platform,
+    targetPid?: number,
+    deviceId?: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    return this.inputProxy.tap(x, y, platform, targetPid, deviceId, signal);
   }
 
-  async doubleTap(x: number, y: number, intervalMs: number = 100, platform?: Platform, deviceId?: string): Promise<void> {
-    return this.inputProxy.doubleTap(x, y, intervalMs, platform, deviceId);
+  async doubleTap(
+    x: number,
+    y: number,
+    intervalMs: number = 100,
+    platform?: Platform,
+    deviceId?: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    return this.inputProxy.doubleTap(x, y, intervalMs, platform, deviceId, signal);
   }
 
-  async longPress(x: number, y: number, durationMs: number = 1000, platform?: Platform, deviceId?: string): Promise<void> {
-    return this.inputProxy.longPress(x, y, durationMs, platform, deviceId);
+  async longPress(
+    x: number,
+    y: number,
+    durationMs: number = 1000,
+    platform?: Platform,
+    deviceId?: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    return this.inputProxy.longPress(x, y, durationMs, platform, deviceId, signal);
   }
 
   async swipe(
-    x1: number, y1: number, x2: number, y2: number,
-    durationMs: number = 300, platform?: Platform, deviceId?: string,
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    durationMs: number = 300,
+    platform?: Platform,
+    deviceId?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
-    return this.inputProxy.swipe(x1, y1, x2, y2, durationMs, platform, deviceId);
+    return this.inputProxy.swipe(x1, y1, x2, y2, durationMs, platform, deviceId, signal);
   }
 
   async swipeDirection(
     direction: "up" | "down" | "left" | "right",
-    platform?: Platform, deviceId?: string,
+    platform?: Platform,
+    deviceId?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
-    return this.inputProxy.swipeDirection(direction, platform, deviceId);
+    return this.inputProxy.swipeDirection(direction, platform, deviceId, signal);
   }
 
-  async inputText(text: string, platform?: Platform, targetPid?: number, deviceId?: string): Promise<void> {
-    return this.inputProxy.inputText(text, platform, targetPid, deviceId);
+  async inputText(
+    text: string,
+    platform?: Platform,
+    targetPid?: number,
+    deviceId?: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    return this.inputProxy.inputText(text, platform, targetPid, deviceId, signal);
   }
 
-  async pressKey(key: string, platform?: Platform, targetPid?: number, deviceId?: string): Promise<void> {
-    return this.inputProxy.pressKey(key, platform, targetPid, deviceId);
+  async pressKey(
+    key: string,
+    platform?: Platform,
+    targetPid?: number,
+    deviceId?: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    return this.inputProxy.pressKey(key, platform, targetPid, deviceId, signal);
   }
 
   // ============ App ops (proxy) ============
@@ -394,16 +422,15 @@ export class DeviceManager {
     return adapter.getClient();
   }
 
-  getWebViewInspector(): WebViewInspectorLike {
-    const adapter = this.adapters.get("android") as { getWebViewInspector?: () => WebViewInspectorLike } | undefined;
+  getWebViewInspector(deviceId?: string): WebViewInspectorLike {
+    const adapter = this.adapters.get("android") as
+      | { getWebViewInspector?: (deviceId?: string) => WebViewInspectorLike }
+      | undefined;
     if (!adapter || typeof adapter.getWebViewInspector !== "function") {
       throw new Error("Android is not installed. Run `mcp-devices install android`.");
     }
-    return adapter.getWebViewInspector();
+    return adapter.getWebViewInspector(deviceId);
   }
 }
 
-/** Factory for full DeviceManager with all 5 adapters (backward compat). */
-export function createFullDeviceManager(): DeviceManager {
-  return new DeviceManager();
-}
+

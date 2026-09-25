@@ -8,7 +8,7 @@ use anyhow::{bail, Context, Result};
 use base64::Engine as _;
 use serde_json::{json, Value};
 
-use crate::utils::process::{ensure_success, run_with_input_limits};
+use crate::utils::process::{ensure_success, run_with_input_limits, terminal_safe_json};
 
 static REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -76,63 +76,63 @@ pub fn screenshot(companion_path: Option<&str>) -> Result<Vec<u8>> {
 pub fn tap(x: i32, y: i32, companion_path: Option<&str>) -> Result<()> {
     let path = get_companion_path(companion_path)?;
     let result = rpc_call(&path, "tap", json!({"x": x, "y": y}))?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    println!("{}", terminal_safe_json(&result)?);
     Ok(())
 }
 
 pub fn tap_by_text(text: &str, companion_path: Option<&str>) -> Result<()> {
     let path = get_companion_path(companion_path)?;
     let result = rpc_call(&path, "tap_by_text", json!({"text": text}))?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    println!("{}", terminal_safe_json(&result)?);
     Ok(())
 }
 
 pub fn input_text(text: &str, companion_path: Option<&str>) -> Result<()> {
     let path = get_companion_path(companion_path)?;
     let result = rpc_call(&path, "input_text", json!({"text": text}))?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    println!("{}", terminal_safe_json(&result)?);
     Ok(())
 }
 
 pub fn press_key(key: &str, companion_path: Option<&str>) -> Result<()> {
     let path = get_companion_path(companion_path)?;
     let result = rpc_call(&path, "press_key", json!({"key": key}))?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    println!("{}", terminal_safe_json(&result)?);
     Ok(())
 }
 
 pub fn get_ui(companion_path: Option<&str>) -> Result<()> {
     let path = get_companion_path(companion_path)?;
     let result = rpc_call(&path, "get_ui", json!({}))?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    println!("{}", terminal_safe_json(&result)?);
     Ok(())
 }
 
 pub fn launch_app(app_path: &str, companion_path: Option<&str>) -> Result<()> {
     let path = get_companion_path(companion_path)?;
     let result = rpc_call(&path, "launch_app", json!({"app_path": app_path}))?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    println!("{}", terminal_safe_json(&result)?);
     Ok(())
 }
 
 pub fn stop_app(app_name: &str, companion_path: Option<&str>) -> Result<()> {
     let path = get_companion_path(companion_path)?;
     let result = rpc_call(&path, "stop_app", json!({"app_name": app_name}))?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    println!("{}", terminal_safe_json(&result)?);
     Ok(())
 }
 
 pub fn get_window_info(companion_path: Option<&str>) -> Result<()> {
     let path = get_companion_path(companion_path)?;
     let result = rpc_call(&path, "get_window_info", json!({}))?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    println!("{}", terminal_safe_json(&result)?);
     Ok(())
 }
 
 pub fn focus_window(window_id: &str, companion_path: Option<&str>) -> Result<()> {
     let path = get_companion_path(companion_path)?;
     let result = rpc_call(&path, "focus_window", json!({"window_id": window_id}))?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    println!("{}", terminal_safe_json(&result)?);
     Ok(())
 }
 
@@ -152,34 +152,34 @@ pub fn resize_window(
             "height": height
         }),
     )?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    println!("{}", terminal_safe_json(&result)?);
     Ok(())
 }
 
 pub fn get_clipboard(companion_path: Option<&str>) -> Result<()> {
     let path = get_companion_path(companion_path)?;
     let result = rpc_call(&path, "get_clipboard", json!({}))?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    println!("{}", terminal_safe_json(&result)?);
     Ok(())
 }
 
 pub fn set_clipboard(text: &str, companion_path: Option<&str>) -> Result<()> {
     let path = get_companion_path(companion_path)?;
     let result = rpc_call(&path, "set_clipboard", json!({"text": text}))?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    println!("{}", terminal_safe_json(&result)?);
     Ok(())
 }
 
 pub fn get_performance_metrics(companion_path: Option<&str>) -> Result<()> {
     let path = get_companion_path(companion_path)?;
     let result = rpc_call(&path, "get_performance_metrics", json!({}))?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    println!("{}", terminal_safe_json(&result)?);
     Ok(())
 }
 
 pub fn get_monitors(companion_path: Option<&str>) -> Result<()> {
     let path = get_companion_path(companion_path)?;
     let result = rpc_call(&path, "get_monitors", json!({}))?;
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    println!("{}", terminal_safe_json(&result)?);
     Ok(())
 }

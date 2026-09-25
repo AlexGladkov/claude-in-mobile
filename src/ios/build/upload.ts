@@ -16,9 +16,8 @@
  * so no secret material appears in the process list.
  */
 
-import { stat } from "fs/promises";
 import { IpaValidationError, MobileError } from "../../errors.js";
-import { validatePath } from "../../utils/sanitize.js";
+import { validateStoreArtifact, type ValidatedStoreArtifact } from "../../store/upload-path.js";
 import { XCODE } from "../../constants/timeouts.js";
 import { runTool } from "./exec.js";
 import type { ToolResult } from "./exec.js";
@@ -43,24 +42,33 @@ interface AltoolCredentials {
 }
 
 /** Shared preconditions: path safety, .ipa extension, credential shape, file exists. */
-async function assertAltoolPreconditions({ ipaPath, keyId, issuerId }: AltoolCredentials): Promise<void> {
-  validatePath(ipaPath, "ipa path");
-  if (!ipaPath.endsWith(".ipa")) {
-    throw new MobileError(
-      `Upload path must point to an .ipa file, got: ${ipaPath}`,
-      "INVALID_IPA_PATH",
-    );
-  }
-  if (!CREDENTIAL_RE.test(keyId) || !CREDENTIAL_RE.test(issuerId)) {
-    throw new MobileError(
-      "Invalid App Store Connect credentials: keyId/issuerId must be alphanumeric (UUID allowed).",
-      "INVALID_ASC_CREDENTIALS",
-    );
+async function assertAltoolPreconditions({
+  ipaPath,
+  keyId,
+  issuerId,
+}: AltoolCredentials): Promise<string> {
+  let artifact: ValidatedStoreArtifact;
+  try {
+    artifact = await validateStoreArtifact(ipaPath, "ios");
+  } catch (error) {
+    if (error instanceof MobileError && error.code === "STORE_ARTIFACT_INVALID_TYPE") {
+      throw new MobileError(`Upload path must point to an .ipa file, got: ${ipaPath}`, "INVALID_IPA_PATH");
+    }
+    if (error instanceof MobileError && error.code === "STORE_ARTIFACT_NOT_FOUND") {
+      throw new MobileError(`IPA file not found: ${ipaPath}`, "IPA_NOT_FOUND");
+    }
+    throw error;
   }
   try {
-    if (!(await stat(ipaPath)).isFile()) throw new Error("not a file");
-  } catch {
-    throw new MobileError(`IPA file not found: ${ipaPath}`, "IPA_NOT_FOUND");
+    if (!CREDENTIAL_RE.test(keyId) || !CREDENTIAL_RE.test(issuerId)) {
+      throw new MobileError(
+        "Invalid App Store Connect credentials: keyId/issuerId must be alphanumeric (UUID allowed).",
+        "INVALID_ASC_CREDENTIALS",
+      );
+    }
+    return artifact.path;
+  } finally {
+    await artifact.close();
   }
 }
 
@@ -93,12 +101,12 @@ function extractValidationDetails(output: string): string[] {
  * (code IPA_VALIDATION_FAILED) listing every server-side reject reason.
  */
 export async function validateIpa(options: AltoolCredentials): Promise<void> {
-  const { ipaPath, keyId, issuerId } = options;
-  await assertAltoolPreconditions(options);
+  const { keyId, issuerId } = options;
+  const validatedPath = await assertAltoolPreconditions(options);
 
   const result = await runTool(
     "xcrun",
-    ["altool", "--validate-app", "-f", ipaPath, ...credentialArgs(keyId, issuerId)],
+    ["altool", "--validate-app", "-f", validatedPath, ...credentialArgs(keyId, issuerId)],
     { timeoutMs: XCODE.UPLOAD_TIMEOUT_MS },
   );
   if (result.ok) return;
@@ -122,14 +130,14 @@ export async function validateIpa(options: AltoolCredentials): Promise<void> {
 }
 
 export async function uploadIpa(options: AltoolCredentials): Promise<void> {
-  const { ipaPath, keyId, issuerId } = options;
-  await assertAltoolPreconditions(options);
+  const { keyId, issuerId } = options;
+  const validatedPath = await assertAltoolPreconditions(options);
 
   const credentials = credentialArgs(keyId, issuerId);
 
   let result: ToolResult = await runTool(
     "xcrun",
-    ["altool", "--upload-package", ipaPath, ...credentials],
+    ["altool", "--upload-package", validatedPath, ...credentials],
     { timeoutMs: XCODE.UPLOAD_TIMEOUT_MS },
   );
 
@@ -141,7 +149,7 @@ export async function uploadIpa(options: AltoolCredentials): Promise<void> {
   ) {
     result = await runTool(
       "xcrun",
-      ["altool", "--upload-app", "-f", ipaPath, ...credentials],
+      ["altool", "--upload-app", "-f", validatedPath, ...credentials],
       { timeoutMs: XCODE.UPLOAD_TIMEOUT_MS },
     );
   }

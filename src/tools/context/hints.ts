@@ -6,13 +6,13 @@
 import { DeviceManager } from "../../device-manager.js";
 import {
   parseUiHierarchy,
-  desktopHierarchyToUiElements,
   harmonyHierarchyToUiElements,
   diffUiElements,
   suggestNextActions,
   UiElement,
 } from "../../ui-tree/ui-parser.js";
 import { iosTreeToUiElements } from "./ios-helpers.js";
+import { getExternalUiElements } from "../helpers/get-elements.js";
 import { getCachedElements, setCachedElements } from "./shared-state.js";
 
 /**
@@ -24,9 +24,12 @@ import { getCachedElements, setCachedElements } from "./shared-state.js";
 export function createGenerateActionHints(deviceManager: DeviceManager, options?: { turbo?: boolean }) {
   const turbo = options?.turbo ?? false;
 
-  return async function generateActionHints(platform: string | undefined): Promise<string> {
+  return async function generateActionHints(
+    platform: string | undefined,
+    deviceId?: string,
+  ): Promise<string> {
     const currentPlatform = platform ?? deviceManager.getCurrentPlatform() ?? "android";
-    const beforeElements = getCachedElements(currentPlatform);
+    const beforeElements = getCachedElements(currentPlatform, deviceId);
 
     // Turbo: shorter initial delay; non-turbo: standard 150ms
     const initialDelay = turbo ? 50 : 150;
@@ -34,7 +37,7 @@ export function createGenerateActionHints(deviceManager: DeviceManager, options?
 
     let afterElements: UiElement[] = [];
     try {
-      afterElements = await fetchUiElements(deviceManager, currentPlatform, turbo);
+      afterElements = await fetchUiElements(deviceManager, currentPlatform, turbo, deviceId);
     } catch {
       return "\n--- Hints ---\nUnable to fetch UI state for hints.";
     }
@@ -45,23 +48,17 @@ export function createGenerateActionHints(deviceManager: DeviceManager, options?
       if (!diff.screenChanged && diff.appeared.length === 0 && diff.disappeared.length === 0) {
         await new Promise(resolve => setTimeout(resolve, 100));
         try {
-          afterElements = await fetchUiElements(deviceManager, currentPlatform, turbo);
+          afterElements = await fetchUiElements(deviceManager, currentPlatform, turbo, deviceId);
         } catch {
           // Keep the original afterElements on retry failure
         }
       }
     }
 
-    // Cache guard: never overwrite a previously-good cache with an empty read.
-    // A single failed/degraded WDA fetch used to write `[]` here, which poisoned
-    // `beforeElements` for every subsequent input and made hints permanently
-    // report "No UI elements detected." on iOS. The invariant is now also
-    // enforced centrally in SharedState.setCachedElements (so the
-    // getElementsForPlatform writers below are covered too); this explicit
-    // guard is kept as belt-and-suspenders and to skip the call entirely.
-    if (afterElements.length > 0) {
-      setCachedElements(currentPlatform, afterElements);
-    }
+    // A successful provider read may legitimately return an empty tree. The
+    // cache owner stores that empty result so stale coordinates are cleared;
+    // degraded reads throw from their parser/provider and never reach here.
+    setCachedElements(currentPlatform, afterElements, deviceId);
 
     if (afterElements.length === 0) {
       return "\n--- Hints ---\nNo UI elements detected.";
@@ -95,22 +92,22 @@ async function fetchUiElements(
   deviceManager: DeviceManager,
   currentPlatform: string,
   turbo: boolean,
+  deviceId?: string,
 ): Promise<UiElement[]> {
   if (currentPlatform === "android") {
-    const xml = await deviceManager.getUiHierarchyAsync("android", undefined, turbo);
+    const xml = await deviceManager.getUiHierarchyAsync("android", deviceId, turbo);
     return parseUiHierarchy(xml);
   } else if (currentPlatform === "ios") {
-    const json = await deviceManager.getUiHierarchy("ios");
+    const json = await deviceManager.getUiHierarchy("ios", deviceId);
     const tree = JSON.parse(json);
     return iosTreeToUiElements(tree);
   } else if (currentPlatform === "harmony") {
-    const json = await deviceManager.getUiHierarchyAsync("harmony", undefined, turbo);
+    const json = await deviceManager.getUiHierarchyAsync("harmony", deviceId, turbo);
     return harmonyHierarchyToUiElements(json);
   } else if (currentPlatform === "desktop") {
-    const text = await deviceManager.getUiHierarchyAsync("desktop");
-    return desktopHierarchyToUiElements(text);
+    return getExternalUiElements(deviceManager, currentPlatform, deviceId);
   }
-  return [];
+  return getExternalUiElements(deviceManager, currentPlatform, deviceId);
 }
 
 /**
@@ -121,29 +118,33 @@ async function fetchUiElements(
 export function createGetElementsForPlatform(deviceManager: DeviceManager, options?: { turbo?: boolean }) {
   const turbo = options?.turbo ?? false;
 
-  return async function getElementsForPlatform(plat: string): Promise<UiElement[]> {
+  return async function getElementsForPlatform(
+    plat: string,
+    deviceId?: string,
+  ): Promise<UiElement[]> {
     if (plat === "android" || !plat) {
-      const xml = await deviceManager.getUiHierarchyAsync("android", undefined, turbo);
+      const xml = await deviceManager.getUiHierarchyAsync("android", deviceId, turbo);
       const elements = parseUiHierarchy(xml);
-      setCachedElements("android", elements);
+      setCachedElements("android", elements, deviceId);
       return elements;
     } else if (plat === "ios") {
-      const json = await deviceManager.getUiHierarchy("ios");
+      const json = await deviceManager.getUiHierarchy("ios", deviceId);
       const tree = JSON.parse(json);
       const elements = iosTreeToUiElements(tree);
-      setCachedElements("ios", elements);
+      setCachedElements("ios", elements, deviceId);
       return elements;
     } else if (plat === "harmony") {
-      const json = await deviceManager.getUiHierarchyAsync("harmony", undefined, turbo);
+      const json = await deviceManager.getUiHierarchyAsync("harmony", deviceId, turbo);
       const elements = harmonyHierarchyToUiElements(json);
-      setCachedElements("harmony", elements);
+      setCachedElements("harmony", elements, deviceId);
       return elements;
     } else if (plat === "desktop") {
-      const text = await deviceManager.getUiHierarchyAsync("desktop");
-      const elements = desktopHierarchyToUiElements(text);
-      setCachedElements("desktop", elements);
+      const elements = await getExternalUiElements(deviceManager, plat, deviceId);
+      setCachedElements("desktop", elements, deviceId);
       return elements;
     }
-    return [];
+    const elements = await getExternalUiElements(deviceManager, plat, deviceId);
+    setCachedElements(plat, elements, deviceId);
+    return elements;
   };
 }

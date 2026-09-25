@@ -1,10 +1,10 @@
-import { existsSync, openAsBlob } from "node:fs";
 import { basename } from "node:path";
 import { createSign } from "crypto";
 import { z } from "zod";
 import type { StoreClient, UploadResult } from "./store-client.js";
 import { AbstractStoreClient } from "./base-client.js";
 import { validatePackageName } from "../utils/sanitize.js";
+import { createStoreArtifactMultipartBody, validateStoreArtifact, type ValidatedStoreArtifact } from "./upload-path.js";
 
 const BASE = "https://public-api.rustore.ru/public/v1";
 const AUTH_URL = "https://public-api.rustore.ru/public/auth";
@@ -187,119 +187,127 @@ export class RuStoreClient extends AbstractStoreClient implements StoreClient {
   // ── Public API ───────────────────────────────────────────────────────────────
 
   async upload(packageName: string, filePath: string): Promise<UploadResult> {
-    validatePackageName(packageName);
-    if (!existsSync(filePath)) {
-      throw new Error(`File not found: ${filePath}`);
-    }
+    return this.withPackageMutation(packageName, async () => {
+      validatePackageName(packageName);
+      let artifact: ValidatedStoreArtifact | undefined;
+      try {
+        const boundArtifact = await validateStoreArtifact(filePath, "android");
+        artifact = boundArtifact;
+        const token = await this.getToken();
+        const versionId = await this.createDraftVersion(packageName, token);
 
-    const token = await this.getToken();
-    const versionId = await this.createDraftVersion(packageName, token);
+        const isAab = boundArtifact.path.toLowerCase().endsWith(".aab");
+        const uploadPath = isAab ? "aab" : "apk";
+        const fileName = basename(boundArtifact.path);
 
-    const isAab = filePath.toLowerCase().endsWith(".aab");
-    const uploadPath = isAab ? "aab" : "apk";
-    const fileName = basename(filePath);
+        const uploadUrl =
+          `${BASE}/application/${encodeURIComponent(packageName)}/version/${versionId}/${uploadPath}` +
+          `?servicesType=Unknown&isMainApk=true`;
+        const multipart = createStoreArtifactMultipartBody(boundArtifact, fileName, []);
 
-    const formData = new FormData();
-    const blob = await openAsBlob(filePath, { type: "application/octet-stream" });
-    formData.append("file", blob, fileName);
+        const res = await this.fetchWithTimeout(uploadUrl, {
+          method: "POST",
+          headers: {
+            "Public-Token": token,
+            "Content-Type": multipart.contentType,
+            "Content-Length": String(multipart.contentLength),
+          },
+          duplex: "half" as const,
+          body: multipart.body,
+        }, 10 * 60_000);
 
-    const uploadUrl =
-      `${BASE}/application/${encodeURIComponent(packageName)}/version/${versionId}/${uploadPath}` +
-      `?servicesType=Unknown&isMainApk=true`;
+        if (!res.ok) {
+          await res.body?.cancel();
+          await this.deleteDraft(packageName, versionId, token);
+          throw new Error(`RuStore upload failed with HTTP ${res.status}.`);
+        }
 
-    const res = await this.fetchWithTimeout(uploadUrl, {
-      method: "POST",
-      headers: {
-        "Public-Token": token,
-        // No Content-Type — let fetch set multipart boundary automatically
-      },
-      body: formData,
-    }, 10 * 60_000);
+        const { code } = responseCode(await this.readJson(res));
+        if (code !== "OK") {
+          await this.deleteDraft(packageName, versionId, token);
+          throw new Error(`RuStore upload failed with code ${code}.`);
+        }
 
-    if (!res.ok) {
-      await res.body?.cancel();
-      await this.deleteDraft(packageName, versionId, token);
-      throw new Error(`RuStore upload failed with HTTP ${res.status}.`);
-    }
+        this.drafts.set(packageName, { versionId, releaseNotes: [] });
 
-    const { code } = responseCode(await this.readJson(res));
-    if (code !== "OK") {
-      await this.deleteDraft(packageName, versionId, token);
-      throw new Error(`RuStore upload failed with code ${code}.`);
-    }
-
-    this.drafts.set(packageName, { versionId, releaseNotes: [] });
-
-    return { versionId: String(versionId) };
+        return { versionId: String(versionId) };
+      } finally {
+        await artifact?.close();
+      }
+    });
   }
 
   async setReleaseNotes(packageName: string, language: string, text: string): Promise<void> {
-    validatePackageName(packageName);
-    if (!/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(language)) {
-      throw new Error("Invalid RuStore release language.");
-    }
-    if (Buffer.byteLength(text, "utf8") > 50 * 1024 || text.includes("\0")) {
-      throw new Error("RuStore release notes exceed the size limit.");
-    }
-    const draft = this.drafts.get(packageName);
-    if (!draft) {
-      throw new Error(`RuStore: no active upload for "${packageName}". Call rustore_upload first.`);
-    }
-    const idx = draft.releaseNotes.findIndex(n => n.language === language);
-    if (idx >= 0) {
-      draft.releaseNotes[idx].text = text;
-    } else {
-      draft.releaseNotes.push({ language, text });
-    }
+    await this.withPackageMutation(packageName, async () => {
+      validatePackageName(packageName);
+      if (!/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(language)) {
+        throw new Error("Invalid RuStore release language.");
+      }
+      if (Buffer.byteLength(text, "utf8") > 50 * 1024 || text.includes("\0")) {
+        throw new Error("RuStore release notes exceed the size limit.");
+      }
+      const draft = this.drafts.get(packageName);
+      if (!draft) {
+        throw new Error(`RuStore: no active upload for "${packageName}". Call rustore_upload first.`);
+      }
+      const idx = draft.releaseNotes.findIndex(n => n.language === language);
+      if (idx >= 0) {
+        draft.releaseNotes[idx].text = text;
+      } else {
+        draft.releaseNotes.push({ language, text });
+      }
+    });
   }
 
   async submit(packageName: string, _options?: { rollout?: number }): Promise<void> {
-    validatePackageName(packageName);
-    if (
-      _options?.rollout !== undefined
-      && (!Number.isFinite(_options.rollout) || _options.rollout !== 1)
-    ) {
-      throw new Error("RuStore does not support staged rollout.");
-    }
-    const draft = this.drafts.get(packageName);
-    if (!draft) {
-      throw new Error(`RuStore: no active upload for "${packageName}". Call rustore_upload first.`);
-    }
-
-    const token = await this.getToken();
-    const { versionId, releaseNotes } = draft;
-
-    // If there are release notes — patch them first
-    if (releaseNotes.length > 0) {
-      const whatsNew: Record<string, string> = {};
-      for (const note of releaseNotes) {
-        whatsNew[note.language] = note.text;
+    await this.withPackageMutation(packageName, async () => {
+      validatePackageName(packageName);
+      if (
+        _options?.rollout !== undefined
+        && (!Number.isFinite(_options.rollout) || _options.rollout !== 1)
+      ) {
+        throw new Error("RuStore does not support staged rollout.");
       }
-      const patchData = await this.api(
-        "PATCH",
-        `${BASE}/application/${encodeURIComponent(packageName)}/version/${versionId}/publishing-settings`,
-        token,
-        { whatsNew }
+      const draft = this.drafts.get(packageName);
+      if (!draft) {
+        throw new Error(`RuStore: no active upload for "${packageName}". Call rustore_upload first.`);
+      }
+
+      const token = await this.getToken();
+      const { versionId, releaseNotes } = draft;
+
+      // If there are release notes — patch them first
+      if (releaseNotes.length > 0) {
+        const whatsNew: Record<string, string> = {};
+        for (const note of releaseNotes) {
+          whatsNew[note.language] = note.text;
+        }
+        const patchData = await this.api(
+          "PATCH",
+          `${BASE}/application/${encodeURIComponent(packageName)}/version/${versionId}/publishing-settings`,
+          token,
+          { whatsNew }
+        );
+        const { code } = responseCode(patchData);
+        if (code !== "OK") {
+          throw new Error(`RuStore release notes update failed with code ${code}.`);
+        }
+      }
+
+      // Submit for moderation
+      const submitData = await this.api(
+        "POST",
+        `${BASE}/application/${encodeURIComponent(packageName)}/version/${versionId}/submit-for-moderation`,
+        token
       );
-      const { code } = responseCode(patchData);
+
+      const { code } = responseCode(submitData);
       if (code !== "OK") {
-        throw new Error(`RuStore release notes update failed with code ${code}.`);
+        throw new Error(`RuStore submission failed with code ${code}.`);
       }
-    }
 
-    // Submit for moderation
-    const submitData = await this.api(
-      "POST",
-      `${BASE}/application/${encodeURIComponent(packageName)}/version/${versionId}/submit-for-moderation`,
-      token
-    );
-
-    const { code } = responseCode(submitData);
-    if (code !== "OK") {
-      throw new Error(`RuStore submission failed with code ${code}.`);
-    }
-
-    this.drafts.delete(packageName);
+      this.drafts.delete(packageName);
+    });
   }
 
   async getReleases(packageName: string): Promise<string> {
@@ -339,18 +347,18 @@ export class RuStoreClient extends AbstractStoreClient implements StoreClient {
   }
 
   async discard(packageName: string): Promise<void> {
-    validatePackageName(packageName);
-    const draft = this.drafts.get(packageName);
-    if (!draft) {
-      throw new Error(`RuStore: no active draft for "${packageName}"`);
-    }
+    await this.withPackageMutation(packageName, async () => {
+      validatePackageName(packageName);
+      const draft = this.drafts.get(packageName);
+      if (!draft) {
+        throw new Error(`RuStore: no active draft for "${packageName}"`);
+      }
 
-    const token = await this.getToken();
-    await this.deleteDraft(packageName, draft.versionId, token);
-    this.drafts.delete(packageName);
+      const token = await this.getToken();
+      await this.deleteDraft(packageName, draft.versionId, token);
+      this.drafts.delete(packageName);
+    });
   }
-
-  // ── Private helpers ──────────────────────────────────────────────────────────
 
   private async deleteDraft(packageName: string, versionId: number, token: string): Promise<void> {
     const res = await this.fetchWithTimeout(

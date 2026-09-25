@@ -7,7 +7,7 @@
 
 use std::io::{Read as _, Write as _};
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
@@ -15,7 +15,9 @@ use tempfile::Builder;
 
 use crate::utils::device_shell::DeviceShellCmd;
 use crate::utils::private_state::{cache_dir, read_bounded_file};
-use crate::utils::process::terminal_safe;
+use crate::utils::process::{
+    effective_duration, install_deadline, remaining_deadline, terminal_safe,
+};
 use crate::{android, aurora, desktop, harmony, ios};
 
 // ---------------------------------------------------------------------------
@@ -31,6 +33,11 @@ const MAX_DURATION_LIMIT: u64 = 60_000;
 /// Maximum screenshots captured per flow in turbo mode.
 const MAX_SCREENSHOTS: usize = 5;
 const MAX_FLOW_BYTES: u64 = 1024 * 1024;
+
+fn serialize_terminal_json(value: &impl Serialize) -> Result<String> {
+    let json = serde_json::to_string_pretty(value)?;
+    Ok(terminal_safe(json.as_bytes()))
+}
 
 /// Actions that are explicitly blocked for security reasons.
 const BLOCKED_ACTIONS: &[&str] = &["shell", "system_shell"];
@@ -130,6 +137,15 @@ fn default_on_error() -> OnError {
     OnError::Stop
 }
 
+/// Return whether a failed step should stop the current flow.
+///
+/// The command-line switch is a global upper bound: disabling
+/// `stop_on_error` always continues, while an individual `on_error=skip`
+/// setting still overrides the enabled global policy.
+fn should_stop_after_failure(stop_on_error: bool, step: &FlowStep) -> bool {
+    stop_on_error && step.on_error == OnError::Stop
+}
+
 // ---------------------------------------------------------------------------
 // Result types (output)
 // ---------------------------------------------------------------------------
@@ -169,17 +185,13 @@ struct PlatformCtx<'a> {
     companion_path: Option<&'a str>,
 }
 
-// ---------------------------------------------------------------------------
-// Public entry point
-// ---------------------------------------------------------------------------
-
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     platform: &str,
     file: Option<&str>,
     turbo: bool,
     max_duration: u64,
-    _stop_on_error: bool,
+    stop_on_error: bool,
     simulator: Option<&str>,
     device: Option<&str>,
     companion_path: Option<&str>,
@@ -233,6 +245,8 @@ pub fn run(
     };
 
     let total_start = Instant::now();
+    let deadline = total_start.checked_add(Duration::from_millis(max_duration));
+    let _deadline_guard = install_deadline(deadline);
     let mut results: Vec<StepResult> = Vec::with_capacity(steps.len());
     let mut screenshots_taken: usize = 0;
     let mut all_passed = true;
@@ -259,7 +273,7 @@ pub fn run(
         let step_start = Instant::now();
 
         // -- Turbo fast-track: combine action + UI dump in 1 ADB call (Android only) --
-        if turbo && ctx.platform == "android" {
+        let fast_track_error = if turbo && ctx.platform == "android" {
             if let Some((shell_cmd, desc)) = build_fast_track_cmd(step, &ctx) {
                 match android::exec_with_ui_dump(&shell_cmd, ctx.device) {
                     Ok((_, ui_xml)) => {
@@ -279,12 +293,21 @@ pub fn run(
                         });
                         continue;
                     }
-                    Err(_) => { /* fall through to normal path */ }
+                    Err(error) => Some(error),
                 }
+            } else {
+                None
             }
-        }
+        } else {
+            None
+        };
 
-        let exec_result = execute_step(&ctx, step);
+        // A fast-track action has already run when it returns an error. Do
+        // not replay it through the normal dispatcher.
+        let exec_result = match fast_track_error {
+            Some(error) => Err(error),
+            None => execute_step(&ctx, step),
+        };
         let step_ms = step_start.elapsed().as_millis();
 
         let (success, message) = match exec_result {
@@ -327,7 +350,7 @@ pub fn run(
         });
 
         // Decide whether to continue
-        if !success && step.on_error == OnError::Stop {
+        if !success && should_stop_after_failure(stop_on_error, step) {
             // Record remaining as skipped
             for j in (i + 1)..steps.len() {
                 results.push(StepResult {
@@ -358,7 +381,7 @@ pub fn run(
         total,
     };
 
-    println!("{}", serde_json::to_string_pretty(&output)?);
+    println!("{}", serialize_terminal_json(&output)?);
 
     if all_passed {
         Ok(())
@@ -396,6 +419,7 @@ pub fn batch(
     platform: &str,
     file: Option<&str>,
     stop_on_error: bool,
+    max_duration: u64,
     turbo: bool,
     simulator: Option<&str>,
     device: Option<&str>,
@@ -459,16 +483,35 @@ pub fn batch(
         companion_path,
     };
 
-    let total_start = std::time::Instant::now();
+    let max_duration = max_duration.min(MAX_DURATION_LIMIT);
+    let total_start = Instant::now();
+    let deadline = total_start.checked_add(Duration::from_millis(max_duration));
+    let _deadline_guard = install_deadline(deadline);
     let mut results: Vec<StepResult> = Vec::with_capacity(steps.len());
     let mut screenshots_taken: usize = 0;
     let mut all_passed = true;
 
     for (i, step) in steps.iter().enumerate() {
+        if total_start.elapsed().as_millis() as u64 >= max_duration {
+            for j in i..steps.len() {
+                results.push(StepResult {
+                    step: j + 1,
+                    action: steps[j].action.clone(),
+                    success: false,
+                    message: "Skipped: max duration exceeded".into(),
+                    ms: 0,
+                    ui: None,
+                    screenshot: None,
+                });
+            }
+            all_passed = false;
+            break;
+        }
+
         let step_start = std::time::Instant::now();
 
-        // Turbo fast-track (Android-only, same as flow run)
-        if turbo && ctx.platform == "android" {
+        // Turbo fast-track (Android-only, same as flow run).
+        let fast_track_error = if turbo && ctx.platform == "android" {
             if let Some((shell_cmd, desc)) = build_fast_track_cmd(step, &ctx) {
                 match android::exec_with_ui_dump(&shell_cmd, ctx.device) {
                     Ok((_, ui_xml)) => {
@@ -488,12 +531,21 @@ pub fn batch(
                         });
                         continue;
                     }
-                    Err(_) => { /* fall through to normal path */ }
+                    Err(error) => Some(error),
                 }
+            } else {
+                None
             }
-        }
+        } else {
+            None
+        };
 
-        let exec_result = execute_step(&ctx, step);
+        // A fast-track action has already run when it returns an error. Do
+        // not replay it through the normal dispatcher.
+        let exec_result = match fast_track_error {
+            Some(error) => Err(error),
+            None => execute_step(&ctx, step),
+        };
         let step_ms = step_start.elapsed().as_millis();
 
         let (success, message) = match exec_result {
@@ -533,7 +585,7 @@ pub fn batch(
             screenshot: screenshot_path,
         });
 
-        if !success && step.on_error == OnError::Stop {
+        if !success && should_stop_after_failure(stop_on_error, step) {
             for j in (i + 1)..steps.len() {
                 results.push(StepResult {
                     step: j + 1,
@@ -563,7 +615,7 @@ pub fn batch(
         total,
     };
 
-    println!("{}", serde_json::to_string_pretty(&output)?);
+    println!("{}", serialize_terminal_json(&output)?);
 
     if all_passed {
         Ok(())
@@ -650,8 +702,9 @@ pub fn parallel(
             simulator: Some(device_id),
             companion_path: None,
         };
-
-        let total_start = std::time::Instant::now();
+        let total_start = Instant::now();
+        let deadline = total_start.checked_add(Duration::from_millis(max_duration));
+        let _deadline_guard = install_deadline(deadline);
         let mut results: Vec<StepResult> = Vec::with_capacity(steps.len());
         let mut screenshots_taken: usize = 0;
         let mut all_passed = true;
@@ -675,8 +728,8 @@ pub fn parallel(
 
             let step_start = std::time::Instant::now();
 
-            // Turbo fast-track (Android-only)
-            if turbo && ctx.platform == "android" {
+            // Turbo fast-track (Android-only).
+            let fast_track_error = if turbo && ctx.platform == "android" {
                 if let Some((shell_cmd, desc)) = build_fast_track_cmd(step, &ctx) {
                     match android::exec_with_ui_dump(&shell_cmd, ctx.device) {
                         Ok((_, ui_xml)) => {
@@ -696,12 +749,20 @@ pub fn parallel(
                             });
                             continue 'steps;
                         }
-                        Err(_) => { /* fall through */ }
+                        Err(error) => Some(error),
                     }
+                } else {
+                    None
                 }
-            }
+            } else {
+                None
+            };
 
-            let exec_result = execute_step(&ctx, step);
+            // A fast-track action has already run when it returns an error.
+            let exec_result = match fast_track_error {
+                Some(error) => Err(error),
+                None => execute_step(&ctx, step),
+            };
             let step_ms = step_start.elapsed().as_millis();
 
             let (success, message) = match exec_result {
@@ -775,7 +836,7 @@ pub fn parallel(
         });
     }
 
-    println!("{}", serde_json::to_string_pretty(&device_results)?);
+    println!("{}", serialize_terminal_json(&device_results)?);
 
     let all_devices_passed = device_results.iter().all(|dr| dr.result.completed);
     if all_devices_passed {
@@ -907,6 +968,10 @@ fn step_tap_text(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
     Ok(format!("Tapped \"{}\"", query))
 }
 
+fn input_result_message(text: &str) -> String {
+    format!("Typed {} characters", text.chars().count())
+}
+
 fn step_input(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
     require_args(args, 1, "input")?;
     let text = &args[0];
@@ -918,7 +983,7 @@ fn step_input(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
         "desktop" => desktop::input_text(text, ctx.companion_path)?,
         _ => bail!("Unsupported platform for input"),
     }
-    Ok(format!("Typed \"{}\"", text))
+    Ok(input_result_message(text))
 }
 
 fn step_swipe(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
@@ -1012,7 +1077,12 @@ fn step_wait(args: &[String]) -> Result<String> {
     let ms: u64 = args[0]
         .parse()
         .map_err(|_| anyhow::anyhow!("Invalid ms value"))?;
-    std::thread::sleep(std::time::Duration::from_millis(ms));
+    let requested = Duration::from_millis(ms);
+    let effective = effective_duration(requested);
+    std::thread::sleep(effective);
+    if effective < requested {
+        bail!("Wait duration of {ms}ms exceeded the remaining flow duration");
+    }
     Ok(format!("Waited {}ms", ms))
 }
 
@@ -1039,7 +1109,7 @@ fn step_open_url(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
         "aurora" => aurora::open_url(url, ctx.device)?,
         _ => bail!("Unsupported platform for open-url"),
     }
-    Ok(format!("Opened URL \"{}\"", url))
+    Ok("Opened URL".into())
 }
 
 // ---------------------------------------------------------------------------
@@ -1185,7 +1255,7 @@ fn step_intent_deeplink(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String
     require_args(args, 1, "intent-deeplink")?;
     let uri = &args[0];
     android::intent_deeplink(uri, None, ctx.device)?;
-    Ok(format!("Deep-link opened: {}", uri))
+    Ok("Deep-link opened".into())
 }
 
 fn step_intent_services(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
@@ -1216,10 +1286,7 @@ fn step_sandbox_prefs_write(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<St
         args.get(4).map(|s| s.as_str()),
         ctx.device,
     )?;
-    Ok(format!(
-        "Preference written: {}.{} = {}",
-        args[1], args[2], args[3]
-    ))
+    Ok("Preference written".into())
 }
 
 fn step_sandbox_sqlite_query(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
@@ -1259,22 +1326,46 @@ fn step_ui_wait(ctx: &PlatformCtx<'_>, args: &[String]) -> Result<String> {
     let query = &args[0];
     let timeout: u64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(5000);
     let interval: u64 = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(500);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout);
+    let requested_timeout = Duration::from_millis(timeout);
+    if remaining_deadline().is_some_and(|remaining| remaining.is_zero()) {
+        bail!("UI wait exceeded the remaining flow duration");
+    }
+    let flow_deadline_clipped =
+        remaining_deadline().is_some_and(|remaining| remaining < requested_timeout);
+    let wait_started = Instant::now();
+    let wait_duration = effective_duration(requested_timeout);
+    let deadline = wait_started
+        .checked_add(wait_duration)
+        .ok_or_else(|| anyhow::anyhow!("UI wait timeout is too large"))?;
 
     loop {
+        if remaining_deadline().is_some_and(|remaining| remaining.is_zero()) {
+            bail!("UI wait exceeded the remaining flow duration");
+        }
         let found = match ctx.platform {
             "android" => android::find_element(query, ctx.device)?,
             "ios" => ios::find_element(query, ctx.simulator)?,
             "harmony" => harmony::find_element(query, ctx.device)?,
             _ => bail!("Unsupported platform for ui-wait"),
         };
+        if remaining_deadline().is_some_and(|remaining| remaining.is_zero()) {
+            bail!("UI wait exceeded the remaining flow duration");
+        }
         if found.is_some() {
             return Ok(format!("Element '{}' appeared", query));
         }
-        if std::time::Instant::now() >= deadline {
+        let now = Instant::now();
+        if now >= deadline {
+            if flow_deadline_clipped {
+                bail!("UI wait exceeded the remaining flow duration");
+            }
             bail!("Timed out waiting for element '{}'", query);
         }
-        std::thread::sleep(std::time::Duration::from_millis(interval));
+        let remaining = deadline.saturating_duration_since(now);
+        let sleep_for = Duration::from_millis(interval).min(remaining);
+        if !sleep_for.is_zero() {
+            std::thread::sleep(sleep_for);
+        }
     }
 }
 
@@ -1403,7 +1494,7 @@ fn build_fast_track_cmd(step: &FlowStep, ctx: &PlatformCtx<'_>) -> Option<(Strin
                 .literal("text")
                 .user_input(&with_space_sentinel)
                 .render();
-            Some((cmd, format!("Typed \"{}\"", step.args[0])))
+            Some((cmd, input_result_message(&step.args[0])))
         }
         "swipe" if step.args.len() >= 4 => {
             let x1 = step.args[0].parse::<i32>().ok()?;
@@ -1511,6 +1602,46 @@ mod tests {
     }
 
     #[test]
+    fn flow_json_output_removes_bidi_overrides_and_remains_valid_json() {
+        let output = serde_json::json!({
+            "steps": [{
+                "message": "before\u{202e}after\u{2066}isolated\u{2069}"
+            }]
+        });
+
+        let rendered = serialize_terminal_json(&output).expect("serialize safe flow output");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&rendered).expect("sanitized JSON remains valid");
+
+        assert_eq!(parsed["steps"][0]["message"], "beforeafterisolated");
+        assert!(!rendered.contains('\u{202e}'));
+        assert!(!rendered.contains('\u{2066}'));
+        assert!(!rendered.contains('\u{2069}'));
+    }
+
+    #[test]
+    fn input_acknowledgement_does_not_include_entered_text() {
+        let secret = "audit-password-93".to_owned();
+        let ctx = PlatformCtx {
+            platform: "android",
+            device: None,
+            simulator: None,
+            companion_path: None,
+        };
+        let step = FlowStep {
+            action: "input".to_owned(),
+            args: vec![secret.clone()],
+            on_error: OnError::Stop,
+        };
+
+        let (_, message) = build_fast_track_cmd(&step, &ctx).expect("input is fast-trackable");
+
+        assert_eq!(message, input_result_message(&secret));
+        assert!(!message.contains(&secret));
+        assert!(!serde_json::to_string(&message).unwrap().contains(&secret));
+    }
+
+    #[test]
     fn test_parse_steps_with_on_error() {
         let json = r#"[
             {"action": "tap-text", "args": ["Login"], "on_error": "skip"},
@@ -1526,6 +1657,25 @@ mod tests {
         let json = r#"[{"action": "tap-text", "args": ["OK"]}]"#;
         let steps: Vec<FlowStep> = serde_json::from_str(json).unwrap();
         assert_eq!(steps[0].on_error, OnError::Stop);
+    }
+
+    #[test]
+    fn global_stop_on_error_flag_controls_step_stop_policy() {
+        let stop_step = FlowStep {
+            action: "wait".to_owned(),
+            args: vec!["1".to_owned()],
+            on_error: OnError::Stop,
+        };
+        let skip_step = FlowStep {
+            action: "wait".to_owned(),
+            args: vec!["1".to_owned()],
+            on_error: OnError::Skip,
+        };
+
+        assert!(should_stop_after_failure(true, &stop_step));
+        assert!(!should_stop_after_failure(false, &stop_step));
+        assert!(!should_stop_after_failure(true, &skip_step));
+        assert!(!should_stop_after_failure(false, &skip_step));
     }
 
     #[test]
@@ -1582,6 +1732,38 @@ mod tests {
     #[test]
     fn test_max_duration_limit() {
         assert_eq!(MAX_DURATION_LIMIT, 60_000);
+    }
+
+    #[test]
+    fn wait_reports_when_deadline_clips_requested_duration() {
+        let _deadline_guard = install_deadline(Some(
+            Instant::now()
+                .checked_add(Duration::from_millis(10))
+                .expect("short wait deadline"),
+        ));
+        let started = Instant::now();
+        let args = vec!["100".to_owned()];
+        let error = step_wait(&args).expect_err("clipped wait should fail");
+        assert!(error
+            .to_string()
+            .contains("exceeded the remaining flow duration"));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn ui_wait_expired_deadline_skips_device_query() {
+        let _deadline_guard = install_deadline(Some(Instant::now()));
+        let ctx = PlatformCtx {
+            platform: "unsupported",
+            device: None,
+            simulator: None,
+            companion_path: None,
+        };
+        let args = vec!["never".to_owned(), "5000".to_owned()];
+        let error = step_ui_wait(&ctx, &args).expect_err("expired wait should fail");
+        assert!(error
+            .to_string()
+            .contains("exceeded the remaining flow duration"));
     }
 
     #[test]

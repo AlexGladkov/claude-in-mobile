@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtemp, mkdir, writeFile, readFile, rm } from "fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink } from "fs/promises";
+import { join, basename, dirname } from "path";
 import { tmpdir } from "os";
-import { join, basename } from "path";
 
 // child_process is mocked for the WHOLE file — no real xcodebuild/altool ever runs.
 // exec.ts does promisify(execFile) at module load; the mock (a plain vi.fn) takes
@@ -58,6 +58,11 @@ afterEach(async () => {
 
 async function fixtureDir(): Promise<string> {
   const dir = await makeTmpDir();
+  tmpDirs.push(dir);
+  return dir;
+}
+async function uploadFixtureDir(): Promise<string> {
+  const dir = await mkdtemp(join(process.cwd(), ".ios-upload-test-"));
   tmpDirs.push(dir);
   return dir;
 }
@@ -376,7 +381,7 @@ describe("uploadIpa", () => {
   let ipaPath: string;
 
   beforeEach(async () => {
-    const dir = await fixtureDir();
+    const dir = await uploadFixtureDir();
     ipaPath = join(dir, "app.ipa");
     await writeFile(ipaPath, Buffer.alloc(64, 0x42));
   });
@@ -421,6 +426,18 @@ describe("uploadIpa", () => {
     ).rejects.toMatchObject({ code: "INVALID_IPA_PATH" });
     expect(execFileMock).not.toHaveBeenCalled();
   });
+  it("rejects outside-root and symlink artifacts before exec", async () => {
+    await expect(
+      uploadIpa({ ipaPath: "/tmp/outside.ipa", keyId: "K", issuerId: "I" }),
+    ).rejects.toMatchObject({ code: "STORE_ARTIFACT_OUTSIDE_ROOT" });
+
+    const linkPath = join(dirname(ipaPath), "linked.ipa");
+    await symlink(ipaPath, linkPath);
+    await expect(
+      uploadIpa({ ipaPath: linkPath, keyId: "K", issuerId: "I" }),
+    ).rejects.toMatchObject({ code: "STORE_ARTIFACT_SYMLINK" });
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
 
   it("rejects path traversal in ipaPath", async () => {
     await expect(
@@ -437,7 +454,7 @@ describe("uploadIpa", () => {
 
   it("rejects missing IPA files", async () => {
     await expect(
-      uploadIpa({ ipaPath: join(tmpdir(), "definitely-missing.ipa"), keyId: "K", issuerId: "I" }),
+      uploadIpa({ ipaPath: join(process.cwd(), "definitely-missing.ipa"), keyId: "K", issuerId: "I" }),
     ).rejects.toMatchObject({ code: "IPA_NOT_FOUND" });
   });
 });
@@ -448,7 +465,7 @@ describe("validateIpa", () => {
   let ipaPath: string;
 
   beforeEach(async () => {
-    const dir = await fixtureDir();
+    const dir = await uploadFixtureDir();
     ipaPath = join(dir, "app.ipa");
     await writeFile(ipaPath, Buffer.alloc(64, 0x42));
   });

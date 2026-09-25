@@ -5,6 +5,12 @@ import { ValidationError } from "../errors.js";
 import { resolveElementCoordinates, applyScale } from "./helpers/resolve-element.js";
 import { parseCommonArgs } from "../utils/parse-common-args.js";
 import { textResult } from "../utils/tool-result.js";
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw signal.reason ?? new Error("Tool operation was cancelled.");
+  }
+}
+
 
 export const interactionTools: ToolDefinition[] = [
   defineTool({
@@ -31,6 +37,7 @@ export const interactionTools: ToolDefinition[] = [
       deviceId: deviceIdField,
     }),
     handler: async (args, ctx) => {
+      throwIfAborted(ctx.signal);
       const { deviceId, platform: currentPlatform } = parseCommonArgs(args as Record<string, unknown>, ctx);
       const platform = args.platform;
 
@@ -40,6 +47,7 @@ export const interactionTools: ToolDefinition[] = [
         currentPlatform,
         deviceId,
       );
+      throwIfAborted(ctx.signal);
 
       if (!resolved) {
         throw new ValidationError("Please provide x,y coordinates, text, resourceId, label, or index.");
@@ -47,12 +55,16 @@ export const interactionTools: ToolDefinition[] = [
 
       if (resolved.iosTapDone) {
         if (resolved.elementId) {
+          throwIfAborted(ctx.signal);
           const iosClient = ctx.deviceManager.getIosClient(deviceId);
           await iosClient.tapElement(resolved.elementId);
+          throwIfAborted(ctx.signal);
         }
+        throwIfAborted(ctx.signal);
         let result = `Tapped element: ${resolved.description}`;
         if (args.hints) {
-          result += await ctx.generateActionHints(args.platform);
+          throwIfAborted(ctx.signal);
+          result += await ctx.generateActionHints(args.platform, deviceId);
         }
         return textResult(result);
       }
@@ -61,13 +73,16 @@ export const interactionTools: ToolDefinition[] = [
 
       if (resolved.fromRawArgs) {
         ({ x, y } = await applyScale(x, y, currentPlatform ?? undefined, ctx, deviceId));
+        throwIfAborted(ctx.signal);
       }
 
-      await ctx.deviceManager.tap(x, y, platform, args.targetPid, deviceId);
-      ctx.invalidateUiTreeCache(currentPlatform ?? undefined);
+      await ctx.deviceManager.tap(x, y, platform, args.targetPid, deviceId, ctx.signal);
+      throwIfAborted(ctx.signal);
+      ctx.invalidateUiTreeCache(currentPlatform ?? undefined, deviceId);
       let result = `Tapped at (${x}, ${y})`;
       if (args.hints) {
-        result += await ctx.generateActionHints(args.platform);
+        throwIfAborted(ctx.signal);
+        result += await ctx.generateActionHints(args.platform, deviceId);
       }
       return textResult(result);
     },
@@ -89,6 +104,7 @@ export const interactionTools: ToolDefinition[] = [
       deviceId: deviceIdField,
     }),
     handler: async (args, ctx) => {
+      throwIfAborted(ctx.signal);
       const { deviceId, platform: currentPlatform } = parseCommonArgs(args as Record<string, unknown>, ctx);
       const platform = args.platform;
       const interval = args.interval;
@@ -99,21 +115,61 @@ export const interactionTools: ToolDefinition[] = [
         currentPlatform,
         deviceId,
       );
+      throwIfAborted(ctx.signal);
 
       if (!resolved) {
         throw new ValidationError("Please provide x,y coordinates, text, resourceId, or index.");
+      }
+
+      if (resolved.iosTapDone) {
+        if (!resolved.elementId) {
+          throw new ValidationError(
+            `Could not double tap element: ${resolved.description}. ` +
+              "WebDriverAgent returned no target coordinates or element ID.",
+          );
+        }
+
+        const iosClient = ctx.deviceManager.getIosClient(deviceId) as unknown as {
+          doubleTapElement?: (elementId: string, intervalMs?: number) => void | Promise<void>;
+          doubleTapElementById?: (elementId: string, intervalMs?: number) => void | Promise<void>;
+        };
+        if (typeof iosClient.doubleTapElement === "function") {
+          throwIfAborted(ctx.signal);
+          await iosClient.doubleTapElement(resolved.elementId, interval);
+          throwIfAborted(ctx.signal);
+        } else if (typeof iosClient.doubleTapElementById === "function") {
+          throwIfAborted(ctx.signal);
+          await iosClient.doubleTapElementById(resolved.elementId, interval);
+          throwIfAborted(ctx.signal);
+        } else {
+          throw new ValidationError(
+            `Could not double tap element: ${resolved.description}. ` +
+              "WebDriverAgent returned no coordinates and does not support target-aware double tap.",
+          );
+        }
+
+        throwIfAborted(ctx.signal);
+        let result = `Double tapped element: ${resolved.description} with ${interval}ms interval`;
+        if (args.hints) {
+          throwIfAborted(ctx.signal);
+          result += await ctx.generateActionHints(args.platform, deviceId);
+        }
+        return textResult(result);
       }
 
       let { x, y } = resolved;
 
       if (resolved.fromRawArgs) {
         ({ x, y } = await applyScale(x, y, currentPlatform ?? undefined, ctx, deviceId));
+        throwIfAborted(ctx.signal);
       }
 
-      await ctx.deviceManager.doubleTap(x, y, interval, platform, deviceId);
+      await ctx.deviceManager.doubleTap(x, y, interval, platform, deviceId, ctx.signal);
+      throwIfAborted(ctx.signal);
       let result = `Double tapped at (${x}, ${y}) with ${interval}ms interval`;
       if (args.hints) {
-        result += await ctx.generateActionHints(args.platform);
+        throwIfAborted(ctx.signal);
+        result += await ctx.generateActionHints(args.platform, deviceId);
       }
       return textResult(result);
     },
@@ -133,6 +189,7 @@ export const interactionTools: ToolDefinition[] = [
       deviceId: deviceIdField,
     }),
     handler: async (args, ctx) => {
+      throwIfAborted(ctx.signal);
       const { deviceId, platform: currentPlatform } = parseCommonArgs(args as Record<string, unknown>, ctx);
       const platform = args.platform;
       const duration = args.duration;
@@ -143,6 +200,7 @@ export const interactionTools: ToolDefinition[] = [
         currentPlatform,
         deviceId,
       );
+      throwIfAborted(ctx.signal);
 
       if (!resolved) {
         throw new ValidationError("Please provide x,y coordinates, text, or label.");
@@ -152,10 +210,13 @@ export const interactionTools: ToolDefinition[] = [
         if (resolved.elementId) {
           const iosClient = ctx.deviceManager.getIosClient(deviceId);
           const rect = await iosClient.getElementRect(resolved.elementId);
+          throwIfAborted(ctx.signal);
           if (rect) {
             const cx = Math.round(rect.x + rect.width / 2);
             const cy = Math.round(rect.y + rect.height / 2);
-            await ctx.deviceManager.longPress(cx, cy, duration, platform, deviceId);
+            throwIfAborted(ctx.signal);
+            await ctx.deviceManager.longPress(cx, cy, duration, platform, deviceId, ctx.signal);
+            throwIfAborted(ctx.signal);
             return textResult(`Long pressed element: ${resolved.description} at (${cx}, ${cy}) for ${duration}ms`);
           }
         }
@@ -166,9 +227,11 @@ export const interactionTools: ToolDefinition[] = [
 
       if (resolved.fromRawArgs) {
         ({ x, y } = await applyScale(x, y, currentPlatform ?? undefined, ctx, deviceId));
+        throwIfAborted(ctx.signal);
       }
 
-      await ctx.deviceManager.longPress(x, y, duration, platform, deviceId);
+      await ctx.deviceManager.longPress(x, y, duration, platform, deviceId, ctx.signal);
+      throwIfAborted(ctx.signal);
       return textResult(`Long pressed at (${x}, ${y}) for ${duration}ms`);
     },
   }),
@@ -192,16 +255,19 @@ export const interactionTools: ToolDefinition[] = [
       deviceId: deviceIdField,
     }),
     handler: async (args, ctx) => {
+      throwIfAborted(ctx.signal);
       const { deviceId, platform: currentPlatform } = parseCommonArgs(args as Record<string, unknown>, ctx);
       const platform = args.platform;
       const direction = args.direction;
 
       if (direction) {
-        await ctx.deviceManager.swipeDirection(direction, platform, deviceId);
-        ctx.invalidateUiTreeCache(platform ?? ctx.deviceManager.getCurrentPlatform() ?? undefined);
+        await ctx.deviceManager.swipeDirection(direction, platform, deviceId, ctx.signal);
+        throwIfAborted(ctx.signal);
+        ctx.invalidateUiTreeCache(platform ?? ctx.deviceManager.getCurrentPlatform() ?? undefined, deviceId);
         let result = `Swiped ${direction}`;
         if (args.hints) {
-          result += await ctx.generateActionHints(args.platform);
+          throwIfAborted(ctx.signal);
+          result += await ctx.generateActionHints(args.platform, deviceId);
         }
         return textResult(result);
       }
@@ -216,11 +282,14 @@ export const interactionTools: ToolDefinition[] = [
         const duration = args.duration;
         const p1 = await applyScale(x1, y1, currentPlatform ?? undefined, ctx, deviceId);
         const p2 = await applyScale(x2, y2, currentPlatform ?? undefined, ctx, deviceId);
-        await ctx.deviceManager.swipe(p1.x, p1.y, p2.x, p2.y, duration, platform, deviceId);
-        ctx.invalidateUiTreeCache(currentPlatform ?? undefined);
+        throwIfAborted(ctx.signal);
+        await ctx.deviceManager.swipe(p1.x, p1.y, p2.x, p2.y, duration, platform, deviceId, ctx.signal);
+        throwIfAborted(ctx.signal);
+        ctx.invalidateUiTreeCache(currentPlatform ?? undefined, deviceId);
         let result = `Swiped from (${p1.x}, ${p1.y}) to (${p2.x}, ${p2.y})`;
         if (args.hints) {
-          result += await ctx.generateActionHints(args.platform);
+          throwIfAborted(ctx.signal);
+          result += await ctx.generateActionHints(args.platform, deviceId);
         }
         return textResult(result);
       }
@@ -240,14 +309,17 @@ export const interactionTools: ToolDefinition[] = [
       deviceId: deviceIdField,
     }),
     handler: async (args, ctx) => {
+      throwIfAborted(ctx.signal);
       const { deviceId } = parseCommonArgs(args as Record<string, unknown>, ctx);
       const platform = args.platform;
       const text = args.text;
-      await ctx.deviceManager.inputText(text, platform, args.targetPid, deviceId);
-      ctx.invalidateUiTreeCache(platform ?? ctx.deviceManager.getCurrentPlatform() ?? undefined);
+      await ctx.deviceManager.inputText(text, platform, args.targetPid, deviceId, ctx.signal);
+      throwIfAborted(ctx.signal);
+      ctx.invalidateUiTreeCache(platform ?? ctx.deviceManager.getCurrentPlatform() ?? undefined, deviceId);
       let result = `Entered ${text.length} character(s).`;
       if (args.hints) {
-        result += await ctx.generateActionHints(args.platform);
+        throwIfAborted(ctx.signal);
+        result += await ctx.generateActionHints(args.platform, deviceId);
       }
       return textResult(result);
     },
@@ -264,14 +336,17 @@ export const interactionTools: ToolDefinition[] = [
       deviceId: deviceIdField,
     }),
     handler: async (args, ctx) => {
+      throwIfAborted(ctx.signal);
       const { deviceId } = parseCommonArgs(args as Record<string, unknown>, ctx);
       const platform = args.platform;
       const key = args.key;
-      await ctx.deviceManager.pressKey(key, platform, args.targetPid, deviceId);
-      ctx.invalidateUiTreeCache(platform ?? ctx.deviceManager.getCurrentPlatform() ?? undefined);
+      await ctx.deviceManager.pressKey(key, platform, args.targetPid, deviceId, ctx.signal);
+      throwIfAborted(ctx.signal);
+      ctx.invalidateUiTreeCache(platform ?? ctx.deviceManager.getCurrentPlatform() ?? undefined, deviceId);
       let result = `Pressed key: ${key}`;
       if (args.hints) {
-        result += await ctx.generateActionHints(args.platform);
+        throwIfAborted(ctx.signal);
+        result += await ctx.generateActionHints(args.platform, deviceId);
       }
       return textResult(result);
     },

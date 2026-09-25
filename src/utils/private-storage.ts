@@ -9,11 +9,11 @@ import {
   openSync,
   readFileSync,
 } from "node:fs";
-import type { Dirent } from "node:fs";
+import type { Dirent, Stats } from "node:fs";
 import { chmod, lstat, mkdir, open, opendir } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { MobileError } from "../errors.js";
 
@@ -23,11 +23,10 @@ const SAFE_NAMESPACE = /^[a-z0-9][a-z0-9-]*$/;
 export function privateRuntimeDir(namespace: string): string {
   validateNamespace(namespace);
   const root = join(homedir(), ".cache", "mcp-devices", namespace);
+  assertExistingDirectory(nearestExistingPathSync(root));
   mkdirSync(root, { recursive: true, mode: DIR_MODE });
   const metadata = lstatSync(root);
-  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
-    throw new MobileError("Private runtime path is not a real directory.", "STORAGE_CORRUPTED");
-  }
+  assertExistingDirectory({ path: root, metadata });
   chmodSync(root, DIR_MODE);
   return root;
 }
@@ -39,22 +38,79 @@ export function makePrivateTempDir(namespace: string): string {
   return root;
 }
 export function ensurePrivateDirectorySync(path: string): void {
+  assertExistingDirectory(nearestExistingPathSync(path));
   mkdirSync(path, { recursive: true, mode: DIR_MODE });
   const metadata = lstatSync(path);
-  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
-    throw new MobileError("Private storage path is not a real directory.", "STORAGE_CORRUPTED");
-  }
+  assertExistingDirectory({ path, metadata });
   chmodSync(path, DIR_MODE);
 }
 
 export async function ensurePrivateDirectory(path: string): Promise<void> {
+  assertExistingDirectory(await nearestExistingPath(path));
   await mkdir(path, { recursive: true, mode: DIR_MODE });
   const metadata = await lstat(path);
-  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
-    throw new MobileError("Private storage path is not a real directory.", "STORAGE_CORRUPTED");
-  }
+  assertExistingDirectory({ path, metadata });
   await chmod(path, DIR_MODE);
 }
+
+type ExistingPath = Readonly<{
+  path: string;
+  metadata: Stats;
+}>;
+
+function assertExistingDirectory(existing: ExistingPath): void {
+  const { path, metadata } = existing;
+  if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
+    throw new MobileError(
+      `Private storage path "${path}" is not a real directory.`,
+      "STORAGE_CORRUPTED",
+    );
+  }
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  if (uid !== undefined && metadata.uid !== uid) {
+    throw new MobileError(
+      `Private storage path "${path}" is not owned by the current user.`,
+      "STORAGE_CORRUPTED",
+    );
+  }
+  if (process.platform !== "win32" && (metadata.mode & 0o022) !== 0) {
+    throw new MobileError(
+      `Private storage path "${path}" is writable by another user.`,
+      "STORAGE_CORRUPTED",
+    );
+  }
+}
+
+function nearestExistingPathSync(path: string): ExistingPath {
+  let candidate = path;
+  for (;;) {
+    try {
+      return { path: candidate, metadata: lstatSync(candidate) };
+    } catch (error: unknown) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+      const parent = dirname(candidate);
+      if (parent === candidate) throw error;
+      candidate = parent;
+    }
+  }
+}
+
+async function nearestExistingPath(path: string): Promise<ExistingPath> {
+  let candidate = path;
+  for (;;) {
+    try {
+      return { path: candidate, metadata: await lstat(candidate) };
+    } catch (error: unknown) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+      const parent = dirname(candidate);
+      if (parent === candidate) throw error;
+      candidate = parent;
+    }
+  }
+}
+
 export async function readPrivateDirectory(
   path: string,
   maxEntries: number,

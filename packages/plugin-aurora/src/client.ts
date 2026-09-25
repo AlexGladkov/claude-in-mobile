@@ -38,9 +38,15 @@ export class AuroraClient {
    *
    * Mirrors the defense applied in src/adb/client.ts:75-97.
    */
-  private runAudbSync(args: string[]): string {
+  private runAudbSync(args: string[], deviceId?: string): string {
+    if (deviceId !== undefined) {
+      validateDeviceId(deviceId);
+    }
+    const commandArgs = deviceId === undefined
+      ? args
+      : ["-s", deviceId, ...args];
     try {
-      const output = execFileSync("audb", args, {
+      const output = execFileSync("audb", commandArgs, {
         encoding: "utf-8",
         maxBuffer: 50 * 1024 * 1024,
         timeout: EXEC_TIMEOUT_MS,
@@ -137,8 +143,8 @@ export class AuroraClient {
    * @param x - X coordinate in pixels
    * @param y - Y coordinate in pixels
    */
-  tap(x: number, y: number): void {
-    this.runAudbSync(["tap", String(x), String(y)]);
+  tap(x: number, y: number, deviceId?: string): void {
+    this.runAudbSync(["tap", String(x), String(y)], deviceId);
   }
 
   /**
@@ -147,16 +153,16 @@ export class AuroraClient {
    * @param y - Y coordinate in pixels
    * @param duration - Duration of the press in milliseconds
    */
-  longPress(x: number, y: number, duration: number): void {
-    this.runAudbSync(["tap", String(x), String(y), "--duration", String(duration)]);
+  longPress(x: number, y: number, duration: number, deviceId?: string): void {
+    this.runAudbSync(["tap", String(x), String(y), "--duration", String(duration)], deviceId);
   }
 
   /**
    * Performs a swipe in the specified direction.
    * @param direction - Direction to swipe: "up", "down", "left", or "right"
    */
-  swipeDirection(direction: "up"|"down"|"left"|"right"): void {
-    this.runAudbSync(["swipe", direction]);
+  swipeDirection(direction: "up"|"down"|"left"|"right", deviceId?: string): void {
+    this.runAudbSync(["swipe", direction], deviceId);
   }
 
   /**
@@ -166,8 +172,8 @@ export class AuroraClient {
    * @param x2 - Ending X coordinate in pixels
    * @param y2 - Ending Y coordinate in pixels
    */
-  swipeCoords(x1: number, y1: number, x2: number, y2: number): void {
-    this.runAudbSync(["swipe", String(x1), String(y1), String(x2), String(y2)]);
+  swipeCoords(x1: number, y1: number, x2: number, y2: number, deviceId?: string): void {
+    this.runAudbSync(["swipe", String(x1), String(y1), String(x2), String(y2)], deviceId);
   }
 
   /**
@@ -179,23 +185,23 @@ export class AuroraClient {
    * @param y2 - Ending Y coordinate
    * @param durationMs - Duration in milliseconds (ignored by audb, kept for compatibility)
    */
-  swipe(x1: number, y1: number, x2: number, y2: number, durationMs?: number): void {
-    this.runAudbSync(["swipe", String(x1), String(y1), String(x2), String(y2)]);
+  swipe(x1: number, y1: number, x2: number, y2: number, durationMs?: number, deviceId?: string): void {
+    this.runAudbSync(["swipe", String(x1), String(y1), String(x2), String(y2)], deviceId);
   }
 
   /** Input text on the selected Aurora device. */
-  inputText(text: string): void {
-    this.runAudbSync(["text", text]);
+  inputText(text: string, deviceId?: string): void {
+    this.runAudbSync(["text", text], deviceId);
   }
 
-  getUiHierarchy(): string {
+  getUiHierarchy(_deviceId?: string): string {
     throw new MobileError(
       "Aurora UI hierarchy is not supported by audb.",
       "CAPABILITY_NOT_SUPPORTED",
     );
   }
 
-  clearAppData(_packageName: string): void {
+  clearAppData(_packageName: string, _deviceId?: string): void {
     throw new MobileError(
       "Aurora app-data clearing is not supported by audb.",
       "CAPABILITY_NOT_SUPPORTED",
@@ -206,22 +212,22 @@ export class AuroraClient {
    * Sends a keyboard key event to the device.
    * @param key - Key name to send (e.g., "Enter", "Back", "Home")
    */
-  pressKey(key: string): void {
-    this.runAudbSync(["key", key]);
+  pressKey(key: string, deviceId?: string): void {
+    this.runAudbSync(["key", key], deviceId);
   }
 
   /**
    * Take screenshot and return raw PNG buffer (consistent with Android/iOS)
    * @returns Raw PNG buffer
    */
-  screenshotRaw(): Buffer {
+  screenshotRaw(deviceId?: string): Buffer {
     const tempDir = makePrivateTempDir("aurora-screenshot");
     const tmpFile = join(tempDir, "screenshot.png");
 
     try {
       // tmpFile passes as a literal argv slot — host shell never parses it,
       // so embedded metacharacters (if any future change introduced them) are inert.
-      this.runAudbSync(["screenshot", "--output", tmpFile]);
+      this.runAudbSync(["screenshot", "--output", tmpFile], deviceId);
       return readPrivateFileSync(tmpFile, MAX_SCREENSHOT_BYTES, "Aurora screenshot");
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
@@ -232,8 +238,8 @@ export class AuroraClient {
    * Takes a screenshot of the Aurora device
    * @returns Base64 encoded PNG screenshot
    */
-  screenshot(): string {
-    return this.screenshotRaw().toString("base64");
+  screenshot(deviceId?: string): string {
+    return this.screenshotRaw(deviceId).toString("base64");
   }
 
   /**
@@ -241,8 +247,8 @@ export class AuroraClient {
    * @param packageName - Application name (D-Bus format: ru.domain.AppName)
    * @returns Output message from audb
    */
-  launchApp(packageName: string): string {
-    const output = this.runAudbSync(["launch", packageName]);
+  launchApp(packageName: string, deviceId?: string): string {
+    const output = this.runAudbSync(["launch", packageName], deviceId);
     return output || `Launched ${packageName}`;
   }
 
@@ -250,8 +256,8 @@ export class AuroraClient {
    * Stop a running application
    * @param packageName - Application name (D-Bus format: ru.domain.AppName)
    */
-  stopApp(packageName: string): void {
-    this.runAudbSync(["stop", packageName]);
+  stopApp(packageName: string, deviceId?: string): void {
+    this.runAudbSync(["stop", packageName], deviceId);
   }
 
   /**
@@ -259,8 +265,8 @@ export class AuroraClient {
    * @param path - Local path to the RPM file
    * @returns Installation result message
    */
-  installApp(path: string): string {
-    const output = this.runAudbSync(["package", "install", path]);
+  installApp(path: string, deviceId?: string): string {
+    const output = this.runAudbSync(["package", "install", path], deviceId);
     return output || `Installed ${path}`;
   }
 
@@ -269,8 +275,8 @@ export class AuroraClient {
    * @param packageName - Package name (e.g., ru.domain.AppName)
    * @returns Uninstallation result message
    */
-  uninstallApp(packageName: string): string {
-    const output = this.runAudbSync(["package", "uninstall", packageName]);
+  uninstallApp(packageName: string, deviceId?: string): string {
+    const output = this.runAudbSync(["package", "uninstall", packageName], deviceId);
     return output || `Uninstalled ${packageName}`;
   }
 
@@ -278,8 +284,8 @@ export class AuroraClient {
    * List installed packages on the Aurora device
    * @returns Array of package names
    */
-  listPackages(): string[] {
-    const output = this.runAudbSync(["package", "list"]);
+  listPackages(deviceId?: string): string[] {
+    const output = this.runAudbSync(["package", "list"], deviceId);
     if (!output) return [];
     return output.split("\n").filter(line => line.trim().length > 0);
   }
@@ -298,8 +304,8 @@ export class AuroraClient {
    * @param command - Shell command to execute (already validated at call site)
    * @returns Command output
    */
-  shell(command: string): string {
-    return this.runAudbSync(["shell", command]);
+  shell(command: string, deviceId?: string): string {
+    return this.runAudbSync(["shell", command], deviceId);
   }
 
   /**
@@ -312,7 +318,7 @@ export class AuroraClient {
    * @param options.since - Show logs since timestamp
    * @returns Log output
    */
-  getLogs(options: LogOptions = {}): string {
+  getLogs(options: LogOptions = {}, deviceId?: string): string {
     const args: string[] = ["logs"];
     if (options.lines) args.push("-n", String(Math.trunc(options.lines)));
     if (options.priority) args.push("--priority", options.priority);
@@ -320,23 +326,23 @@ export class AuroraClient {
     if (options.grep) args.push("--grep", options.grep);
     if (options.since) args.push("--since", options.since);
 
-    return this.runAudbSync(args);
+    return this.runAudbSync(args, deviceId);
   }
 
   /**
    * Clear device logs
    * @returns Result message
    */
-  clearLogs(): string {
-    return this.runAudbSync(["logs", "--clear", "--force"]);
+  clearLogs(deviceId?: string): string {
+    return this.runAudbSync(["logs", "--clear", "--force"], deviceId);
   }
 
   /**
    * Get detailed system information
    * @returns System info output
    */
-  getSystemInfo(): string {
-    return this.runAudbSync(["info"]);
+  getSystemInfo(deviceId?: string): string {
+    return this.runAudbSync(["info"], deviceId);
   }
 
   /**
@@ -345,8 +351,8 @@ export class AuroraClient {
    * @param remotePath - Destination path on the device
    * @returns Upload result message
    */
-  pushFile(localPath: string, remotePath: string): string {
-    const output = this.runAudbSync(["push", localPath, remotePath]);
+  pushFile(localPath: string, remotePath: string, deviceId?: string): string {
+    const output = this.runAudbSync(["push", localPath, remotePath], deviceId);
     return output || `Uploaded ${localPath} → ${remotePath}`;
   }
 
@@ -356,9 +362,9 @@ export class AuroraClient {
    * @param localPath - Optional local destination path (defaults to remote filename)
    * @returns File contents as Buffer
    */
-  pullFile(remotePath: string, localPath?: string): Buffer {
+  pullFile(remotePath: string, localPath?: string, deviceId?: string): Buffer {
     const local = localPath || remotePath.split("/").pop() || "pulled_file";
-    this.runAudbSync(["pull", remotePath, "--output", local]);
+    this.runAudbSync(["pull", remotePath, "--output", local], deviceId);
     return readPrivateFileSync(local, MAX_PULL_BYTES, "Aurora pulled file");
   }
 }

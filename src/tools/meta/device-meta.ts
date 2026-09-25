@@ -4,6 +4,7 @@ import { deviceTools } from "../device-tools.js";
 import { UnknownActionError } from "../../errors.js";
 import { ALL_HIDEABLE_MODULES, ALWAYS_VISIBLE } from "../../profiles.js";
 import type { ModuleCategory } from "../../profiles.js";
+import { PLATFORM_JSON_SCHEMA } from "../common-schema.js";
 
 const handlers = new Map<string, ToolDefinition["handler"]>();
 for (const t of deviceTools) {
@@ -41,7 +42,6 @@ function resolveModuleNames(args: Record<string, unknown>): string[] {
   }
   return [mod];
 }
-
 export const deviceMeta: ToolDefinition = {
   tool: {
     name: "device",
@@ -55,13 +55,11 @@ export const deviceMeta: ToolDefinition = {
         },
         deviceId: { type: "string", description: "Device ID (for set)" },
         platform: {
-          type: "string",
-          enum: ["android", "ios", "desktop", "aurora", "harmony", "browser"],
+          ...PLATFORM_JSON_SCHEMA,
           description: "Filter by platform or target platform",
         },
         target: {
-          type: "string",
-          enum: ["android", "ios", "desktop", "aurora", "harmony", "browser"],
+          ...PLATFORM_JSON_SCHEMA,
           description: "Target platform to switch to (for set_target)",
         },
         module: {

@@ -18,6 +18,12 @@ import {
 } from "../store/app-store-connect.js";
 import type { AscBuild } from "../store/app-store-connect.js";
 import {
+  stageStoreArtifact,
+  validateStoreArtifact,
+  type StagedStoreArtifact,
+  type ValidatedStoreArtifact,
+} from "../store/upload-path.js";
+import {
   detectIosProject,
   listSchemes,
   pickReleaseScheme,
@@ -202,20 +208,35 @@ export const appStoreTools: ToolDefinition[] = [
         ),
     }),
     handler: async (args) => {
-      validatePath(args.ipaPath, "ipaPath");
-      if (!args.ipaPath.endsWith(".ipa")) {
-        throw new ValidationError(`ipaPath must point to an .ipa file, got: ${args.ipaPath}`);
+      let artifact: ValidatedStoreArtifact;
+      try {
+        artifact = await validateStoreArtifact(args.ipaPath, "ios");
+      } catch (error) {
+        if (error instanceof MobileError && error.code === "STORE_ARTIFACT_INVALID_TYPE") {
+          throw new ValidationError(`ipaPath must point to an .ipa file, got: ${args.ipaPath}`);
+        }
+        throw error;
       }
-      const auth = getAscAuthFromEnv();
-      const credentials = { ipaPath: args.ipaPath, keyId: auth.keyId, issuerId: auth.issuerId };
-      if (!args.skipValidation) {
-        await validateIpa(credentials);
+      let staged: StagedStoreArtifact | undefined;
+      try {
+        staged = await stageStoreArtifact(artifact);
+        const auth = getAscAuthFromEnv();
+        const credentials = { ipaPath: staged.path, keyId: auth.keyId, issuerId: auth.issuerId };
+        if (!args.skipValidation) {
+          await validateIpa(credentials);
+        }
+        await uploadIpa(credentials);
+        return textResult(
+          "Upload accepted by App Store Connect. Processing typically takes 5-15 minutes.\n" +
+            "Poll with appstore_get_releases until the build state is VALID, then appstore_promote.",
+        );
+      } finally {
+        try {
+          await staged?.remove();
+        } finally {
+          await artifact.close();
+        }
       }
-      await uploadIpa(credentials);
-      return textResult(
-        "Upload accepted by App Store Connect. Processing typically takes 5-15 minutes.\n" +
-          "Poll with appstore_get_releases until the build state is VALID, then appstore_promote.",
-      );
     },
   }),
 

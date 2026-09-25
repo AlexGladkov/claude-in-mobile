@@ -249,8 +249,8 @@ export class BaselineStore {
     const filePath = this.getBaselinePath(platform, name);
     try {
       await unlink(filePath);
-    } catch {
-      // File already gone — ok
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
 
     manifest.baselines = manifest.baselines.filter(e => !(e.name === name && e.platform === platform));

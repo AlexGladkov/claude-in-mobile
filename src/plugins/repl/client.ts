@@ -12,11 +12,13 @@ import { delimiter } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { z } from "zod";
 import { sanitizeErrorMessage } from "../../utils/sanitize.js";
+import { REPL } from "../../constants/timeouts.js";
 
 const MAX_RPC_MESSAGE_BYTES = 8 * 1024 * 1024;
 const MAX_RPC_REQUEST_BYTES = 4 * 1024 * 1024;
 const MAX_PENDING_REQUESTS = 128;
-const MAX_TIMEOUT_MS = 5 * 60_000;
+const MAX_START_TIMEOUT_MS = REPL.EXPECT_TIMEOUT_MAX_MS;
+const MAX_REQUEST_TIMEOUT_MS = REPL.REQUEST_TIMEOUT_MAX_MS;
 const replReadyMessageSchema = z.object({
   event: z.literal("ready"),
 }).passthrough();
@@ -31,7 +33,7 @@ export interface ReplBridgeOptions {
   binaryPath?: string;
   /** Sanitized environment passed to the supervisor process. */
   env?: NodeJS.ProcessEnv;
-  /** Per-request timeout (ms). Default 30s — well above any expect timeout. */
+  /** Per-request timeout (ms). Default 30s; expect overrides include the bridge buffer. */
   requestTimeoutMs?: number;
   /**
    * Startup timeout (ms): how long to wait for the supervisor's `ready`
@@ -96,10 +98,10 @@ export class ReplBridgeClient {
     if (
       !Number.isSafeInteger(this.requestTimeoutMs)
       || this.requestTimeoutMs < 1
-      || this.requestTimeoutMs > MAX_TIMEOUT_MS
+      || this.requestTimeoutMs > MAX_REQUEST_TIMEOUT_MS
       || !Number.isSafeInteger(this.startTimeoutMs)
       || this.startTimeoutMs < 1
-      || this.startTimeoutMs > MAX_TIMEOUT_MS
+      || this.startTimeoutMs > MAX_START_TIMEOUT_MS
     ) {
       throw new ReplBridgeError("invalid supervisor timeout");
     }
@@ -251,7 +253,7 @@ export class ReplBridgeClient {
     if (
       !Number.isSafeInteger(effectiveTimeout)
       || effectiveTimeout < 1
-      || effectiveTimeout > MAX_TIMEOUT_MS
+      || effectiveTimeout > MAX_REQUEST_TIMEOUT_MS
     ) {
       throw new ReplBridgeError("invalid request timeout");
     }

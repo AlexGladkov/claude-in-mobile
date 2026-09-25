@@ -12,11 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Managed external plugin lifecycle commands with lockfile integrity
   verification, declared host permissions, explicit grants, and opt-in loading.
 - Published a Linux x86_64 GNU native CLI archive with a SHA256 sidecar.
+- Added the URL plugin capability and schema-backed parameters for generic
+  meta-tools.
 
 ### Security
 - Added contributor/security policies, Dependabot, CodeQL, OpenSSF Scorecard,
   pinned GitHub Actions, npm Trusted Publishing, and release artifact
   attestations.
+- Hardened managed-plugin lock recovery and update/remove transactions against
+  stale-owner races and interrupted state commits.
+- Bounded and credential-redacted fallback MCP payloads and streamed REPL output;
+  release publishing now scopes classic npm credentials to dist-tag repair.
 
 ### Fixed
 - MCP stdio transport now accepts legacy `Content-Length` framing used by OMP while preserving newline-delimited JSON clients.
@@ -25,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - REPL sessions now inherit the server working directory, resolve direct
   relative executable paths against it, and clean up recordings after failed
   spawns.
+- Device target reporting now follows current adapter selection and refreshed
+  device state instead of a stale snapshot.
+- Native flow, sync, recorder, and REPL paths now enforce deadlines, preserve
+  action/process failure status, and redact terminal recordings.
 
 ## [4.4.1] — 2026-09-13
 

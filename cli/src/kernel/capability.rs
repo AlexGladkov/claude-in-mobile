@@ -20,11 +20,11 @@ pub enum Capability {
     AppLifecycle,
     Permissions,
     Logs,
+    Url,
     Terminal,
     FileTransfer,
     DeviceMgmt,
 }
-
 pub const ALL_CAPABILITIES: &[Capability] = &[
     Capability::Screen,
     Capability::Input,
@@ -33,6 +33,7 @@ pub const ALL_CAPABILITIES: &[Capability] = &[
     Capability::AppLifecycle,
     Capability::Permissions,
     Capability::Logs,
+    Capability::Url,
     Capability::Terminal,
     Capability::FileTransfer,
     Capability::DeviceMgmt,
@@ -49,6 +50,7 @@ impl Capability {
             Capability::AppLifecycle => "appLifecycle",
             Capability::Permissions => "permissions",
             Capability::Logs => "logs",
+            Capability::Url => "url",
             Capability::Terminal => "terminal",
             Capability::FileTransfer => "fileTransfer",
             Capability::DeviceMgmt => "deviceMgmt",
@@ -68,6 +70,7 @@ impl FromStr for Capability {
             "appLifecycle" => Ok(Capability::AppLifecycle),
             "permissions" => Ok(Capability::Permissions),
             "logs" => Ok(Capability::Logs),
+            "url" => Ok(Capability::Url),
             "terminal" => Ok(Capability::Terminal),
             "fileTransfer" => Ok(Capability::FileTransfer),
             "deviceMgmt" => Ok(Capability::DeviceMgmt),
@@ -92,7 +95,7 @@ mod tests {
         for c in ALL_CAPABILITIES {
             assert!(seen.insert(c.as_str()), "duplicate capability: {}", c);
         }
-        assert_eq!(seen.len(), 10);
+        assert_eq!(seen.len(), 11);
     }
 
     #[test]

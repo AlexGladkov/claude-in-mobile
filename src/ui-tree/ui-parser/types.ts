@@ -60,6 +60,8 @@ export interface ScreenAnalysis {
     hint: string;
     value: string;
     coordinates: { x: number; y: number };
+    /** Prevents downstream formatters from exposing a secure field value. */
+    sensitive?: boolean;
   }>;
   /** Static text on screen */
   texts: Array<{

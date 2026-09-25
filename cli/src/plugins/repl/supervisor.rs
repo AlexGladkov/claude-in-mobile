@@ -12,7 +12,7 @@ use std::time::UNIX_EPOCH;
 use anyhow::{anyhow, bail, Result};
 use serde::Serialize;
 
-use super::expect::{ExpectOutcome, ExpectRules};
+use super::expect::{validate_expect_durations, ExpectOutcome, ExpectRules};
 use super::prompt_profiles::{compile, pick_profile};
 use super::session::{
     ExitCallback, FilmstripFrame, PtySession, SessionState, SessionStatus, SpawnOptions,
@@ -28,6 +28,83 @@ use super::session::{
 /// read state so `list`/`snapshot` can report status/screen WITHOUT blocking
 /// on a concurrent long-running `expect` that holds `session`.
 const MAX_SESSIONS: usize = 16;
+pub const MAX_SESSION_ID_BYTES: usize = 128;
+pub const MAX_CMD_BYTES: usize = 16 * 1024;
+pub const MAX_CWD_BYTES: usize = 4 * 1024;
+pub const MAX_PROMPT_REGEX_BYTES: usize = 4 * 1024;
+pub const MAX_ENV_ENTRIES: usize = 64;
+pub const MAX_ENV_TOTAL_ENTRIES: usize = MAX_ENV_ENTRIES + 5;
+pub const MAX_ENV_KEY_BYTES: usize = 128;
+pub const MAX_ENV_VALUE_BYTES: usize = 4 * 1024;
+pub const MAX_ENV_TOTAL_BYTES: usize = 32 * 1024;
+pub const MAX_SEND_BYTES: usize = 64 * 1024;
+pub const MAX_KEY_BYTES: usize = 64;
+pub const MAX_CAST_PATH_BYTES: usize = 4 * 1024;
+pub const MAX_SPAWN_ARGUMENT_BYTES: usize = 64 * 1024;
+pub const MIN_TERMINAL_DIMENSION: u16 = 1;
+pub const MAX_TERMINAL_DIMENSION: u16 = 1000;
+
+/// Validate PTY dimensions against the public REPL terminal bounds.
+///
+/// # Errors
+///
+/// Returns an error when either dimension is outside `1..=1000`.
+pub fn validate_terminal_dimensions(cols: u16, rows: u16) -> Result<()> {
+    if !(MIN_TERMINAL_DIMENSION..=MAX_TERMINAL_DIMENSION).contains(&cols) {
+        bail!("cols must be between {MIN_TERMINAL_DIMENSION} and {MAX_TERMINAL_DIMENSION}");
+    }
+    if !(MIN_TERMINAL_DIMENSION..=MAX_TERMINAL_DIMENSION).contains(&rows) {
+        bail!("rows must be between {MIN_TERMINAL_DIMENSION} and {MAX_TERMINAL_DIMENSION}");
+    }
+    Ok(())
+}
+
+pub fn validate_session_id(id: &str) -> Result<()> {
+    let mut bytes = id.bytes();
+    if id.len() > MAX_SESSION_ID_BYTES
+        || !bytes
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphanumeric())
+        || !bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        bail!("session id must match [A-Za-z0-9][A-Za-z0-9._-]{{0,127}}");
+    }
+    Ok(())
+}
+
+pub fn validate_byte_limit(name: &str, value: &str, max_bytes: usize) -> Result<()> {
+    if value.len() > max_bytes {
+        bail!("{name} exceeds the {max_bytes}-byte limit");
+    }
+    Ok(())
+}
+
+pub fn validate_env_entry(key: &str, value: &str) -> Result<usize> {
+    let mut bytes = key.bytes();
+    let valid_key = key.len() <= MAX_ENV_KEY_BYTES
+        && bytes
+            .next()
+            .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+    if !valid_key {
+        bail!("environment variable name must be a POSIX identifier of at most {MAX_ENV_KEY_BYTES} bytes");
+    }
+    validate_byte_limit("environment variable value", value, MAX_ENV_VALUE_BYTES)?;
+    Ok(key.len() + value.len())
+}
+
+pub fn validate_environment(env: &[(String, String)]) -> Result<usize> {
+    if env.len() > MAX_ENV_TOTAL_ENTRIES {
+        bail!("environment exceeds the {MAX_ENV_TOTAL_ENTRIES}-entry limit");
+    }
+    let bytes = env.iter().try_fold(0usize, |total, (key, value)| {
+        Ok::<usize, anyhow::Error>(total.saturating_add(validate_env_entry(key, value)?))
+    })?;
+    if bytes > MAX_ENV_TOTAL_BYTES {
+        bail!("environment exceeds the {MAX_ENV_TOTAL_BYTES}-byte limit");
+    }
+    Ok(bytes)
+}
 
 struct Generation {
     id: u64,
@@ -66,6 +143,37 @@ pub struct SpawnRequest {
     pub shell: bool,
     /// When `Some`, enable asciicast v2 recording to this path.
     pub cast_path: Option<PathBuf>,
+}
+fn validate_spawn_request(req: &SpawnRequest) -> Result<()> {
+    validate_terminal_dimensions(req.cols, req.rows)?;
+    validate_session_id(&req.id)?;
+    validate_byte_limit("cmd", &req.cmd, MAX_CMD_BYTES)?;
+    if let Some(cwd) = &req.cwd {
+        validate_byte_limit("cwd", cwd, MAX_CWD_BYTES)?;
+    }
+    if let Some(regex) = &req.prompt_regex {
+        validate_byte_limit("promptRegex", regex, MAX_PROMPT_REGEX_BYTES)?;
+    }
+    let env_bytes = validate_environment(&req.env)?;
+    let cast_path_bytes = req
+        .cast_path
+        .as_ref()
+        .map_or(0, |path| path.to_string_lossy().len());
+    if cast_path_bytes > MAX_CAST_PATH_BYTES {
+        bail!("castPath exceeds the {MAX_CAST_PATH_BYTES}-byte limit");
+    }
+    let total_bytes = req
+        .id
+        .len()
+        .saturating_add(req.cmd.len())
+        .saturating_add(req.cwd.as_ref().map_or(0, String::len))
+        .saturating_add(req.prompt_regex.as_ref().map_or(0, String::len))
+        .saturating_add(env_bytes)
+        .saturating_add(cast_path_bytes);
+    if total_bytes > MAX_SPAWN_ARGUMENT_BYTES {
+        bail!("spawn arguments exceed the {MAX_SPAWN_ARGUMENT_BYTES}-byte limit");
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -181,6 +289,7 @@ impl Supervisor {
     }
 
     fn handle(&self, id: &str) -> Result<Arc<SessionHandle>> {
+        validate_session_id(id)?;
         self.inner
             .lock()
             .unwrap()
@@ -191,6 +300,7 @@ impl Supervisor {
     }
 
     pub fn spawn(&self, req: SpawnRequest) -> Result<SpawnResult> {
+        validate_spawn_request(&req)?;
         let generation = {
             let mut inner = self.inner.lock().unwrap();
             if inner.closed {
@@ -311,6 +421,7 @@ impl Supervisor {
     }
 
     pub fn send(&self, id: &str, text: &str, with_newline: bool) -> Result<()> {
+        validate_byte_limit("text", text, MAX_SEND_BYTES)?;
         let h = self.handle(id)?;
         let mut s = h.session.lock().unwrap();
         if with_newline {
@@ -321,6 +432,7 @@ impl Supervisor {
     }
 
     pub fn send_key(&self, id: &str, key: &str) -> Result<()> {
+        validate_byte_limit("key", key, MAX_KEY_BYTES)?;
         let bytes = key_bytes(key)?;
         let h = self.handle(id)?;
         let mut s = h.session.lock().unwrap();
@@ -334,6 +446,11 @@ impl Supervisor {
         idle_ms: u64,
         timeout_ms: u64,
     ) -> Result<ExpectOutcome> {
+        validate_expect_durations(idle_ms, timeout_ms)?;
+
+        if let Some(regex) = regex {
+            validate_byte_limit("expect regex", regex, MAX_PROMPT_REGEX_BYTES)?;
+        }
         let h = self.handle(id)?;
         let mut s = h.session.lock().unwrap();
         let regex_owned = regex
@@ -431,6 +548,7 @@ impl Supervisor {
     }
 
     pub fn kill(&self, id: &str) -> Result<()> {
+        validate_session_id(id)?;
         let handle = {
             let inner = self.inner.lock().unwrap();
             let handle = inner
@@ -463,6 +581,7 @@ impl Supervisor {
     /// Order: PTY master first, then vt100 + SessionState under lock.
     /// Unknown id → `anyhow!("no session: {id}")`.
     pub fn resize(&self, id: &str, cols: u16, rows: u16) -> Result<()> {
+        validate_terminal_dimensions(cols, rows)?;
         let h = self.handle(id)?;
         let mut s = h.session.lock().unwrap();
         s.resize(cols, rows)
@@ -574,6 +693,7 @@ fn tail_lines_of(full: &str, max_lines: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugins::repl::expect::{MAX_EXPECT_IDLE_MS, MAX_EXPECT_TIMEOUT_MS};
     use std::sync::{Arc, Barrier};
     use std::thread;
     use std::thread::sleep;
@@ -600,6 +720,104 @@ mod tests {
 
     fn spawn_bash(sup: &Supervisor, id: &str) {
         sup.spawn(bash_request(id)).expect("spawn bash failed");
+    }
+
+    #[test]
+    fn terminal_dimension_validation_matches_public_bounds_without_spawning() {
+        for (cols, rows) in [(1, 1), (1, 1000), (1000, 1), (1000, 1000)] {
+            assert!(validate_terminal_dimensions(cols, rows).is_ok());
+        }
+
+        let mut request = bash_request("invalid-dimensions");
+        request.cols = 0;
+        let cols_error = validate_spawn_request(&request).unwrap_err();
+        assert!(cols_error.to_string().contains("cols"));
+
+        request.cols = MAX_TERMINAL_DIMENSION + 1;
+        let large_cols_error = validate_spawn_request(&request).unwrap_err();
+        assert!(large_cols_error.to_string().contains("cols"));
+
+        request.cols = 80;
+        request.rows = 0;
+        let rows_error = validate_spawn_request(&request).unwrap_err();
+        assert!(rows_error.to_string().contains("rows"));
+
+        request.rows = MAX_TERMINAL_DIMENSION + 1;
+        let large_rows_error = validate_spawn_request(&request).unwrap_err();
+        assert!(large_rows_error.to_string().contains("rows"));
+    }
+
+    #[test]
+    fn spawn_rejects_invalid_dimensions_before_pty_creation() {
+        let sup = Supervisor::new();
+
+        let mut cols_request = bash_request("invalid-spawn-cols");
+        cols_request.cols = 0;
+        let cols_error = sup.spawn(cols_request).unwrap_err();
+        assert!(cols_error.to_string().contains("cols"));
+
+        let mut rows_request = bash_request("invalid-spawn-rows");
+        rows_request.rows = MAX_TERMINAL_DIMENSION + 1;
+        let rows_error = sup.spawn(rows_request).unwrap_err();
+        assert!(rows_error.to_string().contains("rows"));
+
+        assert!(sup.list().is_empty());
+    }
+
+    #[test]
+    fn resize_rejects_invalid_dimensions_before_session_lookup() {
+        let sup = Supervisor::new();
+
+        let cols_error = sup.resize("missing", 0, 24).unwrap_err();
+        assert!(cols_error.to_string().contains("cols"));
+
+        let rows_error = sup
+            .resize("missing", 80, MAX_TERMINAL_DIMENSION + 1)
+            .unwrap_err();
+        assert!(rows_error.to_string().contains("rows"));
+    }
+
+    #[test]
+    fn expect_rejects_invalid_durations_before_session_lookup() {
+        let sup = Supervisor::new();
+
+        let idle_error = sup
+            .expect("missing", None, MAX_EXPECT_IDLE_MS + 1, 0)
+            .unwrap_err();
+        assert!(idle_error.to_string().contains("idleMs"));
+
+        let timeout_error = sup
+            .expect("missing", None, 0, MAX_EXPECT_TIMEOUT_MS + 1)
+            .unwrap_err();
+        assert!(timeout_error.to_string().contains("timeoutMs"));
+    }
+
+    #[test]
+    fn spawn_and_input_limits_reject_oversized_values_before_registration() {
+        let sup = Supervisor::new();
+
+        let long_id = format!("a{}", "x".repeat(MAX_SESSION_ID_BYTES));
+        assert!(sup.spawn(bash_request(&long_id)).is_err());
+
+        let mut request = bash_request("long-command");
+        request.cmd = "x".repeat(MAX_CMD_BYTES + 1);
+        assert!(sup.spawn(request).is_err());
+
+        let mut request = bash_request("invalid-env");
+        request.env.push(("BAD-KEY".into(), "x".into()));
+        assert!(sup.spawn(request).is_err());
+
+        let mut request = bash_request("long-regex");
+        request.prompt_regex = Some("x".repeat(MAX_PROMPT_REGEX_BYTES + 1));
+        assert!(sup.spawn(request).is_err());
+
+        let long_text = "x".repeat(MAX_SEND_BYTES + 1);
+        assert!(sup
+            .send("missing", &long_text, true)
+            .unwrap_err()
+            .to_string()
+            .contains("text"));
+        assert!(sup.list().is_empty());
     }
 
     #[test]

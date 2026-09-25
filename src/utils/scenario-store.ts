@@ -355,11 +355,21 @@ export class ScenarioStore {
       throw new ScenarioCorruptedError(name, "invalid, oversized, or unreadable JSON");
     }
     const scenario = this.validateScenarioJson(parsed);
+    if (scenario.name !== entry.name || scenario.platform !== entry.platform) {
+      throw new ScenarioCorruptedError(name, "scenario identity does not match the manifest");
+    }
 
-    // Verify checksum
-    const actualChecksum = this.computeChecksum(scenario.steps);
-    if (actualChecksum !== entry.checksum) {
-      throw new ScenarioCorruptedError(name, "checksum mismatch — file was modified externally");
+    // Checksum the exact persisted key order. Zod validates and projects
+    // records into schema order, which can differ from older serialized step
+    // objects containing optional labels.
+    const rawSteps = (parsed as Scenario).steps;
+    const actualChecksum = this.computeChecksum(rawSteps);
+    if (
+      rawSteps.length !== entry.stepCount
+      || scenario.checksum !== actualChecksum
+      || actualChecksum !== entry.checksum
+    ) {
+      throw new ScenarioCorruptedError(name, "checksum or step count mismatch — file was modified externally");
     }
 
     return scenario;
@@ -375,8 +385,8 @@ export class ScenarioStore {
     const filePath = this.getScenarioPath(platform, name);
     try {
       await unlink(filePath);
-    } catch {
-      // File already gone — ok
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
 
     manifest.scenarios = manifest.scenarios.filter(e => !(e.name === name && e.platform === platform));

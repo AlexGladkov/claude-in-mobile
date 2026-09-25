@@ -15,12 +15,12 @@
   "author": "Alex Gladkov",
   "license": "MIT",
   "dependencies": {
-    "@mcp-devices/plugin-android": "*",
-    "@mcp-devices/plugin-ios": "*",
-    "@mcp-devices/plugin-web": "*",
-    "@mcp-devices/plugin-desktop": "*",
-    "@mcp-devices/plugin-aurora": "*",
-    "@mcp-devices/plugin-harmony": "*"
+    "@mcp-devices/plugin-android": "4.4.1",
+    "@mcp-devices/plugin-ios": "4.4.1",
+    "@mcp-devices/plugin-web": "4.4.1",
+    "@mcp-devices/plugin-desktop": "4.4.1",
+    "@mcp-devices/plugin-aurora": "4.4.1",
+    "@mcp-devices/plugin-harmony": "4.4.1"
   },
   "repository": {
     "type": "git",

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { existsSync, mkdtempSync, rmSync, writeFileSync, chmodSync, unlinkSync } from "fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync, chmodSync, unlinkSync } from "fs";
 import { tmpdir, platform } from "os";
 import { delimiter, join } from "path";
 
@@ -28,17 +28,19 @@ const describeUnix = isWin ? describe.skip : describe;
 describeUnix("AuroraClient — host-side injection regression (issue #40)", () => {
   let workDir: string;
   let proofFile: string;
+  let argsFile: string;
   let savedPath: string | undefined;
-
   beforeEach(() => {
     workDir = mkdtempSync(join(tmpdir(), "cim-sec-aurora-"));
     const fakeAudb = join(workDir, "audb");
     proofFile = join(workDir, "RCE_PROOF");
-
-    // Fake audb: exit 0, ignore args. Real audb would also exit 0 for many sub-commands;
-    // we only care about host-side side-effects here.
-    writeFileSync(fakeAudb, "#!/bin/sh\nexit 0\n");
+    argsFile = join(workDir, "AUDB_ARGS");
+    writeFileSync(
+      fakeAudb,
+      "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$AUDB_ARGS_FILE\"\nexit 0\n",
+    );
     chmodSync(fakeAudb, 0o755);
+    process.env.AUDB_ARGS_FILE = argsFile;
 
     savedPath = process.env.PATH;
     process.env.PATH = `${workDir}${delimiter}${savedPath ?? ""}`;
@@ -47,6 +49,7 @@ describeUnix("AuroraClient — host-side injection regression (issue #40)", () =
   afterEach(() => {
     if (savedPath === undefined) delete process.env.PATH;
     else process.env.PATH = savedPath;
+    delete process.env.AUDB_ARGS_FILE;
     try {
       if (existsSync(proofFile)) unlinkSync(proofFile);
     } catch {
@@ -102,4 +105,24 @@ describeUnix("AuroraClient — host-side injection regression (issue #40)", () =
     client.pushFile("/tmp/local.bin", `/tmp/remote.bin; touch ${proofFile}`);
     expect(existsSync(proofFile)).toBe(false);
   });
+  it("routes explicit device commands with audb's global serial flag", () => {
+    const client = new AuroraClient();
+
+    client.tap(1, 2);
+    expect(readFileSync(argsFile, "utf8").trim().split(/\r?\n/)).toEqual([
+      "tap",
+      "1",
+      "2",
+    ]);
+
+    client.tap(3, 4, "aurora-2");
+    expect(readFileSync(argsFile, "utf8").trim().split(/\r?\n/)).toEqual([
+      "-s",
+      "aurora-2",
+      "tap",
+      "3",
+      "4",
+    ]);
+  });
+
 });

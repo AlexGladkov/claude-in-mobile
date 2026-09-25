@@ -7,6 +7,7 @@
 
 import { createHash } from "crypto";
 import type { UiElement } from "../ui-tree/ui-parser.js";
+import { isSecureElement } from "../ui-tree/ui-parser/formatters/redact.js";
 
 /**
  * Generate a deterministic fingerprint for a screen based on its UI elements.
@@ -23,7 +24,9 @@ export function generateScreenFingerprint(elements: UiElement[]): string {
     if (el.width <= 0 || el.height <= 0) continue;
 
     const shortClass = el.className.split(".").pop() ?? el.className;
-    const keyText = el.text.slice(0, 30) || el.contentDesc.slice(0, 30);
+    const keyText = isSecureElement(el)
+      ? ""
+      : el.text.slice(0, 30) || el.contentDesc.slice(0, 30);
     const entry = keyText ? `${shortClass}:${keyText}` : shortClass;
     parts.push(entry);
   }

@@ -5,6 +5,7 @@ export type {
   AppInventoryAdapter,
   PermissionAdapter,
   ShellAdapter,
+  LogsAdapter,
   FileTransferAdapter,
   UrlOpeningAdapter,
   SyncScreenshotAdapter,
@@ -26,10 +27,15 @@ export type {
 
 // Type guards
 export {
+  hasDeviceManagement,
+  hasInput,
+  hasScreen,
+  hasUi,
   hasAppManagement,
   hasAppInventory,
   hasPermissions,
   hasShell,
+  hasLogs,
   hasFileTransfer,
   hasUrlOpening,
   hasSyncScreenshot,
@@ -37,6 +43,8 @@ export {
   requirePerformanceTrace,
   hasHeapSnapshot,
   requireHeapSnapshot,
+  setAdapterCapabilities,
+  getAdapterCapabilities,
 } from "./platform-adapter.js";
 
 // Concrete adapters

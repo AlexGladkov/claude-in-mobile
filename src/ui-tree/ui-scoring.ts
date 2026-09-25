@@ -38,43 +38,41 @@ export const CLICKABLE_BOOST = 10;
 
 export const DEFAULT_SCORING_RULES: ReadonlyArray<ScoringRule> = [
   {
-    match: ({ text, desc, element }) =>
-      text === desc ? { score: 100, reason: `exact text match: "${element.text}"` } : null,
+    match: ({ text, desc }) =>
+      text === desc ? { score: 100, reason: "exact text match" } : null,
   },
   {
-    match: ({ contentDesc, desc, element }) =>
+    match: ({ contentDesc, desc }) =>
       contentDesc === desc
-        ? { score: 95, reason: `exact description: "${element.contentDesc}"` }
+        ? { score: 95, reason: "exact description match" }
         : null,
   },
   {
-    match: ({ text, desc, element }) =>
-      text.includes(desc) ? { score: 80, reason: `text contains: "${element.text}"` } : null,
+    match: ({ text, desc }) =>
+      text.includes(desc) ? { score: 80, reason: "text contains the query" } : null,
   },
   {
-    match: ({ contentDesc, desc, element }) =>
+    match: ({ contentDesc, desc }) =>
       contentDesc.includes(desc)
-        ? { score: 75, reason: `description contains: "${element.contentDesc}"` }
+        ? { score: 75, reason: "description contains the query" }
         : null,
   },
   {
-    match: ({ id, desc, element }) =>
+    match: ({ id, desc }) =>
       id.includes(desc) || id.includes(desc.replace(/ /g, "_"))
-        ? { score: 60, reason: `ID match: "${element.resourceId}"` }
+        ? { score: 60, reason: "resource ID match" }
         : null,
   },
   {
-    match: ({ text, desc, element }) => {
+    match: ({ text, desc }) => {
       const hit = desc.split(" ").some((w) => w.length > 2 && text.includes(w));
-      return hit ? { score: 40, reason: `partial text match: "${element.text}"` } : null;
+      return hit ? { score: 40, reason: "partial text match" } : null;
     },
   },
   {
-    match: ({ contentDesc, desc, element }) => {
+    match: ({ contentDesc, desc }) => {
       const hit = desc.split(" ").some((w) => w.length > 2 && contentDesc.includes(w));
-      return hit
-        ? { score: 35, reason: `partial description match: "${element.contentDesc}"` }
-        : null;
+      return hit ? { score: 35, reason: "partial description match" } : null;
     },
   },
 ];

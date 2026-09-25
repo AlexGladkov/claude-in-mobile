@@ -20,7 +20,8 @@ export const syncRun = defineTool({
   schema: z.object({
     group: z.string().describe("Sync group name"),
     steps: z.array(stepSchema).describe("Sync steps with role targeting and barriers"),
-    maxDuration: z.number().optional().describe("Max total duration ms (default: 60000)"),
+    maxDuration: z.number().finite().min(1).max(SYNC_MAX_DURATION).optional()
+      .describe("Orchestration time budget in ms (default: 60000, max: 120000). Cancellation is cooperative; non-cancellable operations may overrun this budget or finish after timeout."),
   }),
   handler: async (args, ctx, depth = 0) => {
     if ((depth ?? 0) > MAX_RECURSION_DEPTH) {
@@ -29,7 +30,7 @@ export const syncRun = defineTool({
 
     const groupName = args.group;
     const steps = args.steps as SyncStep[];
-    const maxDuration = Math.min(args.maxDuration || 60_000, SYNC_MAX_DURATION);
+    const maxDuration = Math.min(args.maxDuration ?? 60_000, SYNC_MAX_DURATION);
 
     const group = getGroup(groupName);
 
@@ -47,7 +48,7 @@ export const syncRun = defineTool({
         throw new SyncRoleNotFoundError(step.role, group.name);
       }
 
-      if (!isSyncActionAllowed(step.action)) {
+      if (!isSyncActionAllowed(step.action, step.args ?? {})) {
         throw new MobileError(
           `Action "${step.action}" is not allowed in sync execution.`,
           "SYNC_SECURITY"
@@ -59,7 +60,7 @@ export const syncRun = defineTool({
       }
     }
 
-    const result = await executeSync(group, steps, ctx, depth ?? 0, maxDuration);
+    const result = await executeSync(group, steps, ctx, depth ?? 0, maxDuration, ctx.signal);
     return textResult(formatSyncResult(result, group));
   },
 });

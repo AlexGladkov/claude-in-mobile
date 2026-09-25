@@ -3,6 +3,7 @@ import { platformEnum, deviceIdField } from "../common-schema.js";
 import { analyzeScreen, formatScreenAnalysis, UiElement } from "../../ui-tree/ui-parser.js";
 import { getUiElements } from "../helpers/get-elements.js";
 import { parseCommonArgs } from "../../utils/parse-common-args.js";
+import { isBuiltinPlatform } from "../../platform-types.js";
 import { textResult } from "../../utils/tool-result.js";
 
 export const uiAnalyze = defineTool({
@@ -44,12 +45,17 @@ export const uiAnalyze = defineTool({
       }
     }
 
-    if (!currentPlatform || !["android", "ios", "desktop", "harmony"].includes(currentPlatform)) {
+    if (
+      !currentPlatform
+      || (
+        isBuiltinPlatform(currentPlatform)
+        && !["android", "ios", "desktop", "harmony", "browser"].includes(currentPlatform)
+      )
+    ) {
       if (currentPlatform) {
         return textResult(`ui(action:'analyze') is not supported for platform: ${currentPlatform}`);
       }
     }
-
     const analysis = analyzeScreen(screenElements, activity);
     return textResult(formatScreenAnalysis(analysis));
   },

@@ -90,4 +90,80 @@ describe("CompatibleStdioServerTransport", () => {
     );
     await transport.close();
   });
+
+  it("reports malformed line frames and continues with a valid frame in the same chunk", async () => {
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const transport = new CompatibleStdioServerTransport(stdin, stdout);
+    const received = new Promise<JSONRPCMessage>((resolve) => {
+      transport.onmessage = resolve;
+    });
+    const errors: Error[] = [];
+    let closed = false;
+    transport.onerror = (error) => {
+      errors.push(error);
+    };
+    transport.onclose = () => {
+      closed = true;
+    };
+
+    await transport.start();
+    stdin.write(`{"jsonrpc":"2.0",\n${JSON.stringify(initializeRequest)}\n`);
+
+    await expect(received).resolves.toEqual(initializeRequest);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(Error);
+    expect(closed).toBe(false);
+    await transport.close();
+  });
+
+  it("reports malformed Content-Length frames and continues with a valid frame in the same chunk", async () => {
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const transport = new CompatibleStdioServerTransport(stdin, stdout);
+    const received = new Promise<JSONRPCMessage>((resolve) => {
+      transport.onmessage = resolve;
+    });
+    const errors: Error[] = [];
+    let closed = false;
+    transport.onerror = (error) => {
+      errors.push(error);
+    };
+    transport.onclose = () => {
+      closed = true;
+    };
+
+    await transport.start();
+    const malformed = JSON.stringify({ jsonrpc: "2.0", id: 1 });
+    stdin.write(
+      `Content-Length: ${Buffer.byteLength(malformed, "utf8")}\r\n\r\n` +
+        `${malformed}${contentLengthFrame(initializeRequest)}`,
+    );
+
+    await expect(received).resolves.toEqual(initializeRequest);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(Error);
+    expect(closed).toBe(false);
+    await transport.close();
+  });
+
+  it("closes on an unrecoverable Content-Length header error", async () => {
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const transport = new CompatibleStdioServerTransport(stdin, stdout);
+    const errors: Error[] = [];
+    const closed = new Promise<void>((resolve) => {
+      transport.onclose = () => resolve();
+    });
+    transport.onerror = (error) => {
+      errors.push(error);
+    };
+
+    await transport.start();
+    stdin.write("Content-Type: application/json\r\n\r\n{}");
+
+    await expect(closed).resolves.toBeUndefined();
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.message).toContain("missing Content-Length");
+  });
 });

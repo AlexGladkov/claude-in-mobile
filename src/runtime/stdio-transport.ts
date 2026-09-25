@@ -151,33 +151,47 @@ export class CompatibleStdioServerTransport implements Transport {
   }
 
   private readLineMessage(): JSONRPCMessage | null {
-    while (true) {
+    while (!this.closed) {
       const newline = this.buffer.indexOf(0x0a);
       if (newline === -1) return null;
 
       const line = this.buffer.toString("utf8", 0, newline).replace(/\r$/, "");
       this.buffer = this.buffer.subarray(newline + 1);
       if (line.trim() === "") continue;
-      return JSONRPCMessageSchema.parse(JSON.parse(line));
+
+      try {
+        return JSONRPCMessageSchema.parse(JSON.parse(line));
+      } catch (error) {
+        this.onerror?.(error instanceof Error ? error : new Error(String(error)));
+      }
     }
+    return null;
   }
 
   private readContentLengthMessage(): JSONRPCMessage | null {
-    const headerEnd = this.findHeaderEnd();
-    if (headerEnd === null) return null;
+    while (!this.closed) {
+      const headerEnd = this.findHeaderEnd();
+      if (headerEnd === null) return null;
 
-    const headerBlock = this.buffer.toString("ascii", 0, headerEnd.headerLength);
-    const contentLength = this.parseContentLength(headerBlock);
-    const bodyStart = headerEnd.bodyStart;
-    if (this.buffer.length - bodyStart < contentLength) return null;
+      const headerBlock = this.buffer.toString("ascii", 0, headerEnd.headerLength);
+      const contentLength = this.parseContentLength(headerBlock);
+      const bodyStart = headerEnd.bodyStart;
+      if (this.buffer.length - bodyStart < contentLength) return null;
 
-    const body = this.buffer.toString(
-      "utf8",
-      bodyStart,
-      bodyStart + contentLength,
-    );
-    this.buffer = this.buffer.subarray(bodyStart + contentLength);
-    return JSONRPCMessageSchema.parse(JSON.parse(body));
+      const body = this.buffer.toString(
+        "utf8",
+        bodyStart,
+        bodyStart + contentLength,
+      );
+      this.buffer = this.buffer.subarray(bodyStart + contentLength);
+
+      try {
+        return JSONRPCMessageSchema.parse(JSON.parse(body));
+      } catch (error) {
+        this.onerror?.(error instanceof Error ? error : new Error(String(error)));
+      }
+    }
+    return null;
   }
 
   private findHeaderEnd(): { headerLength: number; bodyStart: number } | null {

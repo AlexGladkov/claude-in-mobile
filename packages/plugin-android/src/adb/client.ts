@@ -46,6 +46,17 @@ export {
   execAdbFileTransfer,
 } from "./exec.js";
 
+function quoteDeviceShellArgument(argument: string): string {
+  return `'${argument.replaceAll("'", "'\\''")}'`;
+}
+
+function createUiDumpShellCommand(): string {
+  const path = quoteDeviceShellArgument(
+    `/data/local/tmp/mcp-devices-ui-${process.pid}-${randomUUID()}.xml`,
+  );
+  return `trap 'rm -f ${path}' 0; uiautomator dump ${path} >/dev/null 2>&1 && cat ${path}`;
+}
+
 export interface Device {
   id: string;
   state: string;
@@ -82,8 +93,12 @@ export class AdbClient {
     return execAdbRaw(args, deviceIdOverride ?? this.deviceId);
   }
 
-  private async execArgsAsync(args: string[], deviceIdOverride?: string): Promise<string> {
-    return execAdbAsync(args, deviceIdOverride ?? this.deviceId);
+  private async execArgsAsync(
+    args: string[],
+    deviceIdOverride?: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    return execAdbAsync(args, deviceIdOverride ?? this.deviceId, signal);
   }
 
   /**
@@ -106,8 +121,12 @@ export class AdbClient {
   /**
    * Execute ADB command async (non-blocking)
    */
-  async execAsync(command: string, deviceIdOverride?: string): Promise<string> {
-    return this.execArgsAsync(splitArgs(command), deviceIdOverride);
+  async execAsync(
+    command: string,
+    deviceIdOverride?: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    return this.execArgsAsync(splitArgs(command), deviceIdOverride, signal);
   }
 
   /**
@@ -212,15 +231,25 @@ export class AdbClient {
    * Get clipboard text
    */
   getClipboardText(): string {
+    let primaryError: unknown;
     try {
       return this.exec("shell cmd clipboard get-primary-clip");
-    } catch {
-      try {
-        const result = this.exec("shell am broadcast -a clipper.get");
-        return parseClipboardBroadcast(result) ?? "(clipboard not available)";
-      } catch {
-        return "(clipboard access not available — requires API 29+ or clipper app)";
+    } catch (error: unknown) {
+      primaryError = error;
+    }
+
+    try {
+      const result = this.exec("shell am broadcast -a clipper.get");
+      const text = parseClipboardBroadcast(result);
+      if (text === null) {
+        throw new Error("Clipper clipboard fallback returned no clipboard data.");
       }
+      return text;
+    } catch (fallbackError: unknown) {
+      throw new AggregateError(
+        [primaryError, fallbackError],
+        "Unable to read Android clipboard using the built-in and Clipper APIs.",
+      );
     }
   }
 
@@ -302,8 +331,7 @@ export class AdbClient {
       // Single ADB call: pipe XML directly to stdout
       xml = stripDumpPrefix(this.exec("exec-out uiautomator dump /dev/tty"));
     } else {
-      this.exec("shell uiautomator dump /sdcard/ui.xml");
-      xml = this.exec("shell cat /sdcard/ui.xml");
+      xml = this.execArgs(["shell", "sh", "-c", createUiDumpShellCommand()]);
     }
 
     this.uiTreeCache.set(xml);
@@ -324,8 +352,7 @@ export class AdbClient {
       // Single ADB call: pipe XML directly to stdout
       xml = stripDumpPrefix(await this.execAsync("exec-out uiautomator dump /dev/tty"));
     } else {
-      await this.execAsync("shell uiautomator dump /sdcard/ui.xml");
-      xml = await this.execAsync("shell cat /sdcard/ui.xml");
+      xml = await this.execArgsAsync(["shell", "sh", "-c", createUiDumpShellCommand()]);
     }
 
     this.uiTreeCache.set(xml);
@@ -333,48 +360,143 @@ export class AdbClient {
   }
 
   /**
-   * Execute an action + uiautomator dump in a single adb shell invocation (turbo only).
-   * Reduces two process spawns to one, saving ~150-300ms per step.
-   * Returns { actionOutput: string; uiXml: string }.
-   *
-   * SECURITY: Device-side composition via single sh -c argv slot — host shell never parses
-   * the metachars. `actionCommand` originates from internal turbo helpers (tap/swipe/press),
-   * which validate numeric inputs; user-controlled strings do not reach this path.
+   * Execute an action argv + UI dump in a single adb shell invocation (turbo only).
+   * POSIX-quote argv fields; a failed UI dump after success must not replay action.
    */
-  async execWithUiDump(actionCommand: string, deviceIdOverride?: string): Promise<{ actionOutput: string; uiXml: string }> {
-    const combined = `${actionCommand} && uiautomator dump /dev/tty`;
-    const raw = await this.execArgsAsync(["shell", "sh", "-c", combined], deviceIdOverride);
+  async execWithUiDump(
+    actionArgs: readonly string[],
+    deviceIdOverride?: string,
+    signal?: AbortSignal,
+  ): Promise<{ actionOutput: string; uiXml: string }> {
+    const actionCommand = actionArgs.map(quoteDeviceShellArgument).join(" ");
+    const combined = `${actionCommand} && { uiautomator dump /dev/tty || true; }`;
+    const raw = await this.execArgsAsync(
+      ["shell", "sh", "-c", combined],
+      deviceIdOverride,
+      signal,
+    );
     return splitActionAndUiXml(raw);
   }
 
   /**
    * Tap at coordinates (async, non-blocking — for turbo mode).
    */
-  async tapAsync(x: number, y: number, deviceIdOverride?: string): Promise<void> {
-    await this.execAsync(`shell input tap ${x} ${y}`, deviceIdOverride);
+  async tapAsync(
+    x: number,
+    y: number,
+    deviceIdOverride?: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await this.execAsync(`shell input tap ${x} ${y}`, deviceIdOverride, signal);
+  }
+
+  /**
+   * Double tap at coordinates (async, non-blocking).
+   */
+  async doubleTapAsync(
+    x: number,
+    y: number,
+    intervalMs: number = 100,
+    deviceIdOverride?: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const xi = Math.trunc(x);
+    const yi = Math.trunc(y);
+    const seconds = (Math.max(0, intervalMs) / 1000).toFixed(2);
+    const deviceCommand = `input tap ${xi} ${yi} && sleep ${seconds} && input tap ${xi} ${yi}`;
+    await this.execArgsAsync(
+      ["shell", "sh", "-c", deviceCommand],
+      deviceIdOverride,
+      signal,
+    );
+  }
+
+  /**
+   * Long press at coordinates (async, non-blocking).
+   */
+  async longPressAsync(
+    x: number,
+    y: number,
+    durationMs: number = 1000,
+    deviceIdOverride?: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await this.execAsync(
+      `shell input swipe ${x} ${y} ${x} ${y} ${durationMs}`,
+      deviceIdOverride,
+      signal,
+    );
   }
 
   /**
    * Swipe gesture (async, non-blocking — for turbo mode).
    */
-  async swipeAsync(x1: number, y1: number, x2: number, y2: number, durationMs: number = 300, deviceIdOverride?: string): Promise<void> {
-    await this.execAsync(`shell input swipe ${x1} ${y1} ${x2} ${y2} ${durationMs}`, deviceIdOverride);
+  async swipeAsync(
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    durationMs: number = 300,
+    deviceIdOverride?: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await this.execAsync(
+      `shell input swipe ${x1} ${y1} ${x2} ${y2} ${durationMs}`,
+      deviceIdOverride,
+      signal,
+    );
+  }
+
+  /**
+   * Swipe in a direction (async, non-blocking).
+   */
+  async swipeDirectionAsync(
+    direction: "up" | "down" | "left" | "right",
+    distance: number = 800,
+    deviceIdOverride?: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const { width, height } = parseScreenSize(
+      await this.execAsync("shell wm size", deviceIdOverride, signal),
+    );
+    const centerX = Math.floor(width / 2);
+    const centerY = Math.floor(height / 2);
+    const coords = {
+      up: [centerX, centerY + distance / 2, centerX, centerY - distance / 2],
+      down: [centerX, centerY - distance / 2, centerX, centerY + distance / 2],
+      left: [centerX + distance / 2, centerY, centerX - distance / 2, centerY],
+      right: [centerX - distance / 2, centerY, centerX + distance / 2, centerY],
+    };
+    const [x1, y1, x2, y2] = coords[direction];
+    await this.swipeAsync(x1, y1, x2, y2, 300, deviceIdOverride, signal);
   }
 
   /**
    * Press key (async, non-blocking — for turbo mode).
    */
-  async pressKeyAsync(key: string, deviceIdOverride?: string): Promise<void> {
-    const keyCode = resolveKeyCode(key, ANDROID_KEYCODES_FAST);
-    await this.execAsync(`shell input keyevent ${keyCode}`, deviceIdOverride);
+  async pressKeyAsync(
+    key: string,
+    deviceIdOverride?: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const keyCode = resolveKeyCode(key, ANDROID_KEYCODES);
+    await this.execAsync(`shell input keyevent ${keyCode}`, deviceIdOverride, signal);
   }
 
   /**
    * Input text (async, non-blocking — for turbo mode).
    */
-  async inputTextAsync(text: string, deviceIdOverride?: string): Promise<void> {
+  async inputTextAsync(
+    text: string,
+    deviceIdOverride?: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
     const escaped = escapeAndroidInputText(text);
-    await this.execArgsAsync(["shell", `input text "${escaped}"`], deviceIdOverride);
+    await this.execArgsAsync(
+      ["shell", `input text "${escaped}"`],
+      deviceIdOverride,
+      signal,
+    );
   }
 
   /**

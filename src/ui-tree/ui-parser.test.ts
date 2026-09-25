@@ -339,6 +339,22 @@ describe("findBestMatch", () => {
     const result = findBestMatch(elements, "Forgot password?");
     expect(result).toBeNull();
   });
+  it("does not expose matched element values in scoring reasons", () => {
+    const secret = "731904";
+    const secure = makeTestElement({
+      className: "android.widget.EditText",
+      resourceId: `com.example:id/otp_${secret}`,
+      text: secret,
+    });
+
+    const result = findBestMatch([secure], secret);
+
+    expect(result?.reason).toBe("exact text match");
+    expect(result?.reason).not.toContain(secret);
+    expect(result?.reason).not.toContain("otp_");
+    expect(formatElement(secure)).not.toContain(secret);
+    expect(formatElement(secure)).not.toContain("otp_");
+  });
 });
 
 // ──────────────────────────────────────────────
@@ -505,8 +521,59 @@ describe("analyzeScreen", () => {
     const disabled = analysis.buttons.find(b => b.label.includes("Forgot"));
     expect(disabled).toBeUndefined();
   });
-});
+  it("redacts secure button labels and input hints while preserving ordinary labels", () => {
+    const analysis = analyzeScreen([
+      makeTestElement({
+        index: 1,
+        className: "android.widget.Button",
+        password: true,
+        clickable: true,
+        text: "hunter2",
+        contentDesc: "Private action",
+      }),
+      makeTestElement({
+        index: 2,
+        className: "securetextbox",
+        text: "123456",
+        contentDesc: "Private PIN name",
+      }),
+      makeTestElement({
+        index: 3,
+        className: "android.widget.Button",
+        clickable: true,
+        text: "Continue",
+        contentDesc: "Continue setup",
+      }),
+    ]);
 
+    expect(analysis.buttons.find(button => button.index === 1)?.label).toBe("[REDACTED]");
+    expect(analysis.inputs.find(input => input.index === 2)?.hint).toBe("[REDACTED]");
+    expect(analysis.buttons.find(button => button.index === 3)?.label).toBe("Continue");
+
+    const formatted = formatScreenAnalysis(analysis);
+    expect(formatted).not.toContain("hunter2");
+    expect(formatted).not.toContain("123456");
+    expect(formatted).not.toContain("Private action");
+    expect(formatted).not.toContain("Private PIN name");
+    expect(formatted).toContain("Continue");
+  });
+  it("redacts OTP/PIN values identified by resource metadata", () => {
+    const otp = makeTestElement({
+      index: 4,
+      className: "android.widget.EditText",
+      resourceId: "com.example:id/otp_input",
+      text: "731904",
+      contentDesc: "One-time code",
+    });
+
+    const formattedElement = formatElement(otp);
+    const formattedAnalysis = formatScreenAnalysis(analyzeScreen([otp]));
+    expect(formattedElement).not.toContain("731904");
+    expect(formattedElement).toContain("[REDACTED]");
+    expect(formattedAnalysis).not.toContain("731904");
+    expect(formattedAnalysis).toContain("[REDACTED]");
+  });
+});
 // ──────────────────────────────────────────────
 // formatElement
 // ──────────────────────────────────────────────
@@ -562,6 +629,111 @@ describe("formatElement", () => {
     const formatted = formatElement(longTextEl);
     expect(formatted).toContain("...");
   });
+  it.each(["password", "securetextbox"])("redacts lowercase secure role %s", (role) => {
+    const secure = makeTestElement({
+      className: role,
+      text: "hunter2",
+      contentDesc: "Private password field",
+    });
+
+    const formatted = formatElement(secure);
+
+    expect(formatted).not.toContain("hunter2");
+    expect(formatted).not.toContain("Private password field");
+    expect(formatted).toContain('text="[REDACTED]"');
+    expect(formatted).toContain('desc="[REDACTED]"');
+  });
+
+  it("redacts populated Android and Harmony text-entry values", () => {
+    const androidField = makeTestElement({
+      className: "android.widget.EditText",
+      text: "731904",
+      clickable: true,
+      focused: true,
+    });
+    const harmonyField = makeTestElement({
+      className: "Harmony.TextInput",
+      text: "harmony-otp-value",
+      clickable: true,
+    });
+    const otpDescription = makeTestElement({
+      className: "android.widget.Button",
+      text: "Continue",
+      contentDesc: "OTP 482617",
+      clickable: true,
+    });
+    const elements = [androidField, harmonyField, otpDescription];
+    const full = formatUiTree(elements, { showAll: true });
+    const compact = formatUiTree(elements, { compact: true });
+    const suggestions = suggestNextActions(elements).join("\n");
+
+    for (const output of [full, compact, suggestions]) {
+      expect(output).not.toContain("731904");
+      expect(output).not.toContain("harmony-otp-value");
+      expect(output).not.toContain("482617");
+    }
+  });
+
+  it("redacts IDs for empty generic text-entry fields", () => {
+    const identifier = "customer-account-5841";
+    const element = makeTestElement({
+      className: "android.widget.EditText",
+      resourceId: identifier,
+      text: "",
+      contentDesc: "Email address",
+    });
+    const formatted = formatElement(element);
+
+    expect(formatted).not.toContain(identifier);
+    expect(formatted).toContain('desc="Email address"');
+  });
+
+  it("removes terminal controls from device-provided UI and analysis values", () => {
+    const attack = "Visible\u001b[31mred\u001b[0m\nINJECTED\u0007\u202eRTL\u202c\u2066isolated\u2069";
+    const element = makeTestElement({
+      className: `android.widget.Button${attack}`,
+      resourceId: `com.test:id/button${attack}`,
+      text: attack,
+      contentDesc: attack,
+      clickable: true,
+    });
+    const formatted = formatElement(element);
+    const compact = formatUiTree([element], { compact: true });
+    const analysis = formatScreenAnalysis({
+      summary: attack,
+      screenTitle: attack,
+      hasDialog: true,
+      dialogTitle: attack,
+      navigationState: {
+        hasBack: true,
+        hasMenu: true,
+        hasTabs: true,
+        currentTab: attack,
+      },
+      buttons: [{ index: 0, label: attack, coordinates: { x: 1, y: 2 } }],
+      inputs: [{
+        index: 1,
+        hint: attack,
+        value: attack,
+        coordinates: { x: 3, y: 4 },
+      }],
+      texts: [{ content: attack, coordinates: { x: 5, y: 6 } }],
+      scrollable: [],
+    });
+
+    expect(formatted).not.toContain("\u001b");
+    expect(formatted.split("\n")).toHaveLength(1);
+    expect(compact).not.toContain("\u001b");
+    expect(compact.split("\n")).toHaveLength(1);
+    expect(analysis).not.toContain("\u001b");
+    expect(formatted).not.toContain("\u202e");
+    expect(formatted).not.toContain("\u202c");
+    expect(formatted).not.toContain("\u2066");
+    expect(formatted).not.toContain("\u2069");
+    expect(compact).not.toContain("\u202e");
+    expect(analysis).not.toContain("\u2069");
+    expect(analysis.split("\n")).toHaveLength(15);
+  });
 });
 
 // ──────────────────────────────────────────────
@@ -595,6 +767,22 @@ describe("formatUiTree", () => {
     const tree = formatUiTree([]);
     expect(tree).toBe("No UI elements found");
   });
+  it("redacts secure text and descriptions in full-tree output", () => {
+    const tree = formatUiTree([
+      makeTestElement({
+        className: "securetextbox",
+        text: "hunter2",
+        contentDesc: "Private PIN name",
+      }),
+    ], { showAll: true });
+
+    expect(tree).not.toContain("hunter2");
+    expect(tree).not.toContain("Private PIN name");
+    expect(tree).toContain("<securetextbox>");
+    expect(tree).toContain('text="[REDACTED]"');
+    expect(tree).toContain('desc="[REDACTED]"');
+    expect(tree).toContain("@ (50, 25)");
+  });
 });
 
 // ──────────────────────────────────────────────
@@ -616,6 +804,22 @@ describe("formatScreenAnalysis", () => {
     const analysis = analyzeScreen([]);
     const formatted = formatScreenAnalysis(analysis);
     expect(formatted).toContain("Empty screen");
+  });
+  it("does not print a value marked as sensitive", () => {
+    const analysis = analyzeScreen([
+      makeTestElement({
+        className: "XCUIElementTypeTextField",
+        password: true,
+        text: "",
+        contentDesc: "pin_input",
+      }),
+    ]);
+    analysis.inputs[0].value = "123456";
+
+    const formatted = formatScreenAnalysis(analysis);
+
+    expect(formatted).not.toContain("123456");
+    expect(formatted).toContain("[REDACTED]");
   });
 });
 
@@ -749,6 +953,21 @@ describe("analyzeScreen cross-platform", () => {
     const analysis = analyzeScreen(elements);
     expect(analysis.inputs.length).toBe(1);
     expect(analysis.inputs[0].hint).toBe("Email");
+  });
+  it("does not retain secure values when hints do not identify the field", () => {
+    const analysis = analyzeScreen([
+      makeTestElement({
+        className: "XCUIElementTypeTextField",
+        password: true,
+        text: "123456",
+        contentDesc: "",
+        resourceId: "pin_input",
+      }),
+    ]);
+
+    expect(analysis.inputs[0].value).toBe("");
+    expect(analysis.inputs[0].sensitive).toBe(true);
+    expect(formatScreenAnalysis(analysis)).not.toContain("123456");
   });
 
   it("detects iOS StaticText as text", () => {

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use crate::utils::device_shell::DeviceShellCmd;
 use crate::utils::private_state::{private_temp_dir, read_bounded_file};
-use crate::utils::process::{run_with_limits, terminal_safe};
+use crate::utils::process::{run_with_limits, terminal_safe, terminal_safe_json};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -249,6 +249,160 @@ fn parse_bounds(value: Option<&Value>) -> Option<(i32, i32, i32, i32)> {
     }
 }
 
+const REDACTED_UI_TEXT: &str = "[REDACTED]";
+
+fn compact_accessibility_marker(value: &str) -> String {
+    value
+        .chars()
+        .filter_map(|character| {
+            character
+                .is_ascii_alphanumeric()
+                .then_some(character.to_ascii_lowercase())
+        })
+        .collect()
+}
+
+fn is_text_entry_role(value: &str) -> bool {
+    let compact = compact_accessibility_marker(value);
+    [
+        "textfield",
+        "textarea",
+        "textview",
+        "searchfield",
+        "textbox",
+        "textinput",
+        "searchbox",
+        "combobox",
+        "spinbutton",
+    ]
+    .iter()
+    .any(|marker| compact.contains(marker))
+}
+
+fn has_sensitive_marker(value: &str) -> bool {
+    let words = value.split(|character: char| !character.is_ascii_alphanumeric());
+    if words.clone().any(|word| {
+        matches!(
+            word.to_ascii_lowercase().as_str(),
+            "pin" | "otp" | "password" | "passwd" | "passcode" | "cvv" | "cvc"
+        )
+    }) {
+        return true;
+    }
+
+    let compact = compact_accessibility_marker(value);
+    [
+        "onetimecode",
+        "verificationcode",
+        "securitycode",
+        "pincode",
+        "otpcode",
+        "pinfield",
+        "otpfield",
+        "creditcard",
+        "cardnumber",
+        "ccnumber",
+        "ccsecuritycode",
+    ]
+    .iter()
+    .any(|marker| compact.contains(marker))
+}
+
+fn json_string_from_keys(attributes: &Map<String, Value>, keys: &[&str]) -> String {
+    keys.iter()
+        .find_map(|key| attributes.get(*key).and_then(Value::as_str))
+        .unwrap_or_default()
+        .to_owned()
+}
+
+fn has_secure_flag(attributes: &Map<String, Value>) -> bool {
+    [
+        "password",
+        "secure",
+        "isSecure",
+        "secureTextEntry",
+        "passwordMode",
+    ]
+    .iter()
+    .any(|key| {
+        attributes.get(*key).is_some_and(|value| {
+            value.as_bool() == Some(true)
+                || value
+                    .as_str()
+                    .is_some_and(|text| text.eq_ignore_ascii_case("true"))
+        })
+    })
+}
+
+fn redact_harmony_ui_fields(attributes: &mut Map<String, Value>) {
+    for key in [
+        "text",
+        "content",
+        "value",
+        "description",
+        "hint",
+        "accessibilityText",
+        "id",
+        "resourceId",
+        "accessibilityId",
+        "label",
+        "title",
+        "name",
+    ] {
+        if attributes.get(key).is_some_and(Value::is_string) {
+            attributes.insert(key.to_owned(), Value::String(REDACTED_UI_TEXT.to_owned()));
+        }
+    }
+}
+
+fn sanitize_harmony_ui_value(value: &mut Value) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                sanitize_harmony_ui_value(value);
+            }
+        }
+        Value::Object(object) => {
+            let attributes = object
+                .get("attributes")
+                .and_then(Value::as_object)
+                .unwrap_or(object);
+            let class = json_string_from_keys(attributes, &["type", "className", "role"]);
+            let text = json_string_from_keys(attributes, &["text", "content", "value"]);
+            let resource_id =
+                json_string_from_keys(attributes, &["id", "resourceId", "accessibilityId"]);
+            let description =
+                json_string_from_keys(attributes, &["description", "hint", "accessibilityText"]);
+            let secure = has_secure_flag(attributes)
+                || (is_text_entry_role(&class) && !text.trim().is_empty())
+                || has_sensitive_marker(&class)
+                || has_sensitive_marker(&text)
+                || has_sensitive_marker(&resource_id)
+                || has_sensitive_marker(&description);
+            if secure {
+                if let Some(attributes) =
+                    object.get_mut("attributes").and_then(Value::as_object_mut)
+                {
+                    redact_harmony_ui_fields(attributes);
+                }
+                redact_harmony_ui_fields(object);
+            }
+
+            for child in object.values_mut() {
+                sanitize_harmony_ui_value(child);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn sanitize_harmony_ui_dump(json: &str) -> Result<String> {
+    let mut root: Value =
+        serde_json::from_str(json).context("HarmonyOS UI dump is not valid JSON")?;
+    sanitize_harmony_ui_value(&mut root);
+    serde_json::to_string(&root).context("failed to serialize sanitized HarmonyOS UI dump")
+}
+
 fn collect_ui_elements(value: &Value, elements: &mut Vec<HarmonyElement>) {
     match value {
         Value::Array(values) => {
@@ -310,7 +464,9 @@ fn collect_ui_elements(value: &Value, elements: &mut Vec<HarmonyElement>) {
 }
 
 fn parse_ui_elements(json: &str) -> Result<Vec<HarmonyElement>> {
-    let root: Value = serde_json::from_str(json).context("HarmonyOS UI dump is not valid JSON")?;
+    let mut root: Value =
+        serde_json::from_str(json).context("HarmonyOS UI dump is not valid JSON")?;
+    sanitize_harmony_ui_value(&mut root);
     let mut elements = Vec::new();
     collect_ui_elements(&root, &mut elements);
     Ok(elements)
@@ -322,7 +478,7 @@ pub fn list_devices() -> Result<Vec<HarmonyDevice>> {
 }
 
 pub fn print_devices() -> Result<()> {
-    println!("{}", serde_json::to_string_pretty(&list_devices()?)?);
+    println!("{}", terminal_safe_json(&list_devices()?)?);
     Ok(())
 }
 
@@ -420,7 +576,8 @@ pub fn ui_dump(format: &str, device: Option<&str>) -> Result<String> {
         bail!("HarmonyOS UI dump supports only json format");
     }
     let bytes = transfer_generated_file(device, "layout", "json", &["uitest", "dumpLayout", "-p"])?;
-    String::from_utf8(bytes).context("HarmonyOS UI dump is not valid UTF-8")
+    let json = String::from_utf8(bytes).context("HarmonyOS UI dump is not valid UTF-8")?;
+    sanitize_harmony_ui_dump(&json)
 }
 
 pub fn get_ui_elements(device: Option<&str>) -> Result<Vec<HarmonyElement>> {
@@ -998,6 +1155,7 @@ mod tests {
         }"#;
         let elements = parse_ui_elements(layout).unwrap();
         assert_eq!(elements.len(), 2);
+
         assert_eq!(elements[1].center(), (50, 70));
         assert_eq!(elements[1].label(), "Continue");
 
@@ -1008,6 +1166,24 @@ mod tests {
             ]}"#,
         );
         assert_eq!(permissions, vec!["ohos.permission.CAMERA"]);
+    }
+
+    #[test]
+    fn redacts_value_bearing_text_entries_from_dump_and_elements() {
+        let secret = "otp-731904";
+        let layout = format!(
+            r#"{{"attributes":{{"type":"TextField","value":"{secret}","id":"otp-entry","description":"verification code","bounds":"[0,0][100,40]"}}}}"#
+        );
+
+        let safe_dump = sanitize_harmony_ui_dump(&layout).unwrap();
+        let elements = parse_ui_elements(&layout).unwrap();
+        assert!(!safe_dump.contains(secret));
+        assert!(!safe_dump.contains("otp-entry"));
+        assert!(!safe_dump.contains("verification code"));
+        assert_eq!(elements.len(), 1);
+        assert_eq!(elements[0].text, REDACTED_UI_TEXT);
+        assert_eq!(elements[0].resource_id, REDACTED_UI_TEXT);
+        assert_eq!(elements[0].content_desc, REDACTED_UI_TEXT);
     }
 
     #[test]

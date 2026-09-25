@@ -5,45 +5,242 @@ on:
     tags:
       - "v*.*.*"
 
+# Jobs opt into write permissions only when they must mutate a release or tap.
 permissions:
-  contents: write
+  contents: read
 
-# The archive matrix is the source of truth for release artifacts.
-# Homebrew currently tracks the macOS targets; Linux archives are checked
-# against their published SHA256 sidecars.
-# Downstream jobs discover artifacts dynamically from upload-artifact filenames.
+# The archive matrix is the source of truth for release artifacts. Public
+# stable/prerelease archives are checked against signed GitHub attestations;
+# Homebrew pairs each macOS URL block with its exact archive digest.
+concurrency:
+  group: ${{ github.repository }}-release
+  cancel-in-progress: false
 
 jobs:
   # Classifies the tag: a version with a prerelease component (e.g. 4.0.0-dev,
-  # 4.0.0-rc.1) is published as a GitHub *pre-release* (does NOT become "Latest")
-  # and to a non-`latest` npm dist-tag, so the stable 3.x line stays the default
-  # install. Downstream jobs read these outputs instead of re-deriving them.
+  # 4.0.0-rc.1) is published as a GitHub pre-release and a non-latest npm
+  # dist-tag. No downstream job starts until this strict SemVer gate succeeds.
   setup:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
+      tag_name: ${{ steps.classify.outputs.tag_name }}
       version: ${{ steps.classify.outputs.version }}
       prerelease: ${{ steps.classify.outputs.prerelease }}
       npm_tag: ${{ steps.classify.outputs.npm_tag }}
+      commit_sha: ${{ steps.resolve-tag.outputs.commit_sha }}
+      tag_object_sha: ${{ steps.resolve-tag.outputs.tag_object_sha }}
     steps:
-      - name: Classify tag
+      - name: Validate and classify tag
         id: classify
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          if [[ "$VERSION" == *-* ]]; then
-            # Prerelease: derive the npm dist-tag from the identifier
-            # (4.0.0-dev -> dev, 4.0.0-rc.1 -> rc); fall back to `next`.
-            NPM_TAG=$(echo "$VERSION" | sed -nE 's/^[0-9]+\.[0-9]+\.[0-9]+-([a-zA-Z][a-zA-Z0-9]*).*/\1/p')
-            [ -z "$NPM_TAG" ] && NPM_TAG=next
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=$NPM_TAG" >> "$GITHUB_OUTPUT"
-          else
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
-            echo "npm_tag=latest" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          if [[ "$REF_NAME" != v* ]]; then
+            echo "::error::Release ref must start with v"
+            exit 1
           fi
-          cat "$GITHUB_OUTPUT"
+
+          VERSION="${REF_NAME#v}"
+          # Release tags use the SemVer core with an optional prerelease.
+          # Build metadata is rejected because it adds no precedence but
+          # creates semver-equivalent package and archive identifiers.
+          SEMVER_RE='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?$'
+          if [[ ! "$VERSION" =~ $SEMVER_RE ]]; then
+            echo "::error::Release tags must be SemVer core versions with an optional prerelease; build metadata is not supported"
+            exit 1
+          fi
+
+          if [[ "$VERSION" == *-* ]]; then
+            PRERELEASE="${VERSION#*-}"
+            NPM_TAG="${PRERELEASE%%.*}"
+            # Numeric prerelease identifiers cannot be npm dist-tags.
+            if [[ "$NPM_TAG" == latest || ! "$NPM_TAG" =~ ^[A-Za-z][A-Za-z0-9-]*$ ]]; then
+              NPM_TAG=next
+            fi
+            printf 'prerelease=true\n' >> "$GITHUB_OUTPUT"
+            printf 'npm_tag=%s\n' "$NPM_TAG" >> "$GITHUB_OUTPUT"
+          else
+            printf 'prerelease=false\n' >> "$GITHUB_OUTPUT"
+            printf 'npm_tag=latest\n' >> "$GITHUB_OUTPUT"
+          fi
+          printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
+          printf 'tag_name=%s\n' "$REF_NAME" >> "$GITHUB_OUTPUT"
+      - name: Resolve exact tag ref and verify triggering commit
+        id: resolve-tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRIGGER_SHA: ${{ github.sha }}
+          TAG_NAME: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG_REF="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG_NAME}")" || {
+            echo "::error::Unable to resolve exact tag ref refs/tags/${TAG_NAME}"
+            exit 1
+          }
+          TAG_OBJECT_SHA="$(jq -er '.object.sha | strings | select(test("^[0-9a-f]{40}$"))' <<<"$TAG_REF")" || {
+            echo "::error::Tag ref did not contain a valid Git object SHA"
+            exit 1
+          }
+          TAG_OBJECT_TYPE="$(jq -er '.object.type' <<<"$TAG_REF")"
+          TAG_SHA=""
+          OBJECT_SHA="$TAG_OBJECT_SHA"
+          OBJECT_TYPE="$TAG_OBJECT_TYPE"
+          for ((depth = 0; depth < 5; depth++)); do
+            case "$OBJECT_TYPE" in
+              commit)
+                TAG_SHA="$OBJECT_SHA"
+                break
+                ;;
+              tag)
+                TAG_OBJECT="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${OBJECT_SHA}")" || {
+                  echo "::error::Unable to dereference annotated tag object ${OBJECT_SHA}"
+                  exit 1
+                }
+                OBJECT_SHA="$(jq -er '.object.sha | strings | select(test("^[0-9a-f]{40}$"))' <<<"$TAG_OBJECT")"
+                OBJECT_TYPE="$(jq -er '.object.type' <<<"$TAG_OBJECT")"
+                ;;
+              *)
+                echo "::error::Unsupported Git tag object type: ${OBJECT_TYPE}"
+                exit 1
+                ;;
+            esac
+          done
+          [[ -n "$TAG_SHA" ]] || {
+            echo "::error::Tag dereference exceeded the supported depth"
+            exit 1
+          }
+          if [[ "$TAG_SHA" != "$TRIGGER_SHA" ]]; then
+            echo "::error::Resolved refs/tags/${TAG_NAME} commit ${TAG_SHA} differs from triggering commit ${TRIGGER_SHA}"
+            exit 1
+          fi
+          printf 'commit_sha=%s\n' "$TAG_SHA" >> "$GITHUB_OUTPUT"
+          printf 'tag_object_sha=%s\n' "$TAG_OBJECT_SHA" >> "$GITHUB_OUTPUT"
+          echo "Resolved refs/tags/${TAG_NAME} object ${TAG_OBJECT_SHA} to commit ${TAG_SHA}"
+
+  # ci.yml is not triggered by tag pushes. Require a bounded, exact-SHA lookup
+  # so a release cannot publish from a commit whose CI is missing or failed.
+  ci-check:
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.setup.outputs.commit_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify tagged commit is in protected main history
+        env:
+          COMMIT_SHA: ${{ needs.setup.outputs.commit_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --force origin \
+            '+refs/heads/main:refs/remotes/origin/main'
+          MAIN_SHA="$(git rev-parse refs/remotes/origin/main^{commit})"
+          if ! git merge-base --is-ancestor "$COMMIT_SHA" "$MAIN_SHA"; then
+            echo "::error::Tagged commit ${COMMIT_SHA} is not reachable from protected main"
+            exit 1
+          fi
+          echo "Tagged commit ${COMMIT_SHA} is reachable from protected main ${MAIN_SHA}"
+
+      - name: Require successful push CI for tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_SHA: ${{ needs.setup.outputs.commit_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          MAX_ATTEMPTS=60
+          SLEEP_SECONDS=30
+          for ((attempt = 1; attempt <= MAX_ATTEMPTS; attempt++)); do
+            if ! RUNS="$(gh run list \
+              --workflow ci.yml \
+              --commit "$COMMIT_SHA" \
+              --limit 100 \
+              --json databaseId,headSha,status,conclusion,event,headBranch)"; then
+              echo "::error::Unable to query ci.yml runs for $COMMIT_SHA"
+              exit 1
+            fi
+
+            SUCCESS="$(jq --arg sha "$COMMIT_SHA" '
+              [.[] |
+                select(
+                  .headSha == $sha and
+                  .event == "push" and
+                  .headBranch == "main" and
+                  .status == "completed" and
+                  .conclusion == "success"
+                )
+              ] | length
+            ' <<< "$RUNS")"
+            ACTIVE="$(jq --arg sha "$COMMIT_SHA" '
+              [.[] |
+                select(
+                  .headSha == $sha and
+                  .event == "push" and
+                  .headBranch == "main" and
+                  (.status == "queued" or .status == "in_progress")
+                )
+              ] | length
+            ' <<< "$RUNS")"
+            COMPLETED="$(jq --arg sha "$COMMIT_SHA" '
+              [.[] |
+                select(
+                  .headSha == $sha and
+                  .event == "push" and
+                  .headBranch == "main" and
+                  .status == "completed"
+                )
+              ] | length
+            ' <<< "$RUNS")"
+
+            # A rerun may be queued or in progress while an older attempt has
+            # already failed. Never fail on that older result.
+            if [[ "$ACTIVE" -gt 0 ]]; then
+              if (( attempt == MAX_ATTEMPTS )); then
+                echo "::error::Matching push CI remained queued/in-progress for the bounded wait"
+                exit 1
+              fi
+              echo "Matching push CI is queued/in-progress (attempt ${attempt}/${MAX_ATTEMPTS}); waiting"
+              sleep "$SLEEP_SECONDS"
+              continue
+            fi
+            if [[ "$SUCCESS" -gt 0 ]]; then
+              echo "Found successful exact-SHA push ci.yml run for $COMMIT_SHA"
+              exit 0
+            fi
+            if [[ "$COMPLETED" -gt 0 ]]; then
+              echo "::error::ci.yml push runs for $COMMIT_SHA completed without success"
+              jq --arg sha "$COMMIT_SHA" '
+                .[] |
+                select(
+                  .headSha == $sha and
+                  .event == "push" and
+                  .headBranch == "main"
+                )
+              ' <<< "$RUNS"
+              exit 1
+            fi
+            if (( attempt == MAX_ATTEMPTS )); then
+              echo "::error::No successful exact-SHA push ci.yml run after the bounded wait"
+              exit 1
+            fi
+            echo "No matching push CI run yet (attempt ${attempt}/${MAX_ATTEMPTS}); waiting"
+            sleep "$SLEEP_SECONDS"
+          done
 
   build:
+    needs: [setup, ci-check]
     strategy:
       matrix:
         include:
@@ -59,16 +256,15 @@ jobs:
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
-      id-token: write
-      attestations: write
-
-
+    env:
+      VERSION: ${{ needs.setup.outputs.version }}
+      TARGET: ${{ matrix.target }}
+      PLATFORM: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-
-      - name: Extract version from tag
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        with:
+          ref: ${{ needs.setup.outputs.commit_sha }}
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -76,20 +272,61 @@ jobs:
 
       - name: Build
         working-directory: cli
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --locked --target "$TARGET"
 
       - name: Package
+        shell: bash
         run: |
-          ARCHIVE="claude-in-mobile-${{ steps.version.outputs.version }}-${{ matrix.platform }}.tar.gz"
-          BIN_DIR="cli/target/${{ matrix.target }}/release"
+          set -euo pipefail
+          ARCHIVE="claude-in-mobile-${VERSION}-${PLATFORM}.tar.gz"
+          BIN_DIR="cli/target/${TARGET}/release"
           ln -sf mcp-devices "$BIN_DIR/mcp-devices-cli"
           tar -czf "$ARCHIVE" -C "$BIN_DIR" mcp-devices mcp-devices-cli
           shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
-
-      - name: Attest packaged CLI archive
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
-        with:
-          subject-path: "claude-in-mobile-*.tar.gz"
+      - name: Smoke-test packaged CLI archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="claude-in-mobile-${VERSION}-${PLATFORM}.tar.gz"
+          SMOKE_DIR="$(mktemp -d)"
+          tar -xzf "$ARCHIVE" -C "$SMOKE_DIR"
+          run_with_timeout() {
+            local seconds="$1"
+            shift
+            perl -e '$SIG{ALRM}=sub { exit 124 }; alarm shift @ARGV; exec @ARGV' "$seconds" "$@"
+          }
+          for executable in mcp-devices mcp-devices-cli; do
+            [[ -x "$SMOKE_DIR/$executable" ]] || {
+              echo "::error::Packaged archive is missing executable $executable"
+              exit 1
+            }
+            run_with_timeout 30 "$SMOKE_DIR/$executable" --version >/dev/null
+            run_with_timeout 30 "$SMOKE_DIR/$executable" --help >/dev/null
+          done
+      - name: Smoke-test native REPL supervisor
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN_DIR="cli/target/${TARGET}/release"
+          run_with_timeout() {
+            local seconds="$1"
+            shift
+            perl -e '$SIG{ALRM}=sub { exit 124 }; alarm shift @ARGV; exec @ARGV' "$seconds" "$@"
+          }
+          REPL_OUTPUT="$(
+            printf '{"id":"r1","method":"shutdown"}\n' |
+              run_with_timeout 30 "$BIN_DIR/mcp-devices" repl-supervisor
+          )"
+          [[ "$REPL_OUTPUT" == *'"event":"ready"'* ]] || {
+            echo "::error::Native REPL supervisor did not report ready"
+            printf '%s\n' "$REPL_OUTPUT"
+            exit 1
+          }
+          [[ "$REPL_OUTPUT" == *'"result":"ok"'* ]] || {
+            echo "::error::Native REPL supervisor did not return result:ok"
+            printf '%s\n' "$REPL_OUTPUT"
+            exit 1
+          }
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -98,67 +335,81 @@ jobs:
           path: |
             claude-in-mobile-*.tar.gz
             claude-in-mobile-*.tar.gz.sha256
+          if-no-files-found: error
 
   verify-plugin-versions:
+    needs: [setup, ci-check]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.setup.outputs.commit_sha }}
+          persist-credentials: false
 
-      - name: Extract version from tag
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Verify package.json, marketplace.json, plugin.json match tag
+      - name: Verify package, manifest, lockfile, and dependency versions
+        env:
+          TAG: ${{ needs.setup.outputs.version }}
+        shell: bash
         run: |
-          TAG="${{ steps.version.outputs.version }}"
+          set -euo pipefail
           FAIL=0
+          PIN_FAIL=0
           COUNT=0
-          # Guard against silently checking fewer fields than the release
-          # profile promises (Stage 2 = 23). This is the 4.0.1 class: a new
-          # manifest is added but the verify loop is not extended, CI stays
-          # green on a stale subset, and channels desync. If you add or remove
-          # a version field below, update EXPECTED to match.
-          EXPECTED=23
+          # Six existing root/manifest fields, eight platform package versions,
+          # nine runtime manifests, seven static PluginManifest fields, the
+          # independently versioned plugin-api package, two root lockfile
+          # fields, ten workspace lockfile versions, and the local mcp-devices link.
+          EXPECTED=44
+          PLUGIN_API_VERSION=1.1.0
 
-          PKG=$(jq -r '.version' package.json)
-          MARKET=$(jq -r '.plugins[0].version' .claude-plugin/marketplace.json)
-          GROK_MARKET=$(jq -r '.plugins[0].version' .grok-plugin/marketplace.json)
-          PLUGIN=$(jq -r '.version' cli/plugin/.claude-plugin/plugin.json)
-          GROK_PLUGIN=$(jq -r '.version' cli/plugin/.grok-plugin/plugin.json)
-          CARGO=$(grep '^version =' cli/Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
-
-          echo "Tag:                                   $TAG"
-          echo "package.json:                          $PKG"
-          echo "cli/Cargo.toml:                        $CARGO"
-          echo ".claude-plugin/marketplace.json:       $MARKET"
-          echo ".grok-plugin/marketplace.json:         $GROK_MARKET"
-          echo "cli/plugin/.claude-plugin/plugin.json: $PLUGIN"
-          echo "cli/plugin/.grok-plugin/plugin.json:   $GROK_PLUGIN"
-
-          for KIND in PKG CARGO MARKET GROK_MARKET PLUGIN GROK_PLUGIN; do
-            VAL=$(eval echo \$$KIND)
+          check_version() {
+            local label="$1"
+            local actual="$2"
+            local expected="${3:-$TAG}"
             COUNT=$((COUNT + 1))
-            if [ "$VAL" != "$TAG" ]; then
-              echo "::error::$KIND version ($VAL) does not match tag ($TAG)"
+            printf '%-58s %s (expected %s)\n' "$label" "${actual:-<missing>}" "$expected"
+            if [[ "$actual" != "$expected" ]]; then
+              echo "::error::$label version ($actual) does not match expected version ($expected)"
               FAIL=1
             fi
-          done
+          }
 
-          # Scoped platform plugins ship on the same version line as the tag
-          # (plugin-api is deliberately excluded — independently versioned).
+          check_pin() {
+            local label="$1"
+            local actual="$2"
+            local expected="$3"
+            printf '%-58s %s (expected %s)\n' "$label" "${actual:-<missing>}" "$expected"
+            if [[ "$actual" != "$expected" ]]; then
+              echo "::error::$label is '$actual'; expected exact pin '$expected'"
+              PIN_FAIL=1
+            fi
+          }
+
+          PKG=$(jq -r '.version // empty' package.json)
+          MARKET=$(jq -r '.plugins[0].version // empty' .claude-plugin/marketplace.json)
+          GROK_MARKET=$(jq -r '.plugins[0].version // empty' .grok-plugin/marketplace.json)
+          PLUGIN=$(jq -r '.version // empty' cli/plugin/.claude-plugin/plugin.json)
+          GROK_PLUGIN=$(jq -r '.version // empty' cli/plugin/.grok-plugin/plugin.json)
+          CARGO=$(sed -nE 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' cli/Cargo.toml | sed -n '1p')
+
+          check_version package.json "$PKG"
+          check_version .claude-plugin/marketplace.json "$MARKET"
+          check_version .grok-plugin/marketplace.json "$GROK_MARKET"
+          check_version cli/plugin/.claude-plugin/plugin.json "$PLUGIN"
+          check_version cli/plugin/.grok-plugin/plugin.json "$GROK_PLUGIN"
+          check_version cli/Cargo.toml "$CARGO"
+
           for p in plugin-android plugin-ios plugin-web plugin-desktop plugin-aurora plugin-harmony plugin-debug plugin-all; do
-            PV=$(jq -r '.version' "packages/$p/package.json")
-            COUNT=$((COUNT + 1))
-            echo "packages/$p:                           $PV"
-            if [ "$PV" != "$TAG" ]; then
-              echo "::error::@mcp-devices/$p version ($PV) does not match tag ($TAG)"
-              FAIL=1
-            fi
+            PV=$(jq -r '.version // empty' "packages/$p/package.json")
+            check_version "packages/$p/package.json" "$PV"
           done
+          PLUGIN_API_PACKAGE=$(jq -r '.version // empty' packages/plugin-api/package.json)
+          check_version packages/plugin-api/package.json "$PLUGIN_API_PACKAGE" "$PLUGIN_API_VERSION"
 
-          # Runtime plugin manifests are consumer-visible and must match their
-          # package/product version. Keeping this separate from package.json
-          # catches stale manifest metadata such as the 3.11.0 -> 4.2.0 drift.
+          # sed returns success when there is no match, so prerelease versions
+          # are parsed completely without a grep/set -e false negative.
           for f in \
             packages/plugin-android/src/index.ts \
             packages/plugin-ios/src/index.ts \
@@ -169,192 +420,2082 @@ jobs:
             packages/plugin-debug/src/plugin.ts \
             src/plugins/builtin-tools/index.ts \
             src/plugins/repl/index.ts; do
-            RV=$(grep -m1 -E '^[[:space:]]*version: "[0-9]+\.[0-9]+\.[0-9]+"' "$f" | sed -E 's/.*"([^"]+)".*/\1/')
-            COUNT=$((COUNT + 1))
-            echo "$f runtime manifest:               $RV"
-            if [ "$RV" != "$TAG" ]; then
-              echo "::error::$f runtime manifest version ($RV) does not match tag ($TAG)"
+            RV=$(sed -nE 's/^[[:space:]]*version:[[:space:]]*"([^"]+)".*/\1/p' "$f" | sed -n '1p')
+            check_version "$f runtime manifest" "$RV"
+          done
+
+          # First-party platform packages carry a static PluginManifest for the
+          # security manager. Validate the object shape and its identity, not
+          # just the package version.
+          for spec in \
+            packages/plugin-android:android \
+            packages/plugin-ios:ios \
+            packages/plugin-web:web \
+            packages/plugin-desktop:desktop \
+            packages/plugin-aurora:aurora \
+            packages/plugin-harmony:harmony \
+            packages/plugin-debug:debug; do
+            path="${spec%%:*}/package.json"
+            expected_id="${spec##*:}"
+            META_VERSION=$(jq -r '.mcpDevicesPlugin.version // empty' "$path")
+            check_version "$path mcpDevicesPlugin.version" "$META_VERSION"
+            if ! jq -e --arg expected_id "$expected_id" --arg tag "$TAG" '
+              (.mcpDevicesPlugin // null) as $m |
+              if ($m | type) != "object" then false else
+                ($m.id == $expected_id) and
+                (($m.name // "") | (type == "string" and length > 0)) and
+                ($m.version == $tag) and
+                ($m.apiVersion == "1") and
+                (($m.capabilities // []) | (type == "array" and length > 0))
+              end
+            ' "$path" >/dev/null; then
+              echo "::error::$path mcpDevicesPlugin is not a valid manifest for $expected_id"
               FAIL=1
             fi
           done
 
-          if [ "$COUNT" -ne "$EXPECTED" ]; then
-            echo "::error::Checked $COUNT version fields but expected $EXPECTED. A manifest was added or removed without updating this job (4.0.1 class). Update the verify loops and EXPECTED together."
+          LOCK_ROOT=$(jq -r '.version // empty' package-lock.json)
+          LOCK_ROOT_PACKAGE=$(jq -r '.packages[""].version // empty' package-lock.json)
+          check_version package-lock.json "$LOCK_ROOT"
+          check_version 'package-lock.json packages[""]' "$LOCK_ROOT_PACKAGE"
+
+          # Every workspace install entry must remain a symlink to the checked-in
+          # workspace. Keep this list explicit so a missing lock entry cannot
+          # silently disappear from the release verification.
+          for spec in \
+            node_modules/mcp-devices:. \
+            node_modules/mcp-devices-lite:packages/lite \
+            node_modules/@mcp-devices/plugin-android:packages/plugin-android \
+            node_modules/@mcp-devices/plugin-ios:packages/plugin-ios \
+            node_modules/@mcp-devices/plugin-web:packages/plugin-web \
+            node_modules/@mcp-devices/plugin-desktop:packages/plugin-desktop \
+            node_modules/@mcp-devices/plugin-aurora:packages/plugin-aurora \
+            node_modules/@mcp-devices/plugin-harmony:packages/plugin-harmony \
+            node_modules/@mcp-devices/plugin-debug:packages/plugin-debug \
+            node_modules/@mcp-devices/plugin-all:packages/plugin-all \
+            node_modules/@mcp-devices/plugin-api:packages/plugin-api; do
+            lock_key="${spec%%:*}"
+            expected_path="${spec##*:}"
+            link_value=$(jq -r --arg key "$lock_key" '.packages[$key].link // false' package-lock.json)
+            resolved_path=$(jq -r --arg key "$lock_key" '.packages[$key].resolved // empty' package-lock.json)
+            check_pin "package-lock $lock_key link" "$link_value" "true"
+            check_pin "package-lock $lock_key resolved" "$resolved_path" "$expected_path"
+          done
+
+          MCP_LOCK_VERSION=$(jq -r '.packages["node_modules/mcp-devices"].version // .packages[""].version // empty' package-lock.json)
+          check_version 'package-lock node_modules/mcp-devices' "$MCP_LOCK_VERSION"
+
+          # Every workspace dependency on the root package must resolve to the
+          # exact release version represented by the local lockfile link.
+
+          for p in plugin-android plugin-ios plugin-web plugin-desktop plugin-aurora plugin-harmony plugin-debug plugin-all plugin-api lite; do
+            MANIFEST_VERSION=$(jq -r '.version // empty' "packages/$p/package.json")
+            LOCK_VERSION=$(jq -r --arg key "packages/$p" '.packages[$key].version // empty' package-lock.json)
+            check_version "package-lock packages/$p" "$LOCK_VERSION" "$MANIFEST_VERSION"
+          done
+
+          check_pin 'package.json @mcp-devices/plugin-api' \
+            "$(jq -r '.dependencies["@mcp-devices/plugin-api"] // empty' package.json)" "$PLUGIN_API_VERSION"
+          check_pin 'package-lock root @mcp-devices/plugin-api' \
+            "$(jq -r '.packages[""].dependencies["@mcp-devices/plugin-api"] // empty' package-lock.json)" "$PLUGIN_API_VERSION"
+
+          for p in plugin-android plugin-ios plugin-web plugin-desktop plugin-aurora plugin-harmony plugin-debug; do
+            path="packages/$p/package.json"
+            lock_path="packages/$p"
+            check_pin "$path mcp-devices" \
+              "$(jq -r '.dependencies["mcp-devices"] // empty' "$path")" "$TAG"
+            check_pin "$path @mcp-devices/plugin-api" \
+              "$(jq -r '.dependencies["@mcp-devices/plugin-api"] // empty' "$path")" "$PLUGIN_API_VERSION"
+            check_pin "package-lock $lock_path mcp-devices" \
+              "$(jq -r --arg key "$lock_path" '.packages[$key].dependencies["mcp-devices"] // empty' package-lock.json)" "$TAG"
+            check_pin "package-lock $lock_path @mcp-devices/plugin-api" \
+              "$(jq -r --arg key "$lock_path" '.packages[$key].dependencies["@mcp-devices/plugin-api"] // empty' package-lock.json)" "$PLUGIN_API_VERSION"
+          done
+
+          for dep in \
+            @mcp-devices/plugin-android \
+            @mcp-devices/plugin-ios \
+            @mcp-devices/plugin-web \
+            @mcp-devices/plugin-desktop \
+            @mcp-devices/plugin-aurora \
+            @mcp-devices/plugin-harmony; do
+            check_pin "packages/plugin-all/package.json $dep" \
+              "$(jq -r --arg dep "$dep" '.dependencies[$dep] // empty' packages/plugin-all/package.json)" "$TAG"
+            check_pin "package-lock packages/plugin-all $dep" \
+              "$(jq -r --arg dep "$dep" '.packages["packages/plugin-all"].dependencies[$dep] // empty' package-lock.json)" "$TAG"
+          done
+
+          check_pin 'packages/lite/package.json mcp-devices' \
+            "$(jq -r '.dependencies["mcp-devices"] // empty' packages/lite/package.json)" "$TAG"
+          check_pin 'packages/lite/package.json @mcp-devices/plugin-api' \
+            "$(jq -r '.dependencies["@mcp-devices/plugin-api"] // empty' packages/lite/package.json)" "$PLUGIN_API_VERSION"
+          check_pin 'package-lock packages/lite mcp-devices' \
+            "$(jq -r '.packages["packages/lite"].dependencies["mcp-devices"] // empty' package-lock.json)" "$TAG"
+          check_pin 'package-lock packages/lite @mcp-devices/plugin-api' \
+            "$(jq -r '.packages["packages/lite"].dependencies["@mcp-devices/plugin-api"] // empty' package-lock.json)" "$PLUGIN_API_VERSION"
+
+          if [[ "$COUNT" -ne "$EXPECTED" ]]; then
+            echo "::error::Checked $COUNT version fields but expected $EXPECTED. Update this guard with any manifest/lockfile addition."
             FAIL=1
           fi
-
-          if [ "$FAIL" -ne 0 ]; then
-            echo "::error::Version drift detected. All version fields must equal the tag."
+          if [[ "$FAIL" -ne 0 || "$PIN_FAIL" -ne 0 ]]; then
+            echo "::error::Version or dependency drift detected; release channels are blocked."
             exit 1
           fi
-          echo "All $COUNT versions match tag $TAG"
+          echo "All $COUNT version fields and dependency pins match the tagged release"
 
-  release:
-    needs: [build, setup]
+  # JavaScript compilation and packing are deliberately credential-free. The
+  # OIDC publishing job consumes only these immutable tarball artifacts.
+  npm-build:
+    needs: [setup, ci-check, verify-plugin-versions]
     runs-on: ubuntu-latest
-
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          merge-multiple: true
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
-        with:
-          generate_release_notes: true
-          files: |
-            *.tar.gz
-            *.tar.gz.sha256
-          # Prerelease tags (e.g. 4.0.0-dev) are flagged as pre-release and are
-          # NOT promoted to "Latest" — the stable line keeps that badge.
-          prerelease: ${{ needs.setup.outputs.prerelease == 'true' }}
-          make_latest: ${{ needs.setup.outputs.prerelease == 'false' }}
-
-  publish-npm:
-    needs: [build, verify-plugin-versions, setup]
-    runs-on: ubuntu-latest
-    # `--provenance` on `npm publish` mints a Sigstore attestation linking
-    # the published tarball to this exact workflow run. The npm CLI rejects
-    # the publish unless the workflow has `id-token: write` granted.
     permissions:
       contents: read
-      id-token: write
+    env:
+      VERSION: ${{ needs.setup.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.setup.outputs.commit_sha }}
+          persist-credentials: false
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
-          # npm Trusted Publishing requires Node >=22.14 and npm >=11.5.1.
           node-version: "22.14.0"
-          registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
-
-      - name: Install npm Trusted Publishing CLI
-        run: npm install --global npm@11.5.1
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Build
+      - name: Build JavaScript packages
         run: npm run build
-
-      - name: Verify package version matches tag
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - name: Build desktop companion for npm artifacts
+        run: npm run build:desktop
+      - name: Smoke-test JavaScript entrypoint
+        shell: bash
         run: |
-          PKG_VERSION=$(jq -r '.version' package.json)
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
-            echo "::error::package.json version ($PKG_VERSION) does not match tag ($TAG_VERSION)"
+          set -euo pipefail
+          ENTRY_VERSION="$(timeout 30s node dist/index.js --version)"
+          if [[ "$ENTRY_VERSION" != "$VERSION" ]]; then
+            echo "::error::JavaScript entrypoint reported ${ENTRY_VERSION}; expected ${VERSION}"
+            exit 1
+          fi
+          timeout 30s node dist/index.js --help >/dev/null
+
+      - name: Pack npm artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARTIFACT_DIR="$RUNNER_TEMP/npm-packages"
+          mkdir -p "$ARTIFACT_DIR"
+          npm pack --pack-destination "$ARTIFACT_DIR" .
+          for p in plugin-android plugin-ios plugin-web plugin-desktop plugin-aurora plugin-harmony plugin-debug plugin-all plugin-api; do
+            npm pack --pack-destination "$ARTIFACT_DIR" "./packages/$p"
+          done
+
+          COMPAT_MANIFEST="compat/claude-in-mobile/package.json"
+          TMP_MANIFEST="$(mktemp)"
+          jq --arg v "$VERSION" \
+            '.version=$v | .dependencies["mcp-devices"]=$v | .dependencies["@mcp-devices/plugin-all"]=$v' \
+            "$COMPAT_MANIFEST" > "$TMP_MANIFEST"
+          mv "$TMP_MANIFEST" "$COMPAT_MANIFEST"
+          npm pack --pack-destination "$ARTIFACT_DIR" ./compat/claude-in-mobile
+
+          shopt -s nullglob
+          PACKAGES=("$ARTIFACT_DIR"/*.tgz)
+          if [[ "${#PACKAGES[@]}" -ne 11 ]]; then
+            echo "::error::Expected 11 npm package archives, found ${#PACKAGES[@]}"
+            exit 1
+          fi
+      - name: Verify bundled plugin-api bytes before upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT_ARCHIVE="$RUNNER_TEMP/npm-packages/mcp-devices-${VERSION}.tgz"
+          PLUGIN_API_PATH="package/node_modules/@mcp-devices/plugin-api/package.json"
+          [[ -f "$ROOT_ARCHIVE" ]] || {
+            echo "::error::Missing prepared root archive $ROOT_ARCHIVE"
+            exit 1
+          }
+
+          if ! ROOT_MANIFEST="$(tar -xOf "$ROOT_ARCHIVE" package/package.json)"; then
+            echo "::error::Root npm archive has no package/package.json"
+            exit 1
+          fi
+          if ! jq -e --arg expected_version "$VERSION" '
+            (.bundledDependencies // []) as $bundled |
+            (.bundleDependencies // []) as $bundle |
+            (.name == "mcp-devices") and
+            (.version == $expected_version) and
+            (.dependencies["@mcp-devices/plugin-api"] == "1.1.0") and
+            (($bundled + $bundle) | type == "array" and length == 1 and .[0] == "@mcp-devices/plugin-api")
+          ' <<<"$ROOT_MANIFEST" >/dev/null; then
+            echo "::error::Root archive has an unexpected plugin-api dependency/bundle declaration"
             exit 1
           fi
 
-      - name: Publish to npm
-        env:
-          NPM_TAG: ${{ needs.setup.outputs.npm_tag }}
-        # OIDC trusted publishing replaces long-lived NPM_TOKEN credentials.
-        # An already published version is left unchanged on a retry; the first
-        # successful publish has already assigned its dist-tag.
+          if ! PLUGIN_API_MANIFEST="$(tar -xOf "$ROOT_ARCHIVE" "$PLUGIN_API_PATH")"; then
+            echo "::error::Root archive does not contain $PLUGIN_API_PATH"
+            exit 1
+          fi
+          if ! jq -e '
+            .name == "@mcp-devices/plugin-api" and
+            .version == "1.1.0"
+          ' <<<"$PLUGIN_API_MANIFEST" >/dev/null; then
+            echo "::error::Bundled plugin-api bytes are not @mcp-devices/plugin-api@1.1.0"
+            exit 1
+          fi
+      - name: Smoke-test prepared root npm tarball
+        shell: bash
         run: |
-          NAME=$(jq -r '.name' package.json)
-          VERSION=$(jq -r '.version' package.json)
-          if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
-            echo "${NAME}@${VERSION} already published — nothing to do"
-          else
-            npm publish --access public --provenance --tag "${NPM_TAG}"
+          set -euo pipefail
+          ROOT_ARCHIVE="$RUNNER_TEMP/npm-packages/mcp-devices-${VERSION}.tgz"
+          SMOKE_DIR="$(mktemp -d)"
+          timeout 30s npm init --yes --prefix "$SMOKE_DIR" >/dev/null
+          (
+            cd "$SMOKE_DIR"
+            timeout 180s npm install --ignore-scripts --no-audit --no-fund "$ROOT_ARCHIVE" >/dev/null
+          )
+          INSTALLED_VERSION="$(timeout 30s "$SMOKE_DIR/node_modules/.bin/claude-in-mobile" --version)"
+          if [[ "$INSTALLED_VERSION" != "$VERSION" ]]; then
+            echo "::error::Installed tarball reported ${INSTALLED_VERSION}; expected ${VERSION}"
+            exit 1
           fi
 
-      - name: Publish @mcp-devices/plugin-api
-        # every platform plugin depend on. Versioned INDEPENDENTLY of the release
-        # tag (its own semver), so it is published as-is and is a no-op when the
-        # version is unchanged. Without it on the registry, `npm i mcp-devices`
-        # 404s on its `@mcp-devices/plugin-api` dependency.
-        working-directory: packages/plugin-api
-        run: |
-          NAME=$(jq -r '.name' package.json)
-          VERSION=$(jq -r '.version' package.json)
-          if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
-            echo "${NAME}@${VERSION} already published — nothing to do"
-          else
-            npm publish --access public --provenance
-          fi
+      - name: Upload npm package artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-packages
+          path: ${{ runner.temp }}/npm-packages/*.tgz
+          if-no-files-found: error
 
-      - name: Publish scoped platform plugins
-        env:
-          NPM_TAG: ${{ needs.setup.outputs.npm_tag }}
-        # OIDC trusted publishing replaces the former long-lived NPM_TOKEN.
-        run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          for p in plugin-android plugin-ios plugin-web plugin-desktop plugin-aurora plugin-harmony plugin-debug plugin-all; do
-            dir="packages/$p"
-            NAME=$(jq -r '.name' "$dir/package.json")
-            VERSION=$(jq -r '.version' "$dir/package.json")
-            if [ "$VERSION" != "$TAG_VERSION" ]; then
-              echo "::error::$NAME version ($VERSION) does not match tag ($TAG_VERSION) — bump it before tagging"
-              exit 1
-            fi
-            if npm view "${NAME}@${VERSION}" version >/dev/null 2>&1; then
-              echo "${NAME}@${VERSION} already published — nothing to do"
-            else
-              ( cd "$dir" && npm publish --access public --provenance --tag "${NPM_TAG}" )
-            fi
-          done
-      - name: Publish claude-in-mobile compat shim
-        env:
-          NPM_TAG: ${{ needs.setup.outputs.npm_tag }}
-        # OIDC trusted publishing replaces the former long-lived NPM_TOKEN.
-        working-directory: compat/claude-in-mobile
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          jq --arg v "$VERSION" '.version=$v | .dependencies["mcp-devices"]=$v | .dependencies["@mcp-devices/plugin-all"]=$v' package.json > package.json.tmp
-          mv package.json.tmp package.json
-          if npm view "claude-in-mobile@${VERSION}" version >/dev/null 2>&1; then
-            echo "claude-in-mobile@${VERSION} already published — nothing to do"
-          else
-            npm publish --access public --provenance --tag "${NPM_TAG}"
-          fi
-
-  update-homebrew:
-    needs: [release, setup]
+  # Attestation is the only job that receives both OIDC and attestation rights.
+  # It performs no compilation or package installation.
+  attest:
+    needs: [build, verify-plugin-versions, setup]
     runs-on: ubuntu-latest
-    # Never bump the stable Homebrew formula to a prerelease — brew users on the
-    # stable tap must not be jumped to a dev build. verify-checksums depends on
-    # this job, so it is skipped for prereleases too.
-    if: needs.setup.outputs.prerelease == 'false'
-    # Publish only to the canonical unified tap. The retired per-product tap is
-    # read-only for this token; keeping it in the matrix made otherwise healthy
-    # releases red and prevented checksum verification.
-
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
-      - name: Extract version from tag
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Download artifacts
+      - name: Download CLI artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
+          pattern: build-*
+          merge-multiple: true
+      - name: Verify exact CLI archives and SHA256 sidecars before attestation
+        env:
+          VERSION: ${{ needs.setup.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          EXPECTED_ARCHIVES=(
+            "claude-in-mobile-${VERSION}-darwin-arm64.tar.gz"
+            "claude-in-mobile-${VERSION}-darwin-x86_64.tar.gz"
+            "claude-in-mobile-${VERSION}-linux-x86_64.tar.gz"
+          )
+          EXPECTED_SIDECARS=(
+            "claude-in-mobile-${VERSION}-darwin-arm64.tar.gz.sha256"
+            "claude-in-mobile-${VERSION}-darwin-x86_64.tar.gz.sha256"
+            "claude-in-mobile-${VERSION}-linux-x86_64.tar.gz.sha256"
+          )
+          ARCHIVES=("claude-in-mobile-"*.tar.gz)
+          SIDECARS=("claude-in-mobile-"*.tar.gz.sha256)
+          if [[ "${#ARCHIVES[@]}" -ne 3 || "${#SIDECARS[@]}" -ne 3 ]]; then
+            echo "::error::Expected exactly three CLI archives and sidecars before attestation"
+            exit 1
+          fi
+
+          for archive in "${ARCHIVES[@]}"; do
+            case "$archive" in
+              "${EXPECTED_ARCHIVES[0]}"|"${EXPECTED_ARCHIVES[1]}"|"${EXPECTED_ARCHIVES[2]}") ;;
+              *)
+                echo "::error::Unexpected CLI archive name before attestation: $archive"
+                exit 1
+                ;;
+            esac
+          done
+          for sidecar in "${SIDECARS[@]}"; do
+            case "$sidecar" in
+              "${EXPECTED_SIDECARS[0]}"|"${EXPECTED_SIDECARS[1]}"|"${EXPECTED_SIDECARS[2]}") ;;
+              *)
+                echo "::error::Unexpected CLI sidecar name before attestation: $sidecar"
+                exit 1
+                ;;
+            esac
+          done
+
+          for archive in "${EXPECTED_ARCHIVES[@]}"; do
+            sidecar="${archive}.sha256"
+            [[ -f "$archive" && -f "$sidecar" ]] || {
+              echo "::error::Missing expected archive or sidecar before attestation for $archive"
+              exit 1
+            }
+            [[ "$(wc -l < "$sidecar")" -eq 1 ]] || {
+              echo "::error::SHA256 sidecar must contain one record before attestation: $sidecar"
+              exit 1
+            }
+            record="$(<"$sidecar")"
+            checksum="${record:0:64}"
+            separator="${record:64:2}"
+            filename="${record:66}"
+            if [[ ! "$checksum" =~ ^[0-9a-f]{64}$ ||
+              "$separator" != "  " ||
+              "$filename" != "$archive" ]]; then
+              echo "::error::Malformed SHA256 sidecar before attestation for $archive"
+              exit 1
+            fi
+            actual="$(shasum -a 256 "$archive" | awk '{print $1}')"
+            if [[ "$actual" != "$checksum" ]]; then
+              echo "::error::SHA256 mismatch before attestation for $archive"
+              exit 1
+            fi
+          done
+
+      - name: Attest packaged CLI archives
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: "claude-in-mobile-*.tar.gz"
+
+  # Stage a draft release before npm publication. Creating the draft is the
+  # only preparation step that needs contents:write; all build/verification
+  # jobs retain contents:read, and finalization separately publishes the draft.
+  # A failed artifact handoff or draft creation prevents every distribution
+  # channel.
+  release:
+    needs: [build, npm-build, attest, verify-plugin-versions, setup, ci-check]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.capture-release.outputs.release_id }}
+    steps:
+      - name: Download CLI artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: build-*
           merge-multiple: true
 
-      - name: Discover platforms and SHAs
-        id: sha
-        # Build a JSON map { "<platform>": "<sha>" } from the .sha256 files.
-        # Downstream consumers (Formula update, verify-checksums) iterate over
-        # this map instead of hardcoded arch names.
+      - name: Verify exact CLI archives and SHA256 sidecars
+        env:
+          VERSION: ${{ needs.setup.outputs.version }}
+        shell: bash
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          MAP="{}"
-          PLATFORMS=()
-          for f in claude-in-mobile-${VERSION}-*.tar.gz.sha256; do
-            BASE=$(basename "$f" .tar.gz.sha256)
-            PLATFORM="${BASE#claude-in-mobile-${VERSION}-}"
-            SHA=$(awk '{print $1}' "$f")
-            MAP=$(echo "$MAP" | jq -c --arg p "$PLATFORM" --arg s "$SHA" '. + {($p): $s}')
-            PLATFORMS+=("$PLATFORM")
+          set -euo pipefail
+          shopt -s nullglob
+          EXPECTED_ARCHIVES=(
+            "claude-in-mobile-${VERSION}-darwin-arm64.tar.gz"
+            "claude-in-mobile-${VERSION}-darwin-x86_64.tar.gz"
+            "claude-in-mobile-${VERSION}-linux-x86_64.tar.gz"
+          )
+          EXPECTED_SIDECARS=(
+            "claude-in-mobile-${VERSION}-darwin-arm64.tar.gz.sha256"
+            "claude-in-mobile-${VERSION}-darwin-x86_64.tar.gz.sha256"
+            "claude-in-mobile-${VERSION}-linux-x86_64.tar.gz.sha256"
+          )
+          ARCHIVES=("claude-in-mobile-"*.tar.gz)
+          SIDECARS=("claude-in-mobile-"*.tar.gz.sha256)
+          if [[ "${#ARCHIVES[@]}" -ne 3 || "${#SIDECARS[@]}" -ne 3 ]]; then
+            echo "::error::Expected exactly three CLI archives and sidecars"
+            exit 1
+          fi
+
+          for archive in "${ARCHIVES[@]}"; do
+            case "$archive" in
+              "${EXPECTED_ARCHIVES[0]}"|"${EXPECTED_ARCHIVES[1]}"|"${EXPECTED_ARCHIVES[2]}") ;;
+              *)
+                echo "::error::Unexpected CLI archive name: $archive"
+                exit 1
+                ;;
+            esac
           done
-          # jq -c keeps MAP single-line: GITHUB_OUTPUT rejects multiline values
-          echo "map=$MAP" >> "$GITHUB_OUTPUT"
-          echo "platforms=${PLATFORMS[*]}" >> "$GITHUB_OUTPUT"
-          echo "Discovered platforms: ${PLATFORMS[*]}"
-          echo "Map: $MAP"
+          for sidecar in "${SIDECARS[@]}"; do
+            case "$sidecar" in
+              "${EXPECTED_SIDECARS[0]}"|"${EXPECTED_SIDECARS[1]}"|"${EXPECTED_SIDECARS[2]}") ;;
+              *)
+                echo "::error::Unexpected CLI sidecar name: $sidecar"
+                exit 1
+                ;;
+            esac
+          done
+
+          for archive in "${EXPECTED_ARCHIVES[@]}"; do
+            sidecar="${archive}.sha256"
+            [[ -f "$archive" && -f "$sidecar" ]] || {
+              echo "::error::Missing expected archive or sidecar for $archive"
+              exit 1
+            }
+            [[ "$(wc -l < "$sidecar")" -eq 1 ]] || {
+              echo "::error::SHA256 sidecar must contain one record: $sidecar"
+              exit 1
+            }
+            record="$(<"$sidecar")"
+            checksum="${record:0:64}"
+            separator="${record:64:2}"
+            filename="${record:66}"
+            if [[ ! "$checksum" =~ ^[0-9a-f]{64}$ ||
+              "$separator" != "  " ||
+              "$filename" != "$archive" ]]; then
+              echo "::error::Malformed SHA256 sidecar record for $archive"
+              exit 1
+            fi
+            actual="$(shasum -a 256 "$archive" | awk '{print $1}')"
+            if [[ "$actual" != "$checksum" ]]; then
+              echo "::error::SHA256 mismatch for $archive"
+              exit 1
+            fi
+          done
+      - name: Recheck immutable tag identity before creating draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_SHA: ${{ needs.setup.outputs.commit_sha }}
+          EXPECTED_TAG_OBJECT_SHA: ${{ needs.setup.outputs.tag_object_sha }}
+          TAG_NAME: ${{ needs.setup.outputs.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG_REF="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG_NAME}")"
+          TAG_OBJECT_SHA="$(jq -er '.object.sha | strings | select(test("^[0-9a-f]{40}$"))' <<<"$TAG_REF")"
+          if [[ "$TAG_OBJECT_SHA" != "$EXPECTED_TAG_OBJECT_SHA" ]]; then
+            echo "::error::refs/tags/${TAG_NAME} object moved from ${EXPECTED_TAG_OBJECT_SHA} to ${TAG_OBJECT_SHA}"
+            exit 1
+          fi
+          OBJECT_SHA="$TAG_OBJECT_SHA"
+          OBJECT_TYPE="$(jq -er '.object.type' <<<"$TAG_REF")"
+          TAG_SHA=""
+          for ((depth = 0; depth < 5; depth++)); do
+            case "$OBJECT_TYPE" in
+              commit)
+                TAG_SHA="$OBJECT_SHA"
+                break
+                ;;
+              tag)
+                TAG_OBJECT="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${OBJECT_SHA}")"
+                OBJECT_SHA="$(jq -er '.object.sha | strings | select(test("^[0-9a-f]{40}$"))' <<<"$TAG_OBJECT")"
+                OBJECT_TYPE="$(jq -er '.object.type' <<<"$TAG_OBJECT")"
+                ;;
+              *)
+                echo "::error::Unsupported Git tag object type: ${OBJECT_TYPE}"
+                exit 1
+                ;;
+            esac
+          done
+          if [[ "$TAG_SHA" != "$COMMIT_SHA" ]]; then
+            echo "::error::refs/tags/${TAG_NAME} resolves to ${TAG_SHA:-<missing>}, expected ${COMMIT_SHA}"
+            exit 1
+          fi
+          echo "Immutable tag identity still resolves to ${TAG_SHA}"
+
+      - name: Create draft GitHub Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: ${{ needs.setup.outputs.tag_name }}
+          target_commitish: ${{ needs.setup.outputs.commit_sha }}
+          generate_release_notes: true
+          draft: true
+          prerelease: ${{ needs.setup.outputs.prerelease == 'true' }}
+          make_latest: false
+          fail_on_unmatched_files: true
+          files: |
+            *.tar.gz
+            *.tar.gz.sha256
+      - name: Capture immutable draft release identity
+        id: capture-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_SHA: ${{ needs.setup.outputs.commit_sha }}
+          TAG_NAME: ${{ needs.setup.outputs.tag_name }}
+          PRERELEASE: ${{ needs.setup.outputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG_NAME}")"
+          if ! RELEASE_ID="$(jq -er \
+            --arg tag "$TAG_NAME" \
+            --arg commit "$COMMIT_SHA" \
+            --arg prerelease "$PRERELEASE" '
+              select(
+                .tag_name == $tag and
+                (.target_commitish == $commit or .target_commitish == "main") and
+                .draft == true and
+                .prerelease == ($prerelease == "true")
+              ) | .id
+            ' <<<"$RELEASE_JSON")"; then
+            echo "::error::Draft release is not bound to the verified tag commit"
+            exit 1
+          fi
+          printf 'release_id=%s\n' "$RELEASE_ID" >> "$GITHUB_OUTPUT"
+          echo "Captured immutable draft release ${RELEASE_ID} for ${TAG_NAME}"
+
+  # npm's Trust API (`GET https://registry.npmjs.org/-/package/{urlencoded-package}/trust`)
+  # is machine-readable, but its GET endpoint requires a package-write npm
+  # access token and a current npm-otp. OIDC exchange tokens are intentionally
+  # publish-only, and NPM_TOKEN is reserved for repair.
+  # Do not add a long-lived OTP/TOTP secret just to turn this into a claim.
+  npm-trusted-publisher-preflight:
+    needs: [release, setup]
+    if: >-
+      needs.release.result == 'success' &&
+      needs.setup.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    environment:
+      name: npm-trusted-publisher-policy
+      url: https://www.npmjs.com/
+    steps:
+      - name: Verify protected npm Trust policy review
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENVIRONMENT_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/environments/npm-trusted-publisher-policy")" || {
+            echo "::error::Unable to inspect npm-trusted-publisher-policy protection through the supported GitHub API"
+            exit 1
+          }
+          jq -e '
+            (.name == "npm-trusted-publisher-policy") and
+            ([.protection_rules[]? |
+              select(
+                (
+                  (
+                    (((.type // "") | ascii_downcase) == "requiredreviewers") or
+                    (((.type // "") | ascii_downcase) == "required_reviewers")
+                  ) and
+                  ((.reviewers // []) | length > 0)
+                )
+              )
+            ] | length > 0)
+          ' <<<"$ENVIRONMENT_JSON" >/dev/null || {
+            echo "::error::npm-trusted-publisher-policy must have a required-reviewers protection rule"
+            exit 1
+          }
+          echo "::notice::The npm Trust GET API requires package-write npm authentication plus npm-otp; OIDC and npm whoami cannot read publisher policy"
+          echo "::notice::The environment reviewer must inspect all 11 package identities: owner AlexGladkov, repository claude-in-mobile, workflow file release.yml, empty environment, and an allowed action for direct npm publish"
+          echo "::notice::This gate deliberately makes no static or token-less claim that the npm identities are configured"
+
+  # GitHub provides a supported pre-publication capability endpoint. If the
+  # workflow token lacks the endpoint's required admin-read permission, the
+  # protected reviewer environment is the documented compensating control.
+  github-immutable-preflight:
+    needs: [release, setup]
+    if: >-
+      needs.release.result == 'success' &&
+      needs.setup.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    environment:
+      name: release-immutable-policy
+      url: https://github.com/${{ github.repository }}/settings
+    steps:
+      - name: Verify immutable-release capability before publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ needs.release.outputs.release_id }}
+          TAG_NAME: ${{ needs.setup.outputs.tag_name }}
+          COMMIT_SHA: ${{ needs.setup.outputs.commit_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENVIRONMENT_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/environments/release-immutable-policy")" || {
+            echo "::error::Unable to inspect release-immutable-policy protection through the supported GitHub API"
+            exit 1
+          }
+          jq -e '
+            (.name == "release-immutable-policy") and
+            ([.protection_rules[]? |
+              select(
+                (
+                  (
+                    (((.type // "") | ascii_downcase) == "requiredreviewers") or
+                    (((.type // "") | ascii_downcase) == "required_reviewers")
+                  ) and
+                  ((.reviewers // []) | length > 0)
+                )
+              )
+            ] | length > 0)
+          ' <<<"$ENVIRONMENT_JSON" >/dev/null || {
+            echo "::error::release-immutable-policy must have a required-reviewers protection rule"
+            exit 1
+          }
+
+          ERROR_FILE="$(mktemp)"
+          trap 'rm -f "$ERROR_FILE"' EXIT
+          if IMMUTABLE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/immutable-releases" 2>"$ERROR_FILE")"; then
+            jq -e '.enabled == true' <<<"$IMMUTABLE_JSON" >/dev/null || {
+              echo "::error::GitHub immutable-release capability API reported enabled=false"
+              exit 1
+            }
+            echo "Verified GitHub immutable releases are enabled through the supported API"
+          else
+            ERROR_TEXT="$(<"$ERROR_FILE")"
+            if [[ "$ERROR_TEXT" == *"HTTP 403"* ||
+              "$ERROR_TEXT" == *"Resource not accessible by integration"* ]]; then
+              echo "::warning::GitHub immutable-release capability could not be read by GITHUB_TOKEN because the endpoint requires admin read access"
+              echo "::notice::The required reviewer approval for release-immutable-policy is the compensating control; reviewer must inspect Settings > General > Releases"
+            else
+              echo "::error::Unable to determine GitHub immutable-release capability through its supported API"
+              printf '%s\n' "$ERROR_TEXT"
+              exit 1
+            fi
+          fi
+
+          DRAFT_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")" || {
+            echo "::error::Unable to inspect the staged GitHub Release before publication"
+            exit 1
+          }
+          jq -e \
+            --arg tag "$TAG_NAME" \
+            --arg commit "$COMMIT_SHA" '
+              (.tag_name == $tag) and
+              (.target_commitish == $commit or .target_commitish == "main") and
+              (.draft == true)
+            ' <<<"$DRAFT_JSON" >/dev/null || {
+            echo "::error::Staged GitHub Release is not bound to the verified tag commit"
+            exit 1
+          }
+
+          echo "::notice::The finalization job still requires the published release object to report immutable=true"
+
+
+  # A stable release must prove the exact tap token's effective repository
+  # permission before npm or GitHub publication. Prereleases never need this
+  # secret and intentionally skip this job.
+  homebrew-token-preflight:
+    needs: [release, setup]
+    if: >-
+      needs.release.result == 'success' &&
+      needs.setup.result == 'success' &&
+      needs.setup.outputs.prerelease == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      TAP_REPOSITORY: AlexGladkov/homebrew-tap
+    steps:
+      - name: Verify stable Homebrew token and effective write permission
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${HOMEBREW_TAP_TOKEN:-}" ]]; then
+            echo "::error::HOMEBREW_TAP_TOKEN is required for a stable release"
+            exit 1
+          fi
+          if ! TAP_JSON="$(GH_TOKEN="$HOMEBREW_TAP_TOKEN" gh api "repos/${TAP_REPOSITORY}")"; then
+            echo "::error::HOMEBREW_TAP_TOKEN cannot read ${TAP_REPOSITORY}; refusing all public publication"
+            exit 1
+          fi
+          jq -e \
+            --arg repository "$TAP_REPOSITORY" '
+              (.full_name == $repository) and
+              (.permissions.push == true)
+            ' <<<"$TAP_JSON" >/dev/null || {
+            echo "::error::HOMEBREW_TAP_TOKEN lacks effective repository push permission (Contents: write) on ${TAP_REPOSITORY}"
+            jq -c '{full_name, permissions, role_name}' <<<"$TAP_JSON"
+            exit 1
+          }
+          echo "Verified ${TAP_REPOSITORY} grants the stable Homebrew token effective push/Contents:write access"
+          echo "::notice::No write probe is performed because a probe would itself mutate the tap; the supported repository API permission is the machine-checkable evidence"
+
+  # Keep all supported release prerequisites in one explicit dependency node.
+  # Every public channel depends on this successful aggregate.
+  release-preflight:
+    needs: [release, setup, npm-trusted-publisher-preflight, github-immutable-preflight, homebrew-token-preflight]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      RELEASE_RESULT: ${{ needs.release.result }}
+      SETUP_RESULT: ${{ needs.setup.result }}
+      NPM_IDENTITY_RESULT: ${{ needs.npm-trusted-publisher-preflight.result }}
+      GITHUB_IMMUTABLE_RESULT: ${{ needs.github-immutable-preflight.result }}
+      HOMEBREW_PREFLIGHT_RESULT: ${{ needs.homebrew-token-preflight.result }}
+      PRERELEASE: ${{ needs.setup.outputs.prerelease }}
+    steps:
+      - name: Enforce pre-publication prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          FAIL=0
+          for pair in \
+            "release:$RELEASE_RESULT" \
+            "setup:$SETUP_RESULT" \
+            "npm-trusted-publisher-preflight:$NPM_IDENTITY_RESULT" \
+            "github-immutable-preflight:$GITHUB_IMMUTABLE_RESULT"; do
+            name="${pair%%:*}"
+            result="${pair#*:}"
+            if [[ "$result" != success ]]; then
+              echo "::error::Required pre-publication job $name ended with $result"
+              FAIL=1
+            fi
+          done
+          if [[ "$PRERELEASE" == false ]]; then
+            if [[ "$HOMEBREW_PREFLIGHT_RESULT" != success ]]; then
+              echo "::error::Stable release requires successful Homebrew token preflight"
+              FAIL=1
+            fi
+          elif [[ "$PRERELEASE" == true ]]; then
+            if [[ "$HOMEBREW_PREFLIGHT_RESULT" != skipped ]]; then
+              echo "::error::Prerelease must skip the stable-only Homebrew token preflight"
+              FAIL=1
+            fi
+          else
+            echo "::error::Tag classification did not produce a stable/prerelease result"
+            FAIL=1
+          fi
+          if [[ "$FAIL" -ne 0 ]]; then
+            echo "::error::Pre-publication release prerequisites failed; no public mutation is allowed"
+            exit 1
+          fi
+
+  # Probe the optional classic token without exposing it to the OIDC publisher.
+  # Invalid or absent credentials produce token_valid=false while this gate
+  # remains successful, allowing fresh OIDC-only releases to proceed.
+  npm-token-preflight:
+    needs: [release, setup]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      token_valid: ${{ steps.check.outputs.token_valid }}
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22.14.0"
+          package-manager-cache: false
+
+      - name: Install pinned npm CLI
+        run: timeout 180s npm install --global npm@11.5.1
+
+      - name: Check optional repair token
+        id: check
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          NPMRC="$(mktemp)"
+          ERROR_FILE="$(mktemp)"
+          trap 'rm -f "$NPMRC" "$ERROR_FILE"' EXIT
+          printf '%s\n' \
+            'registry=https://registry.npmjs.org/' \
+            '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}' > "$NPMRC"
+          if [[ -z "${NPM_TOKEN:-}" ]]; then
+            printf 'token_valid=false\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if env -u NPM_TOKEN \
+            NODE_AUTH_TOKEN="$NPM_TOKEN" \
+            NPM_CONFIG_USERCONFIG="$NPMRC" \
+            timeout 60s npm whoami > /dev/null 2>"$ERROR_FILE"; then
+            printf 'token_valid=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'token_valid=false\n' >> "$GITHUB_OUTPUT"
+          fi
+
+  # This job is intentionally publish-only: it has no checkout, npm ci, or
+  # build script. It publishes only immutable artifacts prepared above.
+  publish-npm:
+    needs: [release, npm-build, verify-plugin-versions, setup, ci-check, npm-token-preflight, release-preflight]
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.repository }}-npm-publish
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      repair_plan: ${{ steps.publish.outputs.repair_plan }}
+    env:
+      RELEASE_VERSION: ${{ needs.setup.outputs.version }}
+      COMMIT_SHA: ${{ needs.setup.outputs.commit_sha }}
+      TAG_NAME: ${{ needs.setup.outputs.tag_name }}
+      NPM_TAG: ${{ needs.setup.outputs.npm_tag }}
+      TOKEN_VALID: ${{ needs.npm-token-preflight.outputs.token_valid }}
+      PLUGIN_API_VERSION: "1.1.0"
+      NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+      npm_config_ignore_scripts: "true"
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22.14.0"
+          package-manager-cache: false
+
+      - name: Install pinned npm Trusted Publishing CLI
+        run: timeout 180s npm install --global npm@11.5.1
+
+      - name: Download npm package artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: npm-packages
+          path: npm-dist
+
+      - name: Recheck immutable tag identity before npm publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_SHA: ${{ needs.setup.outputs.commit_sha }}
+          EXPECTED_TAG_OBJECT_SHA: ${{ needs.setup.outputs.tag_object_sha }}
+          TAG_NAME: ${{ needs.setup.outputs.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG_REF="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG_NAME}")"
+          TAG_OBJECT_SHA="$(jq -er '.object.sha | strings | select(test("^[0-9a-f]{40}$"))' <<<"$TAG_REF")"
+          if [[ "$TAG_OBJECT_SHA" != "$EXPECTED_TAG_OBJECT_SHA" ]]; then
+            echo "::error::refs/tags/${TAG_NAME} object moved from ${EXPECTED_TAG_OBJECT_SHA} to ${TAG_OBJECT_SHA}"
+            exit 1
+          fi
+          OBJECT_SHA="$TAG_OBJECT_SHA"
+          OBJECT_TYPE="$(jq -er '.object.type' <<<"$TAG_REF")"
+          TAG_SHA=""
+          for ((depth = 0; depth < 5; depth++)); do
+            case "$OBJECT_TYPE" in
+              commit)
+                TAG_SHA="$OBJECT_SHA"
+                break
+                ;;
+              tag)
+                TAG_OBJECT="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${OBJECT_SHA}")"
+                OBJECT_SHA="$(jq -er '.object.sha | strings | select(test("^[0-9a-f]{40}$"))' <<<"$TAG_OBJECT")"
+                OBJECT_TYPE="$(jq -er '.object.type' <<<"$TAG_OBJECT")"
+                ;;
+              *)
+                echo "::error::Unsupported Git tag object type: ${OBJECT_TYPE}"
+                exit 1
+                ;;
+            esac
+          done
+          if [[ "$TAG_SHA" != "$COMMIT_SHA" ]]; then
+            echo "::error::refs/tags/${TAG_NAME} resolves to ${TAG_SHA:-<missing>}, expected ${COMMIT_SHA}"
+            exit 1
+          fi
+      - name: Verify root bundle bytes before publication
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT_ARCHIVE="npm-dist/mcp-devices-${RELEASE_VERSION}.tgz"
+          PLUGIN_API_PATH="package/node_modules/@mcp-devices/plugin-api/package.json"
+          [[ -f "$ROOT_ARCHIVE" ]] || {
+            echo "::error::Missing prepared root archive $ROOT_ARCHIVE"
+            exit 1
+          }
+          if ! ROOT_MANIFEST="$(tar -xOf "$ROOT_ARCHIVE" package/package.json)"; then
+            echo "::error::Root npm archive has no package/package.json"
+            exit 1
+          fi
+          if ! jq -e --arg expected_version "$RELEASE_VERSION" '
+            (.bundledDependencies // []) as $bundled |
+            (.bundleDependencies // []) as $bundle |
+            (.name == "mcp-devices") and
+            (.version == $expected_version) and
+            (.dependencies["@mcp-devices/plugin-api"] == "1.1.0") and
+            (($bundled + $bundle) | type == "array" and length == 1 and .[0] == "@mcp-devices/plugin-api")
+          ' <<<"$ROOT_MANIFEST" >/dev/null; then
+            echo "::error::Root archive has an unexpected plugin-api dependency/bundle declaration"
+            exit 1
+          fi
+          if ! PLUGIN_API_MANIFEST="$(tar -xOf "$ROOT_ARCHIVE" "$PLUGIN_API_PATH")"; then
+            echo "::error::Root archive does not contain $PLUGIN_API_PATH"
+            exit 1
+          fi
+          if ! jq -e '
+            .name == "@mcp-devices/plugin-api" and
+            .version == "1.1.0"
+          ' <<<"$PLUGIN_API_MANIFEST" >/dev/null; then
+            echo "::error::Bundled plugin-api bytes are not @mcp-devices/plugin-api@1.1.0"
+            exit 1
+          fi
+      - name: Publish prepared npm packages
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Collect every archive only for cardinality and manifest validation;
+          # the filesystem's incidental order is discarded below. All registry
+          # preflight, repair planning, and publication use this explicit
+          # dependency order.
+          # plugin-api is required by mcp-devices; platform plugins consume both.
+          mapfile -t ARTIFACTS < <(find npm-dist -maxdepth 1 -type f -name '*.tgz' -print)
+          if [[ "${#ARTIFACTS[@]}" -ne 11 ]]; then
+            echo "::error::Expected 11 npm package archives, found ${#ARTIFACTS[@]}"
+            exit 1
+          fi
+
+          PUBLISH_ORDER=(
+            @mcp-devices/plugin-api
+            mcp-devices
+            @mcp-devices/plugin-android
+            @mcp-devices/plugin-ios
+            @mcp-devices/plugin-web
+            @mcp-devices/plugin-desktop
+            @mcp-devices/plugin-aurora
+            @mcp-devices/plugin-harmony
+            @mcp-devices/plugin-debug
+            @mcp-devices/plugin-all
+            claude-in-mobile
+          )
+          if [[ "${#PUBLISH_ORDER[@]}" -ne 11 ]]; then
+            echo "::error::Publication order must contain exactly 11 packages"
+            exit 1
+          fi
+          EXPECTED_NAMES=("${PUBLISH_ORDER[@]}")
+          is_expected_name() {
+            local candidate="$1"
+            for expected in "${EXPECTED_NAMES[@]}"; do
+              if [[ "$candidate" == "$expected" ]]; then
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          declare -A SEEN=()
+          declare -A PACKAGE_VERSION_BY_NAME=()
+          declare -A ARCHIVE_INTEGRITY_BY_NAME=()
+          declare -A ARCHIVE_SHA512_HEX_BY_NAME=()
+          for archive in "${ARTIFACTS[@]}"; do
+            MANIFEST="$(tar -xOf "$archive" package/package.json)"
+            NAME="$(jq -r '.name // empty' <<< "$MANIFEST")"
+            VERSION="$(jq -r '.version // empty' <<< "$MANIFEST")"
+            if [[ -z "$NAME" || -z "$VERSION" ]]; then
+              echo "::error::Missing package name/version in npm artifact"
+              exit 1
+            fi
+            if ! is_expected_name "$NAME"; then
+              echo "::error::Unexpected npm package artifact"
+              exit 1
+            fi
+            if [[ "$NAME" == "@mcp-devices/plugin-api" ]]; then
+              if [[ "$VERSION" != "$PLUGIN_API_VERSION" ]]; then
+                echo "::error::plugin-api artifact version does not match 1.1.0"
+                exit 1
+              fi
+            elif [[ "$VERSION" != "$RELEASE_VERSION" ]]; then
+              echo "::error::npm artifact version does not match the release"
+              exit 1
+            fi
+            if [[ "$NAME" == "claude-in-mobile" ]] &&
+              ! jq -e --arg release_version "$RELEASE_VERSION" '
+                (.name == "claude-in-mobile") and
+                (.dependencies["mcp-devices"] == $release_version) and
+                (.dependencies["@mcp-devices/plugin-all"] == $release_version)
+              ' <<<"$MANIFEST" >/dev/null; then
+              echo "::error::claude-in-mobile artifact must depend on the tagged mcp-devices and plugin-all versions"
+              exit 1
+            fi
+            if [[ -n "${SEEN[$NAME]:-}" ]]; then
+              echo "::error::Duplicate npm artifact"
+              exit 1
+            fi
+            SEEN["$NAME"]="$archive"
+            PACKAGE_VERSION_BY_NAME["$NAME"]="$VERSION"
+            ARCHIVE_SHA512="$(openssl dgst -sha512 -binary "$archive" | openssl base64 -A)"
+            ARCHIVE_SHA512_HEX="$(openssl dgst -sha512 -binary "$archive" | od -An -tx1 | tr -d ' \n')"
+            if [[ ! "$ARCHIVE_SHA512_HEX" =~ ^[0-9a-f]{128}$ ]]; then
+              echo "::error::Unable to calculate the prepared npm archive SHA-512 digest"
+              exit 1
+            fi
+            ARCHIVE_INTEGRITY_BY_NAME["$NAME"]="sha512-${ARCHIVE_SHA512}"
+            ARCHIVE_SHA512_HEX_BY_NAME["$NAME"]="$ARCHIVE_SHA512_HEX"
+          done
+
+          for NAME in "${EXPECTED_NAMES[@]}"; do
+            [[ -n "${SEEN[$NAME]:-}" ]] || {
+              echo "::error::Missing expected npm artifact"
+              exit 1
+            }
+          done
+
+          # Verify that every first-party dependency is published earlier than
+          # its consumer. This keeps the explicit order tied to the artifact
+          # dependency graph instead of relying only on a hand-maintained list.
+          declare -A ORDER_INDEX=()
+          for ((index = 0; index < ${#PUBLISH_ORDER[@]}; index++)); do
+            ORDER_INDEX["${PUBLISH_ORDER[$index]}"]="$index"
+          done
+          for ((index = 0; index < ${#PUBLISH_ORDER[@]}; index++)); do
+            NAME="${PUBLISH_ORDER[$index]}"
+            MANIFEST="$(tar -xOf "${SEEN[$NAME]}" package/package.json)"
+            while IFS= read -r DEPENDENCY; do
+              if [[ "${ORDER_INDEX[$DEPENDENCY]+present}" == present ]] &&
+                (( ORDER_INDEX[$DEPENDENCY] >= index )); then
+                echo "::error::npm dependency ${DEPENDENCY} must be published before ${NAME}"
+                exit 1
+              fi
+            done < <(jq -r '.dependencies // {} | keys[]' <<<"$MANIFEST")
+          done
+
+          # Rebuild the validated artifact arrays in dependency order. No
+          # publication or registry mutation can occur before this point.
+          declare -a PACKAGE_ARCHIVES=()
+          declare -a PACKAGE_NAMES=()
+          declare -a PACKAGE_VERSIONS=()
+          for NAME in "${PUBLISH_ORDER[@]}"; do
+            PACKAGE_ARCHIVES+=("${SEEN[$NAME]}")
+            PACKAGE_NAMES+=("$NAME")
+            PACKAGE_VERSIONS+=("${PACKAGE_VERSION_BY_NAME[$NAME]}")
+          done
+
+          # npm audit signatures invokes pacote's Sigstore verifier. It verifies
+          # registry signatures, attestation DSSE signatures, certificate chains,
+          # and transparency-log inclusion before this claim-level policy runs.
+          verify_registry_attestation() {
+            local name="$1"
+            local version="$2"
+            local expected_integrity="$3"
+            local expected_digest="$4"
+            local strict="$5"
+            local decoded_integrity
+
+            if [[ "$expected_integrity" != sha512-* ]] ||
+              ! decoded_integrity="$(printf '%s' "${expected_integrity#sha512-}" |
+                base64 --decode | od -An -tx1 | tr -d ' \n')" ||
+              [[ "$decoded_integrity" != "$expected_digest" ]]; then
+              echo "::error::Prepared npm integrity is not a canonical SHA-512 digest for ${name}@${version}"
+              return 3
+            fi
+
+            local metadata_error
+            local registry_attestations
+            metadata_error="$(mktemp)"
+            if ! registry_attestations="$(timeout 60s env \
+              -u NPM_TOKEN -u NODE_AUTH_TOKEN \
+              -u NPM_CONFIG_USERCONFIG -u npm_config_userconfig \
+              NPM_CONFIG_REGISTRY=https://registry.npmjs.org/ \
+              npm view "${name}@${version}" dist.attestations --json \
+              2>"$metadata_error")"; then
+              if [[ "$strict" == true ]]; then
+                echo "::error::Unable to read registry attestation for ${name}@${version}; refusing to trust it"
+                cat "$metadata_error"
+                rm -f "$metadata_error"
+                return 3
+              fi
+              echo "::warning::Unable to read registry attestation for ${name}@${version}; registry may still be converging"
+              rm -f "$metadata_error"
+              return 2
+            fi
+            rm -f "$metadata_error"
+            if [[ -z "$registry_attestations" || "$registry_attestations" == "null" ]]; then
+              if [[ "$strict" == true ]]; then
+                echo "::error::Registry has no attestation for ${name}@${version}"
+                return 3
+              fi
+              echo "::warning::Registry attestation is not visible yet for ${name}@${version}"
+              return 2
+            fi
+
+            local subject_name="$name"
+            if [[ "$subject_name" == @* ]]; then
+              subject_name="%40${subject_name#@}"
+            fi
+            local expected_subject="pkg:npm/${subject_name}@${version}"
+            local expected_repository="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+            local expected_source_ref="refs/tags/${TAG_NAME}"
+            local expected_source_uri="git+${expected_repository}@${expected_source_ref}"
+            # npm-package-arg's escapedName preserves the leading @ and encodes
+            # the scoped slash as lowercase %2f; match registry metadata exactly.
+            local attestation_name="$name"
+            if [[ "$attestation_name" == */* ]]; then
+              attestation_name="${attestation_name/\//%2f}"
+            fi
+            local expected_attestation_url="https://registry.npmjs.org/-/npm/v1/attestations/${attestation_name}@${version}"
+            local audit_dir
+            local audit_error
+            local audit_output
+            local audit_status
+            local audit_error_text
+            audit_dir="$(mktemp -d)"
+            audit_error="$(mktemp)"
+            jq -n \
+              --arg name "$name" \
+              --arg version "$version" \
+              '{name:"npm-provenance-verifier", private:true, dependencies:{($name):$version}}' \
+              > "$audit_dir/package.json"
+            mkdir -p "$audit_dir/node_modules/$name"
+            jq -n --arg name "$name" --arg version "$version" \
+              '{name:$name,version:$version}' \
+              > "$audit_dir/node_modules/$name/package.json"
+
+            if audit_output="$(cd "$audit_dir" && env \
+              -u NPM_TOKEN -u NODE_AUTH_TOKEN \
+              -u NPM_CONFIG_USERCONFIG -u npm_config_userconfig \
+              NPM_CONFIG_REGISTRY=https://registry.npmjs.org/ \
+              timeout 180s npm audit signatures --json --include-attestations \
+              --ignore-scripts 2>"$audit_error")"; then
+              audit_status=0
+            else
+              audit_status=$?
+            fi
+            audit_error_text="$(<"$audit_error")"
+
+            if (( audit_status != 0 )); then
+              if [[ "$audit_error_text" == *EATTESTATION* ||
+                "$audit_error_text" == *EINTEGRITY* ||
+                "$audit_error_text" == *EMISSINGSIGNATUREKEY* ||
+                "$audit_error_text" == *EEXPIREDSIGNATUREKEY* ]] ||
+                jq -e --arg name "$name" --arg version "$version" '
+                  any((.invalid // [])[]?;
+                    .name == $name and .version == $version) or
+                  any((.missing // [])[]?;
+                    .name == $name and .version == $version) or
+                  any((.verified // [])[]?;
+                    .name == $name and .version == $version)
+                ' <<<"$audit_output" >/dev/null 2>&1; then
+                echo "::error::npm's cryptographic attestation verifier rejected ${name}@${version}"
+                printf '%s\n' "$audit_error_text"
+                rm -rf "$audit_dir" "$audit_error"
+                return 3
+              fi
+              if [[ "$strict" == true ]]; then
+                echo "::error::Unable to cryptographically verify registry attestation for ${name}@${version}"
+                printf '%s\n' "$audit_error_text"
+                rm -rf "$audit_dir" "$audit_error"
+                return 3
+              fi
+              echo "::warning::Registry attestation verification is temporarily unavailable for ${name}@${version}"
+              rm -rf "$audit_dir" "$audit_error"
+              return 2
+            fi
+
+            if ! jq -e --arg name "$name" --arg version "$version" '
+              any((.verified // [])[]?;
+                .name == $name and .version == $version)
+            ' <<<"$audit_output" >/dev/null; then
+              if [[ "$strict" == true ]]; then
+                echo "::error::npm audit signatures did not cryptographically verify ${name}@${version}"
+                rm -rf "$audit_dir" "$audit_error"
+                return 3
+              fi
+              echo "::warning::Registry attestation verification is not visible yet for ${name}@${version}"
+              rm -rf "$audit_dir" "$audit_error"
+              return 2
+            fi
+
+            if ! jq -e \
+              --arg name "$name" \
+              --arg version "$version" \
+              --arg subject "$expected_subject" \
+              --arg digest "$expected_digest" \
+              --arg attestation_url "$expected_attestation_url" \
+              --arg publish_type "https://github.com/npm/attestation/tree/main/specs/publish/v0.1" \
+              --arg provenance_type "https://slsa.dev/provenance/v1" \
+              --arg build_type "https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1" \
+              --arg repository "$expected_repository" \
+              --arg workflow_path ".github/workflows/release.yml" \
+              --arg source_ref "$expected_source_ref" \
+              --arg source_uri "$expected_source_uri" \
+              --arg commit "$COMMIT_SHA" \
+              --arg builder_id "https://github.com/actions/runner/github-hosted" \
+              --arg invocation_prefix "${expected_repository}/actions/runs/" \
+              '
+              def decoded_statement:
+                try (.bundle.dsseEnvelope.payload | @base64d | fromjson) catch null;
+              def subject_matches:
+                (type == "object") and
+                (.subject | type == "array" and length == 1 and
+                  .[0].name == $subject and
+                  .[0].digest.sha512 == $digest);
+              [(.verified // [])[] |
+                select(.name == $name and .version == $version)] as $verified |
+              [($verified[0].attestationBundles // [])[]? |
+                {
+                  predicateType: .predicateType,
+                  bundle: .bundle,
+                  statement: decoded_statement
+                }
+              ] as $bundles |
+              ($verified | length == 1) and
+              ($verified[0].registry == "https://registry.npmjs.org/") and
+              ($verified[0].attestations.url == $attestation_url) and
+              ($verified[0].attestations.provenance.predicateType == $provenance_type) and
+              ($verified[0].attestationBundles | type == "array") and
+              ($bundles | length == 2) and
+              ([$bundles[] | select(.predicateType == $publish_type)] | length == 1) and
+              ([$bundles[] | select(.predicateType == $provenance_type)] | length == 1) and
+              (
+                ([$bundles[] | select(.predicateType == $publish_type)][0].statement |
+                  subject_matches) and
+                ([$bundles[] | select(.predicateType == $publish_type)][0].statement.predicateType ==
+                  $publish_type) and
+                ([$bundles[] | select(.predicateType == $publish_type)][0].statement.predicate |
+                  type == "object") and
+                ([$bundles[] | select(.predicateType == $publish_type)][0].statement.predicate.name ==
+                  $name) and
+                ([$bundles[] | select(.predicateType == $publish_type)][0].statement.predicate.version ==
+                  $version) and
+                ([$bundles[] | select(.predicateType == $publish_type)][0].statement.predicate.registry ==
+                  "https://registry.npmjs.org") and
+                (
+                  ([$bundles[] | select(.predicateType == $publish_type)][0].bundle |
+                    .dsseEnvelope.signatures |
+                    type == "array" and length == 1 and
+                    (.[0].keyid | type == "string" and startswith("SHA256:"))) and
+                  ([$bundles[] | select(.predicateType == $publish_type)][0].bundle.verificationMaterial.publicKey.hint ==
+                    [$bundles[] | select(.predicateType == $publish_type)][0].bundle.dsseEnvelope.signatures[0].keyid) and
+                  ([$bundles[] | select(.predicateType == $publish_type)][0].bundle.verificationMaterial.tlogEntries |
+                    type == "array" and length > 0)
+                )
+              ) and
+              (
+                ([$bundles[] | select(.predicateType == $provenance_type)][0].statement |
+                  subject_matches and
+                  (.predicateType == $provenance_type) and
+                  (.predicate | type == "object" and
+                    (.buildDefinition | type == "object" and
+                      .buildType == $build_type and
+                      (.externalParameters.workflow | type == "object") and
+                      .externalParameters.workflow.repository == $repository and
+                      .externalParameters.workflow.path == $workflow_path and
+                      .externalParameters.workflow.ref == $source_ref and
+                      (.resolvedDependencies | type == "array" and length == 1 and
+                        .[0].uri == $source_uri and
+                        .[0].digest.gitCommit == $commit)) and
+                    (.runDetails | type == "object" and
+                      .builder.id == $builder_id and
+                      (.metadata.invocationId |
+                        type == "string" and
+                        startswith($invocation_prefix) and
+                        test("/actions/runs/[0-9]+/attempts/[0-9]+$")))))
+                  and
+                (
+                  ([$bundles[] | select(.predicateType == $provenance_type)][0].bundle |
+                    .dsseEnvelope.signatures |
+                    type == "array" and length == 1 and .[0].keyid == "") and
+                  ([$bundles[] | select(.predicateType == $provenance_type)][0].bundle.verificationMaterial.x509CertificateChain.certificates |
+                    type == "array" and length > 0) and
+                  ([$bundles[] | select(.predicateType == $provenance_type)][0].bundle.verificationMaterial.tlogEntries |
+                    type == "array" and length > 0)
+                )
+              )
+              ' <<<"$audit_output" >/dev/null; then
+              echo "::error::Cryptographically verified npm attestation claims do not bind ${name}@${version} to the official release"
+              rm -rf "$audit_dir" "$audit_error"
+              return 3
+            fi
+            rm -rf "$audit_dir" "$audit_error"
+            return 0
+          }
+
+          # Resolve existing package bytes and registry state for every package
+          # before allowing any publish or dist-tag mutation.
+          declare -A EXISTING=()
+          declare -A CURRENT_CHANNELS=()
+          for ((i = 0; i < ${#PACKAGE_ARCHIVES[@]}; i++)); do
+            ARCHIVE="${PACKAGE_ARCHIVES[$i]}"
+            NAME="${PACKAGE_NAMES[$i]}"
+            VERSION="${PACKAGE_VERSIONS[$i]}"
+            LOOKUP_ERROR="$(mktemp)"
+            if timeout 60s env -u NPM_TOKEN -u NODE_AUTH_TOKEN \
+              -u NPM_CONFIG_USERCONFIG -u npm_config_userconfig \
+              npm view "${NAME}@${VERSION}" version >/dev/null 2>"$LOOKUP_ERROR"; then
+              rm -f "$LOOKUP_ERROR"
+              EXISTING["$NAME"]=true
+              REGISTRY_INTEGRITY="$(timeout 60s env -u NPM_TOKEN -u NODE_AUTH_TOKEN \
+                -u NPM_CONFIG_USERCONFIG -u npm_config_userconfig \
+                npm view "${NAME}@${VERSION}" dist.integrity 2>/dev/null || true)"
+              ARCHIVE_INTEGRITY="${ARCHIVE_INTEGRITY_BY_NAME[$NAME]}"
+              if [[ "$REGISTRY_INTEGRITY" != "$ARCHIVE_INTEGRITY" ]]; then
+                echo "::error::Existing npm package bytes do not match the prepared artifact: $NAME@$VERSION"
+                exit 1
+              fi
+              if ! verify_registry_attestation \
+                "$NAME" "$VERSION" "$ARCHIVE_INTEGRITY" \
+                "${ARCHIVE_SHA512_HEX_BY_NAME[$NAME]}" true; then
+                echo "::error::Existing $NAME@$VERSION failed cryptographic npm attestation verification"
+                exit 1
+              fi
+            else
+              ERROR_TEXT="$(<"$LOOKUP_ERROR")"
+              rm -f "$LOOKUP_ERROR"
+              if [[ "$ERROR_TEXT" == *E404* ||
+                "$ERROR_TEXT" == *"404 Not Found"* ||
+                "$ERROR_TEXT" == *"code E404"* ]]; then
+                EXISTING["$NAME"]=false
+              else
+                echo "::error::Unable to determine whether $NAME@$VERSION exists in npm"
+                printf '%s\n' "$ERROR_TEXT"
+                exit 1
+              fi
+            fi
+          done
+
+          # No channel (including latest) may be moved backwards by a retry.
+          # Check every package up front so a later package cannot fail after
+          # an earlier package has already mutated its dist-tag. plugin-api is
+          # intentionally independent and is never repaired here.
+          for NAME in "${EXPECTED_NAMES[@]}"; do
+            [[ "$NAME" == "@mcp-devices/plugin-api" ]] && continue
+            CHANNEL_ERROR="$(mktemp)"
+            if CURRENT_CHANNEL="$(timeout 60s env -u NPM_TOKEN -u NODE_AUTH_TOKEN \
+              -u NPM_CONFIG_USERCONFIG -u npm_config_userconfig \
+              npm view "$NAME" "dist-tags.${NPM_TAG}" 2>"$CHANNEL_ERROR")"; then
+              rm -f "$CHANNEL_ERROR"
+            else
+              ERROR_TEXT="$(<"$CHANNEL_ERROR")"
+              rm -f "$CHANNEL_ERROR"
+              if [[ "$ERROR_TEXT" == *E404* ||
+                "$ERROR_TEXT" == *"404 Not Found"* ||
+                "$ERROR_TEXT" == *"code E404"* ]]; then
+                CURRENT_CHANNEL=""
+              else
+                echo "::error::Unable to determine $NAME@$NPM_TAG in npm"
+                printf '%s\n' "$ERROR_TEXT"
+                exit 1
+              fi
+            fi
+            CURRENT_CHANNELS["$NAME"]="$CURRENT_CHANNEL"
+            if [[ -n "$CURRENT_CHANNEL" ]] &&
+              ! python3 - "$CURRENT_CHANNEL" "$RELEASE_VERSION" <<'PY'
+          import re
+          import sys
+
+          def parse(value):
+              match = re.fullmatch(
+                  r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+                  r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+                  r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?",
+                  value,
+              )
+              if match is None:
+                  raise ValueError(value)
+              prerelease = match.group(4)
+              identifiers = []
+              if prerelease is not None:
+                  for identifier in prerelease.split("."):
+                      if identifier.isdigit():
+                          if len(identifier) > 1 and identifier.startswith("0"):
+                              raise ValueError(value)
+                          identifiers.append((0, int(identifier)))
+                      else:
+                          identifiers.append((1, identifier))
+              return tuple(int(match.group(i)) for i in range(1, 4)), identifiers or None
+
+          def greater(left, right):
+              left_core, left_pre = parse(left)
+              right_core, right_pre = parse(right)
+              if left_core != right_core:
+                  return left_core > right_core
+              if left_pre is None:
+                  return right_pre is not None
+              if right_pre is None:
+                  return False
+              for left_id, right_id in zip(left_pre, right_pre):
+                  if left_id[0] != right_id[0]:
+                      return left_id[0] > right_id[0]
+                  if left_id[1] != right_id[1]:
+                      return left_id[1] > right_id[1]
+              return len(left_pre) > len(right_pre)
+
+          try:
+              sys.exit(1 if greater(sys.argv[1], sys.argv[2]) else 0)
+          except (IndexError, ValueError):
+              sys.exit(2)
+          PY
+            then
+              echo "::error::Refusing to move $NAME@$NPM_TAG backwards from $CURRENT_CHANNEL to $RELEASE_VERSION"
+              exit 1
+            fi
+          done
+
+          REPAIR_PLAN="[]"
+          for ((i = 0; i < ${#PACKAGE_ARCHIVES[@]}; i++)); do
+            NAME="${PACKAGE_NAMES[$i]}"
+            VERSION="${PACKAGE_VERSIONS[$i]}"
+            if [[ "${EXISTING[$NAME]}" == true &&
+              "$NAME" != "@mcp-devices/plugin-api" &&
+              "${CURRENT_CHANNELS[$NAME]}" != "$VERSION" ]]; then
+              REPAIR_PLAN="$(jq -c \
+                --arg name "$NAME" \
+                --arg version "$VERSION" \
+                '. + [{name: $name, version: $version}]' <<<"$REPAIR_PLAN")"
+            fi
+          done
+          if [[ "$REPAIR_PLAN" != "[]" && "$TOKEN_VALID" != "true" ]]; then
+            echo "::error::Existing npm versions require a valid NPM_TOKEN for dist-tag repair"
+            exit 1
+          fi
+          printf 'repair_plan=%s\n' "$REPAIR_PLAN" >> "$GITHUB_OUTPUT"
+
+          verify_registry_artifact() {
+            local name="$1"
+            local version="$2"
+            local expected_integrity="$3"
+            local expected_digest="$4"
+            local lookup_error
+            lookup_error="$(mktemp)"
+
+            if timeout 60s env -u NPM_TOKEN -u NODE_AUTH_TOKEN \
+              -u NPM_CONFIG_USERCONFIG -u npm_config_userconfig \
+              npm view "${name}@${version}" version >/dev/null 2>"$lookup_error"; then
+              rm -f "$lookup_error"
+              local registry_integrity
+              if ! registry_integrity="$(timeout 60s env -u NPM_TOKEN -u NODE_AUTH_TOKEN \
+                -u NPM_CONFIG_USERCONFIG -u npm_config_userconfig \
+                npm view "${name}@${version}" dist.integrity 2>/dev/null)"; then
+                echo "::warning::Unable to read registry integrity for ${name}@${version}"
+                return 2
+              fi
+              if [[ "$registry_integrity" != "$expected_integrity" ]]; then
+                echo "::error::Published npm bytes do not match the prepared artifact: ${name}@${version}"
+                return 3
+              fi
+
+              local attestation_result
+              if verify_registry_attestation \
+                "$name" "$version" "$expected_integrity" "$expected_digest" false; then
+                :
+              else
+                attestation_result=$?
+                return "$attestation_result"
+              fi
+              return 0
+            fi
+
+            local error_text
+            error_text="$(<"$lookup_error")"
+            rm -f "$lookup_error"
+            if [[ "$error_text" == *E404* ||
+              "$error_text" == *"404 Not Found"* ||
+              "$error_text" == *"code E404"* ]]; then
+              return 1
+            fi
+            echo "::warning::Unable to verify registry availability for ${name}@${version}"
+            return 2
+          }
+
+          publish_archive() {
+            local name="$1"
+            local archive="$2"
+            local tag="$NPM_TAG"
+            if [[ "$name" == "@mcp-devices/plugin-api" ]]; then
+              tag="plugin-api"
+            fi
+            env -u NPM_TOKEN -u NODE_AUTH_TOKEN \
+              -u NPM_CONFIG_USERCONFIG -u npm_config_userconfig \
+              timeout 180s npm publish "$archive" --access public --provenance \
+              --tag "$tag" --ignore-scripts
+          }
+
+          # Reconcile every immutable version against its prepared artifact
+          # before this job succeeds. Missing versions are published with OIDC;
+          # each result must then pass exact-byte and registry-provenance checks.
+          MAX_REGISTRY_ATTEMPTS=4
+          for ((i = 0; i < ${#PACKAGE_ARCHIVES[@]}; i++)); do
+            ARCHIVE="${PACKAGE_ARCHIVES[$i]}"
+            NAME="${PACKAGE_NAMES[$i]}"
+            VERSION="${PACKAGE_VERSIONS[$i]}"
+            EXPECTED_INTEGRITY="${ARCHIVE_INTEGRITY_BY_NAME[$NAME]}"
+            RESOLVED=false
+
+            for ((attempt = 1; attempt <= MAX_REGISTRY_ATTEMPTS; attempt++)); do
+              if verify_registry_artifact \
+                "$NAME" "$VERSION" "$EXPECTED_INTEGRITY" \
+                "${ARCHIVE_SHA512_HEX_BY_NAME[$NAME]}"; then
+                RESOLVED=true
+                break
+              else
+                VERIFY_RESULT=$?
+              fi
+
+              case "$VERIFY_RESULT" in
+                1)
+                  if (( attempt < MAX_REGISTRY_ATTEMPTS )); then
+                    echo "Registry is missing ${NAME}@${VERSION}; publish/reconcile attempt ${attempt}/${MAX_REGISTRY_ATTEMPTS}"
+                    if ! publish_archive "$NAME" "$ARCHIVE"; then
+                      echo "::warning::Publish response for ${NAME}@${VERSION} failed; registry state will be checked before retry"
+                    fi
+                  fi
+                  ;;
+                2)
+                  echo "::warning::Registry verification temporarily failed for ${NAME}@${VERSION} (attempt ${attempt}/${MAX_REGISTRY_ATTEMPTS})"
+                  ;;
+                3)
+                  exit 1
+                  ;;
+                *)
+                  echo "::error::Unexpected npm registry verification result ${VERIFY_RESULT}"
+                  exit 1
+                  ;;
+              esac
+              if (( attempt < MAX_REGISTRY_ATTEMPTS )); then sleep 10; fi
+            done
+
+            if [[ "$RESOLVED" != true ]]; then
+              echo "::error::Unable to reconcile exact npm artifact ${NAME}@${VERSION} after bounded retries"
+              exit 1
+            fi
+            echo "Verified registry bytes and provenance for ${NAME}@${VERSION}"
+          done
+
+  # Existing immutable versions need a classic-token dist-tag repair on retry.
+  # Keep that credential in a separate job with no OIDC permission.
+  repair-npm-tags:
+    needs: [publish-npm, setup]
+    if: >-
+      needs.publish-npm.result == 'success' &&
+      needs.publish-npm.outputs.repair_plan != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      NPM_TAG: ${{ needs.setup.outputs.npm_tag }}
+      REPAIR_PLAN: ${{ needs.publish-npm.outputs.repair_plan }}
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22.14.0"
+          package-manager-cache: false
+      - name: Install pinned npm CLI
+        run: timeout 180s npm install --global npm@11.5.1
+
+      - name: Repair existing npm dist-tags
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "${NPM_TOKEN:-}" ]] || {
+            echo "::error::NPM_TOKEN secret is required to repair existing npm dist-tags"
+            exit 1
+          }
+          jq -e 'type == "array" and length > 0' <<<"$REPAIR_PLAN" >/dev/null || {
+            echo "::error::Invalid npm dist-tag repair plan"
+            exit 1
+          }
+          while IFS= read -r entry; do
+            NAME="$(jq -r '.name' <<<"$entry")"
+            VERSION="$(jq -r '.version' <<<"$entry")"
+            CHANNEL_ERROR="$(mktemp)"
+            if CURRENT_CHANNEL="$(timeout 60s env -u NPM_TOKEN -u NODE_AUTH_TOKEN \
+              -u NPM_CONFIG_USERCONFIG -u npm_config_userconfig \
+              npm view "$NAME" "dist-tags.${NPM_TAG}" 2>"$CHANNEL_ERROR")"; then
+              rm -f "$CHANNEL_ERROR"
+            else
+              ERROR_TEXT="$(<"$CHANNEL_ERROR")"
+              rm -f "$CHANNEL_ERROR"
+              if [[ "$ERROR_TEXT" == *E404* ||
+                "$ERROR_TEXT" == *"404 Not Found"* ||
+                "$ERROR_TEXT" == *"code E404"* ]]; then
+                CURRENT_CHANNEL=""
+              else
+                echo "::error::Unable to determine $NAME@$NPM_TAG immediately before repair"
+                printf '%s\n' "$ERROR_TEXT"
+                exit 1
+              fi
+            fi
+            if [[ -n "$CURRENT_CHANNEL" ]] &&
+              ! python3 - "$CURRENT_CHANNEL" "$VERSION" <<'PY'
+          import re
+          import sys
+
+          def parse(value):
+              match = re.fullmatch(
+                  r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+                  r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+                  r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?",
+                  value,
+              )
+              if match is None:
+                  raise ValueError(value)
+              prerelease = match.group(4)
+              identifiers = []
+              if prerelease is not None:
+                  for identifier in prerelease.split("."):
+                      if identifier.isdigit():
+                          if len(identifier) > 1 and identifier.startswith("0"):
+                              raise ValueError(value)
+                          identifiers.append((0, int(identifier)))
+                      else:
+                          identifiers.append((1, identifier))
+              return tuple(int(match.group(i)) for i in range(1, 4)), identifiers or None
+
+          def greater(left, right):
+              left_core, left_pre = parse(left)
+              right_core, right_pre = parse(right)
+              if left_core != right_core:
+                  return left_core > right_core
+              if left_pre is None:
+                  return right_pre is not None
+              if right_pre is None:
+                  return False
+              for left_id, right_id in zip(left_pre, right_pre):
+                  if left_id[0] != right_id[0]:
+                      return left_id[0] > right_id[0]
+                  if left_id[1] != right_id[1]:
+                      return left_id[1] > right_id[1]
+              return len(left_pre) > len(right_pre)
+
+          try:
+              sys.exit(1 if greater(sys.argv[1], sys.argv[2]) else 0)
+          except (IndexError, ValueError):
+              sys.exit(2)
+          PY
+            then
+              echo "::error::Refusing to move $NAME@$NPM_TAG backwards from $CURRENT_CHANNEL to $VERSION"
+              exit 1
+            fi
+            NPMRC="$(mktemp)"
+            printf '%s\n' \
+              'registry=https://registry.npmjs.org/' \
+              '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}' > "$NPMRC"
+            if NODE_AUTH_TOKEN="$NPM_TOKEN" \
+              NPM_CONFIG_USERCONFIG="$NPMRC" \
+              timeout 120s npm dist-tag add "${NAME}@${VERSION}" "$NPM_TAG"; then
+              STATUS=0
+            else
+              STATUS=$?
+            fi
+            rm -f "$NPMRC"
+            if [[ "$STATUS" -ne 0 ]]; then
+              exit "$STATUS"
+            fi
+          done < <(jq -c '.[]' <<<"$REPAIR_PLAN")
+  # Verify the just-published public package without any token configuration.
+  npm-smoke:
+    needs: [publish-npm, repair-npm-tags, setup]
+    if: >-
+      always() &&
+      needs.publish-npm.result == 'success' &&
+      (needs.repair-npm-tags.result == 'success' || needs.repair-npm-tags.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.setup.outputs.version }}
+      npm_config_ignore_scripts: "true"
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22.14.0"
+          package-manager-cache: false
+      - name: Smoke-test public npm entrypoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          PUBLIC_VERSION="$(
+            env -u NPM_TOKEN -u NODE_AUTH_TOKEN \
+              -u NPM_CONFIG_USERCONFIG -u npm_config_userconfig \
+              timeout 180s npx -y "claude-in-mobile@${VERSION}" --version
+          )"
+          if [[ "$PUBLIC_VERSION" != "$VERSION" ]]; then
+            echo "::error::Public npm entrypoint reported ${PUBLIC_VERSION}; expected ${VERSION}"
+            exit 1
+          fi
+      - name: Smoke-test each public scoped plugin package
+        shell: bash
+        run: |
+          set -euo pipefail
+          SMOKE_DIR="$(mktemp -d)"
+          PLUGIN_SPECS=(
+            "@mcp-devices/plugin-api@1.1.0"
+            "@mcp-devices/plugin-android@${VERSION}"
+            "@mcp-devices/plugin-ios@${VERSION}"
+            "@mcp-devices/plugin-web@${VERSION}"
+            "@mcp-devices/plugin-desktop@${VERSION}"
+            "@mcp-devices/plugin-aurora@${VERSION}"
+            "@mcp-devices/plugin-harmony@${VERSION}"
+            "@mcp-devices/plugin-debug@${VERSION}"
+            "@mcp-devices/plugin-all@${VERSION}"
+          )
+          IMPORTABLE_PACKAGES=(
+            "@mcp-devices/plugin-api"
+            "@mcp-devices/plugin-android"
+            "@mcp-devices/plugin-ios"
+            "@mcp-devices/plugin-web"
+            "@mcp-devices/plugin-desktop"
+            "@mcp-devices/plugin-aurora"
+            "@mcp-devices/plugin-harmony"
+            "@mcp-devices/plugin-debug"
+          )
+          env -u NPM_TOKEN -u NODE_AUTH_TOKEN \
+            -u NPM_CONFIG_USERCONFIG -u npm_config_userconfig \
+            timeout 30s npm init --yes --prefix "$SMOKE_DIR" >/dev/null
+          (
+            cd "$SMOKE_DIR"
+            env -u NPM_TOKEN -u NODE_AUTH_TOKEN \
+              -u NPM_CONFIG_USERCONFIG -u npm_config_userconfig \
+              timeout 300s npm install --ignore-scripts --no-audit --no-fund \
+              "${PLUGIN_SPECS[@]}" >/dev/null
+            for package_name in "${IMPORTABLE_PACKAGES[@]}"; do
+              timeout 30s node --input-type=module \
+                -e 'await import(process.argv[1]);' "$package_name"
+              echo "Imported public ${package_name}@${VERSION}"
+            done
+            timeout 30s node --input-type=module -e '
+              import { readFile } from "node:fs/promises";
+              const manifest = JSON.parse(await readFile(process.argv[1], "utf8"));
+              if (manifest.name !== "@mcp-devices/plugin-all" || manifest.version !== process.argv[2]) {
+                throw new Error("plugin-all public package identity mismatch");
+              }
+            ' "$SMOKE_DIR/node_modules/@mcp-devices/plugin-all/package.json" "$VERSION"
+          )
+
+  # Make the draft public only after npm publication and its public smoke
+  # succeed. To recover a post-publication failure, use Actions "Re-run failed
+  # jobs"; finalize revalidates the same immutable release ID and skips PATCH.
+  # Do not rerun the tag workflow, which would try to replace an immutable release.
+  finalize-release:
+    needs: [release, publish-npm, repair-npm-tags, npm-smoke, verify-plugin-versions, setup, ci-check, release-preflight]
+    if: >-
+      always() &&
+      needs.release.result == 'success' &&
+      needs.publish-npm.result == 'success' &&
+      (needs.repair-npm-tags.result == 'success' || needs.repair-npm-tags.result == 'skipped') &&
+      needs.npm-smoke.result == 'success' &&
+      needs.verify-plugin-versions.result == 'success' &&
+      needs.setup.result == 'success' &&
+      needs.ci-check.result == 'success' &&
+      needs.release-preflight.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      attestations: read
+    outputs:
+      release_id: ${{ steps.publish.outputs.release_id }}
+    steps:
+      - name: Recheck immutable tag identity before finalization
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_SHA: ${{ needs.setup.outputs.commit_sha }}
+          EXPECTED_TAG_OBJECT_SHA: ${{ needs.setup.outputs.tag_object_sha }}
+          TAG_NAME: ${{ needs.setup.outputs.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG_REF="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG_NAME}")"
+          TAG_OBJECT_SHA="$(jq -er '.object.sha | strings | select(test("^[0-9a-f]{40}$"))' <<<"$TAG_REF")"
+          if [[ "$TAG_OBJECT_SHA" != "$EXPECTED_TAG_OBJECT_SHA" ]]; then
+            echo "::error::refs/tags/${TAG_NAME} object moved from ${EXPECTED_TAG_OBJECT_SHA} to ${TAG_OBJECT_SHA}"
+            exit 1
+          fi
+          OBJECT_SHA="$TAG_OBJECT_SHA"
+          OBJECT_TYPE="$(jq -er '.object.type' <<<"$TAG_REF")"
+          TAG_SHA=""
+          for ((depth = 0; depth < 5; depth++)); do
+            case "$OBJECT_TYPE" in
+              commit)
+                TAG_SHA="$OBJECT_SHA"
+                break
+                ;;
+              tag)
+                TAG_OBJECT="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${OBJECT_SHA}")"
+                OBJECT_SHA="$(jq -er '.object.sha | strings | select(test("^[0-9a-f]{40}$"))' <<<"$TAG_OBJECT")"
+                OBJECT_TYPE="$(jq -er '.object.type' <<<"$TAG_OBJECT")"
+                ;;
+              *)
+                echo "::error::Unsupported Git tag object type: ${OBJECT_TYPE}"
+                exit 1
+                ;;
+            esac
+          done
+          if [[ "$TAG_SHA" != "$COMMIT_SHA" ]]; then
+            echo "::error::refs/tags/${TAG_NAME} resolves to ${TAG_SHA:-<missing>}, expected ${COMMIT_SHA}"
+            exit 1
+          fi
+
+      - name: Refuse stale stable GitHub release
+        if: ${{ needs.setup.outputs.prerelease == 'false' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.setup.outputs.version }}
+          RELEASE_ID: ${{ needs.release.outputs.release_id }}
+          COMMIT_SHA: ${{ needs.setup.outputs.commit_sha }}
+          TAG_NAME: ${{ needs.setup.outputs.tag_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
+          if jq -e \
+            --arg tag "$TAG_NAME" \
+            --arg commit "$COMMIT_SHA" '
+              (.tag_name == $tag) and
+              (.target_commitish == $commit or .target_commitish == "main") and
+              (.draft == false) and
+              (.prerelease == false) and
+              (.immutable == true)
+            ' <<<"$RELEASE_JSON" >/dev/null; then
+            echo "Release ${RELEASE_ID} is already immutable; resume downstream without changing latest"
+            exit 0
+          fi
+          LATEST_ERROR="$(mktemp)"
+          if LATEST_TAG="$(gh api \
+            "repos/${GITHUB_REPOSITORY}/releases/latest" \
+            --jq '.tag_name' 2>"$LATEST_ERROR")"; then
+            rm -f "$LATEST_ERROR"
+          else
+            ERROR_TEXT="$(<"$LATEST_ERROR")"
+            rm -f "$LATEST_ERROR"
+            if [[ "$ERROR_TEXT" != *404* ]]; then
+              echo "::error::Unable to determine the current GitHub stable release"
+              printf '%s\n' "$ERROR_TEXT"
+              exit 1
+            fi
+            if ! RELEASE_COUNT="$(gh api \
+              "repos/${GITHUB_REPOSITORY}/releases" \
+              --jq '[.[] | select(.draft == false and .prerelease == false)] | length')"; then
+              echo "::error::Unable to determine the current GitHub stable release"
+              exit 1
+            fi
+            if [[ "$RELEASE_COUNT" -gt 0 ]]; then
+              echo "::error::Unable to resolve the current GitHub latest release"
+              exit 1
+            fi
+            echo "No existing GitHub release; stable latest may be initialized"
+            exit 0
+          fi
+          CURRENT_VERSION="${LATEST_TAG#v}"
+          TARGET_CORE="${VERSION%%+*}"
+          CURRENT_CORE="${CURRENT_VERSION%%+*}"
+          if [[ ! "$TARGET_CORE" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ||
+            ! "$CURRENT_CORE" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::GitHub stable release versions are not comparable"
+            exit 1
+          fi
+          IFS=. read -r TARGET_MAJOR TARGET_MINOR TARGET_PATCH <<< "$TARGET_CORE"
+          IFS=. read -r CURRENT_MAJOR CURRENT_MINOR CURRENT_PATCH <<< "$CURRENT_CORE"
+          if (( CURRENT_MAJOR > TARGET_MAJOR ||
+            (CURRENT_MAJOR == TARGET_MAJOR && CURRENT_MINOR > TARGET_MINOR) ||
+            (CURRENT_MAJOR == TARGET_MAJOR && CURRENT_MINOR == TARGET_MINOR && CURRENT_PATCH > TARGET_PATCH) )); then
+            echo "::error::Refusing to make older GitHub release ${VERSION} latest over ${LATEST_TAG}"
+            exit 1
+          fi
+      - name: Publish staged GitHub Release by immutable ID
+        id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ needs.release.outputs.release_id }}
+          COMMIT_SHA: ${{ needs.setup.outputs.commit_sha }}
+          VERSION: ${{ needs.setup.outputs.version }}
+          TAG_NAME: ${{ needs.setup.outputs.tag_name }}
+          PRERELEASE: ${{ needs.setup.outputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
+          jq -e \
+            --arg tag "$TAG_NAME" \
+            --arg commit "$COMMIT_SHA" \
+            --arg prerelease "$PRERELEASE" '
+              (.tag_name == $tag) and
+              (.target_commitish == $commit or .target_commitish == "main") and
+              ((.draft == true) or (.draft == false and .immutable == true)) and
+              (.prerelease == ($prerelease == "true"))
+            ' <<<"$RELEASE_JSON" >/dev/null || {
+            echo "::error::Staged release ${RELEASE_ID} is not the verified draft"
+            exit 1
+          }
+          EXPECTED_ARCHIVES=(
+            "claude-in-mobile-${VERSION}-darwin-arm64.tar.gz"
+            "claude-in-mobile-${VERSION}-darwin-x86_64.tar.gz"
+            "claude-in-mobile-${VERSION}-linux-x86_64.tar.gz"
+          )
+          ARCHIVE_COUNT="$(jq '[.assets[] | select(.name | endswith(".tar.gz"))] | length' <<<"$RELEASE_JSON")"
+          SIDECAR_COUNT="$(jq '[.assets[] | select(.name | endswith(".tar.gz.sha256"))] | length' <<<"$RELEASE_JSON")"
+          ASSET_COUNT="$(jq '.assets | length' <<<"$RELEASE_JSON")"
+          EXPECTED_ASSETS=("${EXPECTED_ARCHIVES[@]}")
+          for ASSET in "${EXPECTED_ARCHIVES[@]}"; do
+            EXPECTED_ASSETS+=("${ASSET}.sha256")
+          done
+          EXPECTED_ASSETS_JSON="$(printf '%s\n' "${EXPECTED_ASSETS[@]}" | jq -Rsc 'split("\n") | map(select(length > 0)) | sort')"
+          ACTUAL_ASSETS_JSON="$(jq -c '[.assets[]?.name] | sort' <<<"$RELEASE_JSON")"
+          if [[ "$ASSET_COUNT" -ne "${#EXPECTED_ASSETS[@]}" ||
+            "$ARCHIVE_COUNT" -ne "${#EXPECTED_ARCHIVES[@]}" ||
+            "$SIDECAR_COUNT" -ne "${#EXPECTED_ARCHIVES[@]}" ||
+            "$ACTUAL_ASSETS_JSON" != "$EXPECTED_ASSETS_JSON" ]]; then
+            UNEXPECTED_ASSETS="$(jq -r --argjson expected "$EXPECTED_ASSETS_JSON" '
+              [.assets[]?.name |
+                select(. as $name | ($expected | index($name)) == null)] |
+              sort | .[]
+            ' <<<"$RELEASE_JSON")"
+            echo "::error::Staged release must contain exactly the expected three archives and three checksum sidecars; refusing to publish"
+            if [[ -n "$UNEXPECTED_ASSETS" ]]; then
+              echo "::error::Unexpected draft asset names:"
+              while IFS= read -r name; do
+                printf '::error::  %s\n' "$name"
+              done <<<"$UNEXPECTED_ASSETS"
+            fi
+            echo "::error::Observed draft asset names:"
+            jq -r '.assets[]?.name' <<<"$RELEASE_JSON" | while IFS= read -r name; do
+              printf '::error::  %s\n' "$name"
+            done
+            echo "::error::Remove stale or duplicate assets from draft release ${RELEASE_ID} manually, then rerun; the workflow will not delete draft assets"
+            exit 1
+          fi
+          for ASSET in "${EXPECTED_ARCHIVES[@]}"; do
+            ASSET_ID="$(jq -er --arg name "$ASSET" '
+              [.assets[] | select(.name == $name)] |
+              if length == 1 then .[0].id else error("archive asset missing or duplicated") end
+            ' <<<"$RELEASE_JSON")"
+            gh api \
+              --header 'Accept: application/octet-stream' \
+              "repos/${GITHUB_REPOSITORY}/releases/assets/${ASSET_ID}" > "$ASSET_ID.archive"
+            [[ -s "$ASSET_ID.archive" ]] || {
+              echo "::error::Staged release asset ${ASSET} is empty"
+              exit 1
+            }
+            ACTUAL="$(shasum -a 256 "$ASSET_ID.archive" | awk '{print $1}')"
+            if ! ATTESTATION_JSON="$(gh attestation verify "$ASSET_ID.archive" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml" \
+              --source-digest "$COMMIT_SHA" \
+              --source-ref "refs/tags/${TAG_NAME}" \
+              --format json)"; then
+              echo "::error::No verified GitHub attestation for staged ${ASSET}"
+              exit 1
+            fi
+            if ! jq -e --arg name "$ASSET" --arg digest "$ACTUAL" '
+              [
+                .[]?.verificationResult.statement? |
+                select(.predicateType == "https://slsa.dev/provenance/v1") |
+                .subject[]? |
+                select((.name // "") == $name and (.digest.sha256 // "") == $digest)
+              ] | length > 0
+            ' <<<"$ATTESTATION_JSON" >/dev/null; then
+              echo "::error::Staged attestation subject does not bind ${ASSET} to ${ACTUAL}"
+              exit 1
+            fi
+            # Secondary consumer-contract check; attestation above is the
+            # archive trust root.
+            SIDECAR_NAME="${ASSET}.sha256"
+            SIDECAR_ID="$(jq -er --arg name "$SIDECAR_NAME" '
+              [.assets[] | select(.name == $name)] |
+              if length == 1 then .[0].id else error("checksum sidecar missing or duplicated") end
+            ' <<<"$RELEASE_JSON")"
+            gh api \
+              --header 'Accept: application/octet-stream' \
+              "repos/${GITHUB_REPOSITORY}/releases/assets/${SIDECAR_ID}" > "$SIDECAR_ID.sidecar"
+            [[ "$(wc -l < "$SIDECAR_ID.sidecar")" -eq 1 ]] || {
+              echo "::error::Staged checksum sidecar must contain one record: ${SIDECAR_NAME}"
+              exit 1
+            }
+            SIDECAR_RECORD="$(<"$SIDECAR_ID.sidecar")"
+            if [[ "$SIDECAR_RECORD" != "${ACTUAL}  ${ASSET}" ]]; then
+              echo "::error::Staged checksum sidecar does not match attested ${ASSET}"
+              exit 1
+            fi
+          done
+
+          if jq -e '.draft == false and .immutable == true' <<<"$RELEASE_JSON" >/dev/null; then
+            PUBLISHED_JSON="$RELEASE_JSON"
+            echo "Revalidated already immutable release ${RELEASE_ID}; skipping PATCH"
+          else
+            if [[ "$PRERELEASE" == true ]]; then
+              MAKE_LATEST=false
+            else
+              MAKE_LATEST=legacy
+            fi
+            PUBLISHED_JSON="$(gh api --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
+              -F draft=false \
+              -F "prerelease=${PRERELEASE}" \
+              -f "make_latest=${MAKE_LATEST}")"
+          fi
+          jq -e \
+            --arg tag "$TAG_NAME" \
+            --arg commit "$COMMIT_SHA" \
+            --arg prerelease "$PRERELEASE" '
+              (.tag_name == $tag) and
+              (.target_commitish == $commit or .target_commitish == "main") and
+              (.draft == false) and
+              (.prerelease == ($prerelease == "true")) and
+              (.immutable == true)
+            ' <<<"$PUBLISHED_JSON" >/dev/null || {
+            echo "::error::Published release ${RELEASE_ID} failed immutable identity verification"
+            exit 1
+          }
+          printf 'release_id=%s\n' "$RELEASE_ID" >> "$GITHUB_OUTPUT"
+          echo "Published or revalidated immutable release ${RELEASE_ID} for ${TAG_NAME}"
+
+  # The complete stable Homebrew update/check is one serialized transaction.
+  # Prereleases skip formula mutation and use verify-checksums below instead.
+  update-homebrew:
+    needs: [finalize-release, publish-npm, setup, release-preflight, homebrew-token-preflight]
+    if: >-
+      needs.setup.outputs.prerelease == 'false' &&
+      needs.finalize-release.result == 'success' &&
+      needs.publish-npm.result == 'success' &&
+      needs.release-preflight.result == 'success' &&
+      needs.homebrew-token-preflight.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      attestations: read
+    concurrency:
+      group: ${{ github.repository }}-homebrew-release
+      cancel-in-progress: false
+
+    steps:
+      - name: Download CLI artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: build-*
+          merge-multiple: true
+
+      - name: Discover exact platform archive digests
+        id: sha
+        env:
+          VERSION: ${{ needs.setup.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          EXPECTED_ARCHIVES=(
+            "claude-in-mobile-${VERSION}-darwin-arm64.tar.gz"
+            "claude-in-mobile-${VERSION}-darwin-x86_64.tar.gz"
+            "claude-in-mobile-${VERSION}-linux-x86_64.tar.gz"
+          )
+          ARCHIVES=("claude-in-mobile-${VERSION}-"*.tar.gz)
+          if [[ "${#ARCHIVES[@]}" -ne "${#EXPECTED_ARCHIVES[@]}" ]]; then
+            echo "::error::Expected exactly three platform archives for ${VERSION}"
+            exit 1
+          fi
+          MAP="{}"
+          for archive in "${ARCHIVES[@]}"; do
+            case "$archive" in
+              "${EXPECTED_ARCHIVES[0]}"|"${EXPECTED_ARCHIVES[1]}"|"${EXPECTED_ARCHIVES[2]}") ;;
+              *)
+                echo "::error::Unexpected platform archive: $archive"
+                exit 1
+                ;;
+            esac
+          done
+          for archive in "${EXPECTED_ARCHIVES[@]}"; do
+            [[ -f "$archive" ]] || {
+              echo "::error::Missing expected platform archive: $archive"
+              exit 1
+            }
+            platform="${archive#claude-in-mobile-${VERSION}-}"
+            platform="${platform%.tar.gz}"
+            sha="$(shasum -a 256 "$archive" | awk '{print $1}')"
+            [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || {
+              echo "::error::Unable to calculate SHA256 for $archive"
+              exit 1
+            }
+            MAP="$(jq -c --arg p "$platform" --arg s "$sha" '. + {($p): $s}' <<<"$MAP")"
+          done
+          [[ "$(jq -c 'keys | sort' <<<"$MAP")" == '["darwin-arm64","darwin-x86_64","linux-x86_64"]' ]] || {
+            echo "::error::Platform archive digest map is incomplete"
+            exit 1
+          }
+          printf 'map=%s\n' "$MAP" >> "$GITHUB_OUTPUT"
 
       - name: Checkout Homebrew tap
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -367,142 +2508,595 @@ jobs:
         working-directory: homebrew-tap
         env:
           SHA_MAP: ${{ steps.sha.outputs.map }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.setup.outputs.version }}
           FORMULA: mcp-devices.rb
         run: |
+          set -euo pipefail
           python3 - <<'PYTHON'
           import json, os, re
-
           version = os.environ["VERSION"]
           sha_map = json.loads(os.environ["SHA_MAP"])
-          # The canonical unified tap keeps the formula at the repo root. The
-          # file is seeded out-of-band; this job patches version + shas in place.
           path = os.environ["FORMULA"]
-
           with open(path) as f:
               content = f.read()
 
+          current_match = re.search(r'version "([^"]+)"', content)
+          target_match = re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:\+[0-9A-Za-z.-]+)?', version)
+          if current_match is None or target_match is None:
+              raise RuntimeError(f"{path}: formula or target has no stable SemVer core")
+
+          def core(match):
+              return tuple(int(match.group(i)) for i in range(1, 4))
+
+          current_core_match = re.match(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', current_match.group(1))
+          if current_core_match is None:
+              raise RuntimeError(f"{path}: formula version is not a stable SemVer")
+          if core(current_core_match) > core(target_match):
+              raise RuntimeError(
+                  f"{path}: refusing stale release {version}; formula already tracks {current_match.group(1)}"
+              )
+
           content = re.sub(r'version ".*?"', f'version "{version}"', content)
-          # `oldname`/`oldnames` are not supported Formula DSL. Same-tap renames
-          # use formula_renames.json; this product moved across taps, so retain
-          # command aliases but strip the invalid migration directive.
           content = re.sub(r'^\s*oldnames?\s+.*\n?', '', content, flags=re.MULTILINE)
 
-          # Homebrew tracks only macOS archives. Linux is released separately
-          # and verified against its published SHA256 sidecar.
-          shas = [sha_map[p] for p in sorted(sha_map) if p.startswith("darwin-")]
-          sha_iter = iter(shas)
-          def replace_sha(m):
-              try:
-                  return f'sha256 "{next(sha_iter)}"'
-              except StopIteration:
-                  return m.group(0)
-          content = re.sub(r'sha256 "[a-f0-9]{64}"', replace_sha, content)
+          expected_platforms = {"darwin-arm64", "darwin-x86_64", "linux-x86_64"}
+          if set(sha_map) != expected_platforms:
+              raise RuntimeError(f"{path}: archive digest map has unexpected platforms")
 
-          # npm and the native CLI both historically installed `mcp-devices`.
-          # Keep the native surface reachable through an unambiguous alias even
-          # when npm shadows the Homebrew executable on PATH.
-          install_line = '    bin.install "mcp-devices"'
-          alias_line = '    bin.install_symlink bin/"mcp-devices" => "mcp-devices-cli"'
-          if alias_line not in content:
-              if install_line not in content:
-                  raise RuntimeError(f"{path}: missing native CLI install line")
-              content = content.replace(
-                  install_line,
-                  f"{install_line}\n{alias_line}",
-                  1,
+          lines = content.splitlines(keepends=True)
+          url_pattern = re.compile(
+              r'^\s*url\s+"([^"\n]+-(darwin-(?:arm64|x86_64))\.tar\.gz)"\s*$'
+          )
+          archive_urls = []
+          for index, line in enumerate(lines):
+              match = url_pattern.match(line.rstrip("\n"))
+              if match is not None:
+                  archive_urls.append((index, match.group(1), match.group(2)))
+          if {platform for _, _, platform in archive_urls} != {"darwin-arm64", "darwin-x86_64"}:
+              raise RuntimeError(f"{path}: formula must contain exactly one URL for each Darwin platform")
+          if len(archive_urls) != 2:
+              raise RuntimeError(f"{path}: formula contains duplicate or missing Darwin archive URLs")
+
+          for url_index, _, platform in archive_urls:
+              sha_index = url_index + 1
+              while sha_index < len(lines) and (
+                  not lines[sha_index].strip() or lines[sha_index].lstrip().startswith("#")
+              ):
+                  sha_index += 1
+              if sha_index >= len(lines):
+                  raise RuntimeError(f"{path}: URL for {platform} has no following sha256")
+              checksum_match = re.fullmatch(
+                  r'\s*sha256\s+"([a-f0-9]{64})"\s*', lines[sha_index]
               )
+              if checksum_match is None:
+                  raise RuntimeError(f"{path}: URL for {platform} is not paired with sha256")
+              expected_sha = sha_map[platform]
+              ending = "\n" if lines[sha_index].endswith("\n") else ""
+              indent = re.match(r"^\s*", lines[sha_index]).group(0)
+              lines[sha_index] = f'{indent}sha256 "{expected_sha}"{ending}'
+          content = "".join(lines)
+
+          install_line = '    bin.install "mcp-devices"'
+          alias_lines = [
+              '    bin.install_symlink bin/"mcp-devices" => "mcp-devices-cli"',
+              '    bin.install_symlink bin/"mcp-devices" => "claude-in-mobile"',
+          ]
+          for alias_line in alias_lines:
+              if alias_line not in content:
+                  if install_line not in content:
+                      raise RuntimeError(f"{path}: missing native CLI install line")
+                  content = content.replace(install_line, f"{install_line}\n{alias_line}", 1)
 
           test_line = '    system "#{bin}/mcp-devices", "--version"'
-          alias_test_line = '    system "#{bin}/mcp-devices-cli", "--version"'
-          if alias_test_line not in content:
-              if test_line not in content:
-                  raise RuntimeError(f"{path}: missing native CLI test line")
-              content = content.replace(
-                  test_line,
-                  f"{test_line}\n{alias_test_line}",
-                  1,
-              )
+          test_alias_lines = [
+              '    system "#{bin}/mcp-devices-cli", "--version"',
+              '    system "#{bin}/claude-in-mobile", "--version"',
+          ]
+          for alias_test_line in test_alias_lines:
+              if alias_test_line not in content:
+                  if test_line not in content:
+                      raise RuntimeError(f"{path}: missing native CLI test line")
+                  content = content.replace(test_line, f"{test_line}\n{alias_test_line}", 1)
+
+          required_lines = [install_line, *alias_lines, test_line, *test_alias_lines]
+          missing_lines = [line for line in required_lines if line not in content]
+          if missing_lines:
+              raise RuntimeError(f"{path}: missing Homebrew CLI alias/test invariant: {missing_lines}")
 
           with open(path, "w") as f:
               f.write(content)
           PYTHON
 
-      - name: Commit and push
-        working-directory: homebrew-tap
+      # The release is public now; verify immutable public assets and their
+      # attestations before making the formula commit. A failed check leaves
+      # the prior formula untouched.
+      - name: Verify public release archives against attestations and formula
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.setup.outputs.version }}
+          COMMIT_SHA: ${{ needs.setup.outputs.commit_sha }}
+          EXPECTED_TAG_OBJECT_SHA: ${{ needs.setup.outputs.tag_object_sha }}
+          TAG_NAME: ${{ needs.setup.outputs.tag_name }}
+          RELEASE_ID: ${{ needs.finalize-release.outputs.release_id }}
+        shell: bash
         run: |
+          set -euo pipefail
+          REPO="$GITHUB_REPOSITORY"
+          FORMULA="$GITHUB_WORKSPACE/homebrew-tap/mcp-devices.rb"
+
+          TAG_REF="$(gh api "repos/${REPO}/git/ref/tags/${TAG_NAME}")"
+          TAG_OBJECT_SHA="$(jq -er '.object.sha | strings | select(test("^[0-9a-f]{40}$"))' <<<"$TAG_REF")"
+          if [[ "$TAG_OBJECT_SHA" != "$EXPECTED_TAG_OBJECT_SHA" ]]; then
+            echo "::error::refs/tags/${TAG_NAME} object moved after finalization"
+            exit 1
+          fi
+          OBJECT_SHA="$TAG_OBJECT_SHA"
+          OBJECT_TYPE="$(jq -er '.object.type' <<<"$TAG_REF")"
+          TAG_SHA=""
+          for ((depth = 0; depth < 5; depth++)); do
+            case "$OBJECT_TYPE" in
+              commit)
+                TAG_SHA="$OBJECT_SHA"
+                break
+                ;;
+              tag)
+                TAG_OBJECT="$(gh api "repos/${REPO}/git/tags/${OBJECT_SHA}")"
+                OBJECT_SHA="$(jq -er '.object.sha | strings | select(test("^[0-9a-f]{40}$"))' <<<"$TAG_OBJECT")"
+                OBJECT_TYPE="$(jq -er '.object.type' <<<"$TAG_OBJECT")"
+                ;;
+              *)
+                echo "::error::Unsupported Git tag object type: ${OBJECT_TYPE}"
+                exit 1
+                ;;
+            esac
+          done
+          if [[ "$TAG_SHA" != "$COMMIT_SHA" ]]; then
+            echo "::error::refs/tags/${TAG_NAME} resolves to ${TAG_SHA:-<missing>}, expected ${COMMIT_SHA}"
+            exit 1
+          fi
+
+          RELEASE_JSON="$(gh api "repos/${REPO}/releases/${RELEASE_ID}")"
+          jq -e --arg tag "$TAG_NAME" --arg commit "$COMMIT_SHA" '
+            (.tag_name == $tag) and
+            (.target_commitish == $commit or .target_commitish == "main") and
+            (.draft == false) and
+            (.prerelease == false) and
+            (.immutable == true)
+          ' <<<"$RELEASE_JSON" >/dev/null || {
+            echo "::error::Public stable release is not bound to the verified tag commit"
+            exit 1
+          }
+
+          FORMULA_BLOCKS="$(
+            python3 - "$FORMULA" <<'PYTHON'
+          import json
+          import re
+          import sys
+
+          path = sys.argv[1]
+          with open(path, encoding="utf-8") as formula:
+              lines = formula.read().splitlines()
+
+          pattern = re.compile(
+              r'^\s*url\s+"([^"\n]+-(darwin-(?:arm64|x86_64))\.tar\.gz)"\s*$'
+          )
+          blocks = {}
+          for index, line in enumerate(lines):
+              match = pattern.fullmatch(line)
+              if match is None:
+                  continue
+              platform = match.group(2)
+              if platform in blocks:
+                  raise SystemExit(f"{path}: duplicate URL block for {platform}")
+              sha_index = index + 1
+              while sha_index < len(lines) and (
+                  not lines[sha_index].strip() or lines[sha_index].lstrip().startswith("#")
+              ):
+                  sha_index += 1
+              if sha_index >= len(lines):
+                  raise SystemExit(f"{path}: URL block for {platform} has no sha256")
+              sha_match = re.fullmatch(r'\s*sha256\s+"([a-f0-9]{64})"\s*', lines[sha_index])
+              if sha_match is None:
+                  raise SystemExit(f"{path}: URL block for {platform} is not paired with sha256")
+              blocks[platform] = {"url": match.group(1), "sha256": sha_match.group(1)}
+
+          if set(blocks) != {"darwin-arm64", "darwin-x86_64"}:
+              raise SystemExit(f"{path}: expected exactly two Darwin URL/checksum blocks")
+          print(json.dumps(blocks, sort_keys=True))
+          PYTHON
+          )"
+
+          EXPECTED_ARCHIVES=(
+            "claude-in-mobile-${VERSION}-darwin-arm64.tar.gz"
+            "claude-in-mobile-${VERSION}-darwin-x86_64.tar.gz"
+            "claude-in-mobile-${VERSION}-linux-x86_64.tar.gz"
+          )
+          ARCHIVE_COUNT="$(jq '[.assets[] | select(.name | endswith(".tar.gz"))] | length' <<<"$RELEASE_JSON")"
+          SIDECAR_COUNT="$(jq '[.assets[] | select(.name | endswith(".tar.gz.sha256"))] | length' <<<"$RELEASE_JSON")"
+          ASSET_COUNT="$(jq '.assets | length' <<<"$RELEASE_JSON")"
+          EXPECTED_ASSETS=("${EXPECTED_ARCHIVES[@]}")
+          for ASSET in "${EXPECTED_ARCHIVES[@]}"; do
+            EXPECTED_ASSETS+=("${ASSET}.sha256")
+          done
+          EXPECTED_ASSETS_JSON="$(printf '%s\n' "${EXPECTED_ASSETS[@]}" | jq -Rsc 'split("\n") | map(select(length > 0)) | sort')"
+          ACTUAL_ASSETS_JSON="$(jq -c '[.assets[]?.name] | sort' <<<"$RELEASE_JSON")"
+          if [[ "$ASSET_COUNT" -ne "${#EXPECTED_ASSETS[@]}" ||
+            "$ARCHIVE_COUNT" -ne "${#EXPECTED_ARCHIVES[@]}" ||
+            "$SIDECAR_COUNT" -ne "${#EXPECTED_ARCHIVES[@]}" ||
+            "$ACTUAL_ASSETS_JSON" != "$EXPECTED_ASSETS_JSON" ]]; then
+            UNEXPECTED_ASSETS="$(jq -r --argjson expected "$EXPECTED_ASSETS_JSON" '
+              [.assets[]?.name |
+                select(. as $name | ($expected | index($name)) == null)] |
+              sort | .[]
+            ' <<<"$RELEASE_JSON")"
+            echo "::error::Public stable release must contain exactly the expected archive and checksum sidecar set"
+            if [[ -n "$UNEXPECTED_ASSETS" ]]; then
+              echo "::error::Unexpected public asset names:"
+              while IFS= read -r name; do
+                printf '::error::  %s\n' "$name"
+              done <<<"$UNEXPECTED_ASSETS"
+            fi
+            echo "::error::Observed public asset names:"
+            jq -r '.assets[]?.name' <<<"$RELEASE_JSON" | while IFS= read -r name; do
+              printf '::error::  %s\n' "$name"
+            done
+            exit 1
+          fi
+
+          for ASSET in "${EXPECTED_ARCHIVES[@]}"; do
+            PLATFORM="${ASSET#claude-in-mobile-${VERSION}-}"
+            PLATFORM="${PLATFORM%.tar.gz}"
+            ASSET_ID="$(jq -er --arg name "$ASSET" '
+              [.assets[] | select(.name == $name)] |
+              if length == 1 then .[0].id else error("asset missing or duplicated") end
+            ' <<<"$RELEASE_JSON")"
+            FORMULA_URL="$(jq -er --arg platform "$PLATFORM" '.[$platform].url' <<<"$FORMULA_BLOCKS" 2>/dev/null || true)"
+            FORMULA_SHA="$(jq -er --arg platform "$PLATFORM" '.[$platform].sha256' <<<"$FORMULA_BLOCKS" 2>/dev/null || true)"
+            if [[ "$PLATFORM" == darwin-* ]]; then
+              EXPECTED_URL="https://github.com/${REPO}/releases/download/v#{version}/claude-in-mobile-#{version}-${PLATFORM}.tar.gz"
+              if [[ "$FORMULA_URL" != "$EXPECTED_URL" || ! "$FORMULA_SHA" =~ ^[0-9a-f]{64}$ ]]; then
+                echo "::error::Homebrew URL/checksum block is not exact for ${PLATFORM}"
+                exit 1
+              fi
+            fi
+
+            gh api \
+              --header 'Accept: application/octet-stream' \
+              "repos/${REPO}/releases/assets/${ASSET_ID}" > "$ASSET_ID.archive"
+            [[ -s "$ASSET_ID.archive" ]] || {
+              echo "::error::Public release asset ${ASSET} is empty"
+              exit 1
+            }
+            ACTUAL="$(shasum -a 256 "$ASSET_ID.archive" | awk '{print $1}')"
+            if [[ "$PLATFORM" == darwin-* && "$ACTUAL" != "$FORMULA_SHA" ]]; then
+              echo "::error::Homebrew checksum mismatch for ${ASSET}: expected ${FORMULA_SHA}, got ${ACTUAL}"
+              exit 1
+            fi
+
+            if ! ATTESTATION_JSON="$(gh attestation verify "$ASSET_ID.archive" \
+              --repo "$REPO" \
+              --signer-workflow "${REPO}/.github/workflows/release.yml" \
+              --source-digest "$COMMIT_SHA" \
+              --source-ref "refs/tags/${TAG_NAME}" \
+              --format json)"; then
+              echo "::error::No verified GitHub attestation for public asset ${ASSET}"
+              exit 1
+            fi
+            if ! jq -e --arg name "$ASSET" --arg digest "$ACTUAL" '
+              [
+                .[]?.verificationResult.statement? |
+                select(.predicateType == "https://slsa.dev/provenance/v1") |
+                .subject[]? |
+                select((.name // "") == $name and (.digest.sha256 // "") == $digest)
+              ] | length > 0
+            ' <<<"$ATTESTATION_JSON" >/dev/null; then
+              echo "::error::Verified attestation subject does not bind ${ASSET} to ${ACTUAL}"
+              exit 1
+            fi
+            # Secondary consumer-contract check; attestation above is the
+            # archive trust root.
+            SIDECAR_NAME="${ASSET}.sha256"
+            SIDECAR_ID="$(jq -er --arg name "$SIDECAR_NAME" '
+              [.assets[] | select(.name == $name)] |
+              if length == 1 then .[0].id else error("checksum sidecar missing or duplicated") end
+            ' <<<"$RELEASE_JSON")"
+            gh api \
+              --header 'Accept: application/octet-stream' \
+              "repos/${REPO}/releases/assets/${SIDECAR_ID}" > "$SIDECAR_ID.sidecar"
+            [[ "$(wc -l < "$SIDECAR_ID.sidecar")" -eq 1 ]] || {
+              echo "::error::Checksum sidecar must contain one record: ${SIDECAR_NAME}"
+              exit 1
+            }
+            SIDECAR_RECORD="$(<"$SIDECAR_ID.sidecar")"
+            if [[ "$SIDECAR_RECORD" != "${ACTUAL}  ${ASSET}" ]]; then
+              echo "::error::Checksum sidecar does not match attested ${ASSET}"
+              exit 1
+            fi
+            echo "Verified checksum consumer record for ${ASSET}"
+            echo "Verified ${ASSET} against its immutable asset bytes and GitHub attestation"
+          done
+
+      - name: Commit and push formula
+        working-directory: homebrew-tap
+        env:
+          VERSION: ${{ needs.setup.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "mcp-devices.rb"
-          git diff --cached --quiet && exit 0
-          git commit -m "Update mcp-devices to ${{ steps.version.outputs.version }}"
+          git add mcp-devices.rb
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "Update mcp-devices to ${VERSION}"
           git push
 
+  # Prereleases have no Homebrew formula. They still verify every immutable
+  # public archive against its GitHub attestation after finalization.
   verify-checksums:
-    needs: update-homebrew
+    needs: [finalize-release, publish-npm, update-homebrew, setup]
+    if: >-
+      always() &&
+      needs.setup.result == 'success' &&
+      needs.finalize-release.result == 'success' &&
+      needs.publish-npm.result == 'success' &&
+      needs.setup.outputs.prerelease == 'true' &&
+      needs.update-homebrew.result == 'skipped'
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: read
+      attestations: read
+    concurrency:
+      group: ${{ github.repository }}-homebrew-release
+      cancel-in-progress: false
     steps:
-      - name: Extract version from tag
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Download release assets and verify checksums
+      - name: Verify public prerelease archives against attestations
         env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        # Every archive must match its published SHA256 sidecar. macOS archives
-        # must also match the Homebrew formula; Linux is distributed separately.
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.setup.outputs.version }}
+          COMMIT_SHA: ${{ needs.setup.outputs.commit_sha }}
+          EXPECTED_TAG_OBJECT_SHA: ${{ needs.setup.outputs.tag_object_sha }}
+          TAG_NAME: ${{ needs.setup.outputs.tag_name }}
+          RELEASE_ID: ${{ needs.finalize-release.outputs.release_id }}
+        shell: bash
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          REPO="AlexGladkov/claude-in-mobile"
-          TAP_REPO="AlexGladkov/homebrew-tap"
-          FAILED=0
+          set -euo pipefail
+          REPO="$GITHUB_REPOSITORY"
 
-          echo "::group::Fetching formula from tap"
-          gh api "repos/${TAP_REPO}/contents/mcp-devices.rb" --jq '.content' | base64 -d > formula.rb
-          cat formula.rb
-          echo "::endgroup::"
-
-          ASSETS=$(gh api "repos/${REPO}/releases/tags/v${VERSION}" \
-            --jq '.assets[] | select(.name | endswith(".tar.gz")) | .name')
-
-          if [ -z "$ASSETS" ]; then
-            echo "::error::No tar.gz assets found in release v${VERSION}"
+          TAG_REF="$(gh api "repos/${REPO}/git/ref/tags/${TAG_NAME}")"
+          TAG_OBJECT_SHA="$(jq -er '.object.sha | strings | select(test("^[0-9a-f]{40}$"))' <<<"$TAG_REF")"
+          if [[ "$TAG_OBJECT_SHA" != "$EXPECTED_TAG_OBJECT_SHA" ]]; then
+            echo "::error::refs/tags/${TAG_NAME} object moved after finalization"
+            exit 1
+          fi
+          OBJECT_SHA="$TAG_OBJECT_SHA"
+          OBJECT_TYPE="$(jq -er '.object.type' <<<"$TAG_REF")"
+          TAG_SHA=""
+          for ((depth = 0; depth < 5; depth++)); do
+            case "$OBJECT_TYPE" in
+              commit)
+                TAG_SHA="$OBJECT_SHA"
+                break
+                ;;
+              tag)
+                TAG_OBJECT="$(gh api "repos/${REPO}/git/tags/${OBJECT_SHA}")"
+                OBJECT_SHA="$(jq -er '.object.sha | strings | select(test("^[0-9a-f]{40}$"))' <<<"$TAG_OBJECT")"
+                OBJECT_TYPE="$(jq -er '.object.type' <<<"$TAG_OBJECT")"
+                ;;
+              *)
+                echo "::error::Unsupported Git tag object type: ${OBJECT_TYPE}"
+                exit 1
+                ;;
+            esac
+          done
+          if [[ "$TAG_SHA" != "$COMMIT_SHA" ]]; then
+            echo "::error::refs/tags/${TAG_NAME} resolves to ${TAG_SHA:-<missing>}, expected ${COMMIT_SHA}"
             exit 1
           fi
 
-          while IFS= read -r ASSET; do
-            URL="https://github.com/${REPO}/releases/download/v${VERSION}/${ASSET}"
-            echo "::group::Verifying ${ASSET}"
-            echo "Downloading ${URL}"
-            curl -fsSL -o "${ASSET}" "${URL}"
-            curl -fsSL -o "${ASSET}.sha256" "${URL}.sha256"
+          RELEASE_JSON="$(gh api "repos/${REPO}/releases/${RELEASE_ID}")"
+          jq -e --arg tag "$TAG_NAME" --arg commit "$COMMIT_SHA" '
+            (.tag_name == $tag) and
+            (.target_commitish == $commit or .target_commitish == "main") and
+            (.draft == false) and
+            (.prerelease == true) and
+            (.immutable == true)
+          ' <<<"$RELEASE_JSON" >/dev/null || {
+            echo "::error::Public prerelease is not bound to the verified tag commit"
+            exit 1
+          }
 
-            ACTUAL=$(shasum -a 256 "${ASSET}" | awk '{print $1}')
-            EXPECTED=$(awk 'NR == 1 { print $1 }' "${ASSET}.sha256")
-            echo "Actual SHA256: ${ACTUAL}"
-            if [ "$ACTUAL" != "$EXPECTED" ]; then
-              echo "::error::Checksum mismatch for ${ASSET}.sha256"
-              FAILED=1
-            else
-              echo "Checksum verified against the published sidecar"
+          EXPECTED_ARCHIVES=(
+            "claude-in-mobile-${VERSION}-darwin-arm64.tar.gz"
+            "claude-in-mobile-${VERSION}-darwin-x86_64.tar.gz"
+            "claude-in-mobile-${VERSION}-linux-x86_64.tar.gz"
+          )
+          ARCHIVE_COUNT="$(jq '[.assets[] | select(.name | endswith(".tar.gz"))] | length' <<<"$RELEASE_JSON")"
+          SIDECAR_COUNT="$(jq '[.assets[] | select(.name | endswith(".tar.gz.sha256"))] | length' <<<"$RELEASE_JSON")"
+          ASSET_COUNT="$(jq '.assets | length' <<<"$RELEASE_JSON")"
+          EXPECTED_ASSETS=("${EXPECTED_ARCHIVES[@]}")
+          for ASSET in "${EXPECTED_ARCHIVES[@]}"; do
+            EXPECTED_ASSETS+=("${ASSET}.sha256")
+          done
+          EXPECTED_ASSETS_JSON="$(printf '%s\n' "${EXPECTED_ASSETS[@]}" | jq -Rsc 'split("\n") | map(select(length > 0)) | sort')"
+          ACTUAL_ASSETS_JSON="$(jq -c '[.assets[]?.name] | sort' <<<"$RELEASE_JSON")"
+          if [[ "$ASSET_COUNT" -ne "${#EXPECTED_ASSETS[@]}" ||
+            "$ARCHIVE_COUNT" -ne "${#EXPECTED_ARCHIVES[@]}" ||
+            "$SIDECAR_COUNT" -ne "${#EXPECTED_ARCHIVES[@]}" ||
+            "$ACTUAL_ASSETS_JSON" != "$EXPECTED_ASSETS_JSON" ]]; then
+            UNEXPECTED_ASSETS="$(jq -r --argjson expected "$EXPECTED_ASSETS_JSON" '
+              [.assets[]?.name |
+                select(. as $name | ($expected | index($name)) == null)] |
+              sort | .[]
+            ' <<<"$RELEASE_JSON")"
+            echo "::error::Public prerelease must contain exactly the expected archive and checksum sidecar set"
+            if [[ -n "$UNEXPECTED_ASSETS" ]]; then
+              echo "::error::Unexpected public asset names:"
+              while IFS= read -r name; do
+                printf '::error::  %s\n' "$name"
+              done <<<"$UNEXPECTED_ASSETS"
             fi
-
-            if [[ "$ASSET" == *-linux-*.tar.gz ]]; then
-              echo "Linux archive is not managed by the Homebrew formula"
-            elif grep -Fq -- "${ACTUAL}" formula.rb; then
-              echo "Checksum verified against the Homebrew formula"
-            else
-              echo "::error::Checksum mismatch for ${ASSET}! Formula does not contain ${ACTUAL}"
-              FAILED=1
-            fi
-            echo "::endgroup::"
-          done <<< "$ASSETS"
-
-          if [ "$FAILED" -ne 0 ]; then
-            echo "::error::Release archive checksums do not match their sidecars or the Homebrew formula."
-            echo "::error::Check whether release archives were replaced after build or upload."
+            echo "::error::Observed public asset names:"
+            jq -r '.assets[]?.name' <<<"$RELEASE_JSON" | while IFS= read -r name; do
+              printf '::error::  %s\n' "$name"
+            done
             exit 1
           fi
+          for ASSET in "${EXPECTED_ARCHIVES[@]}"; do
+            ASSET_ID="$(jq -er --arg name "$ASSET" '
+              [.assets[] | select(.name == $name)] |
+              if length == 1 then .[0].id else error("asset missing or duplicated") end
+            ' <<<"$RELEASE_JSON")"
+            gh api \
+              --header 'Accept: application/octet-stream' \
+              "repos/${REPO}/releases/assets/${ASSET_ID}" > "$ASSET_ID.archive"
+            [[ -s "$ASSET_ID.archive" ]] || {
+              echo "::error::Public prerelease asset ${ASSET} is empty"
+              exit 1
+            }
+            ACTUAL="$(shasum -a 256 "$ASSET_ID.archive" | awk '{print $1}')"
+            if ! ATTESTATION_JSON="$(gh attestation verify "$ASSET_ID.archive" \
+              --repo "$REPO" \
+              --signer-workflow "${REPO}/.github/workflows/release.yml" \
+              --source-digest "$COMMIT_SHA" \
+              --source-ref "refs/tags/${TAG_NAME}" \
+              --format json)"; then
+              echo "::error::No verified GitHub attestation for public prerelease ${ASSET}"
+              exit 1
+            fi
+            if ! jq -e --arg name "$ASSET" --arg digest "$ACTUAL" '
+              [
+                .[]?.verificationResult.statement? |
+                select(.predicateType == "https://slsa.dev/provenance/v1") |
+                .subject[]? |
+                select((.name // "") == $name and (.digest.sha256 // "") == $digest)
+              ] | length > 0
+            ' <<<"$ATTESTATION_JSON" >/dev/null; then
+              echo "::error::Verified attestation subject does not bind ${ASSET} to ${ACTUAL}"
+              exit 1
+            fi
+            # Secondary consumer-contract check; attestation above is the
+            # archive trust root.
+            SIDECAR_NAME="${ASSET}.sha256"
+            SIDECAR_ID="$(jq -er --arg name "$SIDECAR_NAME" '
+              [.assets[] | select(.name == $name)] |
+              if length == 1 then .[0].id else error("checksum sidecar missing or duplicated") end
+            ' <<<"$RELEASE_JSON")"
+            gh api \
+              --header 'Accept: application/octet-stream' \
+              "repos/${REPO}/releases/assets/${SIDECAR_ID}" > "$SIDECAR_ID.sidecar"
+            [[ "$(wc -l < "$SIDECAR_ID.sidecar")" -eq 1 ]] || {
+              echo "::error::Checksum sidecar must contain one record: ${SIDECAR_NAME}"
+              exit 1
+            }
+            SIDECAR_RECORD="$(<"$SIDECAR_ID.sidecar")"
+            if [[ "$SIDECAR_RECORD" != "${ACTUAL}  ${ASSET}" ]]; then
+              echo "::error::Checksum sidecar does not match attested ${ASSET}"
+              exit 1
+            fi
+            echo "Verified checksum consumer record for ${ASSET}"
+            echo "Verified ${ASSET} against its immutable asset bytes and GitHub attestation"
+          done
 
-          echo "All checksums verified successfully"
+  # Always report a failed gate explicitly. Expected skipped jobs are channel
+  # dependent: stable skips prerelease checksum verification; prerelease skips
+  # Homebrew mutation.
+  release-status:
+    needs: [setup, ci-check, build, verify-plugin-versions, npm-build, attest, release, npm-token-preflight, npm-trusted-publisher-preflight, github-immutable-preflight, homebrew-token-preflight, release-preflight, publish-npm, repair-npm-tags, npm-smoke, finalize-release, update-homebrew, verify-checksums]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      SETUP_RESULT: ${{ needs.setup.result }}
+      CI_RESULT: ${{ needs.ci-check.result }}
+      BUILD_RESULT: ${{ needs.build.result }}
+      VERSIONS_RESULT: ${{ needs.verify-plugin-versions.result }}
+      NPM_BUILD_RESULT: ${{ needs.npm-build.result }}
+      ATTEST_RESULT: ${{ needs.attest.result }}
+      RELEASE_RESULT: ${{ needs.release.result }}
+      NPM_RESULT: ${{ needs.publish-npm.result }}
+      TOKEN_PREFLIGHT_RESULT: ${{ needs.npm-token-preflight.result }}
+      TRUSTED_PUBLISHER_RESULT: ${{ needs.npm-trusted-publisher-preflight.result }}
+      IMMUTABLE_PREFLIGHT_RESULT: ${{ needs.github-immutable-preflight.result }}
+      HOMEBREW_PREFLIGHT_RESULT: ${{ needs.homebrew-token-preflight.result }}
+      PREFLIGHT_RESULT: ${{ needs.release-preflight.result }}
+      REPAIR_RESULT: ${{ needs.repair-npm-tags.result }}
+      NPM_SMOKE_RESULT: ${{ needs.npm-smoke.result }}
+      FINALIZE_RESULT: ${{ needs.finalize-release.result }}
+      HOMEBREW_RESULT: ${{ needs.update-homebrew.result }}
+      CHECKSUM_RESULT: ${{ needs.verify-checksums.result }}
+      PRERELEASE: ${{ needs.setup.outputs.prerelease }}
+    steps:
+      - name: Enforce release gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          FAIL=0
+          for pair in \
+            "setup:$SETUP_RESULT" \
+            "ci-check:$CI_RESULT" \
+            "build:$BUILD_RESULT" \
+            "verify-plugin-versions:$VERSIONS_RESULT" \
+            "npm-build:$NPM_BUILD_RESULT" \
+            "attest:$ATTEST_RESULT" \
+            "release:$RELEASE_RESULT" \
+            "publish-npm:$NPM_RESULT" \
+            "npm-token-preflight:$TOKEN_PREFLIGHT_RESULT" \
+            "npm-trusted-publisher-preflight:$TRUSTED_PUBLISHER_RESULT" \
+            "github-immutable-preflight:$IMMUTABLE_PREFLIGHT_RESULT" \
+            "release-preflight:$PREFLIGHT_RESULT" \
+            "npm-smoke:$NPM_SMOKE_RESULT" \
+            "finalize-release:$FINALIZE_RESULT"; do
+            name="${pair%%:*}"
+            result="${pair#*:}"
+            if [[ "$result" != success ]]; then
+              echo "::error::Required release job $name ended with $result"
+              FAIL=1
+            fi
+          done
+          if [[ "$REPAIR_RESULT" != success && "$REPAIR_RESULT" != skipped ]]; then
+            echo "::error::npm dist-tag repair job ended with $REPAIR_RESULT"
+            FAIL=1
+          fi
+          if [[ "$PRERELEASE" == false ]]; then
+            if [[ "$HOMEBREW_PREFLIGHT_RESULT" != success ]]; then
+              echo "::error::Stable release requires successful Homebrew token preflight"
+              FAIL=1
+            fi
+          elif [[ "$PRERELEASE" == true ]]; then
+            if [[ "$HOMEBREW_PREFLIGHT_RESULT" != skipped ]]; then
+              echo "::error::Prerelease must skip the stable-only Homebrew token preflight"
+              FAIL=1
+            fi
+          fi
+
+          if [[ "$PRERELEASE" == false ]]; then
+            if [[ "$HOMEBREW_RESULT" != success ]]; then
+              echo "::error::Stable release requires successful Homebrew update/check"
+              FAIL=1
+            fi
+            if [[ "$CHECKSUM_RESULT" != skipped ]]; then
+              echo "::error::Stable release must skip prerelease checksum job"
+              FAIL=1
+            fi
+          elif [[ "$PRERELEASE" == true ]]; then
+            if [[ "$HOMEBREW_RESULT" != skipped ]]; then
+              echo "::error::Prerelease must skip Homebrew mutation"
+              FAIL=1
+            fi
+            if [[ "$CHECKSUM_RESULT" != success ]]; then
+              echo "::error::Prerelease requires successful checksum verification"
+              FAIL=1
+            fi
+          else
+            echo "::error::Tag classification did not produce a stable/prerelease result"
+            FAIL=1
+          fi
+
+          if [[ "$FAIL" -ne 0 ]]; then
+            echo "::error::Release gate failed; no silent partial release is accepted"
+            exit 1
+          fi
+          echo "All release gates passed"

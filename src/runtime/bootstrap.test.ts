@@ -13,7 +13,7 @@ describe("bootstrapKernel", () => {
   });
 
   it("loads only the requested platforms (async — platforms are packaged)", async () => {
-    const k = await bootstrapKernelAsync({ platforms: ["ios"] });
+    const k = await bootstrapKernelAsync({ platforms: ["ios"], toolPlugins: [] });
     const ids = k.registry.list().map((e) => e.plugin.manifest.id).sort();
     expect(ids).toEqual(["builtin-tools", "ios", "repl"]);
   });

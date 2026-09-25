@@ -14,6 +14,8 @@ import type {
   AppManagementAdapter,
   PermissionAdapter,
   ShellAdapter,
+  LogsAdapter,
+  UrlOpeningAdapter,
   SyncScreenshotAdapter,
   PerformanceTraceAdapter,
   PerformanceTraceCapture,
@@ -27,6 +29,7 @@ import type { Device } from "mcp-devices/device-manager";
 import { IosClient } from "./ios/client.js";
 import { MobileError } from "mcp-devices/errors";
 import { compressScreenshot } from "mcp-devices/utils/image";
+import { validateBundleId } from "mcp-devices/utils/sanitize";
 import type { CompressOptions } from "mcp-devices/utils/image";
 import { PERFORMANCE } from "mcp-devices/constants/timeouts";
 import { XctraceRecording } from "./ios/xctrace.js";
@@ -39,7 +42,7 @@ interface ActiveIosTrace {
   options: XctraceStartOptions;
 }
 export class IosAdapter
-  implements CorePlatformAdapter, AppManagementAdapter, PermissionAdapter, ShellAdapter, SyncScreenshotAdapter, PerformanceTraceAdapter, HeapSnapshotAdapter
+  implements CorePlatformAdapter, AppManagementAdapter, PermissionAdapter, ShellAdapter, LogsAdapter, UrlOpeningAdapter, SyncScreenshotAdapter, PerformanceTraceAdapter, HeapSnapshotAdapter
 {
   readonly platform = "ios" as const;
   readonly heapSnapshotFormat = "xctrace-allocations" as const;
@@ -154,8 +157,8 @@ export class IosAdapter
     await this.clientFor(deviceId).inputText(text, deviceId);
   }
 
-  async pressKey(key: string): Promise<void> {
-    await this.client.pressKey(key);
+  async pressKey(key: string, _targetPid?: number, deviceId?: string): Promise<void> {
+    await this.clientFor(deviceId).pressKey(key, deviceId);
   }
 
   // ============ Screenshot ============
@@ -200,31 +203,35 @@ export class IosAdapter
     this.clientFor(deviceId).stopApp(bundleId, deviceId);
   }
 
-  installApp(path: string): string {
-    return this.client.installApp(path);
+  installApp(path: string, deviceId?: string): string {
+    return this.clientFor(deviceId).installApp(path, deviceId);
   }
 
   // ============ Permissions (PermissionAdapter) ============
 
-  grantPermission(bundleId: string, service: string): string {
-    this.client.grantPermission(bundleId, service);
+  grantPermission(bundleId: string, service: string, deviceId?: string): string {
+    this.clientFor(deviceId).grantPermission(bundleId, service, deviceId);
     return `Granted ${service} to ${bundleId}`;
   }
 
-  revokePermission(bundleId: string, service: string): string {
-    this.client.revokePermission(bundleId, service);
+  revokePermission(bundleId: string, service: string, deviceId?: string): string {
+    this.clientFor(deviceId).revokePermission(bundleId, service, deviceId);
     return `Revoked ${service} from ${bundleId}`;
   }
 
-  resetPermissions(bundleId: string): string {
-    this.client.resetPermissions(bundleId);
+  resetPermissions(bundleId: string, deviceId?: string): string {
+    this.clientFor(deviceId).resetPermissions(bundleId, deviceId);
     return `Reset permissions for ${bundleId}`;
   }
 
   // ============ Shell / Logs (ShellAdapter) ============
 
-  shell(command: string): string {
-    return this.client.shell(command);
+  openUrl(url: string, deviceId?: string): void {
+    this.clientFor(deviceId).openUrl(url);
+  }
+
+  shell(command: string, deviceId?: string): string {
+    return this.clientFor(deviceId).shell(command, deviceId);
   }
 
   getLogs(options: {
@@ -232,16 +239,21 @@ export class IosAdapter
     tag?: string;
     lines?: number;
     package?: string;
-  } = {}): string {
-    return this.client.getLogs({
+  } = {}, deviceId?: string): string {
+    let predicate: string | undefined;
+    if (options.package) {
+      validateBundleId(options.package);
+      predicate = `subsystem == "${options.package}"`;
+    }
+    return this.clientFor(deviceId).getLogs({
       level: options.level as "debug" | "info" | "default" | "error" | "fault" | undefined,
       lines: options.lines,
-      predicate: options.package ? `subsystem == "${options.package}"` : undefined,
-    });
+      predicate,
+    }, deviceId);
   }
 
-  clearLogs(): string {
-    return this.client.clearLogs();
+  clearLogs(deviceId?: string): string {
+    return this.clientFor(deviceId).clearLogs(deviceId);
   }
 
   // ============ Performance tracing ============

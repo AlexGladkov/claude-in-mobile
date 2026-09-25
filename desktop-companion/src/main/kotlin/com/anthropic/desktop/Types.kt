@@ -79,7 +79,8 @@ data class UiElement(
     val focusable: Boolean = false,
     val centerX: Int,
     val centerY: Int,
-    val children: List<UiElement> = emptyList()
+    val children: List<UiElement> = emptyList(),
+    val password: Boolean = false
 )
 
 @Serializable

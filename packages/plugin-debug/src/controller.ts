@@ -297,9 +297,17 @@ export class DebugController {
       const e = this.get(sessionId);
       if (e.platform === "android") return e.dbg.poll(cursor);
       const c = await this.ios();
-      return lldbPollResultSchema.parse(
+      const result = lldbPollResultSchema.parse(
         await c.rpc("poll", { sessionId: e.iosSessionId, cursor }),
       );
+      if (
+        result.alive === false
+        || result.events.some((event) => event.kind === "EXITED")
+      ) {
+        this.sessions.delete(sessionId);
+        this.locks.delete(sessionId);
+      }
+      return result;
     });
   }
 

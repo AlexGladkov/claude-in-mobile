@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import type { UiElement } from "../../ui-tree/ui-parser.js";
-import { SharedState } from "./shared-state-class.js";
+import { SharedState, screenshotStateKey } from "./shared-state-class.js";
 import {
   getCachedElements,
   setCachedElements,
@@ -9,16 +9,12 @@ import { createGetElementsForPlatform } from "./hints.js";
 import { iosTreeToUiElements } from "./ios-helpers.js";
 
 /**
- * Regression guard for the *root* of the "No UI elements detected." bug:
- * the shared per-platform element cache must never be clobbered with an empty
- * read, regardless of which writer performs the write.
+ * Regression guards for cache ownership:
+ * - a valid empty accessibility tree must clear stale coordinates;
+ * - degraded reads must throw before any cache write.
  *
- * The pre-existing hints.test.ts mocks `setCachedElements` away, so it only
- * proves that `generateActionHints` *skips* the call — it never exercises the
- * real owner-level invariant, and it does not cover the second, un-guarded
- * writer (`getElementsForPlatform`). This file drives the REAL SharedState and
- * the REAL shared-state module so a future refactor that removes either guard
- * fails here.
+ * The real SharedState and shared-state module are exercised here because
+ * caller-level guards alone do not prove the cache owner has the right policy.
  */
 
 function validWdaEnvelope() {
@@ -61,20 +57,32 @@ describe("SharedState.setCachedElements — owner-level cache invariant", () => 
     expect(state.getCachedElements("ios")).toEqual(els);
   });
 
-  it("does NOT clobber a good cache with an empty read", () => {
+  it("clears stale coordinates when a valid read is empty", () => {
     const good = sampleElements();
     state.setCachedElements("ios", good);
 
-    // Second (degraded) writer tries to store [] — must be ignored.
+    // A successful empty tree is authoritative and must replace the old list.
     state.setCachedElements("ios", []);
 
-    expect(state.getCachedElements("ios")).toEqual(good);
-    expect(state.getCachedElements("ios").length).toBeGreaterThan(0);
+    expect(state.getCachedElements("ios")).toEqual([]);
   });
 
-  it("allows an empty write only when the cache is already empty", () => {
-    // Starting empty: writing [] is a no-op-equivalent (stays empty), and must
-    // not throw or leave a poisoned non-empty value.
+  it("marks indexed reads stale while retaining the pre-action hint state", () => {
+    const good = sampleElements();
+    state.setCachedElements("android", good);
+
+    state.invalidateUiTreeCache("android");
+
+    expect(state.isCachedElementsStale("android")).toBe(true);
+    expect(state.getCachedElements("android")).toEqual(good);
+
+    state.setCachedElements("android", []);
+    expect(state.isCachedElementsStale("android")).toBe(false);
+  });
+
+  it("allows a successful empty write to clear an existing cache", () => {
+    const good = sampleElements();
+    state.setCachedElements("android", good);
     state.setCachedElements("android", []);
     expect(state.getCachedElements("android")).toEqual([]);
   });
@@ -86,24 +94,43 @@ describe("SharedState.setCachedElements — owner-level cache invariant", () => 
     expect(state.getCachedElements("ios").length).toBeGreaterThan(0);
     expect(state.getCachedElements("android")).toEqual([]);
   });
+  it("isolates element indexes per device on the same platform", () => {
+    const first = sampleElements();
+    const second = sampleElements().map((element) => ({ ...element, text: "Other device" }));
+
+    state.setCachedElements("android", first, "phone-a");
+    state.setCachedElements("android", second, "phone-b");
+
+    expect(state.getCachedElements("android", "phone-a")).toEqual(first);
+    expect(state.getCachedElements("android", "phone-b")).toEqual(second);
+    expect(state.getCachedElements("android")).toEqual([]);
+  });
+  it("invalidates only a device whose ID is not a colon-delimited prefix", () => {
+    const shortDeviceId = "192.168.1.2";
+    const longDeviceId = `${shortDeviceId}:5555`;
+    const shortKey = `${screenshotStateKey("android", shortDeviceId)}:false:false`;
+    const longKey = `${screenshotStateKey("android", longDeviceId)}:false:false`;
+    state.lastUiTreeMap.set(shortKey, { text: "short", timestamp: 1 });
+    state.lastUiTreeMap.set(longKey, { text: "long", timestamp: 1 });
+
+    state.invalidateUiTreeCache("android", shortDeviceId);
+
+    expect(state.lastUiTreeMap.has(shortKey)).toBe(false);
+    expect(state.lastUiTreeMap.has(longKey)).toBe(true);
+  });
 });
+
 
 describe("getElementsForPlatform — second cache writer must not self-poison", () => {
   let mockDeviceManager: any;
 
   beforeEach(() => {
     // Clear the process-wide singleton that shared-state.ts is bound to, so
-    // each test starts from a clean cache without swapping the (already
-    // import-captured) `_state` reference.
+    // each test starts from a clean cache without swapping the import-captured
+    // `_state` reference.
     for (const platform of ["ios", "android", "desktop"]) {
-      // Force-clear even a non-empty cache: the guard blocks [] via the public
-      // API, so reach through getCachedElements to detect and hard-reset.
-      if (getCachedElements(platform).length > 0) {
-        setCachedElements(platform, sampleElements()); // ensure key exists
-      }
+      setCachedElements(platform, []);
     }
-    // Deterministic reset: write a sentinel then rely on per-test writes.
-    setCachedElements("ios", sampleElements());
 
     mockDeviceManager = {
       getCurrentPlatform: vi.fn(() => "ios"),
@@ -132,11 +159,11 @@ describe("getElementsForPlatform — second cache writer must not self-poison", 
     expect(getCachedElements("ios").length).toBeGreaterThan(0);
   });
 
-  it("does not poison a good cache even if an empty [] reaches setCachedElements", async () => {
-    // Belt-and-suspenders: the owner guard blocks [] regardless of caller.
+  it("allows a successful empty read to clear the cache", () => {
     const good = sampleElements();
     setCachedElements("ios", good);
-    setCachedElements("ios", []); // simulate an un-guarded writer
-    expect(getCachedElements("ios").length).toBe(good.length);
+    setCachedElements("ios", []);
+
+    expect(getCachedElements("ios")).toEqual([]);
   });
 });

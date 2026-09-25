@@ -60,6 +60,14 @@ describe("store_upload", () => {
       handler({ packageName: "com.example.app", filePath: "/builds/../../../secret.aab" }, dummyCtx)
     ).rejects.toThrow(MobileError);
   });
+  it("rejects outside-root and wrong-extension artifacts before the client", async () => {
+    await expect(
+      handler({ packageName: "com.example.app", filePath: "/tmp/outside.aab" }, dummyCtx),
+    ).rejects.toMatchObject({ code: "STORE_ARTIFACT_OUTSIDE_ROOT" });
+    await expect(
+      handler({ packageName: "com.example.app", filePath: "release.txt" }, dummyCtx),
+    ).rejects.toMatchObject({ code: "STORE_ARTIFACT_INVALID_TYPE" });
+  });
 });
 
 // ──────────────────────────────────────────────

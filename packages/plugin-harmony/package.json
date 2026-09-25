@@ -30,9 +30,38 @@
   "files": [
     "dist"
   ],
+  "mcpDevicesPlugin": {
+    "id": "harmony",
+    "name": "HarmonyOS Next",
+    "version": "4.4.1",
+    "apiVersion": "1",
+    "capabilities": [
+      "screen",
+      "input",
+      "ui",
+      "shell",
+      "permissions",
+      "appLifecycle",
+      "logs",
+      "url",
+      "fileTransfer",
+      "deviceMgmt"
+    ],
+    "tools": [
+      "harmony_launch_ability",
+      "harmony_arkweb_inspect",
+      "harmony_arkweb_close",
+      "harmony_sandbox_list",
+      "harmony_sandbox_read",
+      "harmony_sandbox_push",
+      "harmony_sandbox_pull",
+      "harmony_test"
+    ],
+    "description": "HarmonyOS Next automation via HDC and ArkXTest (screen, input, UI, apps, permissions, shell, logs, files, ArkWeb, app sandbox, tests)"
+  },
   "dependencies": {
     "@mcp-devices/plugin-api": "1.1.0",
-    "mcp-devices": "*",
+    "mcp-devices": "4.4.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {

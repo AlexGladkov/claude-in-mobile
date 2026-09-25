@@ -56,6 +56,8 @@ export interface DesktopUiElement {
   contentDescription?: string;
   className: string;
   role?: string; // Accessibility role (button, textfield, etc.)
+  /** Whether the accessibility provider marks this element as sensitive. */
+  password?: boolean;
   bounds: Bounds;
   clickable: boolean;
   enabled: boolean;

@@ -13,7 +13,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use crate::utils::device_shell::DeviceShellCmd;
-use crate::utils::process::{ensure_success, run_with_limits, terminal_safe};
+use crate::utils::process::{ensure_success, run_with_limits, terminal_safe, terminal_safe_json};
 
 /// Build audb command with optional device serial
 fn audb_cmd(device: Option<&str>) -> Command {
@@ -420,6 +420,6 @@ pub fn list_devices() -> Result<Vec<Device>> {
 pub fn print_devices() -> Result<()> {
     let devices = list_devices()?;
     println!("Aurora OS devices:");
-    println!("{}", serde_json::to_string_pretty(&devices)?);
+    println!("{}", terminal_safe_json(&devices)?);
     Ok(())
 }

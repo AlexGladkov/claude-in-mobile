@@ -1,5 +1,7 @@
+import type { ToolDefinition } from "@mcp-devices/plugin-api";
 import { describe, expect, it } from "vitest";
 
+import { dummyContext } from "../contract-suite.js";
 import { ReplPlugin } from "./index.js";
 import { ReplBridgeClient } from "./client.js";
 import type { SessionInfo, SessionSnapshot } from "./types.js";
@@ -33,6 +35,74 @@ describe("ReplPlugin.expect timeout coupling (P2)", () => {
     expect(bridge.calls[0].timeoutMs).toBe(65_000);
   });
 
+  it.each([
+    [295_000, 300_000],
+    [295_001, 300_001],
+    [300_000, 305_000],
+  ])(
+    "accepts public timeout %i and preserves the bridge buffer (%i)",
+    async (serverTimeout, requestTimeout) => {
+      const bridge = new CapturingBridge();
+      bridge.result = { kind: "timedOut" };
+      const plugin = new ReplPlugin({ bridge });
+
+      await expect(plugin.expect({ id: "s", timeoutMs: serverTimeout }))
+        .resolves.toEqual({ kind: "timedOut" });
+      expect(bridge.calls[0]).toMatchObject({
+        method: "expect",
+        timeoutMs: requestTimeout,
+      });
+    },
+  );
+
+  it("rejects public expect timeouts above 300,000ms before bridge dispatch", async () => {
+    const bridge = new CapturingBridge();
+    const plugin = new ReplPlugin({ bridge });
+
+    await expect(plugin.expect({ id: "s", timeoutMs: 300_001 }))
+      .rejects.toThrow("300000");
+    expect(bridge.calls).toHaveLength(0);
+  });
+
+  it("rejects malformed public expect timing values before bridge dispatch", async () => {
+    const bridge = new CapturingBridge();
+    const plugin = new ReplPlugin({ bridge });
+
+    for (const timeoutMs of [-1, 300_001, 1.5, null, "5000", true]) {
+      await expect(
+        plugin.expect({ id: "s", timeoutMs: timeoutMs as unknown as number }),
+      ).rejects.toThrow("timeoutMs");
+    }
+    for (const idleMs of [-1, 60_001, 1.5, null, "300", true]) {
+      await expect(
+        plugin.expect({ id: "s", idleMs: idleMs as unknown as number }),
+      ).rejects.toThrow("idleMs");
+    }
+    expect(bridge.calls).toHaveLength(0);
+  });
+
+  it("publishes bounded integer schemas for public expect timing", () => {
+    const definitions: ToolDefinition[] = [];
+    const plugin = new ReplPlugin({ bridge: new CapturingBridge() });
+    plugin.init(dummyContext({ registerTool: (definition) => definitions.push(definition) }));
+
+    const expectTool = definitions.find((definition) => definition.name === "repl_expect");
+    expect(expectTool).toBeDefined();
+    const properties = expectTool!.inputSchema.properties as Record<string, Record<string, unknown>>;
+    expect(properties.idleMs).toMatchObject({
+      type: "integer",
+      minimum: 0,
+      maximum: 60_000,
+      default: 300,
+    });
+    expect(properties.timeoutMs).toMatchObject({
+      type: "integer",
+      minimum: 0,
+      maximum: 300_000,
+      default: 5_000,
+    });
+  });
+
   it("uses the 5s server default + buffer when timeoutMs is omitted", async () => {
     const bridge = new CapturingBridge();
     const plugin = new ReplPlugin({ bridge });
@@ -61,6 +131,24 @@ describe("ReplPlugin.list cmd redaction (P4)", () => {
     const plugin = new ReplPlugin({ bridge });
     const out = await plugin.list();
     expect(out[0].cmd).toBe("deploy --key [REDACTED]");
+  });
+
+  it("redacts command-line password, token, api-key, and mysql secrets", async () => {
+    const bridge = new CapturingBridge();
+    bridge.result = [{
+      id: "s2",
+      cmd: "PASSWORD=pass-secret TOKEN=token-secret deploy --api-key api-secret mysql -pdb-secret",
+      status: "ready",
+      exitCode: null,
+    }];
+    const plugin = new ReplPlugin({ bridge });
+    const out = await plugin.list();
+
+    expect(out[0].cmd).not.toContain("pass-secret");
+    expect(out[0].cmd).not.toContain("token-secret");
+    expect(out[0].cmd).not.toContain("api-secret");
+    expect(out[0].cmd).not.toContain("db-secret");
+    expect(out[0].cmd).toContain("[REDACTED]");
   });
 
   it("leaves cmd untouched when redaction is disabled", async () => {
@@ -138,12 +226,38 @@ describe("ReplPlugin.spawn record (R6)", () => {
     expect(result.castFile).toBeUndefined();
   });
 
-  it("forwards castPath string to bridge (R6)", async () => {
+  it("forwards record path string to bridge (R6)", async () => {
     const bridge = new CapturingBridge();
     bridge.result = { id: "r3", castFile: "/tmp/r3.cast" };
     const plugin = new ReplPlugin({ bridge });
     await plugin.spawn({ id: "r3", cmd: "bash", record: "/tmp/r3.cast" });
     expect(bridge.calls[0].params).toMatchObject({ record: "/tmp/r3.cast" });
+  });
+});
+describe("ReplPlugin input bounds", () => {
+  it("rejects oversized or malformed spawn fields before calling the bridge", async () => {
+    const bridge = new CapturingBridge();
+    const plugin = new ReplPlugin({ bridge });
+    await expect(plugin.spawn({ id: "bad/id", cmd: "bash" })).rejects.toThrow("session id");
+    await expect(
+      plugin.spawn({ id: "bounded", cmd: "x".repeat(16 * 1024 + 1) }),
+    ).rejects.toThrow("cmd");
+    await expect(
+      plugin.spawn({ id: "bounded", cmd: "bash", env: { "BAD-KEY": "x" } }),
+    ).rejects.toThrow("environment variable name");
+    await expect(
+      plugin.spawn({ id: "bounded", cmd: "bash", promptRegex: "x".repeat(4 * 1024 + 1) }),
+    ).rejects.toThrow("promptRegex");
+    expect(bridge.calls).toHaveLength(0);
+  });
+
+  it("rejects oversized terminal input before calling the bridge", async () => {
+    const bridge = new CapturingBridge();
+    const plugin = new ReplPlugin({ bridge });
+    await expect(
+      plugin.send({ id: "valid-id", text: "x".repeat(64 * 1024 + 1) }),
+    ).rejects.toThrow("text");
+    expect(bridge.calls).toHaveLength(0);
   });
 });
 
@@ -203,6 +317,31 @@ describe("ReplPlugin.snapshot TS-side defense-in-depth redaction (R2)", () => {
     expect(snap.raw).not.toContain(TOKEN);
     expect(snap.raw).toContain("[REDACTED]");
   });
+  it("redacts ANSI/OSC-split AWS and GitHub credentials from raw snapshots", async () => {
+    const aws = "ASIAIOSFODNN7EXAMPLE";
+    const github = "ghp_1234567890abcdefghijklmnopqrstuvwxyz";
+    const bridge = new CapturingBridge();
+    bridge.result = {
+      id: "s",
+      status: "ready",
+      screen: "clean",
+      exitCode: null,
+      cols: 120,
+      rows: 40,
+      raw:
+        `\u001b[32m${aws.slice(0, 4)}\u001b[0m${aws.slice(4)} ` +
+        `${github.slice(0, 8)}\u001b]0;split\u0007${github.slice(8)}`,
+    };
+    const plugin = new ReplPlugin({ bridge });
+
+    const snap = await plugin.snapshot({ id: "s", mode: "raw" });
+
+    expect(snap.raw).not.toContain(aws);
+    expect(snap.raw).not.toContain(github);
+    expect(snap.raw).toContain("[REDACTED]");
+    expect(snap.raw).toContain("\u001b[32m");
+  });
+
 
   it("redacts all frames[].grid entries (S10)", async () => {
     const bridge = new CapturingBridge();

@@ -77,7 +77,33 @@ export function createMyPlugin(): SourcePlugin {
 
 External plugins must publish a regular npm package or provide a local package
 directory with `main` or `module` pointing at the built entry. The entry must
-export `default: () => SourcePlugin` or `createPlugin`.
+export `default: () => SourcePlugin` or a callable `createPlugin`; CommonJS
+packages may use `exports.createPlugin`.
+
+The package root MUST also contain a static `mcpDevicesPlugin` field with the
+same `PluginManifest` that the factory returns:
+
+```json
+{
+  "mcpDevicesPlugin": {
+    "id": "myplugin",
+    "name": "My Plugin",
+    "version": "0.1.0",
+    "apiVersion": "1",
+    "capabilities": ["screen", "input"],
+    "permissions": ["device:read"],
+    "tools": ["myplugin_action"]
+  }
+}
+```
+
+The host parses and validates this JSON metadata during `plugin install`,
+`plugin verify`, and `plugin grant`; those commands do **not** import the
+entry or execute top-level or factory code. Runtime discovery checks the
+managed lockfile and permission grants before importing the entry. A bounded
+Promise timeout prevents a never-settling module import from blocking startup;
+the timeout does not cancel the import. External plugins are not sandboxed, so
+only install packages you trust.
 
 The manifest id becomes the managed installation directory id. Keep it stable
 and lower-case. Declare every sensitive permission the plugin needs; undeclared
@@ -109,9 +135,11 @@ node dist/index.js plugin grant myplugin device:read
 node dist/index.js plugin external enable
 ```
 
-`plugin install` disables npm lifecycle scripts, validates the manifest, writes
-an integrity entry to `plugins.lock`, and leaves declared permissions denied
-until an explicit grant. `plugin verify` detects modified files or metadata.
+`plugin install` disables npm lifecycle scripts, validates the static
+`mcpDevicesPlugin` field, writes an integrity entry to `plugins.lock`, and
+leaves declared permissions denied until an explicit grant. `plugin verify` and
+`plugin grant` also validate only package metadata and regular-file/entry
+containment checks; none of these commands executes plugin code.
 
 ## 7. Respect the architecture rules
 

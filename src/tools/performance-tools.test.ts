@@ -17,7 +17,7 @@ import {
 import { PerfBaselineStore } from "../utils/perf-baseline-store.js";
 import type { PerfSnapshot, PerfCompareResult, PerfMonitorResult } from "../perf/types.js";
 import { ValidationError } from "../errors.js";
-import { mkdtemp, rm } from "fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 
@@ -348,6 +348,44 @@ describe("PerfBaselineStore", () => {
     expect(baseline.name).toBe("login-flow");
     expect(baseline.platform).toBe("android");
     expect(baseline.snapshot.memory?.usedMb).toBe(148);
+  });
+  it("rejects a persisted baseline whose metrics no longer match the manifest", async () => {
+    await store.save("login-flow", "android", makeSnapshot());
+    const filePath = join(tempDir, "android-login-flow.json");
+    const raw = JSON.parse(await readFile(filePath, "utf-8"));
+    raw.snapshot.memory.usedMb = 7_000;
+    await writeFile(filePath, JSON.stringify(raw, null, 2));
+
+    await expect(store.get("login-flow", "android")).rejects.toMatchObject({
+      code: "PERF_BASELINE_CORRUPTED",
+    });
+  });
+  it("rejects a persisted baseline whose snapshot targets another platform", async () => {
+    await store.save("login-flow", "android", makeSnapshot());
+    const filePath = join(tempDir, "android-login-flow.json");
+    const raw = JSON.parse(await readFile(filePath, "utf-8"));
+    raw.snapshot.platform = "ios";
+    await writeFile(filePath, JSON.stringify(raw, null, 2));
+
+    await expect(store.get("login-flow", "android")).rejects.toMatchObject({
+      code: "PERF_BASELINE_CORRUPTED",
+    });
+  });
+
+  it("rejects a new baseline when the snapshot platform does not match", async () => {
+    await expect(
+      store.save("mismatched", "android", makeSnapshot({ platform: "ios" })),
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+  });
+
+  it("propagates filesystem failures when deleting a performance baseline", async () => {
+    await store.save("blocked-delete", "android", makeSnapshot());
+    const filePath = join(tempDir, "android-blocked-delete.json");
+    await rm(filePath);
+    await mkdir(filePath);
+
+    await expect(store.delete("blocked-delete", "android")).rejects.toThrow();
+    await expect(store.exists("blocked-delete", "android")).resolves.toBe(true);
   });
 
   it("lists baselines", async () => {

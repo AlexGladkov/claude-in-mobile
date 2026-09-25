@@ -4,6 +4,8 @@ import { findElements, formatElement, findBestMatch } from "../../ui-tree/ui-par
 import { getUiElements } from "../helpers/get-elements.js";
 import { parseCommonArgs } from "../../utils/parse-common-args.js";
 import { textResult } from "../../utils/tool-result.js";
+import { safeTerminalText } from "../../utils/terminal-controls.js";
+import { isSecureElement, REDACTED } from "../../ui-tree/ui-parser/formatters/redact.js";
 
 export const uiFind = defineTool({
   name: "ui_find",
@@ -35,11 +37,24 @@ export const uiFind = defineTool({
           return textResult("No elements found");
         }
 
-        const list = elements.slice(0, 20).map((element, index) =>
-          `[${index}] <${element.type ?? "unknown"}> "${element.label ?? ""}" @ (${element.rect.x}, ${element.rect.y})`,
-        ).join("\n");
+        // WDA `getElementText` can return the live value of a SecureTextField.
+        // Match each result to the authoritative accessibility tree before
+        // exposing its label; if it cannot be classified, fail closed.
+        const { elements: parsedEls } = await getUiElements(ctx, currentPlatform, deviceId);
+        const list = elements.slice(0, 20).map((element, index) => {
+          const candidates = parsedEls.filter((candidate) =>
+            Math.abs(candidate.bounds.x1 - element.rect.x) <= 1
+            && Math.abs(candidate.bounds.y1 - element.rect.y) <= 1
+            && Math.abs(candidate.width - element.rect.width) <= 1
+            && Math.abs(candidate.height - element.rect.height) <= 1,
+          );
+          const label = candidates.length === 0 || candidates.some(isSecureElement)
+            ? REDACTED
+            : safeTerminalText(element.label ?? "");
+          return `[${index}] <${safeTerminalText(element.type ?? "unknown")}> "${label}" @ (${element.rect.x}, ${element.rect.y})`;
+        }).join("\n");
 
-        return textResult(`Found ${elements.length} element(s):\n${list}`);
+        return textResult(`Found ${elements.length} element(s):\n${list}${elements.length > 20 ? "\n..." : ""}`);
       } catch {
         return textResult(
           "Find element failed. Make sure WebDriverAgent is installed and running.",

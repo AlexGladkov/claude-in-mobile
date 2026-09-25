@@ -1,7 +1,7 @@
 import type { ToolDefinition } from "./registry.js";
 import { defineTool, z } from "./define-tool.js";
 import { HuaweiAppGalleryClient } from "../store/huawei.js";
-import { validatePackageName, validatePath } from "../utils/sanitize.js";
+import { validatePackageName } from "../utils/sanitize.js";
 import { ValidationError } from "../errors.js";
 import { createLazySingleton } from "../utils/lazy.js";
 import { textResult } from "../utils/tool-result.js";
@@ -18,7 +18,6 @@ export const huaweiTools: ToolDefinition[] = [
     }),
     handler: async (args) => {
       validatePackageName(args.packageName);
-      validatePath(args.filePath, "filePath");
       const result = await client().upload(args.packageName, args.filePath);
       return textResult(
         `Uploaded to Huawei AppGallery. File ID: ${result.versionId}\n` +

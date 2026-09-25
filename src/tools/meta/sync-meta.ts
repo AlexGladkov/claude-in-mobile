@@ -44,7 +44,7 @@ const { meta, aliases } = createMetaTool({
     target_args: { type: "object", description: "Target action args (assert_cross)" },
     delay_ms: { type: "number", description: "Delay between source and target ms (assert_cross, default: 1000)" },
     retries: { type: "number", description: "Target assertion retry count (assert_cross, default: 3)" },
-    maxDuration: { type: "number", description: "Max total run duration ms (run, default: 60000)" },
+    maxDuration: { type: "number", description: "Max total duration ms (run or assert_cross, default: 60000)" },
     label: { type: "string", description: "Step or assertion label" },
     name: { type: "string", description: "Group name (create_group)" },
   },

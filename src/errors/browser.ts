@@ -1,4 +1,6 @@
 import { MobileError } from "./base.js";
+import { safeTerminalText } from "../utils/terminal-controls.js";
+import { sanitizeResourceUri } from "../utils/sanitize.js";
 
 export class ElementNotFoundError extends MobileError {
   constructor(criteria: string) {
@@ -20,8 +22,14 @@ export class WebViewNotFoundError extends MobileError {
 
 export class BrowserSecurityError extends MobileError {
   constructor(url: string, protocol: string) {
+    const safeUrl = safeTerminalText(
+      (sanitizeResourceUri(url) ?? "[REDACTED]")
+        .replace(/\?[^#]*/u, "?[REDACTED]")
+        .replace(/#.*$/u, "#[REDACTED]"),
+    );
+    const safeProtocol = safeTerminalText(protocol);
     super(
-      `Blocked URL "${url}". Protocol "${protocol}" is not allowed. Use http:// or https://.`,
+      `Blocked URL "${safeUrl}". Protocol "${safeProtocol}" is not allowed. Use http:// or https://.`,
       "BROWSER_SECURITY"
     );
   }

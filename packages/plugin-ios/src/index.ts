@@ -26,6 +26,7 @@ export const IOS_PLUGIN_MANIFEST: PluginManifest = {
     "appLifecycle",
     "permissions",
     "logs",
+    "url",
     "deviceMgmt",
   ],
   description: "iOS Simulator automation via simctl (screen, input, app lifecycle, shell, logs)",

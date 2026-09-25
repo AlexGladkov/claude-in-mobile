@@ -3,6 +3,7 @@ import { defineTool, z } from "./define-tool.js";
 import { deviceIdField } from "./common-schema.js";
 import type { Platform } from "../device-manager.js";
 import { getUiElements } from "./helpers/get-elements.js";
+import { parseCommonArgs } from "../utils/parse-common-args.js";
 import { ALL_RULES, getRuleById } from "../a11y/rules/index.js";
 import { calculateRelativeScore, calculateCategoryScores, generateActionItems } from "../a11y/score.js";
 import {
@@ -18,6 +19,7 @@ import type { UiElement } from "../ui-tree/ui-parser.js";
 import { truncateOutput } from "../utils/truncate.js";
 import { ValidationError, A11yRuleNotFoundError } from "../errors.js";
 import { textResult, errorResult } from "../utils/tool-result.js";
+import { isSensitiveElement } from "../ui-tree/ui-parser/formatters/redact.js";
 
 const VALID_STANDARDS: Readonly<Record<string, true>> = { A: true, AA: true, AAA: true };
 const VALID_SEVERITIES: Readonly<Record<string, true>> = {
@@ -57,7 +59,7 @@ function runAudit(
 ): { report: A11yDetailedReport; passwordIndices: Set<number> } {
   const passwordIndices = new Set<number>();
   for (const el of elements) {
-    if (el.password) passwordIndices.add(el.index);
+    if (isSensitiveElement(el)) passwordIndices.add(el.index);
   }
 
   const ruleResults: A11yRuleResult[] = [];
@@ -166,13 +168,14 @@ export const accessibilityTools: ToolDefinition[] = [
         (args.platform as Platform | undefined) ??
         ctx.deviceManager.getCurrentPlatform() ??
         "android";
+      const { deviceId } = parseCommonArgs(args as Record<string, unknown>, ctx);
       const standard = validateStandard(args.standard);
       const severityFilter = validateSeverityFilter(args.severity);
       const compact = args.compact === true;
       const detailed = args.detailed === true;
       const categoryFilter = args.category as A11yCategory | undefined;
 
-      const { elements } = await getUiElements(ctx, platform);
+      const { elements } = await getUiElements(ctx, platform, deviceId);
 
       let truncatedNote = "";
       let auditElements = elements;
@@ -224,6 +227,7 @@ export const accessibilityTools: ToolDefinition[] = [
         (args.platform as Platform | undefined) ??
         ctx.deviceManager.getCurrentPlatform() ??
         "android";
+      const { deviceId } = parseCommonArgs(args as Record<string, unknown>, ctx);
 
       const text = args.text;
       const resourceId = args.resourceId;
@@ -235,7 +239,7 @@ export const accessibilityTools: ToolDefinition[] = [
         );
       }
 
-      const { elements } = await getUiElements(ctx, platform);
+      const { elements } = await getUiElements(ctx, platform, deviceId);
 
       let target: UiElement | undefined;
 
@@ -287,9 +291,10 @@ export const accessibilityTools: ToolDefinition[] = [
         (args.platform as Platform | undefined) ??
         ctx.deviceManager.getCurrentPlatform() ??
         "android";
+      const { deviceId } = parseCommonArgs(args as Record<string, unknown>, ctx);
       const standard = validateStandard(args.standard);
 
-      const { elements } = await getUiElements(ctx, platform);
+      const { elements } = await getUiElements(ctx, platform, deviceId);
       const { report } = runAudit(elements, platform, standard);
 
       const text = formatAuditSummary(report);

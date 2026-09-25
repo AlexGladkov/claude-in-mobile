@@ -5,6 +5,7 @@
  * Those capabilities are NOT implemented here -- no more "not supported" throws.
  */
 
+import type { PluginUiElement } from "@mcp-devices/plugin-api";
 import type {
   CorePlatformAdapter,
   PerformanceTraceAdapter,
@@ -15,8 +16,8 @@ import type {
   HeapSnapshotCapture,
   HeapSnapshotOptions,
 } from "mcp-devices/adapters/platform-adapter";
-import type { Platform, Device } from "mcp-devices/device-manager";
 import type { CompressOptions } from "mcp-devices/utils/image";
+import type { Device, Platform } from "mcp-devices/device-manager";
 import { BrowserClient } from "./browser/client.js";
 import { SessionManager } from "./browser/session-manager.js";
 import { compressScreenshot } from "mcp-devices/utils/image";
@@ -32,6 +33,7 @@ import type {
 } from "./browser/types.js";
 import { DEFAULT_SESSION } from "./browser/types.js";
 import { BrowserNoSessionError, BrowserSessionNotFoundError } from "mcp-devices/errors";
+import { sanitizeBrowserUrl } from "./browser/snapshot-builder.js";
 import {
   startCdpPerformanceTrace,
   stopCdpPerformanceTrace,
@@ -162,9 +164,12 @@ export class BrowserAdapter implements CorePlatformAdapter, PerformanceTraceAdap
     return this.client.screenshot(this.getActiveSession(), false);
   }
 
-  // -- UI --
   async getUiHierarchy(): Promise<string> {
     return this.client.getSnapshot(this.getActiveSession());
+  }
+
+  async getUiElements(_deviceId?: string): Promise<readonly PluginUiElement[]> {
+    return this.client.getUiElements(this.getActiveSession());
   }
 
   // -- System info --
@@ -303,7 +308,7 @@ export class BrowserAdapter implements CorePlatformAdapter, PerformanceTraceAdap
       const session = await this.client.launch(options);
       try {
         const snapshot = await this.client.getSnapshot(session);
-        return `Opened ${options.url} in session "${sessionName}"\n\n${snapshot}`;
+        return `Opened ${sanitizeBrowserUrl(options.url)} in session "${sessionName}"\n\n${snapshot}`;
       } catch (error) {
         await this.client.close(session);
         throw error;
@@ -347,7 +352,7 @@ export class BrowserAdapter implements CorePlatformAdapter, PerformanceTraceAdap
 
     await this.client.navigate(session, options);
     const snapshot = await this.client.getSnapshot(session);
-    const action = options.action ?? `navigate to ${options.url}`;
+    const action = options.action ?? `navigate to ${sanitizeBrowserUrl(options.url ?? session.url)}`;
     return `${action} in session "${sessionName}"\n\n${snapshot}`;
   }
 
@@ -361,7 +366,8 @@ export class BrowserAdapter implements CorePlatformAdapter, PerformanceTraceAdap
     if (navigated) {
       await new Promise(r => setTimeout(r, 500)); // let page settle
       const snapshot = await this.client.getSnapshot(session);
-      return `Clicked -> navigated to ${newUrl}\n\n${snapshot}`;
+      const safeNewUrl = newUrl ? sanitizeBrowserUrl(newUrl) : undefined;
+      return `Clicked -> navigated to ${safeNewUrl ?? "unknown"}\n\n${snapshot}`;
     }
 
     return `Clicked successfully. Use browser(action:'snapshot') to see changes.`;

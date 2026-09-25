@@ -13,6 +13,7 @@ import type {
   AppManagementAdapter,
   CorePlatformAdapter,
   FileTransferAdapter,
+  LogsAdapter,
   ShellAdapter,
   SyncScreenshotAdapter,
 } from "mcp-devices/adapters/platform-adapter";
@@ -27,6 +28,7 @@ export class AuroraAdapter
     AppManagementAdapter,
     AppInventoryAdapter,
     ShellAdapter,
+    LogsAdapter,
     FileTransferAdapter,
     SyncScreenshotAdapter
 {
@@ -73,19 +75,19 @@ export class AuroraAdapter
 
   // ============ Core actions ============
 
-  async tap(x: number, y: number): Promise<void> {
-    this.client.tap(x, y);
+  async tap(x: number, y: number, _targetPid?: number, deviceId?: string): Promise<void> {
+    this.client.tap(x, y, deviceId);
   }
 
-  async doubleTap(x: number, y: number, intervalMs: number = 100): Promise<void> {
+  async doubleTap(x: number, y: number, intervalMs: number = 100, deviceId?: string): Promise<void> {
     // Aurora: two taps with interval
-    this.client.tap(x, y);
+    this.client.tap(x, y, deviceId);
     await new Promise(resolve => setTimeout(resolve, intervalMs));
-    this.client.tap(x, y);
+    this.client.tap(x, y, deviceId);
   }
 
-  async longPress(x: number, y: number, durationMs: number = 1000): Promise<void> {
-    this.client.longPress(x, y, durationMs);
+  async longPress(x: number, y: number, durationMs: number = 1000, deviceId?: string): Promise<void> {
+    this.client.longPress(x, y, durationMs, deviceId);
   }
 
   async swipe(
@@ -94,20 +96,21 @@ export class AuroraAdapter
     x2: number,
     y2: number,
     durationMs?: number,
+    deviceId?: string,
   ): Promise<void> {
-    this.client.swipe(x1, y1, x2, y2, durationMs);
+    this.client.swipe(x1, y1, x2, y2, durationMs, deviceId);
   }
 
-  async swipeDirection(direction: "up" | "down" | "left" | "right"): Promise<void> {
-    this.client.swipeDirection(direction);
+  async swipeDirection(direction: "up" | "down" | "left" | "right", deviceId?: string): Promise<void> {
+    this.client.swipeDirection(direction, deviceId);
   }
 
-  async inputText(text: string): Promise<void> {
-    this.client.inputText(text);
+  async inputText(text: string, _targetPid?: number, deviceId?: string): Promise<void> {
+    this.client.inputText(text, deviceId);
   }
 
-  async pressKey(key: string): Promise<void> {
-    this.client.pressKey(key);
+  async pressKey(key: string, _targetPid?: number, deviceId?: string): Promise<void> {
+    this.client.pressKey(key, deviceId);
   }
 
   // ============ Screenshot ============
@@ -115,56 +118,57 @@ export class AuroraAdapter
   async screenshotAsync(
     compress: boolean = true,
     options?: CompressOptions & { monitorIndex?: number },
+    deviceId?: string,
   ): Promise<{ data: string; mimeType: string }> {
-    const buffer = this.client.screenshotRaw();
+    const buffer = this.client.screenshotRaw(deviceId);
     if (compress) {
       return compressScreenshot(buffer, options);
     }
     return { data: buffer.toString("base64"), mimeType: "image/png" };
   }
 
-  async getScreenshotBufferAsync(): Promise<Buffer> {
-    return this.client.screenshotRaw();
+  async getScreenshotBufferAsync(deviceId?: string): Promise<Buffer> {
+    return this.client.screenshotRaw(deviceId);
   }
 
-  screenshotRaw(): string {
-    return this.client.screenshot();
+  screenshotRaw(deviceId?: string): string {
+    return this.client.screenshot(deviceId);
   }
 
   // ============ UI ============
 
-  async getUiHierarchy(): Promise<string> {
-    return this.client.getUiHierarchy();
+  async getUiHierarchy(deviceId?: string): Promise<string> {
+    return this.client.getUiHierarchy(deviceId);
   }
 
   // ============ App management (AppManagementAdapter) ============
 
-  launchApp(packageName: string): string {
-    return this.client.launchApp(packageName);
+  launchApp(packageName: string, deviceId?: string): string {
+    return this.client.launchApp(packageName, deviceId);
   }
 
-  stopApp(packageName: string): void {
-    this.client.stopApp(packageName);
+  stopApp(packageName: string, deviceId?: string): void {
+    this.client.stopApp(packageName, deviceId);
   }
 
-  installApp(path: string): string {
-    return this.client.installApp(path);
+  installApp(path: string, deviceId?: string): string {
+    return this.client.installApp(path, deviceId);
   }
 
   // ============ App inventory (AppInventoryAdapter) ============
 
-  listApps(): string[] {
-    return this.client.listPackages();
+  listApps(deviceId?: string): string[] {
+    return this.client.listPackages(deviceId);
   }
 
-  uninstallApp(packageName: string): string {
-    return this.client.uninstallApp(packageName);
+  uninstallApp(packageName: string, deviceId?: string): string {
+    return this.client.uninstallApp(packageName, deviceId);
   }
 
   // ============ Shell / Logs (ShellAdapter) ============
 
-  shell(command: string): string {
-    return this.client.shell(command);
+  shell(command: string, deviceId?: string): string {
+    return this.client.shell(command, deviceId);
   }
 
   getLogs(options: {
@@ -172,29 +176,29 @@ export class AuroraAdapter
     tag?: string;
     lines?: number;
     package?: string;
-  } = {}): string {
-    return this.client.getLogs(options);
+  } = {}, deviceId?: string): string {
+    return this.client.getLogs(options, deviceId);
   }
 
-  clearLogs(): string {
-    return this.client.clearLogs();
+  clearLogs(deviceId?: string): string {
+    return this.client.clearLogs(deviceId);
   }
 
   // ============ File transfer (FileTransferAdapter) ============
 
-  pushFile(localPath: string, remotePath: string): string {
-    return this.client.pushFile(localPath, remotePath);
+  pushFile(localPath: string, remotePath: string, deviceId?: string): string {
+    return this.client.pushFile(localPath, remotePath, deviceId);
   }
 
-  pullFile(remotePath: string, localPath?: string): string {
+  pullFile(remotePath: string, localPath?: string, deviceId?: string): string {
     const destination = localPath ?? remotePath.split("/").at(-1) ?? "pulled_file";
-    const data = this.client.pullFile(remotePath, destination);
+    const data = this.client.pullFile(remotePath, destination, deviceId);
     return `Downloaded ${remotePath} → ${destination} (${data.byteLength} bytes)`;
   }
 
   // ============ System info ============
 
-  async getSystemInfo(): Promise<string> {
-    return this.client.getSystemInfo();
+  async getSystemInfo(deviceId?: string): Promise<string> {
+    return this.client.getSystemInfo(deviceId);
   }
 }

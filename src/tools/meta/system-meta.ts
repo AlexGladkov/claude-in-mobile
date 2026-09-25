@@ -4,7 +4,7 @@ import { clipboardTools } from "../clipboard-tools.js";
 import { permissionTools } from "../permission-tools.js";
 import { UnknownActionError } from "../../errors.js";
 import { getGlobalMetrics } from "../../utils/metrics.js";
-
+import { PLATFORM_JSON_SCHEMA } from "../common-schema.js";
 
 const handlers = new Map<string, ToolDefinition["handler"]>();
 
@@ -61,8 +61,7 @@ export const systemMeta: ToolDefinition = {
         localPath: { type: "string", description: "Local file path (file_push/pull)" },
         remotePath: { type: "string", description: "Remote file path (file_push/pull)" },
         platform: {
-          type: "string",
-          enum: ["android", "ios", "desktop", "aurora", "harmony", "browser"],
+          ...PLATFORM_JSON_SCHEMA,
           description: "Target platform. If not specified, uses the active target.",
         },
         deviceId: {

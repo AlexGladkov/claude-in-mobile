@@ -68,6 +68,23 @@ export interface CDPAccessibilityNode {
 }
 
 /**
+ * Removes a callback subscription from a CDP event.
+ *
+ * Event subscriptions are deliberately explicit rather than promise-only so
+ * callers can clean them up when an operation times out or fails.
+ */
+export type CDPEventUnsubscribe = () => void;
+
+/**
+ * CDP events support a persistent callback subscription as well as the
+ * one-shot promise form used by events such as tracingComplete.
+ */
+export type CDPEventSubscription<T> = {
+  (callback: (params: T) => void): CDPEventUnsubscribe;
+  (): Promise<T>;
+};
+
+/**
  * CDP client interface representing the subset of methods used by BrowserClient.
  * Using this instead of `any` for CDP sessions.
  */
@@ -75,12 +92,8 @@ export interface CDPClientInterface {
   Page: {
     enable(): Promise<void>;
     navigate(params: { url: string }): Promise<unknown>;
-    // chrome-remote-interface exposes two forms: callback (persistent listener)
-    // and zero-arg (one-shot promise that self-removes on resolve). We use the
-    // one-shot form for per-navigation waits to avoid leaking listeners.
-    loadEventFired(callback: () => void): void;
-    loadEventFired(): Promise<unknown>;
-    frameNavigated(callback: () => void): void;
+    loadEventFired: CDPEventSubscription<unknown>;
+    frameNavigated(callback: (params: unknown) => void): CDPEventUnsubscribe;
     reload(): Promise<void>;
     captureScreenshot(params: { format: string; captureBeyondViewport?: boolean }): Promise<{ data: string }>;
   };

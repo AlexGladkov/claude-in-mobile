@@ -33,6 +33,21 @@ export const FLOW = {
   STEP_DELAY_NORMAL_MS: 300,
 } as const;
 
+export const REPL = {
+  /** Public `repl_expect` idle wait default. */
+  EXPECT_IDLE_DEFAULT_MS: 300,
+  /** Public `repl_expect` idle wait maximum enforced by the supervisor. */
+  EXPECT_IDLE_MAX_MS: 60_000,
+  /** Public `repl_expect` timeout default. */
+  EXPECT_TIMEOUT_DEFAULT_MS: 5_000,
+  /** Public `repl_expect` timeout maximum enforced by the supervisor. */
+  EXPECT_TIMEOUT_MAX_MS: 300_000,
+  /** Extra time reserved for the bridge request round-trip. */
+  EXPECT_TIMEOUT_BUFFER_MS: 5_000,
+  /** Maximum client request timeout: public expect maximum plus its buffer. */
+  REQUEST_TIMEOUT_MAX_MS: 305_000,
+} as const;
+
 export const RECORDER = {
   PLAYBACK_MAX_STEP_TIMEOUT_MS: 30_000,
 } as const;

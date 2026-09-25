@@ -1,5 +1,6 @@
 import type { ScreenAnalysis, UiElement } from "./types.js";
 import { getShortId } from "./types.js";
+import { isSecureElement, safeLabel } from "./formatters/redact.js";
 
 /**
  * Detect screen title from Toolbar/ActionBar/NavigationBar elements
@@ -10,13 +11,13 @@ export function detectScreenTitle(elements: UiElement[]): string | undefined {
   for (const el of elements) {
     const className = el.className;
     const isToolbar = toolbarClasses.some(tc => className.includes(tc));
-    if (isToolbar && el.text) {
+    if (isToolbar && el.text && !isSecureElement(el)) {
       return el.text;
     }
   }
   // Fallback: look for a prominent text near the top of the screen (y < 200, large width)
   for (const el of elements) {
-    if (el.text && !el.clickable && el.bounds.y1 < 200 && el.width > 200 &&
+    if (el.text && !isSecureElement(el) && !el.clickable && el.bounds.y1 < 200 && el.width > 200 &&
         (el.className.includes("TextView") || el.className.includes("StaticText"))) {
       return el.text;
     }
@@ -33,6 +34,7 @@ export function detectDialog(elements: UiElement[]): { hasDialog: boolean; dialo
     if (dialogClasses.some(dc => el.className.includes(dc))) {
       // Find the first text child that could be the title
       const titleEl = elements.find(child =>
+        !isSecureElement(child) &&
         child.text &&
         child.bounds.y1 >= el.bounds.y1 &&
         child.bounds.y2 <= el.bounds.y2 &&
@@ -54,6 +56,7 @@ export function detectDialog(elements: UiElement[]): { hasDialog: boolean; dialo
           el.bounds.y1 > 100 && el.bounds.x1 > 20) {
         // Looks like a dialog card
         const titleEl = elements.find(child =>
+          !isSecureElement(child) &&
           child.text && !child.clickable &&
           child.bounds.y1 >= el.bounds.y1 &&
           child.bounds.y2 <= el.bounds.y2 &&
@@ -88,6 +91,7 @@ export function detectNavigation(elements: UiElement[]): {
     const id = (el.resourceId || "").toLowerCase();
     const text = (el.text || "").toLowerCase();
     void text;
+    const secure = isSecureElement(el);
 
     // Back button detection
     if (desc.includes("back") || desc.includes("navigate up") ||
@@ -111,11 +115,12 @@ export function detectNavigation(elements: UiElement[]): {
       hasTabs = true;
     }
 
-    // Selected tab
-    if (el.selected && hasTabs && el.text) {
+    // A secure field can carry a typed value in either text or contentDesc;
+    // never use either as the selected-tab label.
+    if (!secure && el.selected && hasTabs && el.text) {
       currentTab = el.text;
     }
-    if (el.selected && (el.className.includes("Tab") || id.includes("tab")) && el.text) {
+    if (!secure && el.selected && (el.className.includes("Tab") || id.includes("tab")) && el.text) {
       hasTabs = true;
       currentTab = el.text;
     }
@@ -137,10 +142,18 @@ export function analyzeScreen(elements: UiElement[], activity?: string): ScreenA
   for (const el of elements) {
     // Skip invisible elements
     if (el.width <= 0 || el.height <= 0) continue;
+    const secure = isSecureElement(el);
+    const text = secure ? "" : el.text;
+    const normalizedClassName = el.className.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const isInput = normalizedClassName.includes("edittext")
+      || normalizedClassName.includes("textinput")
+      || normalizedClassName.includes("textfield")
+      || normalizedClassName.includes("securetextbox")
+      || normalizedClassName.includes("password");
 
     // Buttons and clickable elements
     if (el.clickable && el.enabled) {
-      const label = el.text || el.contentDesc || getShortId(el.resourceId) || "";
+      const label = safeLabel(el, text || el.contentDesc || getShortId(el.resourceId) || "");
       if (label) {
         buttons.push({
           index: el.index,
@@ -151,23 +164,22 @@ export function analyzeScreen(elements: UiElement[], activity?: string): ScreenA
     }
 
     // Input fields — cross-platform: Android EditText, iOS TextField/SecureTextField
-    if (el.className.includes("EditText") || el.className.includes("TextInputEditText") ||
-        el.className.includes("TextField") || el.className.includes("TextInput") ||
-        el.className.includes("SecureTextField")) {
+    if (isInput) {
       inputs.push({
         index: el.index,
-        hint: el.contentDesc || getShortId(el.resourceId) || "",
-        value: el.text,
-        coordinates: { x: el.centerX, y: el.centerY }
+        hint: safeLabel(el, el.contentDesc || getShortId(el.resourceId) || ""),
+        value: text,
+        coordinates: { x: el.centerX, y: el.centerY },
+        ...(secure ? { sensitive: true } : {}),
       });
     }
 
     // Static text — cross-platform: Android TextView, iOS StaticText
-    if (el.text && !el.clickable &&
+    if (text && !el.clickable &&
         (el.className.includes("TextView") || el.className.includes("StaticText") ||
          el.className.includes("Label"))) {
       texts.push({
-        content: el.text,
+        content: text,
         coordinates: { x: el.centerX, y: el.centerY }
       });
     }

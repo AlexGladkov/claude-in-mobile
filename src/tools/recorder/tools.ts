@@ -12,16 +12,39 @@ import {
 import { defineTool, z } from "../define-tool.js";
 import { platformEnum } from "../common-schema.js";
 import { textResult } from "../../utils/tool-result.js";
-import { getActive, setActive } from "./capture.js";
-import { classifyStepType } from "./redaction.js";
+import {
+  activateStart,
+  beginStop,
+  cancelStart,
+  finishStop,
+  getActive,
+  isStopInProgress,
+  reserveStart,
+} from "./capture.js";
+import {
+  classifyStepType,
+  isRecordingBlockedAction,
+  redactSensitiveArgs,
+  redactScenarioLabel,
+  redactScenarioStep,
+} from "./redaction.js";
 import {
   executePlayback,
   formatEntry,
   formatPlaybackResults,
   formatStepCompact,
+  PLAYBACK_MAX_SPEED,
 } from "./playback.js";
 
 const getStore = createLazySingleton(() => new ScenarioStore());
+
+function throwIfStopInProgress(): void {
+  if (!isStopInProgress()) return;
+  throw new MobileError(
+    "Recording save already in progress. Wait for recorder_stop to finish before retrying.",
+    "RECORDER_SAVE_IN_PROGRESS",
+  );
+}
 
 // ── Tool definitions ──
 
@@ -42,37 +65,39 @@ export const recorderTools: ToolDefinition[] = [
     }),
     handler: async (args, ctx) => {
       const name = args.name;
+      const conflict = reserveStart(name);
+      if (conflict !== undefined) throw new RecorderAlreadyActiveError(conflict);
 
-      const existingActive = getActive();
-      if (existingActive) {
-        throw new RecorderAlreadyActiveError(existingActive.name);
-      }
+      try {
+        const platform = args.platform ?? ctx.deviceManager.getCurrentPlatform() ?? "android";
 
-      const platform = args.platform ?? ctx.deviceManager.getCurrentPlatform() ?? "android";
-
-      // Check if scenario exists (unless overwrite)
-      if (args.overwrite !== true) {
-        const existing = await getStore().list(platform);
-        if (existing.some(e => e.name === name)) {
-          const entry = existing.find(e => e.name === name)!;
-          throw new MobileError(
-            `Scenario "${name}" already exists for platform "${platform}" (${entry.stepCount} steps). Use overwrite:true or recorder(action:'delete').`,
-            "SCENARIO_EXISTS"
-          );
+        // Check if scenario exists (unless overwrite)
+        if (args.overwrite !== true) {
+          const existing = await getStore().list(platform);
+          if (existing.some(e => e.name === name)) {
+            const entry = existing.find(e => e.name === name)!;
+            throw new MobileError(
+              `Scenario "${name}" already exists for platform "${platform}" (${entry.stepCount} steps). Use overwrite:true or recorder(action:'delete').`,
+              "SCENARIO_EXISTS"
+            );
+          }
         }
+
+        activateStart({
+          name,
+          platform,
+          description: args.description ?? "",
+          tags: args.tags ?? [],
+          steps: [],
+          startedAt: Date.now(),
+          lastStepAt: Date.now(),
+        });
+
+        return textResult(`Recording started: "${name}" (${platform}). All tool calls will be captured. Use recorder(action:'stop') to save.`);
+      } catch (error: unknown) {
+        cancelStart(name);
+        throw error;
       }
-
-      setActive({
-        name,
-        platform,
-        description: args.description ?? "",
-        tags: args.tags ?? [],
-        steps: [],
-        startedAt: Date.now(),
-        lastStepAt: Date.now(),
-      });
-
-      return textResult(`Recording started: "${name}" (${platform}). All tool calls will be captured. Use recorder(action:'stop') to save.`);
     },
   }),
 
@@ -86,41 +111,52 @@ export const recorderTools: ToolDefinition[] = [
     handler: async (args) => {
       const activeRecording = getActive();
       if (!activeRecording) throw new RecorderNotActiveError();
+      throwIfStopInProgress();
 
-      const recording = activeRecording;
-      setActive(null);
+      const recording = beginStop();
+      if (!recording) throw new RecorderNotActiveError();
 
       if (args.discard === true) {
+        finishStop(recording, "discarded");
         return textResult(`Recording discarded: "${recording.name}" — ${recording.steps.length} steps dropped.`);
       }
 
-      // Re-index steps
-      recording.steps.forEach((s, i) => { s.index = i; });
+      try {
+        // Re-index and sanitize before calculating the persisted checksum.
+        const safeSteps = recording.steps.map((step, index) => redactScenarioStep({
+          ...step,
+          index,
+        }));
 
-      const store = getStore();
-      const now = new Date().toISOString();
-      const checksum = createHash("sha256")
-        .update(JSON.stringify(recording.steps))
-        .digest("hex");
+        const store = getStore();
+        const now = new Date().toISOString();
+        const checksum = createHash("sha256")
+          .update(JSON.stringify(safeSteps))
+          .digest("hex");
 
-      const scenario: Scenario = {
-        version: 1,
-        name: recording.name,
-        platform: recording.platform,
-        description: recording.description,
-        tags: recording.tags,
-        createdAt: now,
-        updatedAt: now,
-        checksum,
-        steps: recording.steps,
-        metadata: {
-          recordedWithVersion: "3.5.0",
-          totalRecordingTimeMs: Date.now() - recording.startedAt,
-        },
-      };
+        const scenario: Scenario = {
+          version: 1,
+          name: recording.name,
+          platform: recording.platform,
+          description: recording.description,
+          tags: recording.tags,
+          createdAt: now,
+          updatedAt: now,
+          checksum,
+          steps: safeSteps,
+          metadata: {
+            recordedWithVersion: "3.5.0",
+            totalRecordingTimeMs: Date.now() - recording.startedAt,
+          },
+        };
 
-      const entry = await store.save(scenario, { overwrite: true });
-      return textResult(`Recording saved: "${entry.name}" (${entry.platform}) — ${entry.stepCount} steps`);
+        const entry = await store.save(scenario, { overwrite: true });
+        finishStop(recording, "saved");
+        return textResult(`Recording saved: "${entry.name}" (${entry.platform}) — ${entry.stepCount} steps`);
+      } catch (error: unknown) {
+        finishStop(recording, "failed");
+        throw error;
+      }
     },
   }),
 
@@ -166,22 +202,34 @@ export const recorderTools: ToolDefinition[] = [
     handler: async (args) => {
       const activeRecording = getActive();
       if (!activeRecording) throw new RecorderNotActiveError();
-
+      throwIfStopInProgress();
       const actionName = args.action_name;
+      const actionArgs = args.args ?? {};
+
+      if (isRecordingBlockedAction(actionName, actionArgs)) {
+        throw new MobileError(
+          `Action "${actionName}" is blocked from recording for security`,
+          "SCENARIO_ACTION_BLOCKED",
+        );
+      }
+
 
       if (activeRecording.steps.length >= MAX_STEPS_PER_SCENARIO) {
         throw new ValidationError(`Max steps (${MAX_STEPS_PER_SCENARIO}) reached`);
       }
+      const { args: cleanArgs, sensitive } = redactSensitiveArgs(actionName, actionArgs);
+      const label = redactScenarioLabel(args.label, sensitive);
 
       const now = Date.now();
       const step: ScenarioStep = {
         index: activeRecording.steps.length,
         type: classifyStepType(actionName),
         action: actionName,
-        args: args.args ?? {},
+        args: cleanArgs,
         timestampMs: now - activeRecording.startedAt,
         delayBeforeMs: 0,
-        ...(args.label ? { label: args.label } : {}),
+        ...(sensitive ? { sensitive: true } : {}),
+        ...(label ? { label } : {}),
       };
 
       activeRecording.steps.push(step);
@@ -201,7 +249,7 @@ export const recorderTools: ToolDefinition[] = [
     handler: async (args) => {
       const activeRecording = getActive();
       if (!activeRecording) throw new RecorderNotActiveError();
-
+      throwIfStopInProgress();
       const idx = args.stepIndex - 1;
       if (idx < 0 || idx >= activeRecording.steps.length) {
         throw new ValidationError(`Step index out of range. Valid: 1-${activeRecording.steps.length}`);
@@ -306,11 +354,14 @@ export const recorderTools: ToolDefinition[] = [
       platform: platformEnum,
       speed: z
         .number()
+        .finite()
+        .min(0)
+        .max(PLAYBACK_MAX_SPEED)
         .optional()
-        .describe("Speed multiplier (default: 1.0, 0 = no delays)"),
+        .describe(`Speed multiplier (default: 1.0, 0 = no delays, max: ${PLAYBACK_MAX_SPEED})`),
       stopOnFail: z.boolean().optional().describe("Stop on first failure (default: true)"),
       stepTimeout: z.number().optional().describe("Per-step timeout ms (default: 5000)"),
-      maxDuration: z.number().optional().describe("Max total ms (default: 60000)"),
+      maxDuration: z.number().optional().describe("Cooperative time budget for orchestration in ms (default: 60000). Unsupported platform operations may overrun or finish after timeout or cancellation."),
       fromStep: z.number().optional().describe("Start from step N (1-indexed)"),
       toStep: z.number().optional().describe("End at step N (1-indexed)"),
       dryRun: z.boolean().optional().describe("Print steps without executing"),
@@ -367,13 +418,14 @@ export const recorderTools: ToolDefinition[] = [
       const platform = args.platform ?? ctx.deviceManager.getCurrentPlatform() ?? "android";
       const format = args.format ?? "flow_steps";
       const scenario = await getStore().get(name, platform);
+      const safeSteps = scenario.steps.map(redactScenarioStep);
 
       if (format === "markdown") {
         const lines = [
           `# Scenario: ${scenario.name} (${scenario.platform})`,
           "",
         ];
-        scenario.steps.forEach((step, i) => {
+        safeSteps.forEach((step, i) => {
           const label = step.label ? ` (${step.label})` : "";
           const argsStr = Object.keys(step.args).length > 0
             ? ` ${JSON.stringify(step.args)}`
@@ -384,7 +436,7 @@ export const recorderTools: ToolDefinition[] = [
       }
 
       // flow_steps format
-      const flowSteps = scenario.steps.map(step => ({
+      const flowSteps = safeSteps.map(step => ({
         action: step.action,
         args: step.args,
         ...(step.label ? { label: step.label } : {}),

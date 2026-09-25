@@ -14,6 +14,7 @@ import * as path from "path";
 import * as os from "os";
 import * as fs from "fs";
 import { fileURLToPath } from "url";
+import { createRequire } from "module";
 import { validateBundleId, validatePath } from "mcp-devices/utils/sanitize";
 import { MobileError } from "mcp-devices/errors";
 
@@ -177,23 +178,29 @@ export function validateAttachPid(pid: number): void {
 }
 
 /**
- * Find the companion app path on disk.
- *
- * Two candidate locations are checked: relative to the compiled `dist/desktop/client.js`
- * (production) and relative to the source `src/desktop/client.ts` (when running with ts-node
- * or a similar in-place runner).
+ * Find the companion app in either the plugin package, its `mcp-devices`
+ * dependency, or a source checkout.
  */
 export function findCompanionAppPath(): string {
+  const companionRelativePath = path.join(
+    "desktop-companion",
+    "build",
+    "install",
+    "desktop-companion",
+    "bin",
+    "desktop-companion",
+  );
+  const mcpDevicesEntry = createRequire(import.meta.url).resolve("mcp-devices");
+  const mcpDevicesRoot = path.resolve(path.dirname(mcpDevicesEntry), "..");
   const possiblePaths = [
-    // From dist/desktop/client.js (production layout)
-    path.join(__dirname, "..", "..", "desktop-companion", "build", "install", "desktop-companion", "bin", "desktop-companion"),
-    // From src/desktop/client.ts (when running directly)
-    path.join(__dirname, "..", "..", "..", "desktop-companion", "build", "install", "desktop-companion", "bin", "desktop-companion"),
+    path.join(__dirname, "..", "..", companionRelativePath),
+    path.join(mcpDevicesRoot, companionRelativePath),
+    path.join(__dirname, "..", "..", "..", "..", companionRelativePath),
   ];
 
-  for (const p of possiblePaths) {
-    if (fs.existsSync(p)) {
-      return p;
+  for (const candidate of possiblePaths) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
     }
   }
 
@@ -201,5 +208,6 @@ export function findCompanionAppPath(): string {
     "Desktop companion app not found. Please build it first: cd desktop-companion && ./gradlew installDist"
   );
 }
+
 
 export { BUNDLE_LAUNCH_POLL_INTERVAL_MS, BUNDLE_LAUNCH_TIMEOUT_MS };

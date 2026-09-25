@@ -21,6 +21,7 @@ import { NavigationGraph } from "./nav-graph.js";
 import { generateScreenFingerprint } from "./screen-fingerprint.js";
 import { getUiElements } from "../tools/helpers/get-elements.js";
 import { detectScreenTitle } from "../ui-tree/ui-parser.js";
+import { isSensitiveElement, REDACTED, safeLabel } from "../ui-tree/ui-parser/formatters/redact.js";
 import { ExplorationLimitError } from "../errors.js";
 
 /**
@@ -30,6 +31,22 @@ function isDestructiveElement(el: UiElement): boolean {
   const text = (el.text || el.contentDesc || "").toLowerCase();
   if (!text) return false;
   return DESTRUCTIVE_PATTERNS.some((pattern) => text.includes(pattern));
+}
+
+/**
+ * Clone an element before putting it in the persistent navigation graph.
+ * Adapter/parser results may be shared with caches, so secure-field
+ * redaction must never mutate those source records.
+ */
+function sanitizeElementForExploration(el: UiElement): UiElement {
+  const sensitive = isSensitiveElement(el);
+  return {
+    ...el,
+    text: sensitive ? REDACTED : safeLabel(el, el.text),
+    contentDesc: sensitive ? REDACTED : safeLabel(el, el.contentDesc),
+    resourceId: sensitive ? REDACTED : el.resourceId,
+    bounds: { ...el.bounds },
+  };
 }
 
 /**
@@ -51,11 +68,13 @@ function getActionableElements(elements: UiElement[]): UiElement[] {
  * Build an ExplorationAction from a UI element tap.
  */
 function buildTapAction(el: UiElement): ExplorationAction {
+  const sensitive = isSensitiveElement(el);
+  const elementText = sensitive ? REDACTED : safeLabel(el, el.text);
   return {
     type: "tap",
     elementIndex: el.index,
-    elementText: el.text || undefined,
-    elementResourceId: el.resourceId || undefined,
+    elementText: elementText || undefined,
+    elementResourceId: sensitive ? REDACTED : el.resourceId || undefined,
     elementClassName: el.className,
     x: el.centerX,
     y: el.centerY,
@@ -70,7 +89,8 @@ async function captureScreen(
   platform: Platform | string,
   graph: NavigationGraph,
 ): Promise<ScreenNode> {
-  const { elements } = await getUiElements(ctx, platform as Platform);
+  const { elements: sourceElements } = await getUiElements(ctx, platform as Platform);
+  const elements = sourceElements.map(sanitizeElementForExploration);
   const fingerprint = generateScreenFingerprint(elements);
 
   // Check if this screen already exists

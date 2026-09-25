@@ -51,10 +51,9 @@ export interface ResolvedDevice {
 /**
  * Resolve a deviceId (with optional platform hint) to a Device.
  *
- * Match strategy (preserves legacy ordering):
- *   1. Exact id match across all platforms.
- *   2. If a platform hint is given and (1) failed, pick any booted device
- *      on that platform (state ∈ {device, booted, connected}).
+ * Match strategy:
+ *   1. Match the exact id, constrained to the supplied platform when present.
+ *   2. Reject duplicate ids across platforms when no platform is supplied.
  *   3. If nothing matched and the relevant adapter errored structurally,
  *      surface that error -- "Device not found" is misleading when the
  *      toolchain itself failed.
@@ -69,14 +68,16 @@ export function resolveDevice(
 ): ResolvedDevice {
   const { devices, errors } = listing;
 
-  let device = devices.find((d) => d.id === deviceId);
-
-  if (!device && platform) {
-    device = devices.find(
-      (d) =>
-        d.platform === platform &&
-        (d.state === "device" || d.state === "booted" || d.state === "connected"),
-    );
+  let device: Device | undefined;
+  let matchCount = 0;
+  for (const candidate of devices) {
+    if (candidate.id !== deviceId || (platform && candidate.platform !== platform)) continue;
+    device = candidate;
+    matchCount++;
+  }
+  if (matchCount > 1) {
+    const scope = platform ? ` on platform '${platform}'` : " across platforms";
+    throw new Error(`Device ID '${deviceId}' is ambiguous${scope}; specify platform`);
   }
 
   if (!device) {

@@ -113,10 +113,12 @@ export async function resolveElementCoordinates(
       ? currentPlatform
       : undefined;
 
-  // 2. Find by index from cached elements -- device coords, no scale
   if (args.index !== undefined && hierarchyPlatform) {
     const idx = args.index as number;
-    let elements = ctx.getCachedElements(hierarchyPlatform);
+    const cachedIsStale = ctx.isCachedElementsStale?.(hierarchyPlatform, deviceId) ?? false;
+    let elements = cachedIsStale
+      ? []
+      : ctx.getCachedElements(hierarchyPlatform, deviceId);
     if (elements.length === 0) {
       ({ elements } = await getUiElements(ctx, hierarchyPlatform, deviceId));
     }

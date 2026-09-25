@@ -31,6 +31,7 @@ export const HARMONY_PLUGIN_MANIFEST: PluginManifest = {
     "permissions",
     "appLifecycle",
     "logs",
+    "url",
     "fileTransfer",
     "deviceMgmt",
   ],

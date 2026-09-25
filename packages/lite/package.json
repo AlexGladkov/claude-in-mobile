@@ -33,7 +33,7 @@
   "dependencies": {
     "@mcp-devices/plugin-api": "1.1.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "mcp-devices": "*"
+    "mcp-devices": "4.4.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

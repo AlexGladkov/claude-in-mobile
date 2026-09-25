@@ -84,7 +84,7 @@
     "dev": "tsc && node dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build:all"
   },
   "keywords": [
     "mcp",
@@ -125,8 +125,7 @@
   "dependencies": {
     "@mcp-devices/plugin-api": "1.1.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "chrome-launcher": "^1.1.0",
-    "chrome-remote-interface": "^0.33.0",
+    "chrome-launcher": "^1.2.0",
     "google-auth-library": "^10.6.2",
     "jimp": "^1.6.0",
     "zod": "^4.4.3"

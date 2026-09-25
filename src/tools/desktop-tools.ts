@@ -2,6 +2,7 @@ import type { ToolDefinition } from "./registry.js";
 import { defineTool, z } from "./define-tool.js";
 import { validatePath, validateJvmArg, validateBundleId } from "../utils/sanitize.js";
 import { textResult } from "../utils/tool-result.js";
+import { safeTerminalText } from "../utils/terminal-controls.js";
 
 export const desktopTools: ToolDefinition[] = [
   defineTool({
@@ -94,7 +95,7 @@ export const desktopTools: ToolDefinition[] = [
       for (const w of windowInfo.windows) {
         const focused = w.focused ? " [FOCUSED]" : "";
         const pid = w.processId ? ` PID:${w.processId}` : "";
-        result += `  • ${w.id} - ${w.title}${focused}${pid} (${w.bounds.width}x${w.bounds.height})\n`;
+        result += `  • ${safeTerminalText(w.id)} - ${safeTerminalText(w.title)}${focused}${pid} (${w.bounds.width}x${w.bounds.height})\n`;
       }
       return textResult(result.trim());
     },
@@ -111,7 +112,7 @@ export const desktopTools: ToolDefinition[] = [
         return textResult("Desktop app is not running. Use desktop(action:'launch') first.");
       }
       await ctx.deviceManager.getDesktopClient().focusWindow(args.windowId);
-      return textResult(`Focused window: ${args.windowId}`);
+      return textResult(`Focused window: ${safeTerminalText(args.windowId)}`);
     },
   }),
 

@@ -3,6 +3,7 @@ import type {
   AppManagementAdapter,
   CorePlatformAdapter,
   FileTransferAdapter,
+  LogsAdapter,
   PermissionAdapter,
   ShellAdapter,
   SyncScreenshotAdapter,
@@ -21,6 +22,7 @@ export class HarmonyAdapter
     AppInventoryAdapter,
     PermissionAdapter,
     ShellAdapter,
+    LogsAdapter,
     FileTransferAdapter,
     UrlOpeningAdapter,
     SyncScreenshotAdapter

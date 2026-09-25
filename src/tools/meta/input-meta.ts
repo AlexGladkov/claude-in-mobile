@@ -1,5 +1,6 @@
 import { createMetaTool } from "./create-meta-tool.js";
 import { interactionTools } from "../interaction-tools.js";
+import { PLATFORM_JSON_SCHEMA } from "../common-schema.js";
 
 const { meta, aliases } = createMetaTool({
   name: "input",
@@ -25,8 +26,7 @@ const { meta, aliases } = createMetaTool({
     targetPid: { type: "number", description: "Desktop only: PID of target process" },
     hints: { type: "boolean", description: "Return hints about what changed after the action (default: true, set false to disable)", default: true },
     platform: {
-      type: "string",
-      enum: ["android", "ios", "desktop", "aurora", "harmony", "browser"],
+      ...PLATFORM_JSON_SCHEMA,
       description: "Target platform. If not specified, uses the active target.",
     },
   },

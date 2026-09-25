@@ -246,6 +246,47 @@ export class ToolRegistry {
     return null;
   }
 
+  /**
+   * Resolve a tool name and its alias defaults without invoking the handler or
+   * auto-enabling a hidden module. Flow validation uses this pure identity so
+   * aliases cannot evade canonical safety checks.
+   */
+  resolveToolIdentity(
+    name: string,
+    args: Record<string, unknown> = {},
+  ):
+    | {
+        canonical: string;
+        args: Record<string, unknown>;
+      }
+    | undefined {
+    let current = name;
+    let resolvedArgs = { ...args };
+    const seen = new Set<string>();
+
+    while (!this.toolMap.has(current)) {
+      if (seen.has(current)) return undefined;
+      seen.add(current);
+
+      const alias = this.aliasMap.get(current);
+      if (alias !== undefined) {
+        current = alias;
+        continue;
+      }
+
+      const withDefaults = this.aliasDefaultsMap.get(current);
+      if (withDefaults) {
+        resolvedArgs = { ...withDefaults.defaults, ...resolvedArgs };
+        current = withDefaults.canonical;
+        continue;
+      }
+
+      return undefined;
+    }
+
+    return { canonical: current, args: resolvedArgs };
+  }
+
   resolveToolCall(
     name: string,
     args: Record<string, unknown>,
@@ -256,46 +297,13 @@ export class ToolRegistry {
         autoEnabled: string | null;
       }
     | undefined {
-    const direct = this.toolMap.get(name);
-    if (direct) {
-      const autoEnabled = this.tryAutoEnable(name);
-      return { handler: direct.handler, args, autoEnabled };
-    }
+    const identity = this.resolveToolIdentity(name, args);
+    if (!identity) return undefined;
 
-    const canonical = this.aliasMap.get(name);
-    if (canonical) {
-      const def = this.toolMap.get(canonical);
-      if (def) {
-        const autoEnabled = this.tryAutoEnable(canonical);
-        return { handler: def.handler, args, autoEnabled };
-      }
-      const chained = this.aliasDefaultsMap.get(canonical);
-      if (chained) {
-        const chainedDef = this.toolMap.get(chained.canonical);
-        if (chainedDef) {
-          const autoEnabled = this.tryAutoEnable(chained.canonical);
-          return {
-            handler: chainedDef.handler,
-            args: { ...chained.defaults, ...args },
-            autoEnabled,
-          };
-        }
-      }
-    }
+    const def = this.toolMap.get(identity.canonical);
+    if (!def) return undefined;
 
-    const withDefaults = this.aliasDefaultsMap.get(name);
-    if (withDefaults) {
-      const def = this.toolMap.get(withDefaults.canonical);
-      if (def) {
-        const autoEnabled = this.tryAutoEnable(withDefaults.canonical);
-        return {
-          handler: def.handler,
-          args: { ...withDefaults.defaults, ...args },
-          autoEnabled,
-        };
-      }
-    }
-
-    return undefined;
+    const autoEnabled = this.tryAutoEnable(identity.canonical);
+    return { handler: def.handler, args: identity.args, autoEnabled };
   }
 }

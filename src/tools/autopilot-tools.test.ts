@@ -4,9 +4,11 @@ import type { ToolContext } from "./context.js";
 import { autopilotTools } from "./autopilot-tools.js";
 import { generateScreenFingerprint, isSameScreen } from "../autopilot/screen-fingerprint.js";
 import { NavigationGraph } from "../autopilot/nav-graph.js";
+import { explore } from "../autopilot/explorer.js";
 import { healSelector } from "../autopilot/healer.js";
 import { generateTests } from "../autopilot/generator.js";
 import type { ExplorationResult, OriginalSelector } from "../autopilot/types.js";
+import { analyzeScreen, formatElement, formatScreenAnalysis } from "../ui-tree/ui-parser.js";
 import { ValidationError, HealingFailedError, TestGenerationError } from "../errors.js";
 
 // ── Helpers ──
@@ -112,6 +114,57 @@ describe("generateScreenFingerprint", () => {
     const fpWith = generateScreenFingerprint([visible, invisible]);
     const fpWithout = generateScreenFingerprint([visible]);
     expect(fpWith).toBe(fpWithout);
+  });
+  it("omits secure text and content descriptions from fingerprints", () => {
+    const first = makeElement({
+      className: "securetextbox",
+      password: false,
+      text: "hunter2",
+      contentDesc: "hunter2-description",
+    });
+    const second = { ...first, text: "different-secret", contentDesc: "other-secret" };
+
+    expect(generateScreenFingerprint([first])).toBe(generateScreenFingerprint([second]));
+  });
+});
+
+describe("secure UI formatters and screen analysis", () => {
+  it("redacts secure text and content descriptions while preserving ordinary labels", () => {
+    const secure = makeElement({
+      className: "android.widget.EditText",
+      password: true,
+      text: "hunter2",
+      contentDesc: "hunter2-description",
+      clickable: true,
+    });
+    const lowercaseRole = makeElement({
+      index: 1,
+      className: "securetextbox",
+      password: false,
+      text: "other-secret",
+      contentDesc: "other-description",
+      clickable: true,
+    });
+    const ordinary = makeElement({
+      index: 2,
+      text: "Continue",
+      contentDesc: "continue-button",
+      clickable: true,
+    });
+
+    const analysis = analyzeScreen([secure, lowercaseRole, ordinary]);
+    const output = [
+      formatElement(secure),
+      formatElement(lowercaseRole),
+      formatScreenAnalysis(analysis),
+    ].join("\n");
+
+    expect(output).not.toContain("hunter2");
+    expect(output).not.toContain("hunter2-description");
+    expect(output).not.toContain("other-secret");
+    expect(output).not.toContain("other-description");
+    expect(output).toContain("[REDACTED]");
+    expect(output).toContain("Continue");
   });
 });
 
@@ -219,6 +272,42 @@ describe("NavigationGraph", () => {
   });
 });
 
+describe("autopilot exploration redaction", () => {
+  it("clones and redacts secure elements before graph persistence", async () => {
+    const secure = makeElement({
+      index: 0,
+      className: "android.widget.EditText",
+      password: true,
+      text: "hunter2",
+      contentDesc: "hunter2-description",
+      clickable: true,
+    });
+    const ordinary = makeElement({
+      index: 1,
+      text: "Continue",
+      contentDesc: "continue-button",
+      clickable: true,
+    });
+    mockElements = [secure, ordinary];
+
+    const result = await explore(mockCtx(), "android", {
+      package: "com.test",
+      strategy: "bfs",
+      maxScreens: 2,
+      maxActions: 1,
+      dryRun: true,
+    });
+    const persisted = result.graph.screens[0]?.elements ?? [];
+
+    expect(persisted[0]?.text).toBe("[REDACTED]");
+    expect(persisted[0]?.contentDesc).toBe("[REDACTED]");
+    expect(persisted[1]?.text).toBe("Continue");
+    expect(persisted[1]?.contentDesc).toBe("continue-button");
+    expect(secure.text).toBe("hunter2");
+    expect(secure.contentDesc).toBe("hunter2-description");
+  });
+});
+
 // ── Healer tests ──
 
 describe("healSelector", () => {
@@ -257,6 +346,38 @@ describe("healSelector", () => {
 
     expect(result.healed).toBe(true);
     expect(result.healedSelector.index).toBe(0);
+  });
+
+  it("redacts secure candidates in healed results", () => {
+    const secret = "hunter2";
+    const result = healSelector(
+      [makeElement({
+        className: "password",
+        password: false,
+        text: secret,
+        contentDesc: `${secret}-description`,
+      })],
+      { text: secret },
+      0.5,
+    );
+
+    expect(result.healedSelector.text).toBe("[REDACTED]");
+    expect(result.originalSelector.text).toBe("[REDACTED]");
+    expect(JSON.stringify(result)).not.toContain(secret);
+  });
+
+  it("redacts secure candidates in low-confidence diagnostics", () => {
+    const secret = "hunter2";
+    expect(() => healSelector(
+      [makeElement({
+        className: "securetextbox",
+        password: false,
+        text: secret,
+        contentDesc: `${secret}-description`,
+      })],
+      { text: "different-value" },
+      0.99,
+    )).toThrowError(new RegExp(`^(?!.*${secret}).*\\[REDACTED\\]`));
   });
 
   it("throws when confidence is below threshold", () => {
@@ -354,6 +475,64 @@ describe("generateTests", () => {
     expect(test.steps[0].label).toContain("Login");
   });
 
+  it("redacts old persisted secure action text in generated formats", () => {
+    const secret = "hunter2";
+    const exploration: ExplorationResult = {
+      id: "secure-exploration",
+      package: "com.test",
+      strategy: "bfs",
+      startedAt: "",
+      completedAt: "",
+      graph: {
+        screens: [
+          {
+            id: "s1",
+            fingerprint: "fp1",
+            elements: [makeElement({
+              index: 0,
+              className: "android.widget.EditText",
+              password: true,
+              text: secret,
+              contentDesc: `${secret}-description`,
+              clickable: true,
+            })],
+            title: "Login",
+            visitedAt: "",
+          },
+          { id: "s2", fingerprint: "fp2", elements: [], title: "Home", visitedAt: "" },
+        ],
+        edges: [{
+          fromScreenId: "s1",
+          toScreenId: "s2",
+          action: {
+            type: "tap",
+            elementIndex: 0,
+            elementText: secret,
+            elementClassName: "android.widget.EditText",
+            x: 50,
+            y: 50,
+          },
+          timestamp: "",
+        }],
+      },
+      stats: {
+        screensFound: 2,
+        edgesFound: 1,
+        actionsPerformed: 1,
+        maxScreensReached: false,
+        maxActionsReached: false,
+        dryRun: false,
+      },
+    };
+
+    for (const format of ["flow_run", "steps"] as const) {
+      const suite = generateTests(exploration, format);
+      const output = JSON.stringify(suite);
+      expect(output).not.toContain(secret);
+      expect(output).toContain("[REDACTED]");
+    }
+  });
+
   it("generates steps format", () => {
     const exploration: ExplorationResult = {
       id: "test-exp",
@@ -443,6 +622,32 @@ describe("autopilot_heal handler", () => {
 
     expect(result.text).toContain("Healed: YES");
     expect(result.text).toContain("Login");
+  });
+
+  it("does not print secure candidates in formatted output", async () => {
+    const secret = "hunter2";
+    mockElements = [
+      makeElement({
+        index: 0,
+        className: "android.widget.EditText",
+        password: true,
+        text: secret,
+        contentDesc: `${secret}-description`,
+        clickable: true,
+        enabled: true,
+      }),
+    ];
+
+    const handler = autopilotTools.find(
+      (t) => t.tool.name === "autopilot_heal",
+    )!.handler;
+    const result = (await handler(
+      { originalSelector: { text: secret } },
+      mockCtx(),
+    )) as { text: string };
+
+    expect(result.text).not.toContain(secret);
+    expect(result.text).toContain("[REDACTED]");
   });
 
   it("throws when no selector provided", async () => {

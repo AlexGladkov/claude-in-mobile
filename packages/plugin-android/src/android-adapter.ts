@@ -14,6 +14,7 @@ import type {
   AppManagementAdapter,
   PermissionAdapter,
   ShellAdapter,
+  LogsAdapter,
   SyncScreenshotAdapter,
   PerformanceTraceAdapter,
   PerformanceTraceCapture,
@@ -34,6 +35,12 @@ import { randomUUID } from "crypto";
 import { chmod, open, stat } from "fs/promises";
 import { summarizeAndroidTrace } from "./adb/perfetto.js";
 import { summarizeAndroidHeap } from "./adb/hprof.js";
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw signal.reason ?? new Error("Android input was cancelled.");
+  }
+}
+
 
 interface ActiveAndroidTrace {
   handle: PerformanceTraceHandle;
@@ -43,7 +50,7 @@ interface ActiveAndroidTrace {
 }
 
 export class AndroidAdapter
-  implements CorePlatformAdapter, AppManagementAdapter, PermissionAdapter, ShellAdapter, SyncScreenshotAdapter, PerformanceTraceAdapter, HeapSnapshotAdapter
+  implements CorePlatformAdapter, AppManagementAdapter, PermissionAdapter, ShellAdapter, LogsAdapter, SyncScreenshotAdapter, PerformanceTraceAdapter, HeapSnapshotAdapter
 {
   readonly platform = "android" as const;
   readonly heapSnapshotFormat = "android-hprof" as const;
@@ -61,19 +68,33 @@ export class AndroidAdapter
     return this.clientFor(deviceId);
   }
 
-  private _webViewInspector?: WebViewInspector;
-  getWebViewInspector(): WebViewInspector {
-    if (!this._webViewInspector) this._webViewInspector = new WebViewInspector(this.client);
-    return this._webViewInspector;
+  private readonly webViewInspectors = new Map<string, WebViewInspector>();
+  getWebViewInspector(deviceId?: string): WebViewInspector {
+    const client = this.clientFor(deviceId);
+    const targetDeviceId = deviceId ?? client.getDeviceId();
+    const key = targetDeviceId ?? "default";
+    let inspector = this.webViewInspectors.get(key);
+    if (!inspector) {
+      inspector = new WebViewInspector(client, targetDeviceId);
+      this.webViewInspectors.set(key, inspector);
+    }
+    return inspector;
   }
   dispose(): void {
-    this._webViewInspector?.cleanup();
-    this._webViewInspector = undefined;
+    for (const [key, inspector] of this.webViewInspectors) {
+      try {
+        inspector.cleanup();
+        this.webViewInspectors.delete(key);
+      } catch {
+        // Keep failed cleanup handles so a later dispose can retry removal.
+      }
+    }
     for (const trace of this.performanceTraces.values()) {
       trace.client.discardPerfettoTrace(trace.handle.traceId);
     }
     this.performanceTraces.clear();
   }
+
 
 
   /** Return a client targeting deviceId without mutating global state. */
@@ -122,16 +143,37 @@ export class AndroidAdapter
 
   // ============ Core actions ============
 
-  async tap(x: number, y: number, _targetPid?: number, deviceId?: string): Promise<void> {
-    this.clientFor(deviceId).tap(x, y);
+  async tap(
+    x: number,
+    y: number,
+    _targetPid?: number,
+    deviceId?: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    throwIfAborted(signal);
+    await this.clientFor(deviceId).tapAsync(x, y, deviceId, signal);
   }
 
-  async doubleTap(x: number, y: number, intervalMs: number = 100, deviceId?: string): Promise<void> {
-    this.clientFor(deviceId).doubleTap(x, y, intervalMs);
+  async doubleTap(
+    x: number,
+    y: number,
+    intervalMs: number = 100,
+    deviceId?: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    throwIfAborted(signal);
+    await this.clientFor(deviceId).doubleTapAsync(x, y, intervalMs, deviceId, signal);
   }
 
-  async longPress(x: number, y: number, durationMs: number = 1000, deviceId?: string): Promise<void> {
-    this.clientFor(deviceId).longPress(x, y, durationMs);
+  async longPress(
+    x: number,
+    y: number,
+    durationMs: number = 1000,
+    deviceId?: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    throwIfAborted(signal);
+    await this.clientFor(deviceId).longPressAsync(x, y, durationMs, deviceId, signal);
   }
 
   selectAll(): void {
@@ -157,20 +199,39 @@ export class AndroidAdapter
     y2: number,
     durationMs: number = 300,
     deviceId?: string,
+    signal?: AbortSignal,
   ): Promise<void> {
-    this.clientFor(deviceId).swipe(x1, y1, x2, y2, durationMs);
+    throwIfAborted(signal);
+    await this.clientFor(deviceId).swipeAsync(x1, y1, x2, y2, durationMs, deviceId, signal);
   }
 
-  async swipeDirection(direction: "up" | "down" | "left" | "right", deviceId?: string): Promise<void> {
-    this.clientFor(deviceId).swipeDirection(direction);
+  async swipeDirection(
+    direction: "up" | "down" | "left" | "right",
+    deviceId?: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    throwIfAborted(signal);
+    await this.clientFor(deviceId).swipeDirectionAsync(direction, 800, deviceId, signal);
   }
 
-  async inputText(text: string, _targetPid?: number, deviceId?: string): Promise<void> {
-    this.clientFor(deviceId).inputText(text);
+  async inputText(
+    text: string,
+    _targetPid?: number,
+    deviceId?: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    throwIfAborted(signal);
+    await this.clientFor(deviceId).inputTextAsync(text, deviceId, signal);
   }
 
-  async pressKey(key: string, _targetPid?: number, deviceId?: string): Promise<void> {
-    this.clientFor(deviceId).pressKey(key);
+  async pressKey(
+    key: string,
+    _targetPid?: number,
+    deviceId?: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    throwIfAborted(signal);
+    await this.clientFor(deviceId).pressKeyAsync(key, deviceId, signal);
   }
 
   // ============ Screenshot ============

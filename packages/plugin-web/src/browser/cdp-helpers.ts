@@ -104,8 +104,10 @@ export async function buildSelector(
       objectId: object.objectId,
       functionDeclaration: `function() {
         if (this.id) return '#' + CSS.escape(this.id);
-        const testId = this.getAttribute('data-testid') || this.getAttribute('data-test') || this.getAttribute('data-cy');
-        if (testId) return '[data-testid="' + testId + '"]';
+        for (const attr of ['data-testid', 'data-test', 'data-cy']) {
+          const value = this.getAttribute(attr);
+          if (value) return '[' + attr + '=' + CSS.escape(value) + ']';
+        }
         const parts = [];
         let el = this;
         while (el && el !== document.body) {

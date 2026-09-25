@@ -18,7 +18,7 @@ export const AURORA_PLUGIN_MANIFEST: PluginManifest = {
   name: "Aurora OS",
   version: "4.4.1",
   apiVersion: "1",
-  capabilities: ["screen", "input", "ui", "shell", "appLifecycle", "logs", "fileTransfer", "deviceMgmt"],
+  capabilities: ["screen", "input", "shell", "appLifecycle", "logs", "fileTransfer", "deviceMgmt"],
   description: "Aurora OS automation via audb (screen, input, app lifecycle, shell, logs)",
 };
 

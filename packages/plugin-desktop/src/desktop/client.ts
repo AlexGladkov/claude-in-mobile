@@ -89,6 +89,7 @@ const desktopUiElementSchema: z.ZodType<DesktopUiElement> = z.lazy(() => z.objec
   contentDescription: safeRpcTextSchema.optional(),
   className: z.string().min(1).max(4096),
   role: z.string().max(4096).optional(),
+  password: z.boolean().optional(),
   bounds: boundsSchema,
   clickable: z.boolean(),
   enabled: z.boolean(),

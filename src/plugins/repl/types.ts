@@ -47,10 +47,10 @@ export interface SessionSnapshot {
   cols: number;
   rows: number;
   /**
-   * Present when mode is 'raw' or 'both'. Contains the capped, redacted PTY
-   * byte stream (RAW_BUFFER_CAP_BYTES=256KB). WARNING: raw bytes may carry
-   * ANSI escape sequences that split secrets; mode:'grid' gives stronger
-   * redaction guarantees (S28).
+   * Present when mode is 'raw' or 'both'. Contains the capped PTY byte
+   * stream (RAW_BUFFER_CAP_BYTES=256KB). ANSI/OSC controls may remain in this
+   * raw representation, but credential matches span those controls before the
+   * response is returned.
    */
   raw?: string;
   /**
@@ -86,8 +86,8 @@ export interface SpawnArgs {
   shell?: boolean;
   /**
    * When true, tee PTY output to an asciicast v2 file in the plugin temp dir.
-   * When a string, treated as a castPath override (path-traversal is rejected
-   * server-side; only paths inside the temp-dir allowlist are accepted).
+   * When a string, use it as the explicit cast file path (path-traversal is
+   * rejected server-side; only paths inside the temp-dir allowlist are accepted).
    * Spawn result will include castFile when recording is active.
    */
   record?: boolean | string;
@@ -134,9 +134,9 @@ export interface SnapshotArgs {
   tail?: number;
   /**
    * Which surface to return. Default 'grid' preserves the legacy shape.
-   * - 'grid': vt100-rendered screen (strongest redaction, always safe).
-   * - 'raw': capped raw PTY byte stream (ANSI escapes present — less safe,
-   *          see S28; redaction is applied best-effort).
+   * - 'grid': vt100-rendered screen.
+   * - 'raw': capped raw PTY byte stream (ANSI/OSC controls may remain;
+   *          credential matches span those controls).
    * - 'both': both grid and raw fields present.
    * Invalid values are rejected at the bridge layer (S4).
    */

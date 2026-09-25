@@ -2,14 +2,15 @@ use std::fs::{self, File};
 use std::io::Read;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::utils::process::{ensure_success, run_with_limits};
+use crate::utils::process::{ensure_success, run_with_limits, terminal_safe_json};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
+use tempfile::{Builder, TempDir};
 
 const MAX_TRACE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_HEAP_BYTES: u64 = 128 * 1024 * 1024;
@@ -28,13 +29,13 @@ pub fn trace(
 ) -> Result<()> {
     validate_duration(duration_ms)?;
     validate_preset(preset)?;
-    ensure_output_available(Path::new(output))?;
-    let result = match platform {
+    let staged = StagedOutput::new(Path::new(output))?;
+    let mut result = match platform {
         "android" => android_trace(
             package.ok_or_else(|| anyhow::anyhow!("--package is required for Android Perfetto capture"))?,
             preset,
             duration_ms,
-            Path::new(output),
+            staged.path(),
             device,
         )?,
         "ios" => ios_xctrace(
@@ -42,13 +43,15 @@ pub fn trace(
             if preset == "ui-jank" { "Animation Hitches" } else { "Time Profiler" },
             duration_ms,
             "xctrace-zip",
-            Path::new(output),
+            staged.path(),
             simulator,
             MAX_TRACE_BYTES,
         )?,
         _ => bail!("Performance tracing supports android and ios in the native CLI; browser tracing is MCP-only"),
     };
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    staged.publish()?;
+    result["path"] = Value::String(output.to_owned());
+    println!("{}", terminal_safe_json(&result)?);
     Ok(())
 }
 
@@ -61,11 +64,11 @@ pub fn heap_capture(
     device: Option<&str>,
     simulator: Option<&str>,
 ) -> Result<()> {
-    ensure_output_available(Path::new(output))?;
-    let result = match platform {
+    let staged = StagedOutput::new(Path::new(output))?;
+    let mut result = match platform {
         "android" => android_heap(
             package.ok_or_else(|| anyhow::anyhow!("--package is required for Android HPROF capture"))?,
-            Path::new(output),
+            staged.path(),
             device,
         )?,
         "ios" => ios_xctrace(
@@ -73,13 +76,15 @@ pub fn heap_capture(
             "Allocations",
             1_000,
             "xctrace-allocations",
-            Path::new(output),
+            staged.path(),
             simulator,
             MAX_HEAP_BYTES,
         )?,
         _ => bail!("Heap capture supports android and ios in the native CLI; browser HeapProfiler is MCP-only"),
     };
-    println!("{}", serde_json::to_string_pretty(&result)?);
+    staged.publish()?;
+    result["path"] = Value::String(output.to_owned());
+    println!("{}", terminal_safe_json(&result)?);
     Ok(())
 }
 
@@ -101,7 +106,7 @@ pub fn heap_diff(before: &str, after: &str) -> Result<()> {
     };
     println!(
         "{}",
-        serde_json::to_string_pretty(&json!({
+        terminal_safe_json(&json!({
             "before": before,
             "after": after,
             "metric": "artifactSize",
@@ -453,21 +458,63 @@ fn validate_preset(preset: &str) -> Result<()> {
     Ok(())
 }
 
-fn ensure_output_available(path: &Path) -> Result<()> {
-    if path.exists() {
-        bail!(
-            "Refusing to overwrite existing artifact: {}",
-            path.display()
-        );
+struct StagedOutput {
+    destination: PathBuf,
+    staged_path: PathBuf,
+    _temp_dir: TempDir,
+}
+
+impl StagedOutput {
+    fn new(path: &Path) -> Result<Self> {
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let canonical_parent = fs::canonicalize(parent).with_context(|| {
+            format!("Output directory does not exist: {}", terminal_path(parent))
+        })?;
+        if !canonical_parent.is_dir() {
+            bail!("Output directory does not exist: {}", terminal_path(parent));
+        }
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("Output path must name a file"))?;
+        let destination = canonical_parent.join(file_name);
+        match fs::symlink_metadata(&destination) {
+            Ok(_) => bail!(
+                "Refusing to overwrite existing artifact: {}",
+                terminal_path(&destination)
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("Unable to inspect capture output path"),
+        }
+        let temp_dir = Builder::new()
+            .prefix(".mcp-devices-capture-")
+            .tempdir_in(&canonical_parent)?;
+        let staged_path = temp_dir.path().join(file_name);
+        Ok(Self {
+            destination,
+            staged_path,
+            _temp_dir: temp_dir,
+        })
     }
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    if !parent.is_dir() {
-        bail!("Output directory does not exist: {}", parent.display());
+
+    fn path(&self) -> &Path {
+        &self.staged_path
     }
-    Ok(())
+
+    fn publish(&self) -> Result<()> {
+        fs::hard_link(&self.staged_path, &self.destination).with_context(|| {
+            format!(
+                "Unable to safely publish capture at {}",
+                terminal_path(&self.destination)
+            )
+        })
+    }
+}
+
+fn terminal_path(path: &Path) -> String {
+    crate::utils::process::terminal_safe(path.to_string_lossy().as_bytes())
 }
 
 fn secure_and_limit(path: &Path, max_bytes: u64) -> Result<()> {
@@ -581,5 +628,37 @@ mod tests {
             ),
             Some("Allocations".into())
         );
+    }
+
+    #[test]
+    fn staged_output_does_not_follow_a_racing_symlink() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let output = directory.path().join("capture.trace");
+        let target = directory.path().join("outside.txt");
+        fs::write(&target, "do not overwrite").expect("sentinel");
+        let staged = StagedOutput::new(&output).expect("staged output");
+        fs::write(staged.path(), "capture data").expect("capture");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &output).expect("race symlink");
+        #[cfg(not(unix))]
+        fs::write(&output, "attacker file").expect("race file");
+
+        assert!(staged.publish().is_err());
+        assert_eq!(fs::read_to_string(&target).unwrap(), "do not overwrite");
+        #[cfg(not(unix))]
+        assert_eq!(fs::read_to_string(&output).unwrap(), "attacker file");
+    }
+
+    #[test]
+    fn staged_output_publishes_the_completed_artifact_without_overwrite() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let output = directory.path().join("capture.trace");
+        let staged = StagedOutput::new(&output).expect("staged output");
+        fs::write(staged.path(), "complete artifact").expect("capture");
+
+        staged.publish().expect("atomic no-clobber publication");
+
+        assert_eq!(fs::read_to_string(output).unwrap(), "complete artifact");
     }
 }

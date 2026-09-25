@@ -26,7 +26,6 @@ const DESKTOP_DEVICE: Device = {
 };
 
 export class DeviceFacade {
-  private activeDevice?: Device;
   private activeTarget: Platform;
 
   constructor(
@@ -37,7 +36,22 @@ export class DeviceFacade {
     this.activeTarget = initialTarget;
   }
 
+  private requireAdapter(platform: Platform): CorePlatformAdapter {
+    const adapter = this.adapters.get(platform);
+    if (!adapter) {
+      const available = [...this.adapters.keys()].join(", ") || "none";
+      throw new Error(
+        `Platform '${platform}' is not installed. ` +
+          `Enable it with \`mcp-devices install ${platform}\` ` +
+          `(or set MCP_DEVICES_PLATFORMS=${platform}). ` +
+          `Currently available: ${available}.`,
+      );
+    }
+    return adapter;
+  }
+
   setTarget(target: Platform): void {
+    this.requireAdapter(target);
     this.activeTarget = target;
   }
 
@@ -46,11 +60,17 @@ export class DeviceFacade {
   }
 
   getActiveDevice(): Device | undefined {
-    if (this.activeTarget === "desktop" && this.desktopFacade.isRunning()) {
-      return DESKTOP_DEVICE;
+    if (this.activeTarget === "desktop") {
+      return this.desktopFacade.isRunning() ? DESKTOP_DEVICE : undefined;
     }
-    return this.activeDevice;
+
+    const adapter = this.adapters.get(this.activeTarget);
+    const selectedId = adapter?.getSelectedDeviceId();
+    if (!adapter || !selectedId) return undefined;
+
+    return adapter.listDevices().find((device) => device.id === selectedId);
   }
+
 
   getTarget(): { target: Platform; status: string } {
     if (this.activeTarget === "desktop") {
@@ -58,8 +78,8 @@ export class DeviceFacade {
       if (state) return { target: "desktop", status: state.status };
       return { target: "desktop", status: "not available" };
     }
-    const device = this.activeDevice;
-    if (device) return { target: device.platform, status: device.state };
+    const device = this.getActiveDevice();
+    if (device) return { target: this.activeTarget, status: device.state };
     return { target: this.activeTarget, status: "no device" };
   }
 
@@ -73,14 +93,17 @@ export class DeviceFacade {
 
   getDevices(platform?: Platform): Device[] {
     if (platform) {
-      const adapter = this.adapters.get(platform);
-      return adapter ? adapter.listDevices() : [];
+      return this.requireAdapter(platform).listDevices();
     }
     return this.getAllDevices();
   }
 
   setDevice(deviceId: string, platform?: Platform): Device {
-    if (deviceId === "desktop" || platform === "desktop") {
+    if (platform && platform !== "desktop") this.requireAdapter(platform);
+    if (platform === "desktop" || (deviceId === "desktop" && platform === undefined)) {
+      if (deviceId !== "desktop") {
+        throw new Error(`Device not found: ${deviceId}`);
+      }
       if (!this.desktopFacade.isRunning()) {
         throw new Error("Desktop app is not running. Use desktop(action:'launch') first.");
       }
@@ -89,19 +112,13 @@ export class DeviceFacade {
     }
     const listing = listAllDevices(this.adapters);
     const { device } = resolveDevice(deviceId, platform, listing);
-    this.activeDevice = device;
     this.activeTarget = device.platform;
     this.adapters.get(device.platform)?.selectDevice(device.id);
     return device;
   }
 
-  /**
-   * Used by DeviceManager.getAdapter() FIX #8 auto-detect path: when
-   * the adapter discovers a device on its own, we sync facade state to
-   * match the legacy single-source-of-truth behaviour.
-   */
+  /** Keeps the target in sync after an adapter device is auto-selected. */
   recordAutoDetected(device: Device): void {
-    this.activeDevice = device;
     this.activeTarget = device.platform;
   }
 }

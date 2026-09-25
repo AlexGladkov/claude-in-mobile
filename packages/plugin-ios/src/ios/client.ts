@@ -346,12 +346,29 @@ export class IosClient {
    * The `key` argument is whitelisted via keyMap; only fixed AppleScript literals reach
    * osascript.
    */
-  pressKey(key: string): void {
+  pressKey(key: string, deviceIdOverride?: string): void {
     const mappedKey = mapKey(key);
+    const target = this.targetDeviceFor(deviceIdOverride);
 
-    // Use simctl io for button presses
+    if (deviceIdOverride !== undefined) {
+      // Explicit targets must never fall back to the frontmost Simulator window.
+      if (mappedKey === "home") {
+        this.execArgs([
+          "spawn",
+          target,
+          "notifyutil",
+          "-p",
+          "com.apple.springboard.home",
+        ]);
+      } else {
+        this.execArgs(["io", target, "key", mappedKey]);
+      }
+      return;
+    }
+
+    // Preserve the legacy no-override AppleScript path.
     if (mappedKey === "home") {
-      this.execArgs(["io", this.targetDevice, "enumerate"]);
+      this.execArgs(["io", target, "enumerate"]);
       // Trigger home button via keyboard shortcut
       execFileSync(
         "osascript",
@@ -392,9 +409,9 @@ export class IosClient {
   /**
    * Install app (.app bundle or .ipa)
    */
-  installApp(path: string): string {
+  installApp(path: string, deviceIdOverride?: string): string {
     // Path passed as distinct argv slot — spaces in path are safe; no shell parsing.
-    this.execArgs(["install", this.targetDevice, path]);
+    this.execArgs(["install", this.targetDeviceFor(deviceIdOverride), path]);
     return `Installed ${path}`;
   }
 
@@ -538,15 +555,26 @@ export class IosClient {
   }
 
   /**
-   * Execute arbitrary simctl command
+   * Execute an arbitrary simulator command.
+   *
+   * The legacy no-override form remains a raw `simctl` invocation. An explicit
+   * device target is a device-shell operation and is routed through
+   * `simctl spawn <device>` so it cannot fall back to another selected target.
    *
    * SECURITY: `command` is whitespace-split into argv tokens before reaching
-   * execFileSync. Shell metacharacters (;, &, |, $(), backticks, etc.) cannot
+   * `execFileSync`. Shell metacharacters (;, &, |, $(), backticks, etc.) cannot
    * spawn a host shell from this path. The MCP tool layer additionally validates
    * via validateShellCommand as defense in depth.
    */
-  shell(command: string): string {
-    return this.exec(command);
+  shell(command: string, deviceIdOverride?: string): string {
+    if (deviceIdOverride === undefined) {
+      return this.exec(command);
+    }
+    return this.execArgs([
+      "spawn",
+      this.targetDeviceFor(deviceIdOverride),
+      ...splitArgs(command),
+    ]);
   }
 
   /**
@@ -556,14 +584,16 @@ export class IosClient {
     predicate?: string;
     lines?: number;
     level?: "debug" | "info" | "default" | "error" | "fault";
-  } = {}): string {
+  } = {}, deviceIdOverride?: string): string {
     try {
-      const output = this.execArgs(buildLogShowArgs(this.targetDevice, "5m", options));
+      const target = this.targetDeviceFor(deviceIdOverride);
+      const output = this.execArgs(buildLogShowArgs(target, "5m", options));
       return options.lines ? sliceLastLines(output, options.lines) : output;
     } catch {
       // Fallback: try system log (last 1m, swallow stderr — replaces prior `2>/dev/null`).
       try {
-        const fallback = this.execArgsQuiet(buildLogShowArgs(this.targetDevice, "1m"));
+        const target = this.targetDeviceFor(deviceIdOverride);
+        const fallback = this.execArgsQuiet(buildLogShowArgs(target, "1m"));
         return sliceLastLines(fallback, 100);
       } catch {
         return "Unable to retrieve logs. Make sure the simulator is running.";
@@ -592,7 +622,7 @@ export class IosClient {
   /**
    * Clear logs (not fully supported on iOS, but we can note the timestamp)
    */
-  clearLogs(): string {
+  clearLogs(_deviceIdOverride?: string): string {
     return "iOS simulator logs cannot be cleared. Use --last parameter to filter recent logs.";
   }
 
@@ -600,24 +630,24 @@ export class IosClient {
    * Grant privacy permission on iOS simulator
    * Services: camera, microphone, photos, location, contacts, calendar, reminders, motion, health, speech-recognition
    */
-  grantPermission(bundleId: string, service: string): string {
+  grantPermission(bundleId: string, service: string, deviceIdOverride?: string): string {
     validateBundleId(bundleId);
-    return this.execArgs(["privacy", this.targetDevice, "grant", service, bundleId]);
+    return this.execArgs(["privacy", this.targetDeviceFor(deviceIdOverride), "grant", service, bundleId]);
   }
 
   /**
    * Revoke privacy permission on iOS simulator
    */
-  revokePermission(bundleId: string, service: string): string {
+  revokePermission(bundleId: string, service: string, deviceIdOverride?: string): string {
     validateBundleId(bundleId);
-    return this.execArgs(["privacy", this.targetDevice, "revoke", service, bundleId]);
+    return this.execArgs(["privacy", this.targetDeviceFor(deviceIdOverride), "revoke", service, bundleId]);
   }
 
   /**
    * Reset all privacy permissions for an app on iOS simulator
    */
-  resetPermissions(bundleId: string): string {
+  resetPermissions(bundleId: string, deviceIdOverride?: string): string {
     validateBundleId(bundleId);
-    return this.execArgs(["privacy", this.targetDevice, "reset", "all", bundleId]);
+    return this.execArgs(["privacy", this.targetDeviceFor(deviceIdOverride), "reset", "all", bundleId]);
   }
 }

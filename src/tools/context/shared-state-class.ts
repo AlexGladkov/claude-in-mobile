@@ -7,53 +7,68 @@ export interface ScreenshotScale {
 }
 
 export function screenshotStateKey(platform: string, deviceId?: string): string {
-  return deviceId ? `${platform}:${deviceId}` : platform;
+  return deviceId === undefined ? platform : `${platform}:${encodeURIComponent(deviceId)}`;
 }
 
 
 /**
- * SharedState — encapsulates the per-platform caches that used to live as
- * module-level `Map`s in `shared-state.ts`. The legacy module re-exports
+ * SharedState — encapsulates the per-platform/device caches that used to live
+ * as module-level `Map`s in `shared-state.ts`. The legacy module re-exports
  * the singleton instance's Maps directly so existing consumers
  * (`ctx.lastScreenshotMap`, etc.) keep working.
  */
 export class SharedState {
   readonly cachedElementsMap = new Map<string, UiElement[]>();
+  readonly staleElementKeys = new Set<string>();
   readonly lastScreenshotMap = new Map<string, Buffer>();
   readonly lastUiTreeMap = new Map<string, { text: string; timestamp: number }>();
   readonly screenshotScaleMap = new Map<string, ScreenshotScale>();
 
-  getCachedElements(platform: string): UiElement[] {
-    return this.cachedElementsMap.get(platform) ?? [];
+  getCachedElements(platform: string, deviceId?: string): UiElement[] {
+    return this.cachedElementsMap.get(screenshotStateKey(platform, deviceId)) ?? [];
+  }
+
+  isCachedElementsStale(platform: string, deviceId?: string): boolean {
+    return this.staleElementKeys.has(screenshotStateKey(platform, deviceId));
   }
 
   /**
-   * Cache invariant (owned here, not by callers): an empty read must never
-   * clobber a previously-good cache.
-   *
-   * The `cachedElementsMap` is a single per-platform cache shared by several
-   * writers (ui_tree, hints, flow element checks). A single degraded WDA fetch
-   * on iOS returns `[]`; if that `[]` were stored it would poison
-   * `beforeElements` for every subsequent input and make hints permanently
-   * report "No UI elements detected." (cache self-poisoning). Previously each
-   * caller had to remember to guard the write, and one of them
-   * (`getElementsForPlatform`) did not. The rule now lives with the owner of
-   * the cache so it cannot be forgotten again.
+   * Store the result for a successful UI read. Callers that receive a
+   * degraded/error response must not call this method, while a valid empty
+   * accessibility tree intentionally clears stale coordinates.
    */
-  setCachedElements(platform: string, elements: UiElement[]): void {
-    if (elements.length === 0 && this.getCachedElements(platform).length > 0) {
-      return;
-    }
-    this.cachedElementsMap.set(platform, elements);
+  setCachedElements(platform: string, elements: UiElement[], deviceId?: string): void {
+    const key = screenshotStateKey(platform, deviceId);
+    this.cachedElementsMap.set(key, elements);
+    this.staleElementKeys.delete(key);
   }
 
-  invalidateUiTreeCache(platform?: string): void {
+  invalidateUiTreeCache(platform?: string, deviceId?: string): void {
     if (platform) {
-      for (const key of this.lastUiTreeMap.keys()) {
-        if (key.startsWith(platform)) this.lastUiTreeMap.delete(key);
+      const stateKey = screenshotStateKey(platform, deviceId);
+      const prefix = `${stateKey}:`;
+      for (const key of this.cachedElementsMap.keys()) {
+        if (key === stateKey || key.startsWith(prefix)) this.staleElementKeys.add(key);
       }
-    } else {
-      this.lastUiTreeMap.clear();
+      for (const key of this.lastUiTreeMap.keys()) {
+        if (key === stateKey || key.startsWith(prefix)) this.lastUiTreeMap.delete(key);
+      }
+      return;
     }
+
+    if (deviceId !== undefined) {
+      const deviceMarker = `:${encodeURIComponent(deviceId)}`;
+      for (const key of this.cachedElementsMap.keys()) {
+        if (key.endsWith(deviceMarker)) this.staleElementKeys.add(key);
+      }
+      const treeMarker = `${deviceMarker}:`;
+      for (const key of this.lastUiTreeMap.keys()) {
+        if (key.includes(treeMarker)) this.lastUiTreeMap.delete(key);
+      }
+      return;
+    }
+
+    for (const key of this.cachedElementsMap.keys()) this.staleElementKeys.add(key);
+    this.lastUiTreeMap.clear();
   }
 }

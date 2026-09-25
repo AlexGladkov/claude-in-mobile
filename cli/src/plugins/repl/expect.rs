@@ -5,7 +5,31 @@
 
 use std::time::Duration;
 
+use anyhow::{bail, Result};
 use regex::Regex;
+
+pub const DEFAULT_EXPECT_IDLE_MS: u64 = 300;
+pub const DEFAULT_EXPECT_TIMEOUT_MS: u64 = 5_000;
+
+pub const MAX_EXPECT_IDLE_MS: u64 = 60_000;
+pub const MAX_EXPECT_TIMEOUT_MS: u64 = 300_000;
+
+/// Validate the public `repl_expect` duration limits.
+///
+/// Zero is valid for both values, matching the bridge parser's semantics.
+///
+/// # Errors
+///
+/// Returns an error when either duration exceeds its public maximum.
+pub fn validate_expect_durations(idle_ms: u64, timeout_ms: u64) -> Result<()> {
+    if idle_ms > MAX_EXPECT_IDLE_MS {
+        bail!("idleMs exceeds the maximum of {MAX_EXPECT_IDLE_MS}ms");
+    }
+    if timeout_ms > MAX_EXPECT_TIMEOUT_MS {
+        bail!("timeoutMs exceeds the maximum of {MAX_EXPECT_TIMEOUT_MS}ms");
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone)]
 pub struct ExpectRules {
@@ -24,7 +48,7 @@ impl ExpectRules {
     }
 
     pub fn defaults() -> Self {
-        Self::new(None, 300, 5_000)
+        Self::new(None, DEFAULT_EXPECT_IDLE_MS, DEFAULT_EXPECT_TIMEOUT_MS)
     }
 
     /// True when `buf` ends with a prompt match (we only care about the tail).
@@ -59,6 +83,25 @@ pub enum ExpectOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expect_duration_limits_accept_zero_and_public_maxima() {
+        assert!(validate_expect_durations(0, 0).is_ok());
+        assert!(validate_expect_durations(MAX_EXPECT_IDLE_MS, MAX_EXPECT_TIMEOUT_MS).is_ok());
+    }
+
+    #[test]
+    fn expect_duration_limits_reject_values_above_public_maxima() {
+        let idle_error =
+            validate_expect_durations(MAX_EXPECT_IDLE_MS + 1, MAX_EXPECT_TIMEOUT_MS).unwrap_err();
+        assert!(idle_error.to_string().contains("idleMs"));
+        assert!(idle_error.to_string().contains("60000"));
+
+        let timeout_error =
+            validate_expect_durations(MAX_EXPECT_IDLE_MS, MAX_EXPECT_TIMEOUT_MS + 1).unwrap_err();
+        assert!(timeout_error.to_string().contains("timeoutMs"));
+        assert!(timeout_error.to_string().contains("300000"));
+    }
 
     #[test]
     fn matches_python_prompt_at_tail() {

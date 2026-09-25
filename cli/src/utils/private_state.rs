@@ -109,6 +109,70 @@ pub fn atomic_write(path: &Path, contents: &[u8]) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn create_private_file_if_missing(
+    path: &Path,
+    contents: &[u8],
+    label: &str,
+) -> Result<bool> {
+    let parent = path.parent().context("Private state path has no parent")?;
+    create_private_dir(parent)?;
+    let mut temp = NamedTempFile::new_in(parent)
+        .with_context(|| format!("Cannot create temporary state file in {}", parent.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        temp.as_file()
+            .set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    temp.write_all(contents)?;
+    temp.as_file_mut().sync_all()?;
+    match temp.persist_noclobber(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => {
+            Err(error.error).with_context(|| format!("Cannot atomically create private {label}"))
+        }
+    }
+}
+
+/// Reject legacy import files that are not regular files owned by this user
+/// with no group/world write permission.
+///
+/// Legacy state historically lived in shared temporary directories, so a
+/// caller must not parse or import a file that another user can replace.
+pub(crate) fn validate_legacy_file_security(
+    path: &Path,
+    metadata: &fs::Metadata,
+    label: &str,
+) -> Result<()> {
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        bail!("{label} is not a regular file: {}", path.display());
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+
+        // SAFETY: geteuid has no preconditions and only reads the process
+        // credentials supplied by the operating system.
+        let current_uid = unsafe { libc::geteuid() };
+        if metadata.uid() != current_uid {
+            bail!(
+                "{label} is not owned by the current user: {}",
+                path.display()
+            );
+        }
+        if metadata.mode() & 0o022 != 0 {
+            bail!(
+                "{label} is group/world-writable and cannot be imported: {}",
+                path.display()
+            );
+        }
+    }
+
+    Ok(())
+}
+
 fn open_readonly_no_follow(path: &Path) -> Result<File> {
     let mut options = OpenOptions::new();
     options.read(true);
@@ -128,7 +192,12 @@ fn open_readonly_no_follow(path: &Path) -> Result<File> {
         .with_context(|| format!("Cannot safely open {}", path.display()))
 }
 
-pub fn read_bounded_file(path: &Path, max_bytes: u64, label: &str) -> Result<Vec<u8>> {
+fn read_bounded_file_inner(
+    path: &Path,
+    max_bytes: u64,
+    label: &str,
+    validate_security: bool,
+) -> Result<Vec<u8>> {
     if max_bytes == 0 {
         bail!("{label} size limit must be greater than zero");
     }
@@ -136,6 +205,9 @@ pub fn read_bounded_file(path: &Path, max_bytes: u64, label: &str) -> Result<Vec
     let metadata = file
         .metadata()
         .with_context(|| format!("Cannot inspect {label} at {}", path.display()))?;
+    if validate_security {
+        validate_legacy_file_security(path, &metadata, label)?;
+    }
     if !metadata.is_file() || metadata.len() > max_bytes {
         bail!("{label} is not a regular file or exceeds {max_bytes} bytes");
     }
@@ -147,6 +219,18 @@ pub fn read_bounded_file(path: &Path, max_bytes: u64, label: &str) -> Result<Vec
         bail!("{label} exceeds {max_bytes} bytes");
     }
     Ok(data)
+}
+
+pub fn read_bounded_file(path: &Path, max_bytes: u64, label: &str) -> Result<Vec<u8>> {
+    read_bounded_file_inner(path, max_bytes, label, false)
+}
+
+pub(crate) fn read_bounded_legacy_file(
+    path: &Path,
+    max_bytes: u64,
+    label: &str,
+) -> Result<Vec<u8>> {
+    read_bounded_file_inner(path, max_bytes, label, true)
 }
 
 pub fn read_json_file<T: DeserializeOwned>(path: &Path, max_bytes: u64, label: &str) -> Result<T> {
@@ -163,9 +247,27 @@ pub fn private_temp_dir(prefix: &str) -> Result<TempDir> {
 }
 
 #[cfg(test)]
+
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn legacy_file_security_rejects_group_or_world_writable_files() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("legacy.json");
+        fs::write(&path, br#"{"ok":true}"#).unwrap();
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).unwrap();
+        let metadata = fs::symlink_metadata(&path).unwrap();
+        assert!(validate_legacy_file_security(&path, &metadata, "legacy file").is_err());
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let metadata = fs::symlink_metadata(&path).unwrap();
+        assert!(validate_legacy_file_security(&path, &metadata, "legacy file").is_ok());
+    }
     #[test]
     fn identifier_rejects_path_traversal() {
         for value in ["", ".", "..", "../escape", "a/b", "a\\b"] {

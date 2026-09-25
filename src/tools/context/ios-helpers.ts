@@ -4,7 +4,9 @@
 
 import type { UiElement } from "../../ui-tree/ui-parser.js";
 import { z } from "zod";
+import { REDACTED, isTextEntryIdentifier } from "../../ui-tree/ui-parser/formatters/redact.js";
 
+import { safeTerminalText } from "../../utils/terminal-controls.js";
 /**
  * Structural shape of a WebDriverAgent accessibility node (`/wda/accessibleSource`).
  *
@@ -19,6 +21,7 @@ export interface WdaNode {
   value?: string;
   name?: string;
   identifier?: string;
+  password?: boolean;
   enabled?: boolean;
   selected?: boolean;
   rect?: { x?: number; y?: number; width?: number; height?: number };
@@ -55,6 +58,7 @@ const wdaNodeSchema = z.object({
   value: z.string().max(65_536).optional(),
   name: z.string().max(65_536).optional(),
   identifier: z.string().max(65_536).optional(),
+  password: z.boolean().optional(),
   enabled: z.boolean().optional(),
   selected: z.boolean().optional(),
   rect: wdaRectSchema.optional(),
@@ -120,6 +124,20 @@ export function unwrapWdaTree(response: unknown): WdaNode {
   );
 }
 
+function isSecureWdaNode(node: WdaNode): boolean {
+  const type = (node.type ?? "").toLowerCase();
+  const compactType = type.replace(/[^a-z0-9]/g, "");
+  const valueBearingTextEntry = /(?:textfield|textview|searchfield|searchbar|textarea|textinput)/.test(compactType)
+    && typeof node.value === "string"
+    && node.value.length > 0;
+  return node.password === true
+    || type.includes("password")
+    || compactType.includes("securetextfield")
+    || compactType.includes("securetextbox")
+    || compactType === "secure"
+    || valueBearingTextEntry;
+}
+
 /**
  * Convert an iOS accessibility tree (from WDA) to UiElement[].
  *
@@ -154,13 +172,15 @@ export function iosTreeToUiElements(
       const width = rect.width ?? 0;
       const height = rect.height ?? 0;
       if (width > 0 && height > 0) {
+        const secure = isSecureWdaNode(node);
+        const redactIdentifier = secure || isTextEntryIdentifier(node.type);
         elements.push({
           index: index.value++,
-          resourceId: node.identifier ?? "",
           className: node.type ?? "",
+          resourceId: redactIdentifier ? REDACTED : node.identifier ?? "",
           packageName: "",
-          text: node.label ?? node.value ?? "",
-          contentDesc: node.name ?? "",
+          text: secure ? REDACTED : node.label ?? node.value ?? "",
+          contentDesc: secure ? REDACTED : node.name ?? "",
           checkable: false,
           checked: false,
           clickable:
@@ -171,7 +191,7 @@ export function iosTreeToUiElements(
           focused: false,
           scrollable: node.type?.includes("ScrollView") ?? false,
           longClickable: false,
-          password: node.type?.includes("SecureTextField") ?? false,
+          password: secure,
           selected: node.selected ?? false,
           bounds: { x1: x, y1: y, x2: x + width, y2: y + height },
           centerX: Math.floor(x + width / 2),
@@ -194,8 +214,6 @@ export function formatIOSUITree(tree: unknown, indent = 0): string {
   const lines: string[] = [];
   const stack: Array<{ node: WdaNode; depth: number }> = [{ node: root, depth: indent }];
   let visited = 0;
-  const safeText = (value: string) =>
-    value.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 1000);
 
   while (stack.length > 0) {
     if (++visited > 50_000) {
@@ -205,11 +223,21 @@ export function formatIOSUITree(tree: unknown, indent = 0): string {
     if (!entry) continue;
     const { node, depth } = entry;
     if (node.type) {
-      const parts: string[] = [`<${safeText(node.type)}>`];
-      if (node.label) parts.push(`label=${JSON.stringify(safeText(node.label))}`);
-      if (node.value) parts.push(`value=${JSON.stringify(safeText(node.value))}`);
-      if (node.name) parts.push(`name=${JSON.stringify(safeText(node.name))}`);
-      if (node.identifier) parts.push(`id=${JSON.stringify(safeText(node.identifier))}`);
+      const parts: string[] = [`<${safeTerminalText(node.type)}>`];
+      const secure = isSecureWdaNode(node);
+      const redactIdentifier = secure || isTextEntryIdentifier(node.type);
+      if (node.label) {
+        parts.push(`label=${JSON.stringify(secure ? REDACTED : safeTerminalText(node.label))}`);
+      }
+      if (node.value) {
+        parts.push(`value=${JSON.stringify(secure ? REDACTED : safeTerminalText(node.value))}`);
+      }
+      if (node.name) {
+        parts.push(`name=${JSON.stringify(secure ? REDACTED : safeTerminalText(node.name))}`);
+      }
+      if (node.identifier) {
+        parts.push(`id=${JSON.stringify(redactIdentifier ? REDACTED : safeTerminalText(node.identifier))}`);
+      }
       if (node.enabled !== undefined) parts.push(`enabled=${node.enabled}`);
       if (node.rect) parts.push(`@ (${node.rect.x ?? 0}, ${node.rect.y ?? 0})`);
       lines.push(`${"  ".repeat(Math.min(depth, 100))}${parts.join(" ")}`);

@@ -103,7 +103,11 @@ export interface IosClientLike {
 
 export interface AdbClientLike {
   exec(command: string): string;
-  execWithUiDump(actionArgs: readonly string[]): Promise<{ actionOutput: string; uiXml: string }>;
+  execWithUiDump(
+    actionArgs: readonly string[],
+    deviceIdOverride?: string,
+    signal?: AbortSignal,
+  ): Promise<{ actionOutput: string; uiXml: string }>;
   getCurrentActivity(): string;
   getBatteryInfo(): string;
   selectAll(): void;

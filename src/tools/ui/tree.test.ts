@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { uiTree } from "./tree.js";
+import { uiFind } from "./find.js";
 import { iosTreeToUiElements, formatIOSUITree } from "../context/ios-helpers.js";
+import { DeviceManager } from "../../device-manager.js";
 import type { ToolContext } from "../context.js";
 
 // ---------------------------------------------------------------------------
@@ -54,6 +56,14 @@ function makeIosContext(tree: unknown, overrides?: Partial<ToolContext>): ToolCo
   return {
     deviceManager: {
       getCurrentPlatform: vi.fn(() => "ios"),
+      getIosClient: vi.fn(() => ({
+        findElements: vi.fn(async () => [{
+          id: "secure-element",
+          type: "XCUIElementTypeSecureTextField",
+          label: "hunter2",
+          rect: { x: 20, y: 400, width: 350, height: 40 },
+        }]),
+      })),
       getUiHierarchy: vi.fn(async () => JSON.stringify(tree)),
       getUiHierarchyAsync: vi.fn(async () => ""),
     } as any,
@@ -140,7 +150,7 @@ describe("ui_tree — iOS shares the common formatting layer", () => {
     const ctx = makeIosContext(makeIosTree(), { setCachedElements });
     await runTree(ctx, { platform: "ios" });
 
-    expect(setCachedElements).toHaveBeenCalledWith("ios", expect.any(Array));
+    expect(setCachedElements).toHaveBeenCalledWith("ios", expect.any(Array), undefined);
     const cached = setCachedElements.mock.calls[0][1];
     expect(cached.length).toBeGreaterThan(0);
   });
@@ -178,5 +188,169 @@ describe("ui_tree — SecureTextField value is redacted", () => {
     const text = await runTree(ctx, { platform: "ios", compact: true });
 
     expect(text).not.toContain("hunter2");
+  });
+
+  it("redacts SecureTextField values in the legacy iOS tree formatter", () => {
+    const text = formatIOSUITree(makeIosTree());
+    expect(text).not.toContain("hunter2");
+    expect(text).toContain("[REDACTED]");
+  });
+});
+describe("ui_find — iOS secure values are redacted", () => {
+  it("never returns the value of a matched SecureTextField", async () => {
+    const ctx = makeIosContext(makeIosTree());
+    const result = await uiFind.handler(
+      { platform: "ios", label: "Password" } as any,
+      ctx,
+    ) as { content: Array<{ text: string }> };
+    const output = result.content.map((item) => item.text).join("\n");
+
+    expect(output).not.toContain("hunter2");
+    expect(output).toContain("[REDACTED]");
+  });
+});
+
+describe("ui_find — iOS label terminal safety", () => {
+  it("strips terminal controls from non-secure WDA labels", async () => {
+    const rect = { x: 20, y: 60, width: 200, height: 30 };
+    const label = "\u001b[31mOpen\u202e settings\u001b[0m";
+    const ctx = makeIosContext({
+      type: "XCUIElementTypeApplication",
+      rect: { x: 0, y: 0, width: 390, height: 844 },
+      children: [{ type: "XCUIElementTypeButton", label: "Open settings", rect }],
+    });
+    (ctx.deviceManager as any).getIosClient = vi.fn(() => ({
+      findElements: vi.fn(async () => [{
+        type: "XCUIElementTypeButton",
+        label,
+        rect,
+      }]),
+    }));
+
+    const result = await uiFind.handler({ platform: "ios" } as any, ctx) as {
+      content: Array<{ text: string }>;
+    };
+    const output = result.content.map((item) => item.text).join("\n");
+
+    expect(output).toContain("Open");
+    expect(output).not.toContain("\u001b");
+    expect(output).not.toContain("\u202e");
+  });
+});
+
+describe("ui_tree — browser accessibility provider", () => {
+  it("formats normalized browser records instead of parsing snapshot text as XML", async () => {
+    const getUiElements = vi.fn(async () => [{
+      role: "button",
+      label: "Open settings",
+      clickable: true,
+      bounds: { x: 30, y: 40, width: 120, height: 44 },
+    }]);
+    const adapter = {
+      platform: "browser",
+      listDevices: () => [],
+      selectDevice: () => {},
+      getSelectedDeviceId: () => "browser",
+      autoDetectDevice: () => undefined,
+      tap: async () => {},
+      doubleTap: async () => {},
+      longPress: async () => {},
+      swipe: async () => {},
+      swipeDirection: async () => {},
+      inputText: async () => {},
+      pressKey: async () => {},
+      screenshotAsync: async () => ({ data: "", mimeType: "image/png" }),
+      getScreenshotBufferAsync: async () => Buffer.alloc(0),
+      getUiHierarchy: async () => `[Example]\n\nbutton "snapshot"`,
+      getUiElements,
+      getSystemInfo: async () => "{}",
+    };
+    const deviceManager = new DeviceManager({
+      adapters: new Map([["browser", adapter as never]]),
+      activeTarget: "browser",
+    });
+    const setCachedElements = vi.fn();
+    const ctx = makeIosContext({}, {
+      deviceManager,
+      setCachedElements,
+    });
+
+    const text = await runTree(ctx, {
+      platform: "browser",
+      showAll: false,
+      fresh: true,
+    });
+
+    expect(getUiElements).toHaveBeenCalledWith(undefined);
+    expect(text).toContain("Open settings");
+    expect(text).not.toContain("snapshot");
+    expect(setCachedElements).toHaveBeenCalledWith("browser", expect.any(Array), undefined);
+  });
+});
+
+describe("ui_tree — desktop normalized provider", () => {
+  it("redacts password and value-bearing OTP fields while retaining ordinary labels and metadata", async () => {
+    const getUiElements = vi.fn(async () => [
+      {
+        index: 0,
+        id: "password-field",
+        role: "AXSecureTextField",
+        className: "SecureTextField",
+        text: "hunter2",
+        password: true,
+        enabled: true,
+        focused: true,
+        focusable: true,
+        bounds: { x: 10, y: 20, width: 200, height: 40 },
+      },
+      {
+        index: 1,
+        id: "otp-field",
+        role: "textbox",
+        className: "TextField",
+        text: "731904",
+        value: "731904",
+        label: "One-time code",
+        enabled: true,
+        focused: false,
+        focusable: true,
+        bounds: { x: 10, y: 80, width: 200, height: 40 },
+      },
+      {
+        index: 2,
+        id: "continue",
+        role: "button",
+        className: "Button",
+        label: "Continue",
+        clickable: true,
+        enabled: true,
+        focusable: true,
+        bounds: { x: 30, y: 140, width: 120, height: 44 },
+      },
+    ]);
+    const adapter = { platform: "desktop", getUiElements };
+    const deviceManager = new DeviceManager({
+      adapters: new Map([["desktop", adapter as never]]),
+      activeTarget: "desktop",
+    });
+    const setCachedElements = vi.fn();
+    const ctx = makeIosContext({}, {
+      deviceManager,
+      setCachedElements,
+    });
+
+    const text = await runTree(ctx, {
+      platform: "desktop",
+      showAll: true,
+      fresh: true,
+    });
+
+    expect(getUiElements).toHaveBeenCalledWith(undefined);
+    expect(text).not.toContain("hunter2");
+    expect(text).not.toContain("731904");
+    expect(text).toContain("[REDACTED]");
+    expect(text).toContain("Continue");
+    expect(text).toContain("@ (90, 162)");
+    expect(setCachedElements).toHaveBeenCalledWith("desktop", expect.any(Array), undefined);
   });
 });

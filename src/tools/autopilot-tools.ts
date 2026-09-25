@@ -15,6 +15,10 @@ import type {
   ExplorationStrategy,
   TestFormat,
   OriginalSelector,
+  ExplorationResult,
+  GeneratedTestSuite,
+  GeneratedTest,
+  TestStep,
 } from "../autopilot/types.js";
 import { explore } from "../autopilot/explorer.js";
 import { generateTests } from "../autopilot/generator.js";
@@ -29,6 +33,7 @@ import { defineTool, z } from "./define-tool.js";
 import { deviceIdField } from "./common-schema.js";
 import { parseCommonArgs } from "../utils/parse-common-args.js";
 import { textResult } from "../utils/tool-result.js";
+import { isSensitiveElement, REDACTED } from "../ui-tree/ui-parser/formatters/redact.js";
 
 const getStore = createLazySingleton(() => new ExplorationStore());
 
@@ -68,6 +73,112 @@ function formatExplorationSummary(
   result: { id: string; package: string; date: string; screens: number },
 ): string {
   return `${result.id} — ${result.package} — ${result.screens} screens — ${result.date.split("T")[0]}`;
+}
+
+function secureMarker(value: string): boolean {
+  const lower = value.toLowerCase();
+  const compact = lower.replace(/[^a-z0-9]/g, "");
+  return lower.includes("password")
+    || compact.includes("securetextfield")
+    || compact.includes("securetextbox")
+    || compact === "secure";
+}
+
+function secureValues(exploration: ExplorationResult): string[] {
+  const values = new Set<string>();
+  for (const screen of exploration.graph.screens) {
+    for (const element of screen.elements) {
+      if (!isSensitiveElement(element)) continue;
+      if (element.text && element.text !== REDACTED) values.add(element.text);
+      if (element.contentDesc && element.contentDesc !== REDACTED) values.add(element.contentDesc);
+      if (element.resourceId && element.resourceId !== REDACTED) values.add(element.resourceId);
+    }
+  }
+  return [...values].sort((a, b) => b.length - a.length);
+}
+
+function redactSecureValues(value: unknown, exploration: ExplorationResult): unknown {
+  const values = secureValues(exploration);
+  const redact = (candidate: unknown): unknown => {
+    if (typeof candidate === "string") {
+      let redacted = candidate;
+      for (const secureValue of values) {
+        redacted = secureValue.length === 1
+          ? (redacted === secureValue ? REDACTED : redacted)
+          : redacted.replaceAll(secureValue, REDACTED);
+      }
+      return redacted;
+    }
+    if (Array.isArray(candidate)) {
+      return candidate.map((entry) => redact(entry));
+    }
+    if (candidate && typeof candidate === "object") {
+      return Object.fromEntries(
+        Object.entries(candidate).map(([key, entry]) => [key, redact(entry)]),
+      );
+    }
+    return candidate;
+  };
+
+  return redact(value);
+}
+
+function isSecureTestStep(
+  exploration: ExplorationResult,
+  test: GeneratedTest,
+  stepIndex: number,
+): boolean {
+  const fromScreenId = test.path[stepIndex];
+  const toScreenId = test.path[stepIndex + 1];
+  const sourceScreen = exploration.graph.screens.find((screen) => screen.id === fromScreenId);
+  const edges = exploration.graph.edges.filter((candidate) =>
+    candidate.fromScreenId === fromScreenId && candidate.toScreenId === toScreenId,
+  );
+  return edges.some((edge) => {
+    const source = sourceScreen?.elements.find((element) => element.index === edge.action.elementIndex);
+    return Boolean(source && isSensitiveElement(source))
+      || secureMarker(`${edge.action.elementClassName ?? ""} ${edge.action.elementResourceId ?? ""}`);
+  });
+}
+
+function sanitizeGeneratedSuite(
+  suite: GeneratedTestSuite,
+  exploration: ExplorationResult,
+): GeneratedTestSuite {
+  const tests: GeneratedTest[] = suite.tests.map((test) => {
+    const steps: TestStep[] = test.steps.map((step, index) => {
+      const secure = isSecureTestStep(exploration, test, index);
+      const args = redactSecureValues(step.args, exploration);
+      if (secure && args && typeof args === "object" && !Array.isArray(args)) {
+        for (const key of ["elementText", "elementResourceId", "resourceId", "text", "contentDesc", "value", "label", "hint"]) {
+          if (key in args) (args as Record<string, unknown>)[key] = REDACTED;
+        }
+      }
+      let label = redactSecureValues(step.label, exploration) as string | undefined;
+      if (secure && label) {
+        const firstQuote = label.indexOf("\"");
+        const lastQuote = label.lastIndexOf("\"");
+        label = firstQuote >= 0 && lastQuote > firstQuote
+          ? `${label.slice(0, firstQuote + 1)}${REDACTED}${label.slice(lastQuote)}`
+          : REDACTED;
+      }
+      return {
+        ...step,
+        args: args as Record<string, unknown>,
+        label,
+        expectedScreen: redactSecureValues(step.expectedScreen, exploration) as string | undefined,
+      };
+    });
+
+    return {
+      ...test,
+      name: redactSecureValues(test.name, exploration) as string,
+      description: redactSecureValues(test.description, exploration) as string,
+      steps,
+    };
+  });
+
+  return { ...suite, tests };
 }
 
 // ── Tool definitions ──
@@ -146,7 +257,8 @@ export const autopilotTools: ToolDefinition[] = [
       lines.push("");
       lines.push("Screens:");
       for (const screen of result.graph.screens) {
-        lines.push(`  ${screen.id}: ${screen.title ?? "(untitled)"} [${screen.elements.length} elements]`);
+        const safeTitle = redactSecureValues(screen.title, result) as string | undefined;
+        lines.push(`  ${screen.id}: ${safeTitle ?? "(untitled)"} [${screen.elements.length} elements]`);
       }
 
       lines.push("");
@@ -178,7 +290,8 @@ export const autopilotTools: ToolDefinition[] = [
       const format = (args.format ?? "flow_run") as TestFormat;
 
       const exploration = await getStore().getExploration(explorationId);
-      const suite = generateTests(exploration, format);
+      const generated = generateTests(exploration, format);
+      const suite = sanitizeGeneratedSuite(generated, exploration);
 
       await getStore().saveTests(suite);
 
@@ -274,7 +387,8 @@ export const autopilotTools: ToolDefinition[] = [
         ];
 
         for (const screen of exploration.graph.screens) {
-          lines.push(`  ${screen.id}: ${screen.title ?? "(untitled)"} [${screen.elements.length} elements]`);
+          const safeTitle = redactSecureValues(screen.title, exploration) as string | undefined;
+          lines.push(`  ${screen.id}: ${safeTitle ?? "(untitled)"} [${screen.elements.length} elements]`);
         }
 
         return textResult(truncateOutput(lines.join("\n")));
@@ -315,7 +429,9 @@ export const autopilotTools: ToolDefinition[] = [
     handler: async (args) => {
       const explorationId = args.explorationId;
       const testId = args.testId;
-      const suite = await getStore().getTests(explorationId);
+      const exploration = await getStore().getExploration(explorationId);
+      const storedSuite = await getStore().getTests(explorationId);
+      const suite = sanitizeGeneratedSuite(storedSuite, exploration);
 
       if (testId) {
         const test = suite.tests.find((t) => t.id === testId);

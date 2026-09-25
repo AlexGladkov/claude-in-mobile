@@ -49,13 +49,13 @@ export function defineTool<S extends z.ZodTypeAny>(
   };
 
   const safeHandler = runToolSafely<z.output<S>, ToolContext>(
-    (args, ctx) => opts.handler(args, ctx),
+    (args, ctx, depth) => opts.handler(args, ctx, depth),
     opts.errorCode ?? "TOOL_FAILED",
   );
 
   return {
     tool,
-    handler: async (rawArgs, ctx, _depth) => {
+    handler: async (rawArgs, ctx, depth = 0) => {
       const parsed = opts.schema.safeParse(rawArgs ?? {});
       if (!parsed.success) {
         const issues = parsed.error.issues
@@ -63,7 +63,7 @@ export function defineTool<S extends z.ZodTypeAny>(
           .join("; ");
         throw new ValidationError(issues);
       }
-      return safeHandler(parsed.data, ctx);
+      return safeHandler(parsed.data, ctx, depth);
     },
   };
 }

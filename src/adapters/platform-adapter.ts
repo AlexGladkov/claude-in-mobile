@@ -8,8 +8,8 @@
  *   CorePlatformAdapter   -- universal: every platform implements this
  *   AppManagementAdapter  -- launchApp / stopApp / installApp
  *   PermissionAdapter     -- grant / revoke / reset permissions
- *   ShellAdapter          -- shell / logs / clearLogs
- *
+ *   ShellAdapter          -- shell only
+ *   LogsAdapter           -- getLogs / clearLogs
  * Each concrete adapter implements only the interfaces it actually supports.
  * Consumers use type guards (`hasAppManagement`, `hasPermissions`, etc.)
  * to narrow before calling capability-specific methods.
@@ -18,95 +18,64 @@
  * compatibility -- it is the intersection of all capability interfaces.
  */
 
+import {
+  isCapability,
+} from "@mcp-devices/plugin-api";
+import type {
+  Capability,
+  PluginAppInventoryAdapter,
+  PluginAppLifecycleAdapter,
+  PluginDeviceManagementAdapter,
+  PluginFileTransferAdapter,
+  PluginInputAdapter,
+  PluginLogsAdapter,
+  PluginPermissionsAdapter,
+  PluginPlatformAdapter,
+  PluginScreenAdapter,
+  PluginShellAdapter,
+  PluginUiAdapter,
+  PluginUrlAdapter,
+} from "@mcp-devices/plugin-api";
 import type { Platform, Device } from "../device-manager.js";
 import type { CompressOptions } from "../utils/image.js";
-
 // ============ Core -- every adapter MUST implement ============
 
-export interface CorePlatformAdapter {
+export interface CorePlatformAdapter
+  extends
+    PluginPlatformAdapter,
+    PluginDeviceManagementAdapter,
+    PluginInputAdapter,
+    PluginScreenAdapter,
+    PluginUiAdapter {
   /** Which platform this adapter serves. */
   readonly platform: Platform;
 
-  // -- Device management --
+  // The host's Device record refines the public PlatformDevice record.
   listDevices(): Device[];
-  selectDevice(deviceId: string): void;
-  getSelectedDeviceId(): string | undefined;
   autoDetectDevice(): Device | undefined;
 
-  // -- Core interaction --
-  tap(x: number, y: number, targetPid?: number, deviceId?: string): Promise<void>;
-  doubleTap(x: number, y: number, intervalMs?: number, deviceId?: string): Promise<void>;
-  longPress(x: number, y: number, durationMs?: number, deviceId?: string): Promise<void>;
-  swipe(x1: number, y1: number, x2: number, y2: number, durationMs?: number, deviceId?: string): Promise<void>;
-  swipeDirection(direction: "up" | "down" | "left" | "right", deviceId?: string): Promise<void>;
-  inputText(text: string, targetPid?: number, deviceId?: string): Promise<void>;
-  pressKey(key: string, targetPid?: number, deviceId?: string): Promise<void>;
-
-  // -- Screenshot --
   screenshotAsync(
     compress: boolean,
     options?: CompressOptions & { monitorIndex?: number },
     deviceId?: string,
   ): Promise<{ data: string; mimeType: string }>;
-  getScreenshotBufferAsync(deviceId?: string): Promise<Buffer>;
-
-  // -- UI --
-  getUiHierarchy(deviceId?: string, turbo?: boolean): Promise<string>;
-
-  // -- System info --
-  getSystemInfo(deviceId?: string): Promise<string>;
-  /** Release long-lived resources owned by this adapter. Safe to call repeatedly. */
-  dispose?(): void | Promise<void>;
 }
 
-// ============ App management capability ============
+// ============ Manifest capability contracts ============
 
-export interface AppManagementAdapter {
-  launchApp(packageOrBundleId: string, deviceId?: string): string | Promise<string>;
-  stopApp(packageOrBundleId: string, deviceId?: string): void;
-  installApp(path: string, deviceId?: string): string;
-}
+/**
+ * These aliases intentionally point at the public plugin-api contracts.
+ * Keep host-only names for existing imports, but do not duplicate method
+ * declarations here: the manifest and public SDK are the source of truth.
+ */
+export type AppManagementAdapter = PluginAppLifecycleAdapter;
+export type AppInventoryAdapter = PluginAppInventoryAdapter;
+export type PermissionAdapter = PluginPermissionsAdapter;
+export type ShellAdapter = PluginShellAdapter;
+export type LogsAdapter = PluginLogsAdapter;
+export type FileTransferAdapter = PluginFileTransferAdapter;
+export type UrlOpeningAdapter = PluginUrlAdapter;
 
-// ============ App inventory capability ============
-
-export interface AppInventoryAdapter {
-  listApps(deviceId?: string): string[] | Promise<string[]>;
-  uninstallApp(packageOrBundleId: string, deviceId?: string): string | Promise<string>;
-}
-
-// ============ Permission management capability ============
-
-export interface PermissionAdapter {
-  grantPermission(packageOrBundleId: string, permission: string, deviceId?: string): string;
-  revokePermission(packageOrBundleId: string, permission: string, deviceId?: string): string;
-  resetPermissions(packageOrBundleId: string, deviceId?: string): string;
-}
-
-// ============ Shell / logs capability ============
-
-export interface ShellAdapter {
-  shell(command: string, deviceId?: string): string;
-  getLogs(options: {
-    level?: string;
-    tag?: string;
-    lines?: number;
-    package?: string;
-  }, deviceId?: string): string;
-  clearLogs(deviceId?: string): string;
-}
-
-// ============ File transfer capability ============
-
-export interface FileTransferAdapter {
-  pushFile(localPath: string, remotePath: string, deviceId?: string): string | Promise<string>;
-  pullFile(remotePath: string, localPath?: string, deviceId?: string): string | Promise<string>;
-}
-
-// ============ URL opening capability ============
-
-export interface UrlOpeningAdapter {
-  openUrl(url: string, deviceId?: string): string | void | Promise<string | void>;
-}
 
 // ============ Legacy sync screenshot (Android / iOS / Aurora only) ============
 
@@ -222,59 +191,180 @@ export interface HeapSnapshotAdapter {
 
 
 
-// ============ Type guards ============
+// ============ Capability-aware type guards ============
 
-export function hasAppManagement(adapter: CorePlatformAdapter): adapter is CorePlatformAdapter & AppManagementAdapter {
+/**
+ * Kernel discovery records manifest capabilities here without mutating the
+ * plugin-owned adapter object. The weak map also preserves adapter identity
+ * for callers that retain a reference to the public implementation.
+ */
+const adapterCapabilities = new WeakMap<object, ReadonlySet<Capability>>();
+
+export function setAdapterCapabilities(
+  adapter: object,
+  capabilities: readonly Capability[],
+): void {
+  adapterCapabilities.set(adapter, new Set(capabilities));
+}
+
+export function getAdapterCapabilities(
+  adapter: object,
+): readonly Capability[] | undefined {
+  const registered = adapterCapabilities.get(adapter);
+  if (registered) return [...registered];
+  return readAdvertisedCapabilities(adapter);
+}
+
+function readAdvertisedCapabilities(
+  adapter: object,
+): readonly Capability[] | undefined {
+  if (!("capabilities" in adapter)) return undefined;
+  const advertised = adapter.capabilities;
+  if (!Array.isArray(advertised)) return undefined;
+  const capabilities: Capability[] = [];
+  for (const capability of advertised) {
+    if (isCapability(capability)) capabilities.push(capability);
+  }
+  return capabilities;
+}
+
+function hasDeclaredCapability(adapter: object, capability: Capability): boolean {
+  const registered = adapterCapabilities.get(adapter);
+  if (registered) return registered.has(capability);
+
+  const advertised = readAdvertisedCapabilities(adapter);
+  if (advertised === undefined) return true;
+  return advertised.includes(capability);
+}
+
+function hasMethods(adapter: object, methods: readonly string[]): boolean {
+  return methods.every((method) => typeof Reflect.get(adapter, method) === "function");
+}
+
+export function hasDeviceManagement(
+  adapter: CorePlatformAdapter,
+): adapter is CorePlatformAdapter & PluginDeviceManagementAdapter {
+  return hasDeclaredCapability(adapter, "deviceMgmt")
+    && hasMethods(adapter, [
+      "listDevices",
+      "selectDevice",
+      "getSelectedDeviceId",
+      "autoDetectDevice",
+    ]);
+}
+
+export function hasInput(
+  adapter: CorePlatformAdapter,
+): adapter is CorePlatformAdapter & PluginInputAdapter {
+  return hasDeclaredCapability(adapter, "input")
+    && hasMethods(adapter, [
+      "tap",
+      "doubleTap",
+      "longPress",
+      "swipe",
+      "swipeDirection",
+      "inputText",
+      "pressKey",
+    ]);
+}
+
+export function hasScreen(
+  adapter: CorePlatformAdapter,
+): adapter is CorePlatformAdapter & PluginScreenAdapter {
+  return hasDeclaredCapability(adapter, "screen")
+    && hasMethods(adapter, ["screenshotAsync", "getScreenshotBufferAsync"]);
+}
+
+export function hasUi(
+  adapter: CorePlatformAdapter,
+): adapter is CorePlatformAdapter & PluginUiAdapter {
+  return hasDeclaredCapability(adapter, "ui")
+    && (
+      typeof adapter.getUiElements === "function"
+      || typeof adapter.getUiHierarchy === "function"
+    );
+}
+
+/** Narrow a UI-capable adapter to the legacy raw hierarchy operation. */
+export function hasRawUiHierarchy(
+  adapter: CorePlatformAdapter,
+): adapter is CorePlatformAdapter & {
+  getUiHierarchy: NonNullable<PluginUiAdapter["getUiHierarchy"]>;
+} {
+  return hasUi(adapter) && typeof adapter.getUiHierarchy === "function";
+}
+
+export function hasAppManagement(
+  adapter: CorePlatformAdapter,
+): adapter is CorePlatformAdapter & AppManagementAdapter {
+  return hasDeclaredCapability(adapter, "appLifecycle")
+    && hasMethods(adapter, ["launchApp", "stopApp", "installApp"]);
+}
+
+export function hasAppInventory(
+  adapter: CorePlatformAdapter,
+): adapter is CorePlatformAdapter & AppInventoryAdapter {
+  return hasDeclaredCapability(adapter, "appLifecycle")
+    && hasMethods(adapter, ["listApps", "uninstallApp"]);
+}
+
+export function hasPermissions(
+  adapter: CorePlatformAdapter,
+): adapter is CorePlatformAdapter & PermissionAdapter {
+  return hasDeclaredCapability(adapter, "permissions")
+    && hasMethods(adapter, ["grantPermission", "revokePermission", "resetPermissions"]);
+}
+
+export function hasShell(
+  adapter: CorePlatformAdapter,
+): adapter is CorePlatformAdapter & ShellAdapter {
+  return hasDeclaredCapability(adapter, "shell")
+    && hasMethods(adapter, ["shell"]);
+}
+
+export function hasLogs(
+  adapter: CorePlatformAdapter,
+): adapter is CorePlatformAdapter & LogsAdapter {
+  return hasDeclaredCapability(adapter, "logs")
+    && hasMethods(adapter, ["getLogs", "clearLogs"]);
+}
+
+export function hasFileTransfer(
+  adapter: CorePlatformAdapter,
+): adapter is CorePlatformAdapter & FileTransferAdapter {
+  return hasDeclaredCapability(adapter, "fileTransfer")
+    && hasMethods(adapter, ["pushFile", "pullFile"]);
+}
+
+export function hasUrlOpening(
+  adapter: CorePlatformAdapter,
+): adapter is CorePlatformAdapter & UrlOpeningAdapter {
+  return hasDeclaredCapability(adapter, "url")
+    && hasMethods(adapter, ["openUrl"]);
+}
+
+export function hasSyncScreenshot(
+  adapter: CorePlatformAdapter,
+): adapter is CorePlatformAdapter & SyncScreenshotAdapter {
+  return hasDeclaredCapability(adapter, "screen")
+    && hasMethods(adapter, ["screenshotRaw"]);
+}
+
+export function hasPerformanceTrace(
+  adapter: CorePlatformAdapter,
+): adapter is CorePlatformAdapter & PerformanceTraceAdapter {
+  return hasMethods(adapter, ["startPerformanceTrace", "stopPerformanceTrace"]);
+}
+
+export function hasHeapSnapshot(
+  adapter: CorePlatformAdapter,
+): adapter is CorePlatformAdapter & HeapSnapshotAdapter {
+  const format = Reflect.get(adapter, "heapSnapshotFormat");
   return (
-    "launchApp" in adapter &&
-    "stopApp" in adapter &&
-    "installApp" in adapter
-  );
-}
-
-export function hasAppInventory(adapter: CorePlatformAdapter): adapter is CorePlatformAdapter & AppInventoryAdapter {
-  return "listApps" in adapter && "uninstallApp" in adapter;
-}
-
-export function hasPermissions(adapter: CorePlatformAdapter): adapter is CorePlatformAdapter & PermissionAdapter {
-  return (
-    "grantPermission" in adapter &&
-    "revokePermission" in adapter &&
-    "resetPermissions" in adapter
-  );
-}
-
-export function hasShell(adapter: CorePlatformAdapter): adapter is CorePlatformAdapter & ShellAdapter {
-  return (
-    "shell" in adapter &&
-    "getLogs" in adapter &&
-    "clearLogs" in adapter
-  );
-}
-
-export function hasFileTransfer(adapter: CorePlatformAdapter): adapter is CorePlatformAdapter & FileTransferAdapter {
-  return "pushFile" in adapter && "pullFile" in adapter;
-}
-
-export function hasUrlOpening(adapter: CorePlatformAdapter): adapter is CorePlatformAdapter & UrlOpeningAdapter {
-  return "openUrl" in adapter;
-}
-
-export function hasSyncScreenshot(adapter: CorePlatformAdapter): adapter is CorePlatformAdapter & SyncScreenshotAdapter {
-  return "screenshotRaw" in adapter;
-}
-
-export function hasPerformanceTrace(adapter: CorePlatformAdapter): adapter is CorePlatformAdapter & PerformanceTraceAdapter {
-  return (
-    "startPerformanceTrace" in adapter &&
-    "stopPerformanceTrace" in adapter
-  );
-}
-
-export function hasHeapSnapshot(adapter: CorePlatformAdapter): adapter is CorePlatformAdapter & HeapSnapshotAdapter {
-  return (
-    "heapSnapshotFormat" in adapter &&
-    "captureHeapSnapshot" in adapter
+    (format === "android-hprof"
+      || format === "chrome-heapsnapshot"
+      || format === "xctrace-allocations")
+    && hasMethods(adapter, ["captureHeapSnapshot"])
   );
 }
 
@@ -372,10 +462,12 @@ export function requireHeapSnapshot(
  */
 export type PlatformAdapter =
   CorePlatformAdapter &
+  { getUiHierarchy: NonNullable<PluginUiAdapter["getUiHierarchy"]> } &
   AppManagementAdapter &
   AppInventoryAdapter &
   PermissionAdapter &
   ShellAdapter &
+  LogsAdapter &
   FileTransferAdapter &
   UrlOpeningAdapter &
   SyncScreenshotAdapter;

@@ -162,12 +162,11 @@ class MacOSAccessibility : BaseAccessibilityService() {
                                     set elemSize to {0, 0}
                                     set elemEnabled to true
                                     set elemFocused to false
+                                    set elemPassword to false
+                                    if elemRole is "AXSecureTextField" then set elemPassword to true
 
                                     try
                                         set elemTitle to title of elem
-                                    end try
-                                    try
-                                        if elemTitle is "" then set elemTitle to value of elem
                                     end try
                                     try
                                         set elemDesc to description of elem
@@ -186,7 +185,7 @@ class MacOSAccessibility : BaseAccessibilityService() {
                                     end try
 
                                     if item 1 of elemSize > 0 and item 2 of elemSize > 0 then
-                                        set end of uiElements to {elemRole, elemTitle, elemDesc, item 1 of elemPos, item 2 of elemPos, item 1 of elemSize, item 2 of elemSize, elemEnabled, elemFocused}
+                                        set end of uiElements to {elemRole, elemTitle, elemDesc, item 1 of elemPos, item 2 of elemPos, item 1 of elemSize, item 2 of elemSize, elemEnabled, elemFocused, elemPassword}
                                     end if
 
                                     -- Depth=2: Get children of containers (but no deeper)
@@ -196,16 +195,19 @@ class MacOSAccessibility : BaseAccessibilityService() {
                                                 try
                                                     set childRole to role of child
                                                     set childTitle to ""
+                                                    set childDesc to ""
                                                     set childPos to {0, 0}
                                                     set childSize to {0, 0}
                                                     set childEnabled to true
                                                     set childFocused to false
+                                                    set childPassword to false
+                                                    if childRole is "AXSecureTextField" then set childPassword to true
 
                                                     try
                                                         set childTitle to title of child
                                                     end try
                                                     try
-                                                        if childTitle is "" then set childTitle to value of child
+                                                        set childDesc to description of child
                                                     end try
                                                     try
                                                         set childPos to position of child
@@ -221,7 +223,7 @@ class MacOSAccessibility : BaseAccessibilityService() {
                                                     end try
 
                                                     if item 1 of childSize > 0 and item 2 of childSize > 0 then
-                                                        set end of uiElements to {childRole, childTitle, "", item 1 of childPos, item 2 of childPos, item 1 of childSize, item 2 of childSize, childEnabled, childFocused}
+                                                        set end of uiElements to {childRole, childTitle, childDesc, item 1 of childPos, item 2 of childPos, item 1 of childSize, item 2 of childSize, childEnabled, childFocused, childPassword}
                                                     end if
                                                 end try
                                             end repeat
@@ -274,19 +276,21 @@ class MacOSAccessibility : BaseAccessibilityService() {
 
     private fun parseAppleScriptElements(output: String, elements: MutableList<UiElement>) {
         // Parse AppleScript list output
-        // Format: {{role, title, desc, x, y, w, h, enabled, focused}, ...}
-        val pattern = Regex("""\{([^,]*),\s*([^,]*),\s*([^,]*),\s*(-?\d+),\s*(-?\d+),\s*(\d+),\s*(\d+),\s*(true|false),\s*(true|false)\}""")
+        // Format: {{role, title, desc, x, y, w, h, enabled, focused, password}, ...}
+        val pattern = Regex("""\{([^,]*),\s*([^,]*),\s*([^,]*),\s*(-?\d+),\s*(-?\d+),\s*(\d+),\s*(\d+),\s*(true|false),\s*(true|false),\s*(true|false)\}""")
 
         pattern.findAll(output).forEach { match ->
             val groups = match.groupValues
             val role = groups[1].trim()
             val title = groups[2].trim()
+            val description = groups[3].trim()
             val x = groups[4].toIntOrNull() ?: 0
             val y = groups[5].toIntOrNull() ?: 0
             val w = groups[6].toIntOrNull() ?: 0
             val h = groups[7].toIntOrNull() ?: 0
             val enabled = groups[8] == "true"
             val focused = groups[9] == "true"
+            val password = groups[10] == "true" || role == "AXSecureTextField"
 
             // Determine if clickable based on role
             val clickable = role in listOf(
@@ -307,6 +311,9 @@ class MacOSAccessibility : BaseAccessibilityService() {
                     clickable = clickable,
                     enabled = enabled,
                     focused = focused
+                ).copy(
+                    contentDescription = description.ifEmpty { null },
+                    password = password
                 )
             )
         }

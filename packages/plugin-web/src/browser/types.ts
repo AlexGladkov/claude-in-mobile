@@ -1,9 +1,16 @@
 import type { CDPClientInterface } from "./cdp-types.js";
 
+/** Private process-pipe endpoints exposed by chrome-launcher for CDP. */
+export interface RemoteDebuggingPipes {
+  incoming: NodeJS.ReadableStream;
+  outgoing: NodeJS.WritableStream;
+}
+
 /** Minimal interface for chrome-launcher's LaunchedChrome */
 export interface LaunchedChrome {
   port: number;
   process: { pid?: number };
+  remoteDebuggingPipes?: RemoteDebuggingPipes | null;
   kill(): Promise<void>;
 }
 

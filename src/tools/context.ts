@@ -8,13 +8,16 @@
  *   - context/hints.ts         — action hints & platform element helpers
  */
 
-import { DeviceManager, createFullDeviceManager, Platform } from "../device-manager.js";
+import { DeviceManager } from "../device-manager.js";
+import type { Platform } from "../device-manager.js";
+import type { CorePlatformAdapter } from "../adapters/platform-adapter.js";
 import type { UiElement } from "../ui-tree/ui-parser.js";
 import type { ScreenshotScale } from "./context/shared-state-class.js";
 
 // Re-export submodule symbols so every existing import path keeps working
 export {
   getCachedElements,
+  isCachedElementsStale,
   setCachedElements,
   lastScreenshotMap,
   lastUiTreeMap,
@@ -32,6 +35,7 @@ export {
 import { createGenerateActionHints, createGetElementsForPlatform } from "./context/hints.js";
 import {
   getCachedElements,
+  isCachedElementsStale,
   setCachedElements,
   lastScreenshotMap,
   lastUiTreeMap,
@@ -39,22 +43,20 @@ import {
   invalidateUiTreeCache,
 } from "./context/shared-state.js";
 import { iosTreeToUiElements, formatIOSUITree } from "./context/ios-helpers.js";
+import { PLATFORM_JSON_SCHEMA } from "./common-schema.js";
 
-// Fallback DeviceManager for tests / callers that don't inject one. The MCP
-// server (src/index.ts) passes a kernel-backed DeviceManager into
-// createToolContext, which is what production tools use. Post-4.0.0 this
-// fallback has an empty adapter map (all platforms are separate packages), so
-// it only serves tests that construct adapters explicitly.
-export const deviceManager = createFullDeviceManager();
+// Production tools receive a kernel-backed manager. Standalone consumers and
+// tests use this explicit empty manager until they provide an adapter.
+export const deviceManager = new DeviceManager({
+  adapters: new Map<Platform, CorePlatformAdapter>(),
+});
 
 // Bound hint functions for the shared deviceManager (non-turbo defaults for backward compat)
 export const generateActionHints = createGenerateActionHints(deviceManager);
 export const getElementsForPlatform = createGetElementsForPlatform(deviceManager);
 
-// Platform parameter schema (reused across tools)
 export const platformParam = {
-  type: "string",
-  enum: ["android", "ios", "desktop", "aurora", "harmony", "browser"],
+  ...PLATFORM_JSON_SCHEMA,
   description: "Target platform. If not specified, uses the active target.",
 };
 
@@ -63,18 +65,21 @@ export const MAX_RECURSION_DEPTH = 3;
 
 export interface ToolContext {
   deviceManager: DeviceManager;
-  getCachedElements: (platform: string) => UiElement[];
-  setCachedElements: (platform: string, elements: UiElement[]) => void;
+  getCachedElements: (platform: string, deviceId?: string) => UiElement[];
+  isCachedElementsStale?: (platform: string, deviceId?: string) => boolean;
+  setCachedElements: (platform: string, elements: UiElement[], deviceId?: string) => void;
   lastScreenshotMap: Map<string, Buffer>;
   lastUiTreeMap: Map<string, { text: string; timestamp: number }>;
   screenshotScaleMap: Map<string, ScreenshotScale>;
-  generateActionHints: (platform?: string) => Promise<string>;
-  getElementsForPlatform: (plat: string) => Promise<UiElement[]>;
+  generateActionHints: (platform?: string, deviceId?: string) => Promise<string>;
+  getElementsForPlatform: (plat: string, deviceId?: string) => Promise<UiElement[]>;
   iosTreeToUiElements: (tree: unknown) => UiElement[];
   formatIOSUITree: (tree: unknown, indent?: number) => string;
-  invalidateUiTreeCache: (platform?: string) => void;
+  invalidateUiTreeCache: (platform?: string, deviceId?: string) => void;
   platformParam: typeof platformParam;
-  handleTool: (name: string, args: Record<string, unknown>, depth?: number) => Promise<unknown>;
+  handleTool: (name: string, args: Record<string, unknown>, depth?: number, signal?: AbortSignal) => Promise<unknown>;
+  /** Signal for the current request, when a parent flow supplies one. */
+  signal?: AbortSignal;
   turboDefault: boolean;
 }
 
@@ -101,6 +106,7 @@ export function createToolContext(
   return {
     deviceManager: dm,
     getCachedElements,
+    isCachedElementsStale,
     setCachedElements,
     lastScreenshotMap,
     lastUiTreeMap,

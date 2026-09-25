@@ -43,6 +43,26 @@ describe("BrowserAdapter lifecycle", () => {
     expect(close).toHaveBeenCalledWith(session);
   });
 
+  it("redacts query secrets from the public open result", async () => {
+    const manager = sessionManager();
+    const session = fakeSession("default");
+    const client = {
+      launch: vi.fn(async () => session),
+      getSnapshot: vi.fn(async () => "snapshot"),
+      close: vi.fn(async () => {}),
+    } as unknown as BrowserClient;
+    const adapter = new BrowserAdapter(manager, client);
+
+    const result = await adapter.open({
+      url: "https://user:pass@example.com/login?code=oauth-secret#access_token=fragment",
+    });
+
+    expect(result).toContain("https://example.com/login?[REDACTED]#[REDACTED]");
+    expect(result).not.toContain("user:pass");
+    expect(result).not.toContain("oauth-secret");
+    expect(result).not.toContain("access_token=fragment");
+  });
+
   it("disposes every active session through the client", async () => {
     const manager = sessionManager();
     const token = manager.acquireLock("owned");

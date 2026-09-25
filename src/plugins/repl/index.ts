@@ -17,6 +17,8 @@ import type {
   ToolDefinition,
 } from "@mcp-devices/plugin-api";
 
+import { Buffer } from "node:buffer";
+import { REPL } from "../../constants/timeouts.js";
 import { ReplBridgeClient } from "./client.js";
 import type {
   ExpectArgs,
@@ -31,7 +33,115 @@ import type {
   SpawnArgs,
   SpawnResult,
 } from "./types.js";
-import { REDACTION_PATTERNS, redactScreen } from "./redaction.js";
+import { REDACTION_PATTERNS, redactCommandLine, redactScreen } from "./redaction.js";
+
+const REPL_LIMITS = {
+  sessionId: 128,
+  cmd: 16 * 1024,
+  cwd: 4 * 1024,
+  promptRegex: 4 * 1024,
+  envEntries: 64,
+  envKey: 128,
+  envValue: 4 * 1024,
+  envBytes: 32 * 1024,
+  send: 64 * 1024,
+  key: 64,
+  recordPath: 4 * 1024,
+  spawnBytes: 64 * 1024,
+} as const;
+const SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const SESSION_ID_SCHEMA = {
+  type: "string",
+  minLength: 1,
+  maxLength: REPL_LIMITS.sessionId,
+  pattern: SESSION_ID_PATTERN.source,
+} as const;
+const ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+
+function validateByteLength(name: string, value: unknown, maxBytes: number): number {
+  if (typeof value !== "string") throw new TypeError(`${name} must be a string`);
+  const bytes = Buffer.byteLength(value, "utf8");
+  if (bytes > maxBytes) throw new RangeError(`${name} exceeds the ${maxBytes}-byte limit`);
+  return bytes;
+}
+
+function validateSessionId(id: unknown): asserts id is string {
+  if (typeof id !== "string" || !SESSION_ID_PATTERN.test(id) || id !== id.trim()) {
+    throw new TypeError("session id must match [A-Za-z0-9][A-Za-z0-9._-]{0,127}");
+  }
+}
+
+function validateExpectArgs(args: ExpectArgs): void {
+  validateSessionId(args.id);
+  if (args.regex !== undefined) {
+    validateByteLength("expect regex", args.regex, REPL_LIMITS.promptRegex);
+  }
+  if (
+    args.idleMs !== undefined
+    && (
+      !Number.isSafeInteger(args.idleMs)
+      || args.idleMs < 0
+      || args.idleMs > REPL.EXPECT_IDLE_MAX_MS
+    )
+  ) {
+    throw new RangeError(
+      `idleMs must be an integer between 0 and ${REPL.EXPECT_IDLE_MAX_MS}`,
+    );
+  }
+  if (
+    args.timeoutMs !== undefined
+    && (
+      !Number.isSafeInteger(args.timeoutMs)
+      || args.timeoutMs < 0
+      || args.timeoutMs > REPL.EXPECT_TIMEOUT_MAX_MS
+    )
+  ) {
+    throw new RangeError(
+      `timeoutMs must be an integer between 0 and ${REPL.EXPECT_TIMEOUT_MAX_MS}`,
+    );
+  }
+}
+
+function validateSpawnArgs(args: SpawnArgs): void {
+  validateSessionId(args.id);
+  let totalBytes = Buffer.byteLength(args.id, "utf8")
+    + validateByteLength("cmd", args.cmd, REPL_LIMITS.cmd);
+  if (args.cwd !== undefined) {
+    totalBytes += validateByteLength("cwd", args.cwd, REPL_LIMITS.cwd);
+  }
+  if (args.promptRegex !== undefined) {
+    totalBytes += validateByteLength("promptRegex", args.promptRegex, REPL_LIMITS.promptRegex);
+  }
+  if (args.env !== undefined) {
+    if (args.env === null || typeof args.env !== "object" || Array.isArray(args.env)) {
+      throw new TypeError("env must be an object of strings");
+    }
+    const entries = Object.entries(args.env);
+    if (entries.length > REPL_LIMITS.envEntries) {
+      throw new RangeError(`env exceeds the ${REPL_LIMITS.envEntries}-entry limit`);
+    }
+    let envBytes = 0;
+    for (const [key, value] of entries) {
+      if (!ENV_KEY_PATTERN.test(key) || Buffer.byteLength(key, "utf8") > REPL_LIMITS.envKey) {
+        throw new TypeError("environment variable name must be a POSIX identifier of at most 128 bytes");
+      }
+      envBytes += Buffer.byteLength(key, "utf8");
+      envBytes += validateByteLength("environment variable value", value, REPL_LIMITS.envValue);
+    }
+    if (envBytes > REPL_LIMITS.envBytes) {
+      throw new RangeError(`env exceeds the ${REPL_LIMITS.envBytes}-byte limit`);
+    }
+    totalBytes += envBytes;
+  }
+  if (typeof args.record === "string") {
+    totalBytes += validateByteLength("record", args.record, REPL_LIMITS.recordPath);
+  } else if (args.record !== undefined && typeof args.record !== "boolean") {
+    throw new TypeError("record must be a boolean or string path");
+  }
+  if (totalBytes > REPL_LIMITS.spawnBytes) {
+    throw new RangeError(`spawn arguments exceed the ${REPL_LIMITS.spawnBytes}-byte limit`);
+  }
+}
 
 export const REPL_PLUGIN_MANIFEST: PluginManifest = {
   id: "repl",
@@ -86,25 +196,33 @@ export class ReplPlugin implements SourcePlugin {
   // -- Tool surface ---------------------------------------------------------
 
   async spawn(args: SpawnArgs): Promise<SpawnResult> {
+    validateSpawnArgs(args);
+    // The native supervisor owns the asciicast writer and applies the same
+    // redaction before each event is persisted. TS returns only its path.
     return this.bridge.call("spawn", args);
   }
 
   async send(args: SendArgs): Promise<{ ok: true }> {
+    validateSessionId(args.id);
+    validateByteLength("text", args.text, REPL_LIMITS.send);
     return this.bridge.call("send", args);
   }
 
   async key(args: KeyArgs): Promise<{ ok: true }> {
+    validateSessionId(args.id);
+    validateByteLength("key", args.key, REPL_LIMITS.key);
     return this.bridge.call("key", args);
   }
 
   /** Buffer added to a session's expect timeout for the bridge round-trip. */
-  private static readonly EXPECT_TIMEOUT_BUFFER_MS = 5_000;
+  private static readonly EXPECT_TIMEOUT_BUFFER_MS = REPL.EXPECT_TIMEOUT_BUFFER_MS;
 
   async expect(args: ExpectArgs): Promise<ExpectOutcome> {
+    validateExpectArgs(args);
     // The bridge request must outlive the server-side expect wait, otherwise
     // the client rejects while the supervisor is still polling. Default expect
     // timeout server-side is 5000ms (see bridge.rs / ExpectRules::defaults).
-    const serverTimeout = args.timeoutMs ?? 5_000;
+    const serverTimeout = args.timeoutMs ?? REPL.EXPECT_TIMEOUT_DEFAULT_MS;
     return this.bridge.call(
       "expect",
       args,
@@ -113,6 +231,7 @@ export class ReplPlugin implements SourcePlugin {
   }
 
   async snapshot(args: SnapshotArgs): Promise<SessionSnapshot> {
+    validateSessionId(args.id);
     const snap = await this.bridge.call<SessionSnapshot>("snapshot", args);
     if (!this.redact) return snap;
     return applyRedactionToSnapshot(snap);
@@ -123,15 +242,17 @@ export class ReplPlugin implements SourcePlugin {
     // `cmd` can carry inline secrets (e.g. `TOKEN=x cmd`, `mysql -psecret`),
     // so it must be redacted on this egress too — not just in snapshot().
     return this.redact
-      ? sessions.map((s) => ({ ...s, cmd: redactScreen(s.cmd) }))
+      ? sessions.map((s) => ({ ...s, cmd: redactCommandLine(s.cmd) }))
       : sessions;
   }
 
   async kill(args: KillArgs): Promise<{ ok: true }> {
+    validateSessionId(args.id);
     return this.bridge.call("kill", args);
   }
 
   async resize(args: ResizeArgs): Promise<{ ok: true }> {
+    validateSessionId(args.id);
     return this.bridge.call("resize", args);
   }
 
@@ -148,20 +269,26 @@ export class ReplPlugin implements SourcePlugin {
           "the env param, or set shell:true to run cmd through /bin/sh -c. " +
           "Relative executable paths with directory components resolve from cwd. " +
           "Set record:true to tee redacted PTY output to an asciicast v2 file " +
-          "(returned as castFile); supply castPath to override the default temp location.",
+          "(returned as castFile); pass a path string in record to override the default temp location.",
         inputSchema: {
           type: "object",
           required: ["id", "cmd"],
           properties: {
-            id: { type: "string", description: "Session name (unique)" },
-            cmd: { type: "string", description: "Command line to spawn" },
+            id: SESSION_ID_SCHEMA,
+            cmd: { type: "string", minLength: 1, maxLength: REPL_LIMITS.cmd, description: "Command line to spawn" },
             cwd: {
               type: "string",
+              maxLength: REPL_LIMITS.cwd,
               description:
                 "Working directory; defaults to the MCP server's current directory. " +
                 "Relative cwd values resolve from that directory.",
             },
-            env: { type: "object", additionalProperties: { type: "string" } },
+            env: {
+              type: "object",
+              maxProperties: REPL_LIMITS.envEntries,
+              propertyNames: { pattern: ENV_KEY_PATTERN.source },
+              additionalProperties: { type: "string", maxLength: REPL_LIMITS.envValue },
+            },
             cols: {
               type: "integer",
               default: 120,
@@ -172,7 +299,7 @@ export class ReplPlugin implements SourcePlugin {
               default: 40,
               description: "PTY height (clamped 1..=1000, default 40)",
             },
-            promptRegex: { type: "string" },
+            promptRegex: { type: "string", maxLength: REPL_LIMITS.promptRegex },
             shell: {
               type: "boolean",
               default: false,
@@ -180,10 +307,13 @@ export class ReplPlugin implements SourcePlugin {
                 "Run cmd via /bin/sh -c so shell syntax (env prefixes, 2>&1, pipes, globs, &&) works.",
             },
             record: {
-              oneOf: [{ type: "boolean" }, { type: "string" }],
+              oneOf: [
+                { type: "boolean" },
+                { type: "string", maxLength: REPL_LIMITS.recordPath },
+              ],
               default: false,
               description:
-                "Enable asciicast v2 tee. true=auto path in temp dir; string=explicit castPath " +
+                "Enable asciicast v2 tee. true=auto path in temp dir; string=explicit cast file path " +
                 "(must be inside the plugin temp-dir allowlist, path-traversal rejected).",
             },
           },
@@ -198,8 +328,8 @@ export class ReplPlugin implements SourcePlugin {
           type: "object",
           required: ["id", "text"],
           properties: {
-            id: { type: "string" },
-            text: { type: "string" },
+            id: SESSION_ID_SCHEMA,
+            text: { type: "string", maxLength: REPL_LIMITS.send },
             newline: { type: "boolean", default: true },
           },
         },
@@ -217,9 +347,10 @@ export class ReplPlugin implements SourcePlugin {
           type: "object",
           required: ["id", "key"],
           properties: {
-            id: { type: "string" },
+            id: SESSION_ID_SCHEMA,
             key: {
               type: "string",
+              maxLength: REPL_LIMITS.key,
               enum: [
                 "enter", "tab", "shift-tab", "space", "backspace", "esc", "escape",
                 "delete", "home", "end", "pageup", "pagedown",
@@ -240,10 +371,20 @@ export class ReplPlugin implements SourcePlugin {
           type: "object",
           required: ["id"],
           properties: {
-            id: { type: "string" },
-            regex: { type: "string" },
-            idleMs: { type: "integer", default: 300 },
-            timeoutMs: { type: "integer", default: 5000 },
+            id: SESSION_ID_SCHEMA,
+            regex: { type: "string", maxLength: REPL_LIMITS.promptRegex },
+            idleMs: {
+              type: "integer",
+              minimum: 0,
+              maximum: REPL.EXPECT_IDLE_MAX_MS,
+              default: REPL.EXPECT_IDLE_DEFAULT_MS,
+            },
+            timeoutMs: {
+              type: "integer",
+              minimum: 0,
+              maximum: REPL.EXPECT_TIMEOUT_MAX_MS,
+              default: REPL.EXPECT_TIMEOUT_DEFAULT_MS,
+            },
           },
         },
         handler: (args) => this.expect(args as ExpectArgs),
@@ -253,18 +394,17 @@ export class ReplPlugin implements SourcePlugin {
         description:
           "Read the current emulated terminal screen for a session. " +
           "All returned text surfaces are redacted for common secret patterns. " +
-          "mode: 'grid' (default) returns only the vt100-rendered screen — " +
-          "strongest redaction guarantee since ANSI escapes are resolved before " +
-          "regex matching. 'raw' returns the capped PTY byte stream (ANSI escapes " +
-          "present; secrets split across escape sequences may survive redaction — " +
-          "use 'grid' when in doubt). 'both' returns grid and raw. " +
-          "history:true|N returns the last N filmstrip frames (default 10) " +
-          "as frames:[{ts,grid}]; empty array when none captured yet.",
+          "mode: 'grid' (default) returns the vt100-rendered screen. 'raw' " +
+          "returns the capped PTY byte stream with ANSI/OSC controls preserved " +
+          "where practical; credential matches span those controls. 'both' " +
+          "returns grid and raw. history:true|N returns the last N filmstrip " +
+          "frames (default 10) as frames:[{ts,grid}]; empty array when none " +
+          "captured yet.",
         inputSchema: {
           type: "object",
           required: ["id"],
           properties: {
-            id: { type: "string" },
+            id: SESSION_ID_SCHEMA,
             tail: { type: "integer", description: "Trailing lines to return" },
             mode: {
               type: "string",
@@ -300,7 +440,7 @@ export class ReplPlugin implements SourcePlugin {
         inputSchema: {
           type: "object",
           required: ["id"],
-          properties: { id: { type: "string" } },
+          properties: { id: SESSION_ID_SCHEMA },
         },
         handler: (args) => this.kill(args as KillArgs),
       },
@@ -316,7 +456,7 @@ export class ReplPlugin implements SourcePlugin {
           type: "object",
           required: ["id", "cols", "rows"],
           properties: {
-            id: { type: "string", description: "Session id" },
+            id: SESSION_ID_SCHEMA,
             cols: {
               type: "integer",
               description: "New PTY width (1..=1000)",

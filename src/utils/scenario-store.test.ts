@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, readFile, rm, writeFile } from "fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 import { createHash } from "crypto";
@@ -126,6 +126,25 @@ describe("get", () => {
 
     await expect(store.get("login", "android")).rejects.toThrow(ScenarioCorruptedError);
   });
+  it("rejects an imported scenario with a different platform identity", async () => {
+    await store.save(makeScenario("login", "android"));
+    const filePath = join(tempDir, ".test-scenarios", "android", "login.json");
+    const raw = JSON.parse(await readFile(filePath, "utf-8"));
+    raw.platform = "ios";
+    await writeFile(filePath, JSON.stringify(raw, null, 2));
+
+    await expect(store.get("login", "android")).rejects.toThrow(ScenarioCorruptedError);
+  });
+
+  it("rejects an imported scenario whose checksum field disagrees with its contents", async () => {
+    await store.save(makeScenario("login", "android"));
+    const filePath = join(tempDir, ".test-scenarios", "android", "login.json");
+    const raw = JSON.parse(await readFile(filePath, "utf-8"));
+    raw.checksum = "0".repeat(64);
+    await writeFile(filePath, JSON.stringify(raw, null, 2));
+
+    await expect(store.get("login", "android")).rejects.toThrow(ScenarioCorruptedError);
+  });
 });
 
 // ── Delete ──
@@ -140,6 +159,15 @@ describe("delete", () => {
 
   it("throws for non-existent", async () => {
     await expect(store.delete("nope", "android")).rejects.toThrow(ScenarioNotFoundError);
+  });
+  it("propagates filesystem failures when deleting a scenario", async () => {
+    await store.save(makeScenario("blocked-delete", "android"));
+    const filePath = join(tempDir, ".test-scenarios", "android", "blocked-delete.json");
+    await rm(filePath);
+    await mkdir(filePath);
+
+    await expect(store.delete("blocked-delete", "android")).rejects.toThrow();
+    await expect(store.list("android")).resolves.toHaveLength(1);
   });
 });
 

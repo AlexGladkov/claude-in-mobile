@@ -7,6 +7,7 @@
 
 import type { UiElement } from "../ui-tree/ui-parser.js";
 import type { OriginalSelector, HealingResult } from "./types.js";
+import { isSensitiveElement, safeLabel, REDACTED } from "../ui-tree/ui-parser/formatters/redact.js";
 import { HealingFailedError } from "../errors.js";
 
 /**
@@ -117,6 +118,24 @@ function scoreElement(
   };
 }
 
+function selectorLooksSecure(selector: OriginalSelector): boolean {
+  const marker = `${selector.className ?? ""} ${selector.resourceId ?? ""}`;
+  const lower = marker.toLowerCase();
+  const compact = lower.replace(/[^a-z0-9]/g, "");
+  return lower.includes("password")
+    || compact.includes("securetextfield")
+    || compact.includes("securetextbox")
+    || compact === "secure";
+}
+
+function copySelector(selector: OriginalSelector, redactSensitive: boolean): OriginalSelector {
+  const copy: OriginalSelector = { ...selector };
+  if (selector.bounds) copy.bounds = { ...selector.bounds };
+  if (redactSensitive && selector.text !== undefined) copy.text = REDACTED;
+  if (redactSensitive && selector.resourceId !== undefined) copy.resourceId = REDACTED;
+  return copy;
+}
+
 /**
  * Find the best matching element for a broken selector.
  *
@@ -151,26 +170,32 @@ export function healSelector(
       return { element: el, score, reason };
     })
     .sort((a, b) => b.score - a.score);
-
   const best = scored[0];
 
+  const secureCandidate = isSensitiveElement(best.element) || selectorLooksSecure(selector);
+
   if (best.score < confidenceThreshold) {
+    const bestLabel = secureCandidate
+      ? REDACTED
+      : safeLabel(best.element, best.element.text || best.element.resourceId);
     throw new HealingFailedError(
       `Best match confidence ${(best.score * 100).toFixed(0)}% is below threshold ${(confidenceThreshold * 100).toFixed(0)}%. ` +
-        `Best candidate: [${best.element.index}] "${best.element.text || best.element.resourceId}" (${best.reason}).`,
+        `Best candidate: [${best.element.index}] "${bestLabel}" (${best.reason}).`,
     );
   }
 
   return {
     healed: true,
     confidence: best.score,
-    originalSelector: selector,
+    originalSelector: copySelector(selector, secureCandidate),
     healedSelector: {
       index: best.element.index,
-      text: best.element.text,
-      resourceId: best.element.resourceId,
+      text: secureCandidate
+        ? REDACTED
+        : safeLabel(best.element, best.element.text),
+      resourceId: secureCandidate ? REDACTED : best.element.resourceId,
       className: best.element.className,
-      bounds: best.element.bounds,
+      bounds: { ...best.element.bounds },
       centerX: best.element.centerX,
       centerY: best.element.centerY,
     },

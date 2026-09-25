@@ -14,12 +14,15 @@ import type {
   CorePlatformAdapter,
   AppManagementAdapter,
   ShellAdapter,
+  LogsAdapter,
 } from "mcp-devices/adapters/platform-adapter";
 import type { Device } from "mcp-devices/device-manager";
 import { DesktopClient } from "./desktop/client.js";
-import type { RawLaunchOptions, UiHierarchy } from "./desktop/types.js";
-
-export class DesktopAdapter implements CorePlatformAdapter, AppManagementAdapter, ShellAdapter {
+import type { RawLaunchOptions, UiHierarchy, DesktopUiElement } from "./desktop/types.js";
+import type { PluginUiElement } from "@mcp-devices/plugin-api";
+import { isSecureElement, REDACTED } from "mcp-devices/ui-tree/ui-parser/formatters/redact";
+import { safeTerminalText } from "mcp-devices/utils/terminal-controls";
+export class DesktopAdapter implements CorePlatformAdapter, AppManagementAdapter, ShellAdapter, LogsAdapter {
   readonly platform = "desktop" as const;
   private client: DesktopClient;
 
@@ -192,6 +195,12 @@ export class DesktopAdapter implements CorePlatformAdapter, AppManagementAdapter
     return formatDesktopHierarchy(hierarchy);
   }
 
+  async getUiElements(_deviceId?: string): Promise<readonly PluginUiElement[]> {
+    this.ensureRunning();
+    const hierarchy = await this.client.getUiHierarchy();
+    return hierarchy.elements.map(toPluginUiElement);
+  }
+
   // ============ App management (AppManagementAdapter) ============
 
   async launchApp(packageName: string): Promise<string> {
@@ -240,6 +249,127 @@ export class DesktopAdapter implements CorePlatformAdapter, AppManagementAdapter
   }
 }
 
+function toPluginUiElement(element: DesktopUiElement): PluginUiElement {
+  const secure = isSecureDesktopElement(element);
+  const id = safeDesktopElementId(element, secure);
+
+  return {
+    index: element.index,
+    ...(id !== undefined ? { id } : {}),
+    ...(element.role !== undefined ? { role: safeTerminalText(element.role) } : {}),
+    className: safeTerminalText(element.className),
+    ...(element.text !== undefined
+      ? { text: secure ? REDACTED : safeTerminalText(element.text) }
+      : {}),
+    ...(element.contentDescription !== undefined
+      ? {
+          label: secure ? REDACTED : safeTerminalText(element.contentDescription),
+          contentDesc: secure ? REDACTED : safeTerminalText(element.contentDescription),
+        }
+      : {}),
+    enabled: element.enabled,
+    focused: element.focused,
+    clickable: element.clickable,
+    focusable: element.focusable,
+    ...(secure
+      ? { password: true }
+      : element.password !== undefined
+        ? { password: element.password }
+        : {}),
+    bounds: element.bounds,
+    centerX: element.centerX,
+    centerY: element.centerY,
+    children: element.children.map(toPluginUiElement),
+  };
+}
+
+function safeDesktopElementId(
+  element: DesktopUiElement,
+  secure: boolean,
+): string | undefined {
+  const id = element.id;
+  if (id === undefined) return undefined;
+
+  // Empty text-entry fields do not become secure based on their value, but
+  // their provider-generated identifiers can still disclose user data.
+  const textEntry = [element.className, element.role].some(isTextEntryIdentifier);
+  if (textEntry) return REDACTED;
+  if (!secure) return safeTerminalText(id);
+
+  const rawValues = [element.text, element.contentDescription];
+  return rawValues.some(
+    (value) => value !== undefined && value.length > 0 && id.includes(value),
+  )
+    ? REDACTED
+    : safeTerminalText(id);
+}
+
+/**
+ * Desktop accessibility providers may expose the current value only as `text`
+ * and omit both `password` and a protocol-level `value` field.
+ */
+
+function isTextEntryIdentifier(value: string | undefined): boolean {
+  if (!value) return false;
+  const compact = value
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/gu, "");
+
+  return compact === "input"
+    || compact === "email"
+    || compact === "url"
+    || compact === "tel"
+    || compact === "number"
+    || compact.includes("edittext")
+    || compact.includes("textfield")
+    || compact.includes("textview")
+    || compact.includes("textinput")
+    || compact.includes("textarea")
+    || compact.includes("textbox")
+    || compact.includes("searchfield")
+    || compact.includes("searchbox")
+    || compact.includes("combobox")
+    || compact.includes("spinbutton");
+}
+
+function isSecureDesktopElement(element: DesktopUiElement): boolean {
+  const secureByProvider = isSecureElement({
+    index: element.index,
+    resourceId: element.id ?? "",
+    className: [element.className, element.role].filter(Boolean).join(" "),
+    packageName: "",
+    text: element.text ?? "",
+    contentDesc: element.contentDescription ?? "",
+    checkable: false,
+    checked: false,
+    clickable: element.clickable,
+    enabled: element.enabled,
+    focusable: element.focusable,
+    focused: element.focused,
+    scrollable: false,
+    longClickable: false,
+    password: element.password === true,
+    selected: false,
+    bounds: {
+      x1: element.bounds.x,
+      y1: element.bounds.y,
+      x2: element.bounds.x + element.bounds.width,
+      y2: element.bounds.y + element.bounds.height,
+    },
+    centerX: element.centerX,
+    centerY: element.centerY,
+    width: element.bounds.width,
+    height: element.bounds.height,
+  });
+  if (secureByProvider) return true;
+
+  return element.text !== undefined
+    && element.text.trim().length > 0
+    && [element.className, element.role].some(isTextEntryIdentifier);
+}
+
 // ============ Helpers (moved from old device-manager.ts) ============
 
 /**
@@ -254,15 +384,20 @@ function formatDesktopHierarchy(hierarchy: UiHierarchy): string {
   for (const win of hierarchy.windows) {
     const focused = win.focused ? " [FOCUSED]" : "";
     lines.push(
-      `  ${win.title}${focused} (${win.bounds.width}x${win.bounds.height})`,
+      `  ${safeTerminalText(win.title)}${focused} (${win.bounds.width}x${win.bounds.height})`,
     );
   }
 
   lines.push(`\n=== UI Elements (${hierarchy.elements.length}) ===`);
 
   for (const el of hierarchy.elements) {
-    const text = el.text ? `"${el.text}"` : "";
-    const role = el.role || el.className;
+    const secure = isSecureDesktopElement(el);
+    const text = secure
+      ? `"${REDACTED}"`
+      : el.text
+        ? `"${safeTerminalText(el.text)}"`
+        : "";
+    const role = safeTerminalText(el.role || el.className);
     const clickable = el.clickable ? " [clickable]" : "";
     const focused = el.focused ? " [focused]" : "";
 
@@ -274,3 +409,4 @@ function formatDesktopHierarchy(hierarchy: UiHierarchy): string {
 
   return lines.join("\n");
 }
+

@@ -1,9 +1,18 @@
 import type { ToolDefinition } from "./registry.js";
-import type { Platform } from "../device-manager.js";
+import { BUILTIN_PLATFORMS, isBuiltinPlatform } from "../device-manager.js";
+import type { BuiltinPlatform, Platform } from "../device-manager.js";
 import { defineTool, z } from "./define-tool.js";
+import { platformEnum, platformIdSchema } from "./common-schema.js";
 import { textResult } from "../utils/tool-result.js";
 
-const platformEnum = z.enum(["android", "ios", "desktop", "aurora", "harmony", "browser"]);
+const BUILTIN_SECTION_LABELS: Readonly<Record<BuiltinPlatform, string>> = {
+  android: "Android",
+  ios: "iOS",
+  desktop: "Desktop",
+  aurora: "Aurora",
+  harmony: "HarmonyOS",
+  browser: "Browser",
+};
 
 export const deviceTools: ToolDefinition[] = [
   defineTool({
@@ -26,67 +35,50 @@ export const deviceTools: ToolDefinition[] = [
       const activeDevice = ctx.deviceManager.getActiveDevice();
       const { target: activeTarget } = ctx.deviceManager.getTarget();
 
-      const android = devices.filter((d) => d.platform === "android");
-      const ios = devices.filter((d) => d.platform === "ios");
-      const desktop = devices.filter((d) => d.platform === "desktop");
-      const aurora = devices.filter((d) => d.platform === "aurora");
-      const harmony = devices.filter((d) => d.platform === "harmony");
-      const browser = devices.filter((d) => d.platform === "browser");
+      const groups = new Map<Platform, typeof devices>();
+      for (const device of devices) {
+        const group = groups.get(device.platform) ?? [];
+        group.push(device);
+        groups.set(device.platform, group);
+      }
 
       let result = "Connected devices:\n";
-
-      if (android.length > 0) {
-        result += "\nAndroid:\n";
-        for (const d of android) {
+      for (const groupPlatform of BUILTIN_PLATFORMS) {
+        const heading = BUILTIN_SECTION_LABELS[groupPlatform];
+        const grouped = groups.get(groupPlatform);
+        if (!grouped || grouped.length === 0) continue;
+        result += `\n${heading}:\n`;
+        for (const d of grouped) {
           const active =
-            activeDevice?.id === d.id && activeTarget === "android" ? " [ACTIVE]" : "";
-          const type = d.isSimulator ? "emulator" : "physical";
-          result += `  • ${d.id} - ${d.name} (${type}, ${d.state})${active}\n`;
+            activeTarget === groupPlatform &&
+            (groupPlatform === "desktop" ||
+              groupPlatform === "browser" ||
+              activeDevice?.id === d.id)
+              ? " [ACTIVE]"
+              : "";
+          const detail =
+            groupPlatform === "android"
+              ? `${d.isSimulator ? "emulator" : "physical"}, ${d.state}`
+              : groupPlatform === "ios"
+                ? `${d.isSimulator ? "simulator" : "physical"}, ${d.state}`
+                : groupPlatform === "harmony"
+                  ? `${d.isSimulator ? "emulator" : "physical"}, ${d.state}`
+                  : d.state;
+          result += `  • ${d.id} - ${d.name} (${detail})${active}\n`;
         }
       }
 
-      if (ios.length > 0) {
-        result += "\niOS:\n";
-        for (const d of ios) {
+      for (const [groupPlatform, grouped] of groups) {
+        if (isBuiltinPlatform(groupPlatform)) continue;
+        result += `\n${groupPlatform}:\n`;
+        for (const d of grouped) {
           const active =
-            activeDevice?.id === d.id && activeTarget === "ios" ? " [ACTIVE]" : "";
-          const type = d.isSimulator ? "simulator" : "physical";
-          result += `  • ${d.id} - ${d.name} (${type}, ${d.state})${active}\n`;
-        }
-      }
-
-      if (desktop.length > 0) {
-        result += "\nDesktop:\n";
-        for (const d of desktop) {
-          const active = activeTarget === "desktop" ? " [ACTIVE]" : "";
-          result += `  • ${d.id} - ${d.name} (${d.state})${active}\n`;
-        }
-      }
-
-      if (aurora.length > 0) {
-        result += "\nAurora:\n";
-        for (const d of aurora) {
-          const active =
-            activeDevice?.id === d.id && activeTarget === "aurora" ? " [ACTIVE]" : "";
-          result += `  • ${d.id} - ${d.name} (${d.state})${active}\n`;
-        }
-      }
-
-      if (harmony.length > 0) {
-        result += "\nHarmonyOS:\n";
-        for (const d of harmony) {
-          const active =
-            activeDevice?.id === d.id && activeTarget === "harmony" ? " [ACTIVE]" : "";
-          const type = d.isSimulator ? "emulator" : "physical";
-          result += `  • ${d.id} - ${d.name} (${type}, ${d.state})${active}\n`;
-        }
-      }
-
-      if (browser.length > 0) {
-        result += "\nBrowser:\n";
-        for (const d of browser) {
-          const active = activeTarget === "browser" ? " [ACTIVE]" : "";
-          result += `  • ${d.id} - ${d.name} (${d.state})${active}\n`;
+            activeTarget === groupPlatform && activeDevice?.id === d.id
+              ? " [ACTIVE]"
+              : "";
+          result +=
+            `  • ${d.id} - ${d.name} ` +
+            `(${d.isSimulator ? "emulator" : "physical"}, ${d.state})${active}\n`;
         }
       }
 
@@ -102,7 +94,7 @@ export const deviceTools: ToolDefinition[] = [
       deviceId: z.string().describe("Device ID from device(action:'list')"),
       platform: platformEnum
         .optional()
-        .describe("Target platform. If not specified, uses the active target."),
+        .describe("Optional platform constraint. If omitted, device IDs must be unique across platforms."),
     }),
     handler: async (args, ctx) => {
       const device = ctx.deviceManager.setDevice(args.deviceId, args.platform as Platform | undefined);
@@ -112,9 +104,9 @@ export const deviceTools: ToolDefinition[] = [
 
   defineTool({
     name: "device_set_target",
-    description: "Switch active platform (android/ios/desktop/aurora/harmony/browser)",
+    description: "Switch active platform (built-in or installed external platform)",
     schema: z.object({
-      target: platformEnum.describe("Target platform to switch to"),
+      target: platformIdSchema.describe("Target platform to switch to"),
     }),
     handler: async (args, ctx) => {
       ctx.deviceManager.setTarget(args.target as Platform);

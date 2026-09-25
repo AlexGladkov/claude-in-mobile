@@ -1,10 +1,9 @@
-import { existsSync, openAsBlob } from "node:fs";
-import { stat } from "node:fs/promises";
 import { basename } from "node:path";
 import { z } from "zod";
 import type { StoreClient, UploadResult } from "./store-client.js";
 import { AbstractStoreClient } from "./base-client.js";
 import { validatePackageName } from "../utils/sanitize.js";
+import { createStoreArtifactMultipartBody, validateStoreArtifact, type ValidatedStoreArtifact } from "./upload-path.js";
 
 const OAUTH_URL = "https://connect-api.cloud.huawei.com/api/oauth2/v1/token";
 const BASE = "https://connect-api.cloud.huawei.com/api/publish/v2";
@@ -190,107 +189,123 @@ export class HuaweiAppGalleryClient extends AbstractStoreClient implements Store
   // ── Public API ───────────────────────────────────────────────────────────────
 
   async upload(packageName: string, filePath: string): Promise<UploadResult> {
-    validatePackageName(packageName);
-    if (!existsSync(filePath)) {
-      throw new Error(`File not found: ${filePath}`);
-    }
+    return this.withPackageMutation(packageName, async () => {
+      validatePackageName(packageName);
+      let artifact: ValidatedStoreArtifact | undefined;
+      try {
+        const boundArtifact = await validateStoreArtifact(filePath, "android");
+        artifact = boundArtifact;
+        const token = await this.getToken();
+        const appId = await this.getAppId(packageName, token);
 
-    const token = await this.getToken();
-    const appId = await this.getAppId(packageName, token);
+        const ext = boundArtifact.path.toLowerCase().endsWith(".aab") ? "AAB" : "APK";
+        const fileName = basename(boundArtifact.path);
+        const fileSize = boundArtifact.size;
 
-    const ext = filePath.toLowerCase().endsWith(".aab") ? "AAB" : "APK";
-    const fileName = basename(filePath);
-    const { size: fileSize } = await stat(filePath);
+        // Step 1: Get upload URL and authCode
+        const urlData = parseHuaweiResponse(await this.api(
+          "GET",
+          `${UPLOAD_KIT_BASE}/files/uploadUrl?appId=${encodeURIComponent(appId)}&fileType=${ext}&releaseType=1`,
+          token
+        ), "upload session creation");
+        const uploadUrl = parseHuaweiId(urlData.uploadUrl, "upload URL");
+        const authCode = parseHuaweiId(urlData.authCode, "upload authorization");
+        validateUploadUrl(uploadUrl);
 
-    // Step 1: Get upload URL and authCode
-    const urlData = parseHuaweiResponse(await this.api(
-      "GET",
-      `${UPLOAD_KIT_BASE}/files/uploadUrl?appId=${encodeURIComponent(appId)}&fileType=${ext}&releaseType=1`,
-      token
-    ), "upload session creation");
-    const uploadUrl = parseHuaweiId(urlData.uploadUrl, "upload URL");
-    const authCode = parseHuaweiId(urlData.authCode, "upload authorization");
-    validateUploadUrl(uploadUrl);
+        // Step 2: stream the validated descriptor via multipart/form-data
+        const multipart = createStoreArtifactMultipartBody(
+          boundArtifact,
+          fileName,
+          [{ name: "token", value: authCode }],
+        );
+        const uploadRes = await this.fetchWithTimeout(uploadUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": multipart.contentType,
+            "Content-Length": String(multipart.contentLength),
+          },
+          duplex: "half" as const,
+          body: multipart.body,
+        }, 10 * 60_000);
 
-    // Step 2: Upload file via multipart/form-data
-    const formData = new FormData();
-    const blob = await openAsBlob(filePath, { type: "application/octet-stream" });
-    formData.append("file", blob, fileName);
-    formData.append("token", authCode);
+        if (!uploadRes.ok) {
+          await uploadRes.body?.cancel();
+          throw new Error(`Huawei file upload failed with HTTP ${uploadRes.status}.`);
+        }
 
-    const uploadRes = await this.fetchWithTimeout(uploadUrl, {
-      method: "POST",
-      body: formData,
-    }, 10 * 60_000);
+        const uploadResult = huaweiUploadSchema.safeParse(await this.readJson(uploadRes));
+        if (!uploadResult.success) {
+          throw new Error("Huawei returned an invalid upload response.");
+        }
+        if (uploadResult.data.result.resultCode !== 0) {
+          throw new Error("Huawei rejected the uploaded file.");
+        }
+        const fileInfo = uploadResult.data.fileInfoList[0];
 
-    if (!uploadRes.ok) {
-      await uploadRes.body?.cancel();
-      throw new Error(`Huawei file upload failed with HTTP ${uploadRes.status}.`);
-    }
+        // Step 3: Attach uploaded file to app
+        parseHuaweiResponse(await this.api(
+          "PUT",
+          `${BASE}/app-file-info?appId=${encodeURIComponent(appId)}`,
+          token,
+          {
+            fileType: 5,
+            files: [{
+              fileId: fileInfo.fileId,
+              fileName: fileInfo.fileName,
+              fileDestUrl: uploadUrl,
+              size: fileSize,
+            }],
+          }
+        ), "file attachment");
 
-    const uploadResult = huaweiUploadSchema.safeParse(await this.readJson(uploadRes));
-    if (!uploadResult.success) {
-      throw new Error("Huawei returned an invalid upload response.");
-    }
-    if (uploadResult.data.result.resultCode !== 0) {
-      throw new Error("Huawei rejected the uploaded file.");
-    }
-    const fileInfo = uploadResult.data.fileInfoList[0];
-
-    // Step 3: Attach uploaded file to app
-    parseHuaweiResponse(await this.api(
-      "PUT",
-      `${BASE}/app-file-info?appId=${encodeURIComponent(appId)}`,
-      token,
-      {
-        fileType: 5,
-        files: [{
+        // Store draft state for release notes and submit
+        this.drafts.set(packageName, {
           fileId: fileInfo.fileId,
           fileName: fileInfo.fileName,
-          fileDestUrl: uploadUrl,
-          size: fileSize,
-        }],
+          fileSize,
+          fileType: ext,
+          releaseNotes: [],
+        });
+
+        return { versionId: fileInfo.fileId };
+      } finally {
+        await artifact?.close();
       }
-    ), "file attachment");
-
-    // Store draft state for release notes and submit
-    this.drafts.set(packageName, {
-      fileId: fileInfo.fileId,
-      fileName: fileInfo.fileName,
-      fileSize,
-      fileType: ext,
-      releaseNotes: [],
     });
-
-    return { versionId: fileInfo.fileId };
   }
 
   async setReleaseNotes(packageName: string, language: string, text: string): Promise<void> {
-    validatePackageName(packageName);
-    if (!/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(language)) {
-      throw new Error("Invalid Huawei release language.");
-    }
-    if (Buffer.byteLength(text, "utf8") > 50 * 1024 || text.includes("\0")) {
-      throw new Error("Huawei release notes exceed the size limit.");
-    }
-    const draft = this.drafts.get(packageName);
-    if (!draft) {
-      throw new Error(`Huawei: no active upload for "${packageName}". Call huawei_upload first.`);
-    }
-    const idx = draft.releaseNotes.findIndex(n => n.language === language);
-    if (idx >= 0) {
-      draft.releaseNotes[idx].text = text;
-    } else {
-      draft.releaseNotes.push({ language, text });
-    }
+    await this.withPackageMutation(packageName, async () => {
+      validatePackageName(packageName);
+      if (!/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(language)) {
+        throw new Error("Invalid Huawei release language.");
+      }
+      if (Buffer.byteLength(text, "utf8") > 50 * 1024 || text.includes("\0")) {
+        throw new Error("Huawei release notes exceed the size limit.");
+      }
+      const draft = this.drafts.get(packageName);
+      if (!draft) {
+        throw new Error(`Huawei: no active upload for "${packageName}". Call huawei_upload first.`);
+      }
+      const idx = draft.releaseNotes.findIndex(n => n.language === language);
+      if (idx >= 0) {
+        draft.releaseNotes[idx].text = text;
+      } else {
+        draft.releaseNotes.push({ language, text });
+      }
+    });
   }
 
   async submit(packageName: string, _options?: { rollout?: number }): Promise<void> {
-    validatePackageName(packageName);
-    const token = await this.getToken();
-    const appId = await this.getAppId(packageName, token);
-    const draft = this.drafts.get(packageName);
-    if (draft) {
+    await this.withPackageMutation(packageName, async () => {
+      validatePackageName(packageName);
+      const draft = this.drafts.get(packageName);
+      if (!draft) {
+        throw new Error(`Huawei: no active upload for "${packageName}". Call huawei_upload first.`);
+      }
+
+      const token = await this.getToken();
+      const appId = await this.getAppId(packageName, token);
       for (const note of draft.releaseNotes) {
         parseHuaweiResponse(await this.api(
           "PUT",
@@ -299,16 +314,16 @@ export class HuaweiAppGalleryClient extends AbstractStoreClient implements Store
           { lang: note.language, newFeatures: note.text },
         ), "release notes update");
       }
-    }
 
-    // Submit the app for review/publishing
-    parseHuaweiResponse(await this.api(
-      "POST",
-      `${BASE}/app-submit?appId=${encodeURIComponent(appId)}`,
-      token
-    ), "submission");
+      // Submit the app for review/publishing
+      parseHuaweiResponse(await this.api(
+        "POST",
+        `${BASE}/app-submit?appId=${encodeURIComponent(appId)}`,
+        token
+      ), "submission");
 
-    this.drafts.delete(packageName);
+      this.drafts.delete(packageName);
+    });
   }
 
   async getReleases(packageName: string): Promise<string> {

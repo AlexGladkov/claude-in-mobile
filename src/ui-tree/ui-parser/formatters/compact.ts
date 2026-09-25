@@ -1,4 +1,5 @@
 import type { UiElement } from "../types.js";
+import { safeTerminalText } from "../../../utils/terminal-controls.js";
 import { safeLabel } from "./redact.js";
 
 /**
@@ -23,7 +24,7 @@ export function formatUiTreeCompact(elements: UiElement[], maxElements: number):
 
   while (i < limit) {
     const el = interactive[i];
-    const shortClass = el.className.split(".").pop() ?? el.className;
+    const shortClass = safeTerminalText(el.className.split(".").pop() ?? el.className);
 
     // Check for consecutive identical class names with no text
     let groupCount = 1;

@@ -9,6 +9,7 @@ import {
   SyncRoleNotFoundError,
 } from "../errors.js";
 import type { ToolContext } from "./context.js";
+import { sleep } from "../utils/sleep.js";
 
 // ── Helpers ──
 
@@ -68,6 +69,18 @@ beforeEach(() => {
     {
       tool: { name: "system_shell", description: "Shell", inputSchema: { type: "object", properties: {} } },
       handler: async () => ({ text: "shell executed" }),
+    },
+    {
+      tool: { name: "system", description: "System meta-tool", inputSchema: { type: "object", properties: {} } },
+      handler: async () => ({ text: "system executed" }),
+    },
+    {
+      tool: { name: "debug_eval", description: "Evaluate debugger expression", inputSchema: { type: "object", properties: {} } },
+      handler: async () => ({ text: "evaluated" }),
+    },
+    {
+      tool: { name: "debug_set_var", description: "Mutate debugger variable", inputSchema: { type: "object", properties: {} } },
+      handler: async () => ({ text: "mutated" }),
     },
   ]);
 });
@@ -155,11 +168,13 @@ describe("sync_run", () => {
       "input_tap",
       expect.objectContaining({ deviceId: "emulator-5554" }),
       1,
+      expect.any(AbortSignal),
     );
     expect(ctx.handleTool).toHaveBeenCalledWith(
       "system_wait",
       expect.objectContaining({ deviceId: "emulator-5556" }),
       1,
+      expect.any(AbortSignal),
     );
   });
 
@@ -187,6 +202,85 @@ describe("sync_run", () => {
     expect(result.text).toContain("OK");
     expect(result.text).toContain("barrier");
   });
+  it("unblocks peer roles waiting at barriers after a hard step failure", async () => {
+    const ctx = makeMockContext({
+      handleTool: vi.fn(async (name, args) => {
+        if (name === "input_tap" && args.deviceId === "emulator-5554") {
+          await sleep(20);
+          throw new Error("sender action failed");
+        }
+        return { text: "ok" };
+      }),
+    });
+    await createHandler({ name: "barrier-fail-test", roles: defaultRoles }, ctx);
+
+    const startedAt = Date.now();
+    const result = await runHandler({
+      group: "barrier-fail-test",
+      maxDuration: 5000,
+      steps: [
+        { role: "sender", action: "input_tap" },
+        { role: "sender", action: "system_wait", barrier: "ready" },
+        { role: "receiver", action: "system_wait", barrier: "ready" },
+        { role: "receiver", action: "ui_assert_visible" },
+      ],
+    }, ctx) as { text: string };
+
+    expect(Date.now() - startedAt).toBeLessThan(1000);
+    expect(result.text).toContain("PARTIAL FAILURE");
+    expect(ctx.handleTool).not.toHaveBeenCalledWith(
+      "ui_assert_visible",
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it("treats repeated barrier names as distinct phases", async () => {
+    const events: string[] = [];
+    const ctx = makeMockContext({
+      handleTool: vi.fn(async (name, args) => {
+        if (name === "input_tap" && args.phase === 2) {
+          await sleep(40);
+          events.push("sender-second-action-finished");
+        }
+        if (name === "ui_assert_visible") events.push("receiver-after-second-barrier");
+        return { text: "ok" };
+      }),
+    });
+    await createHandler({ name: "barrier-reuse-test", roles: defaultRoles }, ctx);
+
+    await runHandler({
+      group: "barrier-reuse-test",
+      maxDuration: 5000,
+      steps: [
+        { role: "sender", action: "input_tap", args: { phase: 1 }, barrier: "ready" },
+        { role: "receiver", action: "system_wait", barrier: "ready" },
+        { role: "sender", action: "input_tap", args: { phase: 2 }, barrier: "ready" },
+        { role: "receiver", action: "system_wait", args: { phase: 2 }, barrier: "ready" },
+        { role: "receiver", action: "ui_assert_visible" },
+      ],
+    }, ctx);
+
+    expect(events.indexOf("sender-second-action-finished")).toBeGreaterThanOrEqual(0);
+    expect(events.indexOf("receiver-after-second-barrier"))
+      .toBeGreaterThan(events.indexOf("sender-second-action-finished"));
+  });
+
+  it("rejects a shell command hidden in the system meta-tool action", async () => {
+    const ctx = makeMockContext();
+    await createHandler({ name: "meta-block-test", roles: defaultRoles }, ctx);
+
+    await expect(runHandler({
+      group: "meta-block-test",
+      steps: [{
+        role: "sender",
+        action: "system",
+        args: { action: "shell", command: "id" },
+      }],
+    }, ctx)).rejects.toMatchObject({ code: "SYNC_SECURITY" });
+    expect(ctx.handleTool).not.toHaveBeenCalled();
+  });
 
   it("rejects blocked actions", async () => {
     const ctx = makeMockContext();
@@ -196,6 +290,19 @@ describe("sync_run", () => {
       group: "block-test",
       steps: [{ role: "sender", action: "system_shell", args: { command: "ls" } }],
     }, ctx)).rejects.toThrow(MobileError);
+  });
+  
+  it("rejects debugger evaluation and variable mutation before dispatch", async () => {
+    const ctx = makeMockContext();
+    await createHandler({ name: "debug-block-test", roles: defaultRoles }, ctx);
+
+    for (const action of ["debug_eval", "debug_set_var"]) {
+      await expect(runHandler({
+        group: "debug-block-test",
+        steps: [{ role: "sender", action, args: { expression: "1 + 1", name: "value", value: "changed" } }],
+      }, ctx)).rejects.toMatchObject({ code: "SYNC_SECURITY" });
+    }
+    expect(ctx.handleTool).not.toHaveBeenCalled();
   });
 
   it("rejects unknown role in steps", async () => {
@@ -381,6 +488,58 @@ describe("sync_assert_cross", () => {
       target_action: "ui_assert_visible",
       delay_ms: 10,
     }, ctx)).rejects.toThrow(MobileError);
+  });
+  
+  it("rejects debugger actions as either sync assertion endpoint", async () => {
+    const ctx = makeMockContext();
+    await createHandler({ name: "debug-assert-block", roles: defaultRoles }, ctx);
+
+    for (const action of ["debug_eval", "debug_set_var"]) {
+      await expect(assertHandler({
+        group: "debug-assert-block",
+        source_role: "sender",
+        source_action: action,
+        source_args: { expression: "1 + 1", name: "value", value: "changed" },
+        target_role: "receiver",
+        target_action: "ui_assert_visible",
+        delay_ms: 10,
+      }, ctx)).rejects.toMatchObject({ code: "SYNC_SECURITY" });
+      await expect(assertHandler({
+        group: "debug-assert-block",
+        source_role: "sender",
+        source_action: "ui_assert_visible",
+        target_role: "receiver",
+        target_action: action,
+        target_args: { expression: "1 + 1", name: "value", value: "changed" },
+        delay_ms: 10,
+      }, ctx)).rejects.toMatchObject({ code: "SYNC_SECURITY" });
+    }
+    expect(ctx.handleTool).not.toHaveBeenCalled();
+  });
+  it("rejects shell actions hidden inside the system meta-tool", async () => {
+    const ctx = makeMockContext();
+    await createHandler({ name: "blocked-meta-assert", roles: defaultRoles }, ctx);
+
+    await expect(assertHandler({
+      group: "blocked-meta-assert",
+      source_role: "sender",
+      source_action: "system",
+      source_args: { action: "shell", command: "id" },
+      target_role: "receiver",
+      target_action: "ui_assert_visible",
+      delay_ms: 10,
+    }, ctx)).rejects.toMatchObject({ code: "SYNC_SECURITY" });
+
+    await expect(assertHandler({
+      group: "blocked-meta-assert",
+      source_role: "sender",
+      source_action: "input_tap",
+      target_role: "receiver",
+      target_action: "system",
+      target_args: { action: "shell", command: "id" },
+      delay_ms: 10,
+    }, ctx)).rejects.toMatchObject({ code: "SYNC_SECURITY" });
+    expect(ctx.handleTool).not.toHaveBeenCalled();
   });
 });
 

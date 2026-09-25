@@ -1,5 +1,6 @@
 import { createMetaTool } from "./create-meta-tool.js";
 import { uiTools } from "../ui-tools.js";
+import { PLATFORM_JSON_SCHEMA } from "../common-schema.js";
 
 const { meta, aliases } = createMetaTool({
   name: "ui",
@@ -29,8 +30,7 @@ const { meta, aliases } = createMetaTool({
     timeout: { type: "number", description: "Max wait time in ms for wait (default: 5000)", default: 5000 },
     interval: { type: "number", description: "Poll interval in ms for wait (default: 500)", default: 500 },
     platform: {
-      type: "string",
-      enum: ["android", "ios", "desktop", "aurora", "harmony", "browser"],
+      ...PLATFORM_JSON_SCHEMA,
       description: "Target platform. If not specified, uses the active target.",
     },
   },

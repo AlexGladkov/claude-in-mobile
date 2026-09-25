@@ -5,11 +5,34 @@
  * keep their "alias of *Async" shape so the public surface is unchanged.
  */
 
-import { hasSyncScreenshot } from "../../adapters/platform-adapter.js";
+import { hasRawUiHierarchy, hasScreen, hasSyncScreenshot } from "../../adapters/platform-adapter.js";
 import type { Platform } from "../../platform-types.js";
 import type { CompressOptions } from "../../utils/image.js";
 import type { AdapterResolver } from "./input-proxy.js";
 
+function requireScreen(
+  resolve: AdapterResolver,
+  platform: Platform | undefined,
+  deviceId: string | undefined,
+) {
+  const adapter = resolve(platform, deviceId);
+  if (!(hasScreen(adapter) as boolean)) {
+    throw new Error(`Screen is not supported for ${adapter.platform}.`);
+  }
+  return adapter;
+}
+
+function requireUiHierarchy(
+  resolve: AdapterResolver,
+  platform: Platform | undefined,
+  deviceId: string | undefined,
+) {
+  const adapter = resolve(platform, deviceId);
+  if (!hasRawUiHierarchy(adapter)) {
+    throw new Error(`Raw UI hierarchy is not supported for ${adapter.platform}.`);
+  }
+  return adapter;
+}
 export class ScreenProxy {
   constructor(private readonly resolve: AdapterResolver) {}
 
@@ -40,17 +63,17 @@ export class ScreenProxy {
     options?: CompressOptions & { monitorIndex?: number },
     deviceId?: string,
   ): Promise<{ data: string; mimeType: string }> {
-    const adapter = this.resolve(platform, deviceId);
+    const adapter = requireScreen(this.resolve, platform, deviceId);
     return adapter.screenshotAsync(compress, options, deviceId);
   }
 
   async getScreenshotBufferAsync(platform?: Platform, deviceId?: string): Promise<Buffer> {
-    const adapter = this.resolve(platform, deviceId);
+    const adapter = requireScreen(this.resolve, platform, deviceId);
     return adapter.getScreenshotBufferAsync(deviceId);
   }
 
   async getUiHierarchy(platform?: Platform, deviceId?: string, turbo?: boolean): Promise<string> {
-    const adapter = this.resolve(platform, deviceId);
+    const adapter = requireUiHierarchy(this.resolve, platform, deviceId);
     return adapter.getUiHierarchy(deviceId, turbo);
   }
 }

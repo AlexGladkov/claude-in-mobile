@@ -80,15 +80,24 @@ export interface WebViewDomNode {
 
 export class WebViewInspector {
   private forwardedPort: number | null = null;
+  private inspectionPromise: Promise<{
+    sockets: string[];
+    targets: WebViewTarget[];
+  }> | null = null;
 
-  constructor(private adbClient: AdbClient) {}
+  constructor(
+    private readonly adbClient: AdbClient,
+    private readonly deviceId?: string,
+  ) {}
 
   /**
    * Discover available WebView debug sockets on device
    */
   discoverWebViews(): string[] {
     try {
-      const output = this.adbClient.shell("cat /proc/net/unix 2>/dev/null");
+      const output = this.deviceId === undefined
+        ? this.adbClient.shell("cat /proc/net/unix 2>/dev/null")
+        : this.adbClient.exec("shell cat /proc/net/unix 2>/dev/null", this.deviceId);
       const lines = output.split("\n");
       const sockets: string[] = [];
 
@@ -113,11 +122,8 @@ export class WebViewInspector {
    */
   async forwardWebView(socketName?: string): Promise<number> {
     // Clean up previous forward
-    if (this.forwardedPort) {
-      try {
-        this.adbClient.exec(`forward --remove tcp:${this.forwardedPort}`);
-      } catch {}
-      this.forwardedPort = null;
+    if (this.forwardedPort !== null) {
+      this.cleanup();
     }
 
     // If no socket specified, auto-discover
@@ -136,7 +142,7 @@ export class WebViewInspector {
     const port = await this.findFreePort(9222);
 
     // Forward the socket
-    this.adbClient.exec(`forward tcp:${port} localabstract:${socketName}`);
+    this.adbClient.exec(`forward tcp:${port} localabstract:${socketName}`, this.deviceId);
     this.forwardedPort = port;
 
     return port;
@@ -207,7 +213,23 @@ export class WebViewInspector {
   async inspect(): Promise<{
     sockets: string[];
     targets: WebViewTarget[];
-    forwardedPort: number;
+  }> {
+    if (this.inspectionPromise) return this.inspectionPromise;
+
+    const inspection = this.performInspection();
+    this.inspectionPromise = inspection;
+    try {
+      return await inspection;
+    } finally {
+      if (this.inspectionPromise === inspection) {
+        this.inspectionPromise = null;
+      }
+    }
+  }
+
+  private async performInspection(): Promise<{
+    sockets: string[];
+    targets: WebViewTarget[];
   }> {
     const sockets = this.discoverWebViews();
 
@@ -215,22 +237,41 @@ export class WebViewInspector {
       throw new WebViewNotFoundError();
     }
 
-    const port = await this.forwardWebView(sockets[0]);
-    const targets = await this.listTargets(port);
-
-    return { sockets, targets, forwardedPort: port };
+    let inspectionError: unknown;
+    try {
+      const port = await this.forwardWebView(sockets[0]);
+      const targets = await this.listTargets(port);
+      return { sockets, targets };
+    } catch (error) {
+      inspectionError = error;
+      throw error;
+    } finally {
+      try {
+        this.cleanup();
+      } catch (cleanupError) {
+        if (inspectionError !== undefined) {
+          throw new AggregateError(
+            [inspectionError, cleanupError],
+            "WebView inspection failed and the temporary ADB forward could not be removed.",
+          );
+        }
+        throw cleanupError;
+      }
+    }
   }
 
   /**
    * Clean up port forwarding
    */
   cleanup(): void {
-    if (this.forwardedPort) {
-      try {
-        this.adbClient.exec(`forward --remove tcp:${this.forwardedPort}`);
-      } catch {}
-      this.forwardedPort = null;
+    if (this.forwardedPort === null) return;
+    try {
+      this.adbClient.exec(`forward --remove tcp:${this.forwardedPort}`, this.deviceId);
+    } catch {
+      // Keep the port so a later cleanup attempt can retry removal.
+      throw new Error("Unable to remove temporary WebView port forwarding; retry cleanup.");
     }
+    this.forwardedPort = null;
   }
 
   private async findFreePort(startPort: number): Promise<number> {

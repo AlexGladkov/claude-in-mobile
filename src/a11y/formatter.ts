@@ -1,29 +1,32 @@
 import type { A11yReport, A11yIssue, A11ySeverity, A11yDetailedReport, A11yCategoryScore, A11yActionItem } from "./types.js";
 import { SEVERITY_ORDER } from "./severity.js";
+import { isSensitiveElement, REDACTED } from "../ui-tree/ui-parser/formatters/redact.js";
+import { safeTerminalText } from "../utils/terminal-controls.js";
 
 function shortClassName(className: string): string {
-  return className.split(".").pop() ?? className;
+  return safeTerminalText(className.split(".").pop() ?? className);
 }
 
 function shortResourceId(resourceId: string): string {
   if (!resourceId) return "";
-  return resourceId.split(":id/").pop() ?? resourceId;
+  return safeTerminalText(resourceId.split(":id/").pop() ?? resourceId);
 }
 
 function formatElementRef(issue: A11yIssue, redactPasswords: Set<number>): string {
   const el = issue.element;
   const shortClass = shortClassName(el.className);
   const parts: string[] = [`<${shortClass}>`];
+  const sensitive = redactPasswords.has(el.index) || isSensitiveElement(el);
 
-  const shortId = shortResourceId(el.resourceId);
+  const shortId = sensitive ? REDACTED : shortResourceId(el.resourceId);
   if (shortId) {
     parts.push(`id="${shortId}"`);
   }
 
   parts.push(`@ (${el.centerX}, ${el.centerY})`);
 
-  if (redactPasswords.has(el.index)) {
-    parts.push("text=[REDACTED]");
+  if (sensitive) {
+    parts.push(`text=${REDACTED}`);
   }
 
   return parts.join(" ");

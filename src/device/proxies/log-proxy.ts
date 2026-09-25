@@ -5,7 +5,7 @@
  * facade used to. getSystemInfo is unguarded (matches previous behaviour).
  */
 
-import { hasShell } from "../../adapters/platform-adapter.js";
+import { hasLogs, hasShell } from "../../adapters/platform-adapter.js";
 import type { Platform } from "../../platform-types.js";
 import type { AdapterResolver } from "./input-proxy.js";
 
@@ -31,7 +31,7 @@ export class LogProxy {
     } = {},
   ): string {
     const adapter = this.resolve(options.platform, options.deviceId);
-    if (!hasShell(adapter)) {
+    if (!hasLogs(adapter)) {
       throw new Error(`Logs are not supported for ${adapter.platform}.`);
     }
     return adapter.getLogs({
@@ -44,7 +44,7 @@ export class LogProxy {
 
   clearLogs(platform?: Platform, deviceId?: string): string {
     const adapter = this.resolve(platform, deviceId);
-    if (!hasShell(adapter)) {
+    if (!hasLogs(adapter)) {
       throw new Error(`Logs are not supported for ${adapter.platform}.`);
     }
     return adapter.clearLogs(deviceId);

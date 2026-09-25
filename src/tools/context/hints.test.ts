@@ -146,6 +146,7 @@ describe("createGenerateActionHints — cache self-poisoning guard (Bug B)", () 
     expect(setCachedElements).toHaveBeenCalledWith(
       "ios",
       expect.any(Array),
+      undefined,
     );
 
     const cachedCall = setCachedElements.mock.calls.find(
@@ -192,6 +193,7 @@ describe("createGenerateActionHints — cascade prevention", () => {
   let setCachedElements: ReturnType<typeof vi.fn>;
   let getCachedElements: ReturnType<typeof vi.fn>;
   let createGenerateActionHints: any;
+  let createGetElementsForPlatform: any;
 
   beforeEach(async () => {
     // Mock shared-state
@@ -220,12 +222,58 @@ describe("createGenerateActionHints — cascade prevention", () => {
 
     const hints = await import("./hints.js");
     createGenerateActionHints = hints.createGenerateActionHints;
+    createGetElementsForPlatform = hints.createGetElementsForPlatform;
 
     mockDeviceManager = {
       getCurrentPlatform: vi.fn(() => "ios"),
       getUiHierarchy: vi.fn(),
       getUiHierarchyAsync: vi.fn(),
     };
+  });
+  it("routes external UI provider elements to hints and flow predicates", async () => {
+    mockDeviceManager.getCurrentPlatform.mockReturnValue("tizen");
+    const getUiElements = vi.fn(async () => [{
+      id: "continue",
+      role: "button",
+      text: "Continue",
+      clickable: true,
+      bounds: { x: 10, y: 20, width: 100, height: 40 },
+    }]);
+    mockDeviceManager.getAdapter = vi.fn(() => ({ getUiElements }));
+
+    const getElementsForPlatform = createGetElementsForPlatform(mockDeviceManager);
+    const elements = await getElementsForPlatform("tizen", "tizen-2");
+
+    expect(getUiElements).toHaveBeenCalledWith("tizen-2");
+    expect(elements).toMatchObject([{ resourceId: "continue", text: "Continue", clickable: true }]);
+
+    const hints = await createGenerateActionHints(mockDeviceManager)("tizen", "tizen-2");
+    expect(hints).toContain("Elements: 1 -> 1");
+    expect(hints).not.toContain("No UI elements detected");
+  });
+
+  it("routes desktop UI through the normalized provider path", async () => {
+    mockDeviceManager.getCurrentPlatform.mockReturnValue("desktop");
+    const getUiElements = vi.fn(async () => [{
+      role: "textbox",
+      className: "TextField",
+      text: "731904",
+      value: "731904",
+      label: "One-time code",
+      bounds: { x: 10, y: 20, width: 100, height: 40 },
+    }]);
+    mockDeviceManager.getAdapter = vi.fn(() => ({ getUiElements }));
+
+    const getElementsForPlatform = createGetElementsForPlatform(mockDeviceManager);
+    const elements = await getElementsForPlatform("desktop");
+
+    expect(getUiElements).toHaveBeenCalledWith(undefined);
+    expect(elements).toMatchObject([{
+      password: true,
+      text: "[REDACTED]",
+      contentDesc: "[REDACTED]",
+      resourceId: "[REDACTED]",
+    }]);
   });
 
   afterEach(() => {

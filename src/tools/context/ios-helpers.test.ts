@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   iosTreeToUiElements,
+  formatIOSUITree,
   unwrapWdaTree,
   WdaTreeError,
 } from "./ios-helpers.js";
@@ -42,6 +43,7 @@ function wdaEnvelope() {
                 {
                   type: "XCUIElementTypeStaticText",
                   label: "Welcome",
+                  name: "welcome-hint",
                   rect: { x: 20, y: 60, width: 200, height: 30 },
                 },
                 {
@@ -55,6 +57,7 @@ function wdaEnvelope() {
                   // The typed password lands here. Must never leave the process.
                   value: "hunter2",
                   label: "Password",
+                  name: "hunter2-accessibility",
                   enabled: true,
                   rect: { x: 20, y: 400, width: 350, height: 40 },
                 },
@@ -75,7 +78,6 @@ function degradedEnvelope() {
 // ---------------------------------------------------------------------------
 // Root #1: zero-rect containers must NOT discard their paintable subtree.
 // ---------------------------------------------------------------------------
-
 describe("iosTreeToUiElements — real accessibleSource format", () => {
   it("keeps leaf elements even when every ancestor has a zero/absent rect", () => {
     const elements = iosTreeToUiElements(wdaEnvelope());
@@ -86,6 +88,11 @@ describe("iosTreeToUiElements — real accessibleSource format", () => {
     expect(labels).toContain("Welcome");
     expect(labels).toContain("Sign in");
     expect(elements.length).toBe(3);
+
+    const secure = elements.find(e => e.password)!;
+    expect(elements.find(e => e.text === "Welcome")?.contentDesc).toBe("welcome-hint");
+    expect(secure.text).toBe("[REDACTED]");
+    expect(secure.contentDesc).toBe("[REDACTED]");
   });
 
   it("unwraps the {value,status,sessionId} envelope instead of parsing it as a node", () => {
@@ -99,6 +106,75 @@ describe("iosTreeToUiElements — real accessibleSource format", () => {
     const bare = wdaEnvelope().value;
     const elements = iosTreeToUiElements(bare);
     expect(elements.length).toBe(3);
+  });
+
+  it("redacts secure labels, values, and accessibility names in formatter output", () => {
+    const formatted = formatIOSUITree(wdaEnvelope());
+    expect(formatted).not.toContain("hunter2");
+    expect(formatted).not.toContain("hunter2-accessibility");
+    expect(formatted).toContain("[REDACTED]");
+    expect(formatted).toContain("Welcome");
+    expect(formatted).toContain("welcome-hint");
+    expect(formatted).toContain("Sign in");
+  });
+});
+
+describe("value-bearing iOS text entries", () => {
+  it("redacts values from ordinary iOS text-entry elements", () => {
+    const otp = "731904";
+    const elements = iosTreeToUiElements({
+      type: "XCUIElementTypeApplication",
+      children: [{
+        type: "XCUIElementTypeTextField",
+        identifier: `one-time-code-${otp}`,
+        value: otp,
+        label: "One-time code",
+        name: "verification-code",
+        rect: { x: 20, y: 100, width: 300, height: 40 },
+      }],
+    });
+    const field = elements[0];
+
+    expect(field.password).toBe(true);
+    expect(field.text).toBe("[REDACTED]");
+    expect(field.contentDesc).toBe("[REDACTED]");
+    expect(field.resourceId).toBe("[REDACTED]");
+    expect(formatIOSUITree({
+      type: "XCUIElementTypeApplication",
+      children: [{
+        type: "XCUIElementTypeTextField",
+        identifier: `one-time-code-${otp}`,
+        value: otp,
+        rect: { x: 20, y: 100, width: 300, height: 40 },
+      }],
+    })).not.toContain(otp);
+    const bidiOutput = formatIOSUITree({
+      type: "XCUIElementTypeStaticText\u202e",
+      label: "value\u2066hidden\u2069",
+      rect: { x: 1, y: 2, width: 30, height: 10 },
+    });
+    expect(bidiOutput).not.toContain("\u202e");
+    expect(bidiOutput).not.toContain("\u2066");
+    expect(bidiOutput).not.toContain("\u2069");
+  });
+
+  it("redacts identifiers for empty generic text-entry fields", () => {
+    const identifier = "customer-account-5841";
+    const tree = {
+      type: "XCUIElementTypeApplication",
+      children: [{
+        type: "XCUIElementTypeTextField",
+        label: "Email address",
+        identifier,
+        rect: { x: 10, y: 20, width: 200, height: 40 },
+      }],
+    };
+    const [field] = iosTreeToUiElements(tree);
+    const formatted = formatIOSUITree(tree);
+
+    expect(field.resourceId).toBe("[REDACTED]");
+    expect(formatted).not.toContain(identifier);
+    expect(formatted).toContain('label="Email address"');
   });
 });
 

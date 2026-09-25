@@ -100,6 +100,18 @@ export function getTools(): Tool[] {
   return reg().getTools();
 }
 
+export interface ResolvedToolIdentity {
+  canonical: string;
+  args: Record<string, unknown>;
+}
+
+export function resolveToolIdentity(
+  name: string,
+  args: Record<string, unknown> = {},
+): ResolvedToolIdentity | undefined {
+  return reg().resolveToolIdentity(name, args);
+}
+
 export interface ResolvedToolCall {
   handler: ToolDefinition["handler"];
   args: Record<string, unknown>;

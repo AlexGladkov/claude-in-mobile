@@ -1,5 +1,6 @@
 import { createMetaTool } from "./create-meta-tool.js";
 import { visualTools } from "../visual-tools.js";
+import { PLATFORM_JSON_SCHEMA } from "../common-schema.js";
 
 const { meta, aliases } = createMetaTool({
   name: "visual",
@@ -9,8 +10,7 @@ const { meta, aliases } = createMetaTool({
   prefix: "visual_",
   extraSchema: {
     platform: {
-      type: "string",
-      enum: ["android", "ios", "desktop", "aurora", "harmony", "browser"],
+      ...PLATFORM_JSON_SCHEMA,
       description: "Target platform. If not specified, uses the active target.",
     },
     name: { type: "string", description: "Baseline name (e.g. 'login-screen', 'dashboard')" },

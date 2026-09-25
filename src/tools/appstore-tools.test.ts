@@ -1,4 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { MobileError, ValidationError } from "../errors.js";
 
 // ──────────────────────────────────────────────
@@ -73,10 +75,20 @@ function build(id: string, version: string, processingState: string): {
   return { id, version, processingState, uploadedDate: "2026-06-10T10:00:00Z" };
 }
 
-beforeEach(() => {
+let uploadRoot: string;
+let uploadIpaPath: string;
+
+beforeEach(async () => {
+  uploadRoot = await mkdtemp(join(process.cwd(), ".appstore-tools-test-"));
+  uploadIpaPath = join(uploadRoot, "app.ipa");
+  await writeFile(uploadIpaPath, "payload");
   for (const m of [...Object.values(ascMocks), ...Object.values(buildMocks)]) m.mockReset();
   ascMocks.getAscAuthFromEnv.mockReturnValue(ENV_AUTH);
   ascMocks.findApp.mockResolvedValue(APP);
+});
+
+afterEach(async () => {
+  await rm(uploadRoot, { recursive: true, force: true });
 });
 
 // ──────────────────────────────────────────────
@@ -181,37 +193,96 @@ describe("appstore_upload", () => {
     expect(buildMocks.uploadIpa).not.toHaveBeenCalled();
     expect(buildMocks.validateIpa).not.toHaveBeenCalled();
   });
+  it("rejects outside-root and symlink paths before ASC credentials", async () => {
+    await expect(handler({ ipaPath: "/tmp/outside.ipa", skipValidation: true }, dummyCtx))
+      .rejects.toMatchObject({ code: "STORE_ARTIFACT_OUTSIDE_ROOT" });
+    const linkPath = join(uploadRoot, "linked.ipa");
+    await symlink(uploadIpaPath, linkPath);
+    await expect(handler({ ipaPath: linkPath, skipValidation: true }, dummyCtx))
+      .rejects.toMatchObject({ code: "STORE_ARTIFACT_SYMLINK" });
+    expect(ascMocks.getAscAuthFromEnv).not.toHaveBeenCalled();
+    expect(buildMocks.uploadIpa).not.toHaveBeenCalled();
+    expect(buildMocks.validateIpa).not.toHaveBeenCalled();
+  });
 
   it("validates the IPA BEFORE uploading (validate gate)", async () => {
     const order: string[] = [];
-    buildMocks.validateIpa.mockImplementation(async () => { order.push("validate"); });
+    buildMocks.validateIpa.mockImplementation(async (credentials: { ipaPath: string }) => {
+      order.push("validate");
+      expect(await readFile(credentials.ipaPath, "utf8")).toBe("payload");
+    });
     buildMocks.uploadIpa.mockImplementation(async () => { order.push("upload"); });
 
-    await handler({ ipaPath: "/builds/app.ipa" }, dummyCtx);
+    await handler({ ipaPath: uploadIpaPath }, dummyCtx);
 
     expect(order).toEqual(["validate", "upload"]);
-    expect(buildMocks.validateIpa).toHaveBeenCalledWith({
-      ipaPath: "/builds/app.ipa",
+    const credentials = buildMocks.validateIpa.mock.calls[0][0];
+    expect(credentials.ipaPath).not.toBe(uploadIpaPath);
+    expect(credentials).toMatchObject({
       keyId: ENV_AUTH.keyId,
       issuerId: ENV_AUTH.issuerId,
     });
+    expect(buildMocks.uploadIpa).toHaveBeenCalledWith(credentials);
   });
 
-  it("does NOT upload when validation fails", async () => {
-    buildMocks.validateIpa.mockRejectedValue(
-      new MobileError("Invalid bundle. Missing CFBundleIconName.", "IPA_VALIDATION_FAILED"),
-    );
+  it("uses one cleaned snapshot when the original is mutated after validation", async () => {
+    let validationPath: string | undefined;
+    let uploadPath: string | undefined;
+    let validationBytes: string | undefined;
+    let uploadBytes: string | undefined;
 
-    await expect(handler({ ipaPath: "/builds/app.ipa" }, dummyCtx)).rejects.toMatchObject({
+    buildMocks.validateIpa.mockImplementation(async (credentials: { ipaPath: string }) => {
+      validationPath = credentials.ipaPath;
+      validationBytes = await readFile(credentials.ipaPath, "utf8");
+      await writeFile(uploadIpaPath, "mutated-original");
+    });
+    buildMocks.uploadIpa.mockImplementation(async (credentials: { ipaPath: string }) => {
+      uploadPath = credentials.ipaPath;
+      uploadBytes = await readFile(credentials.ipaPath, "utf8");
+    });
+
+    await handler({ ipaPath: uploadIpaPath }, dummyCtx);
+
+    expect(validationPath).toBeDefined();
+    expect(uploadPath).toBe(validationPath);
+    expect(validationPath).not.toBe(uploadIpaPath);
+    expect(validationBytes).toBe("payload");
+    expect(uploadBytes).toBe("payload");
+    await expect(readFile(validationPath as string)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does NOT upload when validation fails and still cleans the snapshot", async () => {
+    let stagedPath: string | undefined;
+    buildMocks.validateIpa.mockImplementation(async (credentials: { ipaPath: string }) => {
+      stagedPath = credentials.ipaPath;
+      throw new MobileError("Invalid bundle. Missing CFBundleIconName.", "IPA_VALIDATION_FAILED");
+    });
+
+    await expect(handler({ ipaPath: uploadIpaPath }, dummyCtx)).rejects.toMatchObject({
       code: "IPA_VALIDATION_FAILED",
     });
     expect(buildMocks.uploadIpa).not.toHaveBeenCalled();
+    expect(stagedPath).toBeDefined();
+    await expect(readFile(stagedPath as string)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("cleans the snapshot when upload fails", async () => {
+    let stagedPath: string | undefined;
+    buildMocks.uploadIpa.mockImplementation(async (credentials: { ipaPath: string }) => {
+      stagedPath = credentials.ipaPath;
+      throw new MobileError("Upload failed.", "ASC_UPLOAD_ERROR");
+    });
+
+    await expect(handler({ ipaPath: uploadIpaPath, skipValidation: true }, dummyCtx))
+      .rejects.toMatchObject({ code: "ASC_UPLOAD_ERROR" });
+    expect(stagedPath).toBeDefined();
+    await expect(readFile(stagedPath as string)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("skips validation when skipValidation=true", async () => {
     buildMocks.uploadIpa.mockResolvedValue(undefined);
 
-    await handler({ ipaPath: "/builds/app.ipa", skipValidation: true }, dummyCtx);
+    await handler({ ipaPath: uploadIpaPath, skipValidation: true }, dummyCtx);
 
     expect(buildMocks.validateIpa).not.toHaveBeenCalled();
     expect(buildMocks.uploadIpa).toHaveBeenCalledTimes(1);
@@ -225,10 +296,11 @@ describe("appstore_upload", () => {
   it("uploads with env-resolved credentials and advises polling", async () => {
     buildMocks.uploadIpa.mockResolvedValue(undefined);
 
-    const result = await handler({ ipaPath: "/builds/app.ipa" }, dummyCtx);
+    const result = await handler({ ipaPath: uploadIpaPath }, dummyCtx);
 
-    expect(buildMocks.uploadIpa).toHaveBeenCalledWith({
-      ipaPath: "/builds/app.ipa",
+    const credentials = buildMocks.uploadIpa.mock.calls[0][0];
+    expect(credentials.ipaPath).not.toBe(uploadIpaPath);
+    expect(credentials).toMatchObject({
       keyId: ENV_AUTH.keyId,
       issuerId: ENV_AUTH.issuerId,
     });
@@ -466,12 +538,13 @@ describe("store meta — apple provider", () => {
     const alias = storeAliases.testflight_upload;
 
     const result = await storeMeta.handler(
-      { ...alias.defaults, ipaPath: "/builds/app.ipa" },
+      { ...alias.defaults, ipaPath: uploadIpaPath },
       dummyCtx,
     );
 
-    expect(buildMocks.uploadIpa).toHaveBeenCalledWith({
-      ipaPath: "/builds/app.ipa",
+    const credentials = buildMocks.uploadIpa.mock.calls[0][0];
+    expect(credentials.ipaPath).not.toBe(uploadIpaPath);
+    expect(credentials).toMatchObject({
       keyId: ENV_AUTH.keyId,
       issuerId: ENV_AUTH.issuerId,
     });

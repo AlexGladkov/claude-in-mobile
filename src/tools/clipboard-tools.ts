@@ -71,9 +71,9 @@ export const clipboardTools: ToolDefinition[] = [
       const client = getAndroidAdapter(ctx, platform, deviceId);
 
       if (args.fieldText || args.fieldId) {
-        const xml = await ctx.deviceManager.getUiHierarchyAsync("android");
+        const xml = await ctx.deviceManager.getUiHierarchyAsync("android", deviceId);
         const elements = parseUiHierarchy(xml);
-        ctx.setCachedElements("android", elements);
+        ctx.setCachedElements("android", elements, deviceId);
 
         let found: UiElement[] = [];
         if (args.fieldText) {

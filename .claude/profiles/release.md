@@ -30,7 +30,9 @@ minor / patch / hotfix). Полностью заменяет глобальны�
 **Это причина, по которой профиль существует. Без этой стадии релиз не
 запускается.**
 
-1. `gh issue list --state open --limit 50` — снять полный список.
+1. `gh issue list --state open --limit 1000` — снять полный список.
+   Если достигнут лимит, получить остальные страницы через GitHub API до
+   последней страницы; не считать лимит концом списка.
 2. Для каждого open issue:
    - Прочитать `gh issue view <N>`.
    - Принять решение из трёх:
@@ -44,6 +46,56 @@ minor / patch / hotfix). Полностью заменяет глобальны�
    идти дальше. Если пользователь хочет публиковать поверх open issue —
    зафиксировать это явным сообщением и записать в Report как
    осознанный techdebt.
+5. **Проверить внешние release prerequisites до любой irreversible
+   publication:**
+   - **GitHub immutable releases.** Поддерживаемый API:
+     `GET /repos/AlexGladkov/claude-in-mobile/immutable-releases` возвращает
+     `enabled` и `enforced_by_owner` (200 — включено, 404 — выключено).
+     `github-immutable-preflight` вызывает этот endpoint до npm-публикации и
+     требует `enabled == true`. Job также требует защищённое GitHub
+     Environment `release-immutable-policy` с required reviewers; при 403
+     от `GITHUB_TOKEN` это reviewer gate является компенсирующим контролем.
+     Аппрувер обязан проверить
+     `Settings → General → Releases → Enable release immutability`;
+     это компенсирующий human gate, а не machine proof. Финализация всё равно
+     проверяет `.immutable == true` у опубликованного Release.
+   - **npm Trusted Publishing (OIDC).** У npm есть поддерживаемый
+     `GET https://registry.npmjs.org/-/package/{urlencoded-package}/trust`,
+     но он требует npm access token с package-write и свежий `npm-otp`.
+     OIDC exchange token действует для publish/stage и не может читать Trust,
+     а `npm whoami` проверяет только classic-token identity. Поэтому workflow
+     не хранит TOTP/privileged npm token и не делает ложного machine assertion:
+     до `publish-npm` требуется защищённое Environment
+     `npm-trusted-publisher-policy` с required reviewers. Аппрувер сверяет
+     Trust-конфигурацию каждого из 11 пакетов (все значения должны совпасть):
+     owner/repository `AlexGladkov/claude-in-mobile`, workflow filename
+     `release.yml`, environment пустой, `Allowed Actions` разрешает прямой
+     `npm publish` (не только `npm stage publish`). Список в порядке `PUBLISH_ORDER`:
+     `@mcp-devices/plugin-api`, `mcp-devices`,
+     `@mcp-devices/plugin-android`, `@mcp-devices/plugin-ios`,
+     `@mcp-devices/plugin-web`, `@mcp-devices/plugin-desktop`,
+     `@mcp-devices/plugin-aurora`, `@mcp-devices/plugin-harmony`,
+     `@mcp-devices/plugin-debug`, `@mcp-devices/plugin-all`,
+     `claude-in-mobile`. Если npm предоставит безопасный non-interactive
+     read credential, gate можно заменить точным API-проверяющим job; до этого
+     approval обязателен и не считается API-доказательством.
+   - Если возможен retry с непустым `REPAIR_PLAN`, обеспечить `NPM_TOKEN`
+     с write-доступом для `npm dist-tag add` на затрагиваемые пакеты.
+     `npm-token-preflight` проверяет только identity через `npm whoami`;
+     read-only token тоже проходит и не подтверждает право repair. OIDC
+     publisher не получает этот токен.
+   - **Homebrew stable gate.** `homebrew-token-preflight` до любого public
+     channel вызывает `GET /repos/AlexGladkov/homebrew-tap` с
+     `HOMEBREW_TAP_TOKEN` и требует `.full_name` exact и
+     `.permissions.push == true` — machine-readable effective repository
+     push, соответствующий Contents: write. Safe write probe не выполняется,
+     поскольку он изменил бы tap. Для prerelease job skipped; для stable
+     отсутствие token/permission блокирует npm и GitHub publication, а не
+     оставляет Homebrew на старой версии.
+   - **Residual risk:** администратор может изменить GitHub immutable policy
+     после preflight, а reviewer может ошибиться. Finalization перепроверит
+     `.immutable` и остановится, но уже опубликованные npm-версии не
+     откатываются; изменения release settings должны быть ограничены владельцами.
 
 **Антипаттерн:** "issues — отдельная задача, релиз отдельно". Так нельзя:
 issue #43 ERR_REQUIRE_ESM пролежал между 3.10.3 и 3.11.2 и сломал
@@ -59,16 +111,15 @@ issue #43 ERR_REQUIRE_ESM пролежал между 3.10.3 и 3.11.2 и сло
 3. Если предыдущий релиз провалил CI (3.11.0 / 3.11.1 — оба
    потенциально) — обязательно прочитать их changelog-entries и убедиться
    что не повторим причины. Конкретно для этого проекта:
-   - `npm run build` должен билдить workspace `@claude-in-mobile/plugin-api`
+   - `npm run build` должен билдить workspace `@mcp-devices/plugin-api`
      перед main tsc. См. 3.11.1.
    - publish-npm job должен иметь `id-token: write` permission, если
      `npm publish --provenance` используется. См. 3.11.2.
 
-### Стадия 2 — Версии и манифесты (23 поля — обязательно ВСЕ)
+### Стадия 2 — Версии и манифесты (44 проверки — обязательно ВСЕ)
 
-`.github/workflows/release.yml` job `verify-plugin-versions` сверяет **23**
-версии с тегом и провалит релиз (→ `publish-npm` **skipped**, npm не выйдет)
-если хоть одна не совпадает. 6 top-level манифеста:
+`release.yml` job `verify-plugin-versions` сверяет 44 версии и dependency pins:
+ошибка в любой из них останавливает релиз до npm-публикации. В число проверок входят:
 
 - [ ] `package.json` `"version"`
 - [ ] `cli/Cargo.toml` `version = "..."`
@@ -105,12 +156,28 @@ plugin registry и тоже обязан == тег:
 - [ ] `src/plugins/builtin-tools/index.ts`
 - [ ] `src/plugins/repl/index.ts`
 
+**+ 7 статических полей `mcpDevicesPlugin.version`** в манифестах платформенных пакетов:
+
+- [ ] `packages/plugin-android/package.json`
+- [ ] `packages/plugin-ios/package.json`
+- [ ] `packages/plugin-web/package.json`
+- [ ] `packages/plugin-desktop/package.json`
+- [ ] `packages/plugin-aurora/package.json`
+- [ ] `packages/plugin-harmony/package.json`
+- [ ] `packages/plugin-debug/package.json`
+
 
 Одной командой:
-`for p in android ios web desktop aurora harmony debug all; do jq --arg v "X.Y.Z" '.version=$v' packages/plugin-$p/package.json > /tmp/pp && mv /tmp/pp packages/plugin-$p/package.json; done`
+`for p in android ios web desktop aurora harmony debug all; do jq --arg v "X.Y.Z" '.version=$v | if has("mcpDevicesPlugin") then .mcpDevicesPlugin.version=$v else . end' packages/plugin-$p/package.json > /tmp/pp && mv /tmp/pp packages/plugin-$p/package.json; done`
 
-(`packages/plugin-api/package.json` — НЕ трогать, версионируется независимо,
-CI его исключает.)
+`packages/plugin-api/package.json` версионируется независимо и должен оставаться
+на pinned `1.1.0`. Workflow также проверяет два root lockfile fields,
+10 workspace lockfile versions и локальную ссылку на `mcp-devices`.
+`compat/claude-in-mobile/package.json` — это исходный шаблон совместимого
+пакета; его имя `claude-in-mobile` не меняется, а `npm-build` временно
+переписывает версию и exact pins на `mcp-devices` и
+`@mcp-devices/plugin-all`. Перед публикацией artifact gate проверяет эти
+идентичности и зависимости; не публиковать исходный template напрямую.
 
 После bump-а: синхронизировать lockfile-ы.
 
@@ -129,18 +196,32 @@ CI его исключает.)
 
 ### Стадия 4 — Локальная сборка и тесты (Pre-flight)
 
-Все обязательны. Любой fail = `git reset` и обратно на стадию 1.
+Все обязательны. Любой fail останавливает продвижение релиза; исправить
+причину на ветке, сохранив незакоммиченные данные. Не использовать `git reset`.
 
 - [ ] **Branch CI зелёный.** `gh run list --branch <release-branch> --limit 3`
   — если последние прогоны красные, разобраться ДО тега. Урок v3.12.0:
   ci.yml падал с Phase 5 (tsc без сборки workspace plugin-api), заметили
   только после пуша тега.
 - [ ] **После любого `npm audit fix` / правки зависимостей:** полный
-  rebuild lockfile (`rm -rf node_modules package-lock.json && npm install`,
-  НЕ `--package-lock-only` — он сохраняет стейловые резолюции и теряет
-  optional-dep ветки других платформ), восстановить postinstall-симлинк
-  `node_modules/claude-in-mobile`, и прогнать `npm ci` на чистом клоне
-  (`git clone --depth 1 file://… /tmp/ci-sim && cd /tmp/ci-sim && npm ci`).
+  rebuild lockfile в disposable-копии рабочей директории — не удалять
+  `package-lock.json` или другие tracked-файлы в checkout:
+  ```sh
+  TMP_REPO="$(mktemp -d)"
+  trap 'rm -rf "$TMP_REPO"' EXIT
+  tar --exclude='./.git' --exclude='./node_modules' -cf - . |
+    tar -xf - -C "$TMP_REPO"
+  (
+    cd "$TMP_REPO"
+    rm -f package-lock.json
+    npm install --no-audit --no-fund
+  )
+  cp "$TMP_REPO/package-lock.json" package-lock.json
+  ```
+  НЕ использовать `--package-lock-only` — он сохраняет стейловые
+  резолюции и теряет optional-dep ветки других платформ; восстановить
+  postinstall-симлинк `node_modules/mcp-devices`, затем прогнать `npm ci`
+  в той же disposable-копии (`cd "$TMP_REPO" && npm ci --no-audit --no-fund`).
 - [ ] **После ЛЮБОГО `npm install` (включая version-бамп):** проверить,
   что lock сохранил минимум четыре linux-ветки optional deps sharp:
   `node -e 'const p=require("./package-lock.json").packages;const n=Object.keys(p).filter(k=>k.startsWith("node_modules/@img/sharp-linux"));if(n.length<4)throw Error("missing sharp linux optional deps: "+n.length)'`.
@@ -151,13 +232,19 @@ CI его исключает.)
   `@emnapi/runtime` count больше не является надёжным proxy начиная с sharp 0.35.
 
 - [ ] `npm run build` — zero TypeScript errors. Если падает на
-  `@claude-in-mobile/plugin-api` — это регрессия workspace build script
+  `@mcp-devices/plugin-api` — это регрессия workspace build script
   (см. 3.11.1).
 - [ ] `npx vitest run` — все TS тесты зелёные. Известные pre-existing
   падения (например, vite-resolve в store-tools) допустимы при условии
   что они уже были на main до релиза. Зафиксировать в report.
 - [ ] `cd cli && cargo build --release` — чисто.
 - [ ] `cd cli && cargo test --lib && cargo test --test setup_grok && cargo test --test repl_observability && cargo test --test repl_live_tui && cargo test --test harmony_cli` — все Rust тесты зелёные.
+
+- [ ] **JDK 17 (Temurin).** `npm run build:desktop` собирает companion,
+  включаемый в npm artifacts.
+- [ ] `cd desktop-companion && ./gradlew test --no-daemon` — тесты desktop
+  companion проходят на JDK 17 (та же команда, что в CI).
+
 
 ### Стадия 5 — Smoke-тесты бинарей (защита от регрессий типа #43, #44)
 
@@ -167,11 +254,11 @@ CI его исключает.)
 - [ ] `node dist/index.js --version` → печатает версию и **выходит 0**
   без таймаута. Если зависает — регрессия #44.
 - [ ] `node dist/index.js --help` → печатает usage и **выходит 0**.
-- [ ] Если изменился `src/browser/**` или `dist/browser/**`:
-  `node -e 'import("./dist/browser/client.js").then(m => console.log("ok"))'`
+- [ ] Если изменился `packages/plugin-web/src/browser/**` или `packages/plugin-web/dist/browser/**`:
+  `node -e 'import("./packages/plugin-web/dist/browser/client.js").then(() => console.log("ok"))'`
   → должно вывести `ok` без `ERR_REQUIRE_ESM`. Защита от #43.
 - [ ] Если изменился `cli/src/plugins/repl/**`: запустить
-  `printf '{"id":"r1","method":"shutdown"}\n' | cli/target/release/claude-in-mobile repl-supervisor`
+  `printf '{"id":"r1","method":"shutdown"}\n' | cli/target/release/mcp-devices repl-supervisor`
   → должно прийти `{"event":"ready"}` и `{"id":"r1","result":"ok"}`.
 
 ### Стадия 5b — Tarball install smoke (защита от регрессий типа #45)
@@ -180,18 +267,19 @@ CI его исключает.)
 публикуемых dependency-package-ов. Без этой стадии #45 повторится.
 
 - [ ] `npm pack` — создать тарбол.
-- [ ] `tar -tzf claude-in-mobile-X.Y.Z.tgz | grep -E 'plugin-api|node_modules'` —
+- [ ] `tar -tzf mcp-devices-X.Y.Z.tgz | grep -E 'plugin-api|node_modules'` —
   проверить, что bundled workspace-пакеты реально лежат в тарболе.
 - [ ] Установить тарбол в чистую директорию **БЕЗ доступа к workspace**:
   ```sh
   (cd /tmp && rm -rf install-smoke && mkdir install-smoke && cd install-smoke \
     && npm init -y >/dev/null \
-    && npm install /absolute/path/to/claude-in-mobile-X.Y.Z.tgz)
+    && npm install /absolute/path/to/mcp-devices-X.Y.Z.tgz)
   ```
-  Зелёный результат = `added N packages`. Любой `npm ERR! 404` или
-  `code E404` для `@claude-in-mobile/*` — релиз останавливается, идёт
-  на стадию 1. Workspace в `bundledDependencies` обязателен пока
-  плагинный API не опубликован отдельно.
+  `code E404` для `@mcp-devices/*` — публикацию остановить и устранить
+  причину до продолжения. Workflow публикует
+  `@mcp-devices/plugin-api@1.1.0` отдельно, но root `mcp-devices`
+  всё ещё bundle-ит pinned workspace copy через `bundledDependencies`;
+  release workflow проверяет эти байты до upload.
 - [ ] `cd /tmp/install-smoke && ./node_modules/.bin/claude-in-mobile --version`
   → версия совпадает с тегом.
 - [ ] **После публикации** — повторить через публичный npm:
@@ -226,46 +314,73 @@ CI его исключает.)
 
 ### Стадия 8 — Мониторинг CI
 
-`release.yml` запускается на push тега. Жанры jobs:
+`release.yml` запускается по SemVer-тегу на закреплённом commit SHA. Основные jobs:
 
-| Job                       | Что делает                          | Что может упасть                              |
-|---------------------------|--------------------------------------|------------------------------------------------|
-| build (arm64, x86_64)     | `cargo build --release`              | Rust compile error                             |
-| verify-plugin-versions    | сверка 23 версий/манифестов          | Не bump-нули одну из версий или манифестов      |
-| release                   | создаёт GitHub Release с tar.gz      | Permissions                                    |
-| publish-npm               | `npm publish --provenance`           | Build script / id-token permission (3.11.1-2)  |
-| update-homebrew           | патчит Formula в внешнем tap         | `HOMEBREW_TAP_TOKEN` истёк                     |
-| verify-checksums          | сверка sha256 формулы и тарбола      | Скачивание провалилось                         |
+| Job | Что делает |
+|---|---|
+| `setup` | проверяет tag, SemVer и commit SHA |
+| `ci-check` | требует успешный CI для того же commit |
+| `build` | собирает `darwin-arm64`, `darwin-x86_64` и `linux-x86_64` |
+| `verify-plugin-versions` | проверяет 44 version/dependency fields и static manifest identity |
+| `npm-build` | собирает и проверяет immutable npm artifacts |
+| `attest` | создаёт provenance attestations для CLI artifacts |
+| `release` | создаёт draft GitHub Release с тремя архивами и sidecar-файлами |
+| `npm-trusted-publisher-preflight` | требует защищённый reviewer gate для 11 npm Trust identities; OIDC/npm whoami не подменяют Trust API |
+| `github-immutable-preflight` | проверяет `GET /immutable-releases`; при admin-read 403 требует protected reviewer gate, затем проверяет draft identity |
+| `homebrew-token-preflight` | для stable проверяет secret и `.permissions.push` на `AlexGladkov/homebrew-tap`; prerelease skipped |
+| `release-preflight` | агрегирует все pre-publication gates; без success `publish-npm` и finalization не запускаются |
+| `npm-token-preflight` | проверяет identity classic token через `npm whoami`; не проверяет write-доступ |
+| `publish-npm` | публикует OIDC-пакеты и до success сверяет все 11 registry versions с подготовленными bytes/provenance; отсутствующие версии публикует повторно |
+| `repair-npm-tags` | применяет сохранённый preflight plan для известных dist-tag repair после полного npm reconciliation |
+| `npm-smoke` | проверяет доступность и identity опубликованных npm-пакетов |
+| `finalize-release` | публикует draft после успешных обязательных проверок |
+| `update-homebrew` | обновляет Formula только для stable-релиза |
+| `verify-checksums` | проверяет SHA-256 и attestations публичных архивов |
+| `release-status` | сводит результаты всех jobs в итоговый gate |
 
 - [ ] `gh run watch <run_id> --exit-status` — ждать завершения.
-- [ ] При падении: остановить релиз, исправить hotfix (`X.Y.Z+1`),
-  начать с **стадии 0** заново. Не "перезапускать" неудачный job —
-  rerun использует тот же commit SHA, фиксы не подхватятся.
+- [ ] При временном сбое `publish-npm` автоматически сверяет exact bytes/provenance
+  всех 11 версий и повторно публикует только отсутствующие, сохраняя dependency
+  order. При устойчивом сбое workflow остаётся красным для безопасного Actions
+  rerun; тот же immutable release ID перепроверяется без замены release или
+  переключения на новый commit.
 
-### Стадия 9 — Post-release валидация (все 3 канала)
+- Ограничение npm registry: публикация 11 независимых пакетов не является
+  атомарной транзакцией. Пока reconciliation выполняется или если ограниченные
+  повторы исчерпаны, часть immutable versions может быть публично видна.
+  Workflow останавливает дальнейшую финализацию, если точные bytes/provenance
+  всех пакетов не подтверждены; rerun сверяет состояние и продолжает публикацию,
+  но immutable npm versions нельзя откатить.
 
-- [ ] **GitHub:** `gh release view vX.Y.Z --json assets` — 2 ассета
-  (darwin-arm64 + darwin-x86_64), размер 3-9 MB каждый. Если ~20 MB —
-  это случайно собрали Node-бандл, удалить релиз и пересобрать.
-- [ ] **npm:** `npm view mcp-devices@X.Y.Z version` — версия
-  опубликована. `npm view mcp-devices dist-tags` — `latest` поднят
-  на новую версию.
-- [ ] **Homebrew (unified tap `AlexGladkov/homebrew-tap`):**
-  `brew update && brew upgrade alexgladkov/tap/mcp-devices` —
+- [ ] Если требуется изменить код/workflow, начать Stage 0 заново с нового
+  commit и следующего SemVer-тега. Не перезапускать tag workflow целиком:
+  он попытается создать тот же immutable release.
+
+### Стадия 9 — Post-release валидация (все применимые каналы)
+
+- [ ] **GitHub:** `gh release view vX.Y.Z --json assets` — ровно 6 assets:
+  `claude-in-mobile-X.Y.Z-{darwin-arm64,darwin-x86_64,linux-x86_64}.tar.gz`
+  и соответствующий `.sha256` sidecar для каждого архива. Draft становится
+  публичным только после `finalize-release`; не удалять и не пересоздавать release.
+- [ ] **npm:** `npm view mcp-devices@X.Y.Z version` — версия опубликована.
+  `npm view mcp-devices dist-tags` — stable-тег поднимает `latest`, prerelease
+  должен присутствовать в dist-tag, вычисленном для его SemVer prerelease.
+- [ ] **Homebrew:** только для stable-релиза; prerelease пропускает мутацию Formula.
+  Для stable: `brew update && brew upgrade alexgladkov/tap/mcp-devices` —
   переходит на новую версию. `mcp-devices --version` → `X.Y.Z`.
   Первая установка: `brew install alexgladkov/tap/mcp-devices`.
   Старые установки из `AlexGladkov/homebrew-claude-in-mobile` не мигрируют
   автоматически: `oldname` не является Formula DSL, а cross-tap rename не
   поддерживается через `formula_renames.json`. Переустановить из unified tap;
   каноническая формула сохраняет бинарный alias `claude-in-mobile`.
-  Формула лежит в КОРНЕ tap (`mcp-devices.rb`), не в `Formula/`.
+  Формула лежит в корне tap (`mcp-devices.rb`), не в `Formula/`.
   Если brew просит trust — `brew trust alexgladkov/tap`.
   Если `--version` показывает старую версию при обновлённом Cellar —
-  проверить `ls -la $(which claude-in-mobile)`: npm-g симлинк может
+  проверить `ls -la $(which mcp-devices)`: npm-g симлинк может
   перекрывать brew-бинарь (тот же prefix); обновить и npm-g копию.
-- [ ] **Smoke новой установки:**
-  `claude-in-mobile repl-supervisor < /dev/null` (если REPL plugin
-  затронут) → `{"event":"ready","apiVersion":"1"}`.
+- [ ] **Smoke новой установки:** `mcp-devices-cli repl-supervisor < /dev/null`
+  (если REPL plugin затронут) → `{"event":"ready","apiVersion":"1"}`.
+
 
 ### Стадия 10 — Release notes и issue cleanup
 
@@ -299,7 +414,7 @@ CI его исключает.)
 1. **Open issues — гейт релиза.** Если есть отчёт пользователя на
    текущей или предыдущей версии — релиз не выходит, пока он не
    разобран. Это причина появления профиля.
-2. **Версии в 14 полях, всегда.** `verify-plugin-versions` — наш страж.
+2. **44 проверки версий и dependency pins, всегда.** `verify-plugin-versions` — наш страж.
 3. **Smoke runtime ≠ tsc/vitest.** Runtime smoke (`--help`, `import()`,
    binary spawn) ловит классы багов которые не видны на этапе
    компиляции и unit-тестов. Класс #43 (ESM) и класс #44 (deadlock на

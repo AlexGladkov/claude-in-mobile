@@ -5,6 +5,7 @@ import type { ToolResult } from "./tool-result.js";
 export type ToolHandler<TArgs = Record<string, unknown>, TCtx = unknown> = (
   args: TArgs,
   ctx: TCtx,
+  depth?: number,
 ) => Promise<ToolResult>;
 
 /**
@@ -20,9 +21,9 @@ export function runToolSafely<TArgs, TCtx>(
   handler: ToolHandler<TArgs, TCtx>,
   fallbackCode = "TOOL_FAILED",
 ): ToolHandler<TArgs, TCtx> {
-  return async (args, ctx) => {
+  return async (args, ctx, depth) => {
     try {
-      return await handler(args, ctx);
+      return await handler(args, ctx, depth);
     } catch (err) {
       if (err instanceof MobileError) throw err;
       const message = err instanceof Error ? err.message : String(err);

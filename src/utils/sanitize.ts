@@ -1,4 +1,5 @@
 import { MobileError } from "../errors.js";
+import { stripTerminalControls } from "./terminal-controls.js";
 
 // C1: Block dangerous shell patterns.
 //
@@ -287,20 +288,203 @@ export function validatePathContainment(filePath: string, baseDir: string): void
   }
 }
 
-// S1: Sanitize error messages — strip tokens, keys, and secrets
+// S1: Sanitize error messages — strip tokens, keys, and secrets.
+//
+// Keep the credential recognizers here (rather than in MCP code) so every
+// caller that exposes an error or diagnostic string gets the same protection.
+const CREDENTIAL_REDACTION = "[REDACTED]";
+const AWS_ACCESS_KEY_RE =
+  /\b(?:AKIA|ASIA|AIDA|AROA|AGPA|AIPA|ANPA|ANVA|ASCA|ACCA|ABIA|A3T[A-Z0-9])[0-9A-Z]{16}\b/gu;
+const AWS_SECRET_CANDIDATE_RE =
+  /(?<![A-Za-z0-9/+=])[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])/gu;
+const GITHUB_TOKEN_RE = /\b(?:gh[pousr]|github_pat)_[A-Za-z0-9_]+/gu;
+const ANTHROPIC_TOKEN_RE = /\bsk-ant-[A-Za-z0-9_-]+/gu;
+const OPENAI_TOKEN_RE = /\bsk-[A-Za-z0-9_-]+/gu;
+const GOOGLE_API_KEY_RE = /\bAIza[A-Za-z0-9_-]+/gu;
+const SLACK_TOKEN_RE = /\bxox[A-Za-z0-9]*-[A-Za-z0-9-]+/gu;
+const JWT_RE = /\beyJ[A-Za-z0-9._-]+/gu;
+const URI_SENSITIVE_QUERY_KEY_RE =
+  /(?:password|passwd|secret|token|api[_-]?key|client[_-]?secret|authorization|credential|private[_-]?key|access[_-]?token|refresh[_-]?token|jwt|(?:^|[_-])(?:pin|otp)(?:$|[_-]|code|number|value)|one[_-]?time[_-]?code|verification[_-]?code|security[_-]?code|cvv|cvc|(?:^|[_-])(?:code|state)(?:$|[_-])|oauth[_-]?code|authorization[_-]?code|^key$)/iu;
+function normalizeSanitizedText(value: string): string {
+  const withoutTerminalControls = stripTerminalControls(value);
+  const normalized = withoutTerminalControls.replace(/\r\n?/g, "\n");
+  return normalized.replace(
+    /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,
+    "",
+  );
+}
+
+
+function redactCredentialText(value: string): string {
+  return normalizeSanitizedText(value)
+    .replace(/([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/\s?#]*@/giu, "$1")
+    .replace(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/gu, "[REDACTED_KEY]")
+    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9\-._~+/]+=*/giu, "$1 [REDACTED]")
+    .replace(
+      /(["']?\b(?:access[_-]?token|refresh[_-]?token|jwtToken|api[_-]?key|client[_-]?secret|password|passwd|secret|authorization|credentials?|private[_-]?key|token|key|code|state|oauth[_-]?code|authorization[_-]?code|(?:[A-Za-z0-9_-]+[_-])?(?:pin|otp)(?:[_-]?(?:code|value|number))?|one[_-]?time[_-]?code|verification[_-]?code|security[_-]?code|cvv|cvc|credit[_-]?card[_-]?(?:number|code)|card[_-]?number)\b["']?\s*:\s*)"((?:\\.|[^"\\])*)"/giu,
+      '$1"[REDACTED]"',
+    )
+    .replace(
+      /(["']?\b(?:access[_-]?token|refresh[_-]?token|jwtToken|api[_-]?key|client[_-]?secret|password|passwd|secret|authorization|credentials?|private[_-]?key|token|key|code|state|oauth[_-]?code|authorization[_-]?code|(?:[A-Za-z0-9_-]+[_-])?(?:pin|otp)(?:[_-]?(?:code|value|number))?|one[_-]?time[_-]?code|verification[_-]?code|security[_-]?code|cvv|cvc|credit[_-]?card[_-]?(?:number|code)|card[_-]?number)\b["']?\s*:\s*)'((?:\\.|[^'\\])*)'/giu,
+      "$1'[REDACTED]'",
+    )
+    .replace(
+      /\b(access[_-]?token|refresh[_-]?token|jwtToken|api[_-]?key|client[_-]?secret|password|passwd|secret|authorization|credentials?|private[_-]?key|token|key|code|state|oauth[_-]?code|authorization[_-]?code|(?:[A-Za-z0-9_-]+[_-])?(?:pin|otp)(?:[_-]?(?:code|value|number))?|one[_-]?time[_-]?code|verification[_-]?code|security[_-]?code|cvv|cvc|credit[_-]?card[_-]?(?:number|code)|card[_-]?number)\b\s*[=:]\s*(?!Bearer\b|Basic\b)[^\s,'"}]+/giu,
+      "$1=[REDACTED]",
+    )
+    .replace(AWS_ACCESS_KEY_RE, CREDENTIAL_REDACTION)
+    .replace(AWS_SECRET_CANDIDATE_RE, CREDENTIAL_REDACTION)
+    .replace(GITHUB_TOKEN_RE, CREDENTIAL_REDACTION)
+    .replace(ANTHROPIC_TOKEN_RE, CREDENTIAL_REDACTION)
+    .replace(OPENAI_TOKEN_RE, CREDENTIAL_REDACTION)
+    .replace(GOOGLE_API_KEY_RE, CREDENTIAL_REDACTION)
+    .replace(SLACK_TOKEN_RE, CREDENTIAL_REDACTION)
+    .replace(JWT_RE, "[REDACTED_JWT]");
+}
+
+function containsCredentialMaterial(value: string): boolean {
+  return redactCredentialText(value) !== value;
+}
+
+function decodeUriComponentSafely(value: string): string {
+  try {
+    return decodeURIComponent(value.replace(/\+/g, " "));
+  } catch {
+    return value;
+  }
+}
+
+function filterUriQuery(rawQuery: string): { query: string; changed: boolean } {
+  if (!rawQuery) return { query: rawQuery, changed: false };
+
+  let changed = false;
+  const safeSegments: string[] = [];
+  for (const segment of rawQuery.split("&")) {
+    if (segment.length === 0) {
+      safeSegments.push(segment);
+      continue;
+    }
+    const separator = segment.indexOf("=");
+    const encodedKey = separator >= 0 ? segment.slice(0, separator) : segment;
+    const encodedValue = separator >= 0 ? segment.slice(separator + 1) : "";
+    const key = decodeUriComponentSafely(encodedKey);
+    const queryValue = decodeUriComponentSafely(encodedValue);
+    if (
+      URI_SENSITIVE_QUERY_KEY_RE.test(key)
+      || containsCredentialMaterial(key)
+      || containsCredentialMaterial(queryValue)
+      || containsCredentialMaterial(`${key}=${queryValue}`)
+    ) {
+      changed = true;
+      continue;
+    }
+    safeSegments.push(segment);
+  }
+  return { query: safeSegments.join("&"), changed };
+}
+
+function stripRawUriUserinfo(uri: string): { value: string; changed: boolean } {
+  const authority = /^([A-Za-z][A-Za-z0-9+.-]*:)?\/\/([^/?#]*)(.*)$/u.exec(uri);
+  if (!authority) return { value: uri, changed: false };
+
+  const at = authority[2].lastIndexOf("@");
+  if (at < 0) return { value: uri, changed: false };
+  return {
+    value: `${authority[1] ?? ""}//${authority[2].slice(at + 1)}${authority[3]}`,
+    changed: true,
+  };
+}
+
+// URI fields are textual MCP egresses, but blindly applying URL normalization
+// would change ordinary resource identifiers. Preserve safe input verbatim;
+// only strip userinfo and credential-bearing query/fragment components.
+export function sanitizeResourceUri(value: unknown, maxChars = 8_192): string | undefined {
+  if (typeof value !== "string") return undefined;
+
+  const normalized = normalizeSanitizedText(value.slice(0, maxChars));
+  let candidate = normalized;
+  let changed = false;
+  let parsed: URL | undefined;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    // MCP permits non-URL resource identifiers. The fallback below handles
+    // their query, fragment, and authority components without rejecting safe
+    // custom schemes or relative identifiers.
+  }
+
+  if (parsed) {
+    const hasUserinfo = parsed.username.length > 0
+      || parsed.password.length > 0
+      || /^([A-Za-z][A-Za-z0-9+.-]*:)?\/\/[^/?#]*@/u.test(normalized);
+    if (hasUserinfo) {
+      parsed.username = "";
+      parsed.password = "";
+      changed = true;
+    }
+
+    const filteredQuery = filterUriQuery(parsed.search.slice(1));
+    if (filteredQuery.changed) {
+      parsed.search = filteredQuery.query ? `?${filteredQuery.query}` : "";
+      changed = true;
+    }
+
+    if (parsed.hash) {
+      const fragment = decodeUriComponentSafely(parsed.hash.slice(1));
+      if (containsCredentialMaterial(fragment)) {
+        parsed.hash = "";
+        changed = true;
+      }
+    }
+
+    const decodedPath = decodeUriComponentSafely(parsed.pathname);
+    if (containsCredentialMaterial(decodedPath)) return undefined;
+    if (changed) candidate = parsed.toString();
+  } else {
+    const stripped = stripRawUriUserinfo(candidate);
+    candidate = stripped.value;
+    changed = stripped.changed;
+
+    const fragmentIndex = candidate.indexOf("#");
+    if (fragmentIndex >= 0) {
+      const fragment = decodeUriComponentSafely(candidate.slice(fragmentIndex + 1));
+      if (containsCredentialMaterial(fragment)) {
+        candidate = candidate.slice(0, fragmentIndex);
+        changed = true;
+      }
+    }
+
+    const queryIndex = candidate.indexOf("?");
+    if (queryIndex >= 0) {
+      const filteredQuery = filterUriQuery(candidate.slice(queryIndex + 1));
+      if (filteredQuery.changed) {
+        candidate = `${candidate.slice(0, queryIndex)}${
+          filteredQuery.query ? `?${filteredQuery.query}` : ""
+        }`;
+        changed = true;
+      }
+    }
+
+    const pathEnd = candidate.search(/[?#]/u);
+    const decodedPath = decodeUriComponentSafely(
+      pathEnd >= 0 ? candidate.slice(0, pathEnd) : candidate,
+    );
+    if (containsCredentialMaterial(decodedPath)) return undefined;
+  }
+
+  if (candidate.length === 0 && normalized.length > 0) return undefined;
+
+  // Redact credentials in non-standard URI paths/hosts as a final defense,
+  // while retaining ordinary URI text exactly when no sensitive material exists.
+  const redacted = redactCredentialText(candidate);
+  return redacted.slice(0, maxChars);
+}
+
 export function sanitizeErrorMessage(value: unknown): string {
   const message = value instanceof Error
     ? value.message
     : typeof value === "string"
       ? value
       : "Unknown error";
-  return message
-    .slice(0, 64 * 1024)
-    .replace(/\r\n?/g, "\n")
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, "")
-    .replace(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/g, "[REDACTED_KEY]")
-    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9\-._~+/]+=*/gi, "$1 [REDACTED]")
-    .replace(/\b(access[_-]?token|refresh[_-]?token|jwtToken|api[_-]?key|client[_-]?secret|password|token|key)\s*[=:]\s*['"]?[^\s,'"}]+/gi, "$1=[REDACTED]")
-    .replace(/eyJ[A-Za-z0-9._-]+/g, "[REDACTED_JWT]")
-    .slice(0, 4096);
+  return redactCredentialText(message.slice(0, 64 * 1024)).slice(0, 4096);
 }

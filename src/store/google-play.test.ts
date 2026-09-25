@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { writeFile, rm } from "fs/promises";
-import { tmpdir } from "os";
+import { mkdtemp, writeFile, rm, symlink } from "fs/promises";
 import { join } from "path";
 
 // GoogleAuth мокается как настоящий класс — иначе `new GoogleAuth()` падает
@@ -50,17 +49,18 @@ const OK      = {};
 
 describe("GooglePlayClient", () => {
   let client: GooglePlayClient;
+  let root: string;
   let tmpFile: string;
-
   beforeEach(async () => {
+    root = await mkdtemp(join(process.cwd(), ".google-play-store-test-"));
     client = new GooglePlayClient();
-    tmpFile = join(tmpdir(), `test-${Date.now()}.aab`);
+    tmpFile = join(root, "test.aab");
     await writeFile(tmpFile, Buffer.alloc(1024, 0x42)); // 1 KB fake AAB
   });
 
   afterEach(async () => {
     vi.unstubAllGlobals();
-    if (tmpFile) await rm(tmpFile, { force: true });
+    if (root) await rm(root, { recursive: true, force: true });
   });
 
   // ── upload ────────────────────────────────────────────────────────────────
@@ -93,10 +93,46 @@ describe("GooglePlayClient", () => {
       expect(streamOpts.method).toBe("PUT");
       expect(streamOpts.duplex).toBe("half");
     });
+    it("rejects an outside-root artifact before auth or network", async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
 
-    it("throws if file does not exist", async () => {
-      await expect(client.upload("com.example.app", "/nonexistent/path.aab"))
-        .rejects.toThrow("File not found");
+      await expect(client.upload("com.example.app", "/tmp/outside.aab"))
+        .rejects.toMatchObject({ code: "STORE_ARTIFACT_OUTSIDE_ROOT" });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("rejects a symlink artifact before auth or network", async () => {
+      const linkPath = join(root, "linked.aab");
+      await symlink(tmpFile, linkPath);
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+
+      await expect(client.upload("com.example.app", linkPath))
+        .rejects.toMatchObject({ code: "STORE_ARTIFACT_SYMLINK" });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+    it("rejects wrong extensions before auth or network", async () => {
+      const wrongPath = join(root, "release.txt");
+      await writeFile(wrongPath, "payload");
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+
+      await expect(client.upload("com.example.app", wrongPath))
+        .rejects.toMatchObject({ code: "STORE_ARTIFACT_INVALID_TYPE" });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+    it("does not read Google credentials for an invalid artifact", async () => {
+      const previousKeyFile = process.env.GOOGLE_PLAY_KEY_FILE;
+      process.env.GOOGLE_PLAY_KEY_FILE = join(root, "missing-key.json");
+      try {
+        const guardedClient = new GooglePlayClient();
+        await expect(guardedClient.upload("com.example.app", "/tmp/outside.aab"))
+          .rejects.toMatchObject({ code: "STORE_ARTIFACT_OUTSIDE_ROOT" });
+      } finally {
+        if (previousKeyFile === undefined) delete process.env.GOOGLE_PLAY_KEY_FILE;
+        else process.env.GOOGLE_PLAY_KEY_FILE = previousKeyFile;
+      }
     });
 
     it("throws if upload initiation fails", async () => {
@@ -138,8 +174,8 @@ describe("GooglePlayClient", () => {
     });
 
     it("uses /apks endpoint for .apk files", async () => {
-      const apkFile = join(tmpdir(), `test-${Date.now()}.apk`);
-      await writeFile(apkFile, Buffer.alloc(512));
+      const apkFile = join(root, "test.apk");
+      await writeFile(apkFile, Buffer.alloc(256, 0x41));
 
       vi.stubGlobal("fetch", makeFetch(
         { status: 200, body: { id: "edit-apk" } },
@@ -266,5 +302,143 @@ describe("GooglePlayClient", () => {
       await expect(client.submit("com.example.app", "internal", 1.0))
         .rejects.toThrow("No active release");
     });
+  });
+  it("queues same-package uploads and notes/submission behind an in-progress upload", async () => {
+    const events: string[] = [];
+    let createEditCount = 0;
+    let nextVersionCode = 42;
+    let trackBody: unknown;
+    let releaseFirstEdit!: () => void;
+    let firstEditStartedResolve!: () => void;
+    const firstEditStarted = new Promise<void>((resolve) => {
+      firstEditStartedResolve = resolve;
+    });
+
+    const fetchMock = vi.fn((input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+
+      if (url.endsWith("/edits") && method === "POST") {
+        createEditCount += 1;
+        events.push(`create-edit-${createEditCount}`);
+        const response = new Response(JSON.stringify(EDIT));
+        if (createEditCount === 1) {
+          firstEditStartedResolve();
+          return new Promise<Response>((resolve) => {
+            releaseFirstEdit = () => resolve(response);
+          });
+        }
+        return Promise.resolve(response);
+      }
+      if (url.includes("uploadType=resumable")) {
+        events.push("initiate-upload");
+        return Promise.resolve(new Response(null, {
+          status: 200,
+          headers: { location: `https://upload.googleapis.com/resumable/${nextVersionCode}` },
+        }));
+      }
+      if (url.startsWith("https://upload.googleapis.com/")) {
+        events.push(`stream-${nextVersionCode}`);
+        return Promise.resolve(new Response(
+          JSON.stringify({ versionCode: nextVersionCode++ }),
+        ));
+      }
+      if (url.includes("/tracks/internal") && method === "PUT") {
+        events.push("track");
+        trackBody = JSON.parse(String(init?.body));
+        return Promise.resolve(new Response(JSON.stringify(OK)));
+      }
+      if (url.includes(":commit") && method === "POST") {
+        events.push("commit");
+        return Promise.resolve(new Response(JSON.stringify(OK)));
+      }
+      throw new Error(`Unexpected Google Play request: ${method} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const firstUpload = client.upload("com.example.app", tmpFile);
+    await firstEditStarted;
+
+    const secondUpload = client.upload("com.example.app", tmpFile);
+    const notes = client.setReleaseNotes("com.example.app", "en-US", "queued");
+    const submit = client.submit("com.example.app", "internal", 1.0);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    releaseFirstEdit();
+
+    const [firstResult, secondResult] = await Promise.all([firstUpload, secondUpload]);
+    await Promise.all([notes, submit]);
+
+    expect(firstResult).toEqual({ versionCode: 42 });
+    expect(secondResult).toEqual({ versionCode: 43 });
+    expect(createEditCount).toBe(1);
+    expect(events).toEqual([
+      "create-edit-1",
+      "initiate-upload",
+      "stream-42",
+      "initiate-upload",
+      "stream-43",
+      "track",
+      "commit",
+    ]);
+    expect(trackBody).toMatchObject({
+      releases: [{
+        versionCodes: ["43"],
+        releaseNotes: [{ language: "en-US", text: "queued" }],
+      }],
+    });
+  });
+  it("keeps different package mutations concurrent", async () => {
+    let releaseFirstEdit!: () => void;
+    let firstEditStartedResolve!: () => void;
+    let secondEditStartedResolve!: () => void;
+    const firstEditStarted = new Promise<void>((resolve) => {
+      firstEditStartedResolve = resolve;
+    });
+    const secondEditStarted = new Promise<void>((resolve) => {
+      secondEditStartedResolve = resolve;
+    });
+
+    const fetchMock = vi.fn((input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url.endsWith("/edits") && method === "POST") {
+        if (url.includes("/applications/com.first.app/")) {
+          const response = new Response(JSON.stringify({ id: "edit-first" }));
+          firstEditStartedResolve();
+          return new Promise<Response>((resolve) => {
+            releaseFirstEdit = () => resolve(response);
+          });
+        }
+        if (url.includes("/applications/com.second.app/")) {
+          secondEditStartedResolve();
+          return Promise.resolve(new Response(JSON.stringify({ id: "edit-second" })));
+        }
+      }
+      if (url.includes("uploadType=resumable")) {
+        const packagePath = url.includes("com.first.app") ? "first" : "second";
+        return Promise.resolve(new Response(null, {
+          status: 200,
+          headers: { location: `https://upload.googleapis.com/resumable/${packagePath}` },
+        }));
+      }
+      if (url.startsWith("https://upload.googleapis.com/")) {
+        const versionCode = url.endsWith("/first") ? 11 : 22;
+        return Promise.resolve(new Response(JSON.stringify({ versionCode })));
+      }
+      throw new Error(`Unexpected Google Play request: ${method} ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const firstUpload = client.upload("com.first.app", tmpFile);
+    await firstEditStarted;
+    const secondUpload = client.upload("com.second.app", tmpFile);
+    await secondEditStarted;
+
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("com.second.app"))).toBe(true);
+    releaseFirstEdit();
+
+    await expect(firstUpload).resolves.toEqual({ versionCode: 11 });
+    await expect(secondUpload).resolves.toEqual({ versionCode: 22 });
   });
 });
