@@ -13,7 +13,7 @@ import { WDAManager } from "./wda-manager.js";
 
 interface BuildHarness {
   derivedDataPath: string;
-  buildWDAIfNeeded(wdaPath: string): Promise<void>;
+  buildWDAIfNeeded(wdaPath: string, targetId?: string): Promise<void>;
 }
 
 function harness(manager: WDAManager): BuildHarness {
@@ -94,6 +94,15 @@ describe("WDAManager build path", () => {
     const args = readFileSync(buildArgsLog, "utf8");
     expect(args).toContain("id=UDID-BOOTED");
     expect(args).not.toContain("iPhone 14");
+  });
+
+  it("builds against the simulator WDA is launching on, not another booted one", async () => {
+    const manager = new WDAManager();
+    harness(manager).derivedDataPath = derivedDataPath;
+
+    await harness(manager).buildWDAIfNeeded(wdaPath, "UDID-SHUTDOWN");
+
+    expect(readFileSync(buildArgsLog, "utf8")).toContain("id=UDID-SHUTDOWN");
   });
 
   it("reports that no simulator is available instead of failing obscurely", async () => {

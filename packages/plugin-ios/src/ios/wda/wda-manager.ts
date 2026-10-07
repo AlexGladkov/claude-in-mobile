@@ -103,7 +103,7 @@ export class WDAManager {
     }
 
     const wdaPath = await this.discoverWDA();
-    if (isSimulator) await this.buildWDAIfNeeded(wdaPath);
+    if (isSimulator) await this.buildWDAIfNeeded(wdaPath, deviceId);
     const port = await this.reservePort();
     let instance: ManagedInstance | undefined;
     let client: WDAClient | undefined;
@@ -161,8 +161,8 @@ export class WDAManager {
     );
   }
 
-  private resolveSimulatorDestination(devices: IosDevice[]): string {
-    const device = pickBuildSimulator(devices);
+  private resolveSimulatorDestination(devices: IosDevice[], targetId?: string): string {
+    const device = pickBuildSimulator(devices, targetId);
     if (!device) {
       throw new Error(
         "No iOS simulator available to build WebDriverAgent against. "
@@ -172,9 +172,9 @@ export class WDAManager {
     return `platform=iOS Simulator,id=${device.id}`;
   }
 
-  private async buildWDAIfNeeded(wdaPath: string): Promise<void> {
+  private async buildWDAIfNeeded(wdaPath: string, targetId?: string): Promise<void> {
     const devices = parseDevicesJson(execSimctl(["list", "devices", "-j"]));
-    const destination = this.resolveSimulatorDestination(devices);
+    const destination = this.resolveSimulatorDestination(devices, targetId);
     console.error("Preparing WebDriverAgent for first use...");
     try {
       // Always invoke xcodebuild: its incremental build graph is the reliable
