@@ -138,6 +138,18 @@ function isSecureWdaNode(node: WdaNode): boolean {
     || valueBearingTextEntry;
 }
 
+const CLICKABLE_TYPES = new Set([
+  "Button", "PopUpButton", "MenuButton", "ToolbarButton", "Link", "Cell", "Icon",
+  "Switch", "Toggle", "Slider", "Stepper", "SegmentedControl", "PickerWheel",
+  "Key", "MenuItem", "Tab", "CheckBox", "RadioButton", "SearchField", "TextView",
+]);
+const SCROLLABLE_TYPES = new Set(["ScrollView", "Table", "CollectionView"]);
+
+/** `/source?format=json` names types bare, `accessibleSource` with the XCUIElementType prefix. */
+function bareType(type: string | null | undefined): string {
+  return (type ?? "").replace(/^XCUIElementType/, "");
+}
+
 /**
  * Convert an iOS accessibility tree (from WDA) to UiElement[].
  *
@@ -183,13 +195,11 @@ export function iosTreeToUiElements(
           contentDesc: secure ? REDACTED : node.name ?? "",
           checkable: false,
           checked: false,
-          clickable:
-            node.enabled !== false
-            && Boolean(node.type?.includes("Button") || node.type?.includes("Link") || node.type?.includes("Cell")),
+          clickable: node.enabled !== false && CLICKABLE_TYPES.has(bareType(node.type)),
           enabled: node.enabled !== false,
           focusable: node.enabled !== false,
           focused: false,
-          scrollable: node.type?.includes("ScrollView") ?? false,
+          scrollable: SCROLLABLE_TYPES.has(bareType(node.type)),
           longClickable: false,
           password: secure,
           selected: node.selected ?? false,

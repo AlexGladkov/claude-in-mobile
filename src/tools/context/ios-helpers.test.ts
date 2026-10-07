@@ -240,3 +240,42 @@ describe("hints path never leaks a SecureTextField value", () => {
     expect(suggestions).not.toContain(password);
   });
 });
+
+describe("iosTreeToUiElements — interactivity follows the element type", () => {
+  function screen(...types: string[]) {
+    return {
+      value: {
+        type: "Application",
+        rect: { x: 0, y: 0, width: 440, height: 956 },
+        children: types.map((type, i) => ({
+          type,
+          rect: { x: 0, y: i * 50, width: 100, height: 40 },
+        })),
+      },
+    };
+  }
+
+  it.each(["Icon", "Switch", "Slider", "SegmentedControl", "Key", "MenuItem", "SearchField"])(
+    "treats a %s as clickable",
+    (type) => {
+      const [, el] = iosTreeToUiElements(screen(type));
+      expect(el.clickable).toBe(true);
+    },
+  );
+
+  it.each(["Table", "CollectionView", "ScrollView"])("treats a %s as scrollable", (type) => {
+    const [, el] = iosTreeToUiElements(screen(type));
+    expect(el.scrollable).toBe(true);
+  });
+
+  it("matches whole type names, so a TabBar does not count as a Tab", () => {
+    const [, tabBar, text] = iosTreeToUiElements(screen("TabBar", "StaticText"));
+    expect(tabBar.clickable).toBe(false);
+    expect(text.clickable).toBe(false);
+  });
+
+  it("accepts the XCUIElementType prefix of the accessibleSource format", () => {
+    const [, el] = iosTreeToUiElements(screen("XCUIElementTypeIcon"));
+    expect(el.clickable).toBe(true);
+  });
+});
