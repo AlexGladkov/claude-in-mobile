@@ -98,6 +98,14 @@ export interface IosClientLike {
   findElements(options: Record<string, unknown>): Promise<IosElementLike[]>;
   getElementRect(elementId: string): Promise<IosElementLike["rect"] | null>;
   tapElement(elementId: string): Promise<void>;
+  pinch?(
+    x: number,
+    y: number,
+    scale: number,
+    startDistance?: number,
+    durationMs?: number,
+    deviceId?: string,
+  ): Promise<{ startDistance: number; endDistance: number }>;
   cleanup(): void | Promise<void>;
 }
 

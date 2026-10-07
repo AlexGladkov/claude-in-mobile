@@ -306,6 +306,31 @@ export class IosClient {
   }
 
   /**
+   * Pinch around a centre point: scale > 1 spreads the fingers (zoom in), < 1 closes them.
+   * `startDistance` is the initial finger spread in points; both fingers stay on screen.
+   */
+  async pinch(
+    x: number,
+    y: number,
+    scale: number,
+    startDistance: number = 200,
+    durationMs: number = 500,
+    deviceIdOverride?: string,
+  ): Promise<{ startDistance: number; endDistance: number }> {
+    try {
+      const wdaClient = await this.ensureWDA(deviceIdOverride);
+      const size = await this.getScreenPointSize(deviceIdOverride);
+      const room = 2 * Math.min(x, size.width - x) - 2;
+      const start = Math.max(2, Math.min(startDistance, room));
+      const end = Math.max(2, Math.min(start * scale, room));
+      await wdaClient.pinch(x, y, start, end, durationMs);
+      return { startDistance: Math.round(start), endDistance: Math.round(end) };
+    } catch (error: unknown) {
+      throw wdaRequiredError("Pinch", error);
+    }
+  }
+
+  /**
    * Swipe in direction (uses actual screen center from WDA, not hardcoded)
    */
   async swipeDirection(direction: "up" | "down" | "left" | "right", distance: number = 400): Promise<void> {

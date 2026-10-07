@@ -5,7 +5,7 @@ import { PLATFORM_JSON_SCHEMA } from "../common-schema.js";
 const { meta, aliases } = createMetaTool({
   name: "input",
   description:
-    "Input actions. tap/double_tap/long_press: coords or text/id/label/index. swipe: direction or coords. text: type text. key: press key.",
+    "Input actions. tap/double_tap/long_press: coords or text/id/label/index. swipe: direction or coords. pinch (iOS): scale around x/y or screen centre. text: type text. key: press key.",
   tools: interactionTools,
   prefix: "input_",
   extraSchema: {
@@ -21,7 +21,9 @@ const { meta, aliases } = createMetaTool({
     index: { type: "number", description: "Tap element by index from ui_tree output (Android/HarmonyOS)" },
     key: { type: "string", description: "Key name: BACK, HOME, ENTER, TAB, DELETE, etc." },
     direction: { type: "string", enum: ["up", "down", "left", "right"], description: "Swipe direction" },
-    duration: { type: "number", description: "Duration in ms (long_press default: 1000, swipe default: 300)" },
+    duration: { type: "number", description: "Duration in ms (long_press default: 1000, swipe default: 300, pinch default: 500)" },
+    scale: { type: "number", description: "pinch: final finger spread relative to the initial one (> 1 zoom in, < 1 zoom out)" },
+    distance: { type: "number", description: "pinch: initial finger spread (default: 200)" },
     interval: { type: "number", description: "Delay between taps in ms for double_tap (default: 100)" },
     targetPid: { type: "number", description: "Desktop only: PID of target process" },
     hints: { type: "boolean", description: "Return hints about what changed after the action (default: true, set false to disable)", default: true },

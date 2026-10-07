@@ -299,6 +299,64 @@ export const interactionTools: ToolDefinition[] = [
   }),
 
   defineTool({
+    name: "input_pinch",
+    description:
+      "iOS only: two-finger pinch around a centre point. scale > 1 spreads the fingers (zoom in), scale < 1 closes them (zoom out). " +
+      "x/y (centre) and distance (initial finger spread) are screenshot-space like input_tap and auto-scaled; without x/y the screen centre is used and distance is in points.",
+    schema: z.object({
+      x: z.number().optional().describe("Centre X (screenshot pixel space; default: screen centre)"),
+      y: z.number().optional().describe("Centre Y (screenshot pixel space; default: screen centre)"),
+      scale: z.number().positive().describe("Final finger spread relative to the initial one: 2 = zoom in 2x, 0.5 = zoom out"),
+      distance: z.number().positive().default(200).describe("Initial finger spread (default: 200)"),
+      duration: z.number().default(500).describe("Duration of the finger movement in ms (default: 500)"),
+      hints: z.boolean().default(true).describe("Return hints about what changed after the action."),
+      platform: platformEnum,
+      deviceId: deviceIdField,
+    }),
+    handler: async (args, ctx) => {
+      throwIfAborted(ctx.signal);
+      const { deviceId, platform: currentPlatform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      if (currentPlatform !== "ios") {
+        throw new ValidationError("input(action:'pinch') is supported on iOS only.");
+      }
+      if (args.scale === 1) {
+        throw new ValidationError("scale must differ from 1 (> 1 zooms in, < 1 zooms out).");
+      }
+      const iosClient = ctx.deviceManager.getIosClient(deviceId);
+      if (typeof iosClient.pinch !== "function") {
+        throw new ValidationError("The installed iOS plugin does not support pinch.");
+      }
+
+      let x: number;
+      let y: number;
+      let distance = args.distance;
+      if (args.x !== undefined && args.y !== undefined) {
+        const centre = await applyScale(args.x, args.y, currentPlatform, ctx, deviceId);
+        const edge = await applyScale(args.x + args.distance, args.y, currentPlatform, ctx, deviceId);
+        ({ x, y } = centre);
+        distance = Math.abs(edge.x - centre.x);
+      } else if (args.x === undefined && args.y === undefined) {
+        const size = await iosClient.getScreenPointSize(deviceId);
+        x = Math.round(size.width / 2);
+        y = Math.round(size.height / 2);
+      } else {
+        throw new ValidationError("Provide both x and y, or neither for the screen centre.");
+      }
+
+      throwIfAborted(ctx.signal);
+      const spread = await iosClient.pinch(x, y, args.scale, distance, args.duration, deviceId);
+      throwIfAborted(ctx.signal);
+      ctx.invalidateUiTreeCache(currentPlatform, deviceId);
+      let result = `Pinched at (${x}, ${y}): finger spread ${spread.startDistance} -> ${spread.endDistance}`;
+      if (args.hints) {
+        throwIfAborted(ctx.signal);
+        result += await ctx.generateActionHints(args.platform, deviceId);
+      }
+      return textResult(result);
+    },
+  }),
+
+  defineTool({
     name: "input_text",
     description: "Type text into focused input field",
     schema: z.object({

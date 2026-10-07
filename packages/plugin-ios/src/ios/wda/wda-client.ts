@@ -357,6 +357,35 @@ export class WDAClient {
     });
   }
 
+  /** Two fingers on a horizontal line through (cx, cy), spreading from startDistance to endDistance apart. */
+  async pinch(
+    cx: number,
+    cy: number,
+    startDistance: number,
+    endDistance: number,
+    duration: number = 500
+  ): Promise<void> {
+    if (!this.sessionId) {
+      throw new Error("No active WDA session");
+    }
+
+    const finger = (id: string, sign: number) => ({
+      type: "pointer",
+      id,
+      parameters: { pointerType: "touch" },
+      actions: [
+        { type: "pointerMove", duration: 0, x: Math.round(cx + sign * startDistance / 2), y: cy },
+        { type: "pointerDown", button: 0 },
+        { type: "pause", duration: 50 },
+        { type: "pointerMove", duration, x: Math.round(cx + sign * endDistance / 2), y: cy, origin: "viewport" },
+        { type: "pointerUp", button: 0 },
+      ],
+    });
+    await this.request("POST", `/session/${this.sessionId}/actions`, {
+      actions: [finger("finger1", -1), finger("finger2", 1)],
+    });
+  }
+
   async getElementRect(elementId: string): Promise<WDARect> {
     if (!this.sessionId) {
       throw new Error("No active WDA session");

@@ -173,3 +173,26 @@ describe("WDAClient — the UI tree must carry element geometry", () => {
     );
   });
 });
+
+describe("WDAClient.pinch", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("sends two simultaneous touch pointers moving symmetrically about the centre", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: 0, value: null }));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new WDAClient(8100);
+    (client as unknown as { sessionId: string | null }).sessionId = "TEST";
+
+    await client.pinch(200, 400, 100, 300, 500);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:8100/session/TEST/actions");
+    const { actions } = JSON.parse(init.body as string);
+    expect(actions.map((a: { id: string }) => a.id)).toEqual(["finger1", "finger2"]);
+    const moves = actions.map((a: { actions: Array<{ type: string; x?: number }> }) =>
+      a.actions.filter((step) => step.type === "pointerMove").map((step) => step.x));
+    expect(moves).toEqual([[150, 50], [250, 350]]);
+  });
+});
