@@ -22,7 +22,6 @@ import { listPhysicalDevices } from "./go-ios/index.js";
 import { wdaRequiredError } from "./wda-errors.js";
 import {
   ACTIVATE_SIMULATOR_OSASCRIPT_ARGS,
-  HOME_KEY_OSASCRIPT_ARGS,
   mapKey,
 } from "./keymap.js";
 import {
@@ -341,48 +340,37 @@ export class IosClient {
   /**
    * Press key
    *
+   * Home goes through WDA: the Cmd+Shift+H shortcut needs a Simulator.app
+   * window, which a headless simulator does not have.
+   *
    * SECURITY: AppleScript invocations use execFileSync("osascript", ["-e", literal])
    * — the script literal is a single argv slot, so /bin/sh never parses its contents.
-   * The `key` argument is whitelisted via keyMap; only fixed AppleScript literals reach
-   * osascript.
    */
-  pressKey(key: string, deviceIdOverride?: string): void {
+  async pressKey(key: string, deviceIdOverride?: string): Promise<void> {
     const mappedKey = mapKey(key);
-    const target = this.targetDeviceFor(deviceIdOverride);
 
-    if (deviceIdOverride !== undefined) {
-      // Explicit targets must never fall back to the frontmost Simulator window.
-      if (mappedKey === "home") {
-        this.execArgs([
-          "spawn",
-          target,
-          "notifyutil",
-          "-p",
-          "com.apple.springboard.home",
-        ]);
-      } else {
-        this.execArgs(["io", target, "key", mappedKey]);
+    if (mappedKey === "home") {
+      try {
+        const wdaClient = await this.ensureWDA(deviceIdOverride);
+        await wdaClient.pressHome();
+      } catch (error: unknown) {
+        throw wdaRequiredError("Home", error);
       }
       return;
     }
 
-    // Preserve the legacy no-override AppleScript path.
-    if (mappedKey === "home") {
-      this.execArgs(["io", target, "enumerate"]);
-      // Trigger home button via keyboard shortcut
-      execFileSync(
-        "osascript",
-        [...HOME_KEY_OSASCRIPT_ARGS],
-        { encoding: "utf-8", timeout: SIMCTL_EXEC_TIMEOUT_MS, maxBuffer: 64 * 1024 }
-      );
-    } else {
-      // Try generic approach
-      execFileSync(
-        "osascript",
-        [...ACTIVATE_SIMULATOR_OSASCRIPT_ARGS],
-        { encoding: "utf-8", timeout: SIMCTL_EXEC_TIMEOUT_MS, maxBuffer: 64 * 1024 }
-      );
+    if (deviceIdOverride !== undefined) {
+      // Explicit targets must never fall back to the frontmost Simulator window.
+      this.execArgs(["io", this.targetDeviceFor(deviceIdOverride), "key", mappedKey]);
+      return;
     }
+
+    // Try generic approach
+    execFileSync(
+      "osascript",
+      [...ACTIVATE_SIMULATOR_OSASCRIPT_ARGS],
+      { encoding: "utf-8", timeout: SIMCTL_EXEC_TIMEOUT_MS, maxBuffer: 64 * 1024 }
+    );
   }
 
   /**

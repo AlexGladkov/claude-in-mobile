@@ -173,3 +173,20 @@ describe("WDAClient — the UI tree must carry element geometry", () => {
     );
   });
 });
+
+describe("WDAClient — hardware buttons", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("presses Home through WDA's homescreen route", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ status: 0, value: null }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await new WDAClient(8100).pressHome();
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:8100/wda/homescreen");
+    expect(init.method).toBe("POST");
+  });
+});

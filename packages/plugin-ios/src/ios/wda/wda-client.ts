@@ -252,6 +252,10 @@ export class WDAClient {
     });
   }
 
+  async pressHome(): Promise<void> {
+    await this.request("POST", "/wda/homescreen");
+  }
+
   async longPress(x: number, y: number, durationMs: number = 1000): Promise<void> {
     if (!this.sessionId) {
       throw new Error("No active WDA session");

@@ -96,3 +96,18 @@ describe("IosClient session lifetime", () => {
     await manager.cleanup();
   });
 });
+
+describe("IosClient Home key", () => {
+  it("goes home through WDA, so a headless simulator needs no Simulator.app", async () => {
+    const client = new IosClient("device-a", new WDAManager());
+    const pressHome = vi.fn().mockResolvedValue(undefined);
+    const ensureWDA = vi
+      .spyOn(client as unknown as ClientHarness, "ensureWDA")
+      .mockResolvedValue({ pressHome } as unknown as WDAClient);
+
+    await client.pressKey("HOME", "device-b");
+
+    expect(ensureWDA).toHaveBeenCalledWith("device-b");
+    expect(pressHome).toHaveBeenCalledOnce();
+  });
+});

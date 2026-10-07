@@ -21,14 +21,6 @@ export function mapKey(key: string): string {
 }
 
 /**
- * AppleScript argv that activates Simulator and triggers Cmd+Shift+H (home).
- */
-export const HOME_KEY_OSASCRIPT_ARGS: readonly string[] = [
-  "-e", 'tell application "Simulator" to activate',
-  "-e", 'tell application "System Events" to keystroke "h" using {command down, shift down}',
-];
-
-/**
  * AppleScript argv that just brings Simulator to focus.
  */
 export const ACTIVATE_SIMULATOR_OSASCRIPT_ARGS: readonly string[] = [
