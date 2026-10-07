@@ -1,9 +1,10 @@
-import { execFileSync, spawn } from "child_process";
+import { execFile, execFileSync, spawn } from "child_process";
 import type { ChildProcess } from "child_process";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
 import { createServer } from "net";
+import { promisify } from "util";
 import { WDAClient } from "./wda-client.js";
 import { pickBuildSimulator } from "./wda-build.js";
 import { execSimctl } from "../simctl-exec.js";
@@ -15,6 +16,7 @@ import { sanitizeErrorMessage } from "mcp-devices/utils/sanitize";
 const DEVICE_WDA_PORT = 8100;
 const GO_IOS_BIN = process.env.GO_IOS_BIN ?? "ios";
 const RESERVED_PORTS = new Set<number>();
+const execFileAsync = promisify(execFile);
 
 interface ManagedInstance extends WDAInstanceInfo {
   child: ChildProcess;
@@ -31,6 +33,7 @@ export class WDAManager {
   private readonly instances = new Map<string, ManagedInstance>();
   private readonly clients = new Map<string, WDAClient>();
   private readonly launchPromises = new Map<string, Promise<WDAClient>>();
+  private readonly buildPromises = new Map<string, Promise<void>>();
   private readonly forwards = new Map<string, ManagedForward>();
   private readonly startupTimeout = 30_000;
   private readonly deviceStartupTimeout = 300_000;
@@ -120,6 +123,8 @@ export class WDAManager {
       this.clients.set(deviceId, client);
       return client;
     } catch (error) {
+      // The products the remembered build left may be gone (DerivedData cleared).
+      if (isSimulator) this.buildPromises.delete(wdaPath);
       await client?.deleteSession();
       const published = instance ?? this.instances.get(deviceId);
       if (published?.port === port) await this.stopDevice(deviceId, published);
@@ -172,15 +177,29 @@ export class WDAManager {
     return `platform=iOS Simulator,id=${device.id}`;
   }
 
-  private async buildWDAIfNeeded(wdaPath: string): Promise<void> {
+  /**
+   * One build per checkout per process: xcodebuild's incremental graph decides
+   * freshness on the first launch, and a relaunch after the runner dies reuses
+   * that result instead of paying another pass; a failed launch forgets it.
+   * Async, so the MCP server keeps answering while a cold build runs.
+   */
+  private buildWDAIfNeeded(wdaPath: string): Promise<void> {
+    const existing = this.buildPromises.get(wdaPath);
+    if (existing) return existing;
+    const build = this.buildWDA(wdaPath);
+    this.buildPromises.set(wdaPath, build);
+    build.catch(() => {
+      if (this.buildPromises.get(wdaPath) === build) this.buildPromises.delete(wdaPath);
+    });
+    return build;
+  }
+
+  private async buildWDA(wdaPath: string): Promise<void> {
     const devices = parseDevicesJson(execSimctl(["list", "devices", "-j"]));
     const destination = this.resolveSimulatorDestination(devices);
     console.error("Preparing WebDriverAgent for first use...");
     try {
-      // Always invoke xcodebuild: its incremental build graph is the reliable
-      // freshness check. A filesystem probe cannot distinguish another WDA
-      // checkout or stale sources from the project being launched.
-      execFileSync("xcodebuild", [
+      await execFileAsync("xcodebuild", [
         "build-for-testing",
         "-project", "WebDriverAgent.xcodeproj",
         "-scheme", "WebDriverAgentRunner",
@@ -190,12 +209,13 @@ export class WDAManager {
       ], {
         cwd: wdaPath,
         timeout: this.buildTimeout,
-        stdio: "pipe",
         maxBuffer: 50 * 1024 * 1024,
       });
     } catch (error) {
-      const details = error as { stderr?: Buffer | string; stdout?: Buffer | string; message?: string };
-      const message = details.stderr?.toString() || details.stdout?.toString() || details.message || String(error);
+      const details = error as { stderr?: Buffer | string; stdout?: Buffer | string; message?: string; killed?: boolean };
+      const message = details.killed
+        ? `xcodebuild did not finish within ${this.buildTimeout / 1000}s.`
+        : details.stderr?.toString() || details.stdout?.toString() || details.message || String(error);
       throw new Error(
         `Failed to build WebDriverAgent.\n\n${sanitizeErrorMessage(message).slice(0, 4096)}`,
       );
@@ -227,7 +247,7 @@ export class WDAManager {
     );
     if (!healthy) {
       throw new Error(
-        `WebDriverAgent failed to start within 30s.\n\nLast output:\n${sanitizeErrorMessage(output()).slice(-500)}`,
+        `WebDriverAgent failed to start within ${this.startupTimeout / 1000}s.\n\nLast output:\n${sanitizeErrorMessage(output()).slice(-500)}`,
       );
     }
     return instance;
