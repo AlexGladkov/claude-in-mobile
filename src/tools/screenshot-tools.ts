@@ -15,9 +15,30 @@ import {
 } from "../utils/image.js";
 import { parseUiHierarchy, UiElement } from "../ui-tree/ui-parser.js";
 import { getUiElements } from "./helpers/get-elements.js";
-import { screenshotStateKey } from "./context/shared-state-class.js";
+import { screenshotKeyFor } from "./helpers/resolve-element.js";
+import type { ToolContext } from "./context.js";
 
 const STABLE_THRESHOLD_PERCENT = 2;
+
+/** Record a full-screen image as the frame input x/y are read against, and say so to the agent. */
+function rememberFrame(
+  ctx: ToolContext,
+  stateKey: string,
+  image: { width: number; height: number; originalWidth: number; originalHeight: number },
+): string {
+  ctx.screenshotScaleMap.set(stateKey, {
+    scaleX: image.originalWidth / image.width,
+    scaleY: image.originalHeight / image.height,
+    originalWidth: image.originalWidth,
+    originalHeight: image.originalHeight,
+  });
+  return `Screenshot: ${image.width}x${image.height} (device: ${image.originalWidth}x${image.originalHeight} px). ` +
+    "input x/y are read in this image's pixels until the next capture of this device; " +
+    "ui tree/find coordinates go with coords:'device'.";
+}
+
+const NO_FRAME_NOTE =
+  "input x/y are taken as device coordinates until the next full capture.";
 
 function readPngDimensions(buffer: Buffer): { width: number; height: number } {
   if (
@@ -151,44 +172,55 @@ export const screenshotTools: ToolDefinition[] = [
         turbo: ctx.turboDefault,
       };
       const currentPlatform = platform ?? ctx.deviceManager.getCurrentPlatform() ?? "android";
-      const stateKey = screenshotStateKey(currentPlatform, deviceId);
-      // A diff/cropped result has no stable full-screen coordinate transform.
-      // Clear any prior transform before capturing so it cannot be reused.
-      ctx.screenshotScaleMap.delete(stateKey);
 
       const captureBuffer = () =>
         ctx.deviceManager.getScreenshotBufferAsync(currentPlatform, deviceId);
+      const pngBuffer = stableMode
+        ? await waitForStableScreenshot(captureBuffer)
+        : await captureBuffer();
+      // Keyed after the capture: a first capture may be what selects the active device.
+      const stateKey = screenshotKeyFor(ctx, currentPlatform, deviceId);
+      // A diff/cropped result has no full-screen coordinate transform, so a
+      // prior one must not outlive this capture unless replaced below.
+      ctx.screenshotScaleMap.delete(stateKey);
+
+      const fullFrame = async (source: Buffer) => {
+        if (!compress) {
+          const dimensions = readPngDimensions(source);
+          const note = rememberFrame(ctx, stateKey, {
+            ...dimensions,
+            originalWidth: dimensions.width,
+            originalHeight: dimensions.height,
+          });
+          return { data: source.toString("base64"), mimeType: "image/png", note };
+        }
+        const result = await compressScreenshot(source, compressOptions);
+        return { data: result.data, mimeType: result.mimeType, note: rememberFrame(ctx, stateKey, result) };
+      };
 
       if (diffMode) {
-        const pngBuffer = stableMode
-          ? await waitForStableScreenshot(captureBuffer)
-          : await captureBuffer();
         const prevBuffer = ctx.lastScreenshotMap.get(stateKey);
         ctx.lastScreenshotMap.set(stateKey, pngBuffer);
 
         if (!prevBuffer) {
-          const result = compress
-            ? await compressScreenshot(pngBuffer, compressOptions)
-            : { data: pngBuffer.toString("base64"), mimeType: "image/png" };
+          const frame = await fullFrame(pngBuffer);
           return {
-            image: { data: result.data, mimeType: result.mimeType },
-            text: "First screenshot (no previous to diff against)",
+            image: { data: frame.data, mimeType: frame.mimeType },
+            text: `First screenshot (no previous to diff against). ${frame.note}`,
           } as unknown as ToolResult;
         }
 
         const diff = await compareScreenshots(prevBuffer, pngBuffer, diffThreshold);
 
         if (diff.changePercent < 5) {
-          return textResult(`Screen unchanged (${diff.changePercent}% diff)`);
+          return textResult(`Screen unchanged (${diff.changePercent}% diff). ${NO_FRAME_NOTE}`);
         }
 
         if (diff.changePercent >= 80 || !diff.changedRegion) {
-          const result = compress
-            ? await compressScreenshot(pngBuffer, compressOptions)
-            : { data: pngBuffer.toString("base64"), mimeType: "image/png" };
+          const frame = await fullFrame(pngBuffer);
           return {
-            image: { data: result.data, mimeType: result.mimeType },
-            text: `Screen changed significantly (${diff.changePercent}% diff) — full screenshot`,
+            image: { data: frame.data, mimeType: frame.mimeType },
+            text: `Screen changed significantly (${diff.changePercent}% diff) — full screenshot. ${frame.note}`,
           } as unknown as ToolResult;
         }
 
@@ -198,46 +230,15 @@ export const screenshotTools: ToolDefinition[] = [
           : { data: croppedBuffer.toString("base64"), mimeType: "image/png" };
         return {
           image: { data: result.data, mimeType: result.mimeType },
-          text: `Changed region (${diff.changePercent}% diff) at (${diff.changedRegion.x}, ${diff.changedRegion.y}) ${diff.changedRegion.width}x${diff.changedRegion.height}`,
+          text: `Changed region (${diff.changePercent}% diff) at (${diff.changedRegion.x}, ${diff.changedRegion.y}) ${diff.changedRegion.width}x${diff.changedRegion.height}. ${NO_FRAME_NOTE}`,
         } as unknown as ToolResult;
       }
 
-      // Standard screenshot (non-diff) — single capture, reuse buffer
-      const pngBuffer = stableMode
-        ? await waitForStableScreenshot(captureBuffer)
-        : await captureBuffer();
       ctx.lastScreenshotMap.set(stateKey, pngBuffer);
-
-      if (!compress) {
-        const dimensions = readPngDimensions(pngBuffer);
-        ctx.screenshotScaleMap.set(stateKey, {
-          scaleX: 1,
-          scaleY: 1,
-          originalWidth: dimensions.width,
-          originalHeight: dimensions.height,
-        });
-        return {
-          image: { data: pngBuffer.toString("base64"), mimeType: "image/png" },
-        } as unknown as ToolResult;
-      }
-
-      const result = await compressScreenshot(pngBuffer, compressOptions);
-      const scaleX = result.originalWidth / result.width;
-      const scaleY = result.originalHeight / result.height;
-      const scaled = scaleX !== 1 || scaleY !== 1;
-
-      // Store scale so interaction tools can auto-correct coordinates
-      ctx.screenshotScaleMap.set(stateKey, {
-        scaleX, scaleY,
-        originalWidth: result.originalWidth,
-        originalHeight: result.originalHeight,
-      });
-
+      const frame = await fullFrame(pngBuffer);
       return {
-        image: { data: result.data, mimeType: result.mimeType },
-        text: scaled
-          ? `Screenshot: ${result.width}x${result.height} (device: ${result.originalWidth}x${result.originalHeight}). Coordinate scaling applied automatically.`
-          : undefined,
+        image: { data: frame.data, mimeType: frame.mimeType },
+        text: frame.note,
       } as unknown as ToolResult;
     },
   }),
@@ -334,7 +335,7 @@ export const screenshotTools: ToolDefinition[] = [
           data: annotResult.image.data,
           mimeType: annotResult.image.mimeType,
         },
-        text: `Annotated ${totalAnnotElements} elements:\n${elementsList}${truncNotice}`,
+        text: `Annotated ${totalAnnotElements} elements (device coordinates — tap them with coords:'device'):\n${elementsList}${truncNotice}`,
       } as unknown as ToolResult;
     },
   }),

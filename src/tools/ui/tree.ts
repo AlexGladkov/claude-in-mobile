@@ -60,7 +60,7 @@ function formatAndCacheTree(
 
 export const uiTree = defineTool({
   name: "ui_tree",
-  description: "Get UI hierarchy (accessibility tree). Shows elements, text, IDs, coordinates.",
+  description: "Get UI hierarchy (accessibility tree). Shows elements, text, IDs, coordinates. Coordinates are device coordinates (iOS points, Android pixels), not screenshot pixels: pass them to input with coords:'device'.",
   schema: z.object({
     showAll: z
       .boolean()

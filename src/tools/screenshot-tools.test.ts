@@ -159,4 +159,36 @@ describe("screen_capture — coordinate transform state", () => {
       originalHeight: 2622,
     });
   });
+  it("keys a capture without deviceId by the active device, so input naming that device finds it", async () => {
+    const source = await solidPngSized(1206, 2622, 0x112233ff);
+    const ctx = makeCtx({
+      deviceManager: {
+        getCurrentPlatform: vi.fn(() => "ios"),
+        getActiveDevice: vi.fn(() => ({ id: "device-a" })),
+        getScreenshotBufferAsync: vi.fn(async () => source),
+      } as any,
+    });
+
+    const result = await handler({ platform: "ios", preset: "low" }, ctx);
+
+    const frame = ctx.screenshotScaleMap.get("ios:device-a");
+    expect(frame?.originalWidth).toBe(1206);
+    expect(ctx.screenshotScaleMap.has("ios")).toBe(false);
+    expect((result as { text: string }).text).toMatch(/^Screenshot: \d+x480 \(device: 1206x2622 px\)/);
+  });
+
+  it("records the frame of a full screenshot returned by a diff capture", async () => {
+    const source = await solidPngSized(1206, 2622, 0x112233ff);
+    const ctx = makeCtx({
+      deviceManager: {
+        getCurrentPlatform: vi.fn(() => "ios"),
+        getScreenshotBufferAsync: vi.fn(async () => source),
+      } as any,
+    });
+
+    await handler({ platform: "ios", deviceId: "device-a", diff: true, preset: "low" }, ctx);
+
+    expect(ctx.screenshotScaleMap.get("ios:device-a")?.originalHeight).toBe(2622);
+  });
 });
+

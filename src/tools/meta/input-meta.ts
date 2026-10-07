@@ -9,6 +9,7 @@ const { meta, aliases } = createMetaTool({
   tools: interactionTools,
   prefix: "input_",
   extraSchema: {
+    coords: { type: "string", enum: ["screenshot", "device"], description: "Space of raw x/y: 'screenshot' (default) — pixels of this device's last screen capture; 'device' — iOS points / Android pixels, as ui tree/find report them" },
     x: { type: "number", description: "X coordinate" },
     y: { type: "number", description: "Y coordinate" },
     x1: { type: "number", description: "Start X (for custom swipe)" },

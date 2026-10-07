@@ -56,3 +56,11 @@ export const PLATFORM_JSON_SCHEMA = {
     },
   ],
 } as const;
+
+export const coordsField = z
+  .enum(["screenshot", "device"])
+  .default("screenshot")
+  .describe(
+    "Space of raw x/y: 'screenshot' (default) — pixels of the last screen capture of this device; " +
+      "'device' — iOS points / Android pixels, as ui(action:'tree'|'find') report them.",
+  );

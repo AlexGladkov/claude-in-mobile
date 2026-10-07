@@ -27,20 +27,43 @@ export interface ResolvedCoordinates {
   elementId?: string;
 }
 
+/** "screenshot": x/y read off the last capture of the device; "device": iOS points / Android pixels, as ui tree and find report them. */
+export type CoordinateSpace = "screenshot" | "device";
+
+export interface MappedPoint {
+  x: number;
+  y: number;
+  /** Size of the screenshot the raw x/y were read against; absent when they were taken as device coordinates. */
+  screenshot?: { width: number; height: number };
+}
+
+/** Key of the device's last screenshot; a call without deviceId addresses the active device, so it shares that device's key. */
+export function screenshotKeyFor(ctx: ToolContext, platform: string, deviceId?: string): string {
+  return screenshotStateKey(platform, deviceId ?? ctx.deviceManager.getActiveDevice?.()?.id);
+}
+
 /**
- * Apply screenshot scale to raw coordinates from Claude (image space -> device space).
+ * Map raw x/y into the coordinates the device's input takes. In screenshot
+ * space they are read against the last capture of that device; without one
+ * they are taken as device coordinates.
  */
-export async function applyScale(
+export async function mapToDevice(
   x: number,
   y: number,
   platform: string | undefined,
   ctx: ToolContext,
   deviceId?: string,
-): Promise<{ x: number; y: number }> {
+  coords: CoordinateSpace = "screenshot",
+): Promise<MappedPoint> {
+  if (coords === "device") return { x, y };
   const platformKey = platform ?? ctx.deviceManager.getCurrentPlatform() ?? "android";
-  const scale = ctx.screenshotScaleMap.get(screenshotStateKey(platformKey, deviceId));
+  const scale = ctx.screenshotScaleMap.get(screenshotKeyFor(ctx, platformKey, deviceId));
   if (!scale) return { x, y };
 
+  const screenshot = {
+    width: Math.round(scale.originalWidth / scale.scaleX),
+    height: Math.round(scale.originalHeight / scale.scaleY),
+  };
   let { scaleX, scaleY } = scale;
   if (platformKey === "ios") {
     // Screenshots are measured in device pixels; WDA's coordinate APIs take
@@ -55,8 +78,40 @@ export async function applyScale(
     scaleY *= points.height / scale.originalHeight;
   }
 
-  if (scaleX === 1 && scaleY === 1) return { x, y };
-  return { x: Math.round(x * scaleX), y: Math.round(y * scaleY) };
+  if (scaleX === 1 && scaleY === 1) return { x, y, screenshot };
+  return { x: Math.round(x * scaleX), y: Math.round(y * scaleY), screenshot };
+}
+
+/** Apply screenshot scale to raw coordinates from Claude (image space -> device space). */
+export async function applyScale(
+  x: number,
+  y: number,
+  platform: string | undefined,
+  ctx: ToolContext,
+  deviceId?: string,
+): Promise<{ x: number; y: number }> {
+  const mapped = await mapToDevice(x, y, platform, ctx, deviceId);
+  return { x: mapped.x, y: mapped.y };
+}
+
+/**
+ * Tail of an input result naming the coordinate space: the device unit and,
+ * when x/y were read off a screenshot, the numbers given and that image's size.
+ */
+export function describeMapping(
+  platform: string | undefined,
+  points: ReadonlyArray<{ raw: { x: number; y: number }; mapped: MappedPoint }>,
+  coords: CoordinateSpace = "screenshot",
+): string {
+  const unit = platform === "ios" ? "device points" : "device pixels";
+  const frame = points[0]?.mapped.screenshot;
+  if (frame) {
+    const given = points.map(({ raw }) => `(${raw.x}, ${raw.y})`).join(" and ");
+    return ` — ${unit}, mapped from ${given} in the ${frame.width}x${frame.height} screenshot`;
+  }
+  return coords === "device"
+    ? ` — ${unit}`
+    : ` — ${unit}: no full screenshot of this device to map from, x/y taken as device coordinates`;
 }
 
 /**

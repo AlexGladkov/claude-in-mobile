@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { resolveElementCoordinates, applyScale } from "./resolve-element.js";
+import { resolveElementCoordinates, applyScale, mapToDevice, describeMapping } from "./resolve-element.js";
 import type { ToolContext } from "../context.js";
 import type { UiElement } from "../../ui-tree/ui-parser.js";
 import { ElementNotFoundError } from "../../errors.js";
@@ -387,5 +387,41 @@ describe("applyScale — iOS taps land in the point space WDA expects", () => {
     const { x, y } = await applyScale(100, 200, "android", ctx);
 
     expect({ x, y }).toEqual({ x: 200, y: 400 });
+  });
+});
+
+describe("mapToDevice — the coordinate space is explicit", () => {
+  const iosCtx = () => {
+    const ctx = makeCtx({
+      getIosClient: () => ({
+        getScreenPointSize: async () => ({ width: 402, height: 874 }),
+      }),
+    } as any);
+    (ctx.deviceManager as any).getCurrentPlatform = () => "ios";
+    (ctx.deviceManager as any).getActiveDevice = () => ({ id: "device-a" });
+    // 1206x2622 px captured at 221x480.
+    ctx.screenshotScaleMap.set("ios:device-a", {
+      scaleX: 1206 / 221, scaleY: 2622 / 480, originalWidth: 1206, originalHeight: 2622,
+    });
+    return ctx;
+  };
+
+  it("passes device coordinates through untouched even after a capture", async () => {
+    await expect(mapToDevice(201, 437, "ios", iosCtx(), "device-a", "device")).resolves.toEqual({ x: 201, y: 437 });
+  });
+
+  it("reads x/y without deviceId against the active device's capture", async () => {
+    const mapped = await mapToDevice(110, 240, "ios", iosCtx());
+
+    expect(mapped).toEqual({ x: 200, y: 437, screenshot: { width: 221, height: 480 } });
+  });
+
+  it("names both the given numbers and the screenshot they were read against", async () => {
+    const mapped = await mapToDevice(110, 240, "ios", iosCtx(), "device-a");
+
+    expect(describeMapping("ios", [{ raw: { x: 110, y: 240 }, mapped }]))
+      .toBe(" — device points, mapped from (110, 240) in the 221x480 screenshot");
+    expect(describeMapping("ios", [{ raw: { x: 5, y: 5 }, mapped: { x: 5, y: 5 } }]))
+      .toBe(" — device points: no full screenshot of this device to map from, x/y taken as device coordinates");
   });
 });
