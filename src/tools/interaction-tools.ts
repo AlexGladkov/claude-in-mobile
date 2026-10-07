@@ -299,6 +299,51 @@ export const interactionTools: ToolDefinition[] = [
   }),
 
   defineTool({
+    name: "input_drag",
+    description:
+      "iOS only: press and hold at x1/y1, then drag to x2/y2 without lifting — the gesture that picks up and moves an item " +
+      "(a timeline clip, a list row) where swipe would scroll and long_press would open a menu. " +
+      "Keep the hold short: past ~600 ms an item with a context menu opens it, and the release then picks a menu item " +
+      "(Delete, Mark as Completed) instead of dropping. " +
+      "x1/y1/x2/y2 are screenshot-space like input_swipe and auto-scaled.",
+    schema: z.object({
+      x1: z.number().describe("Start X (screenshot pixel space)"),
+      y1: z.number().describe("Start Y (screenshot pixel space)"),
+      x2: z.number().describe("End X (screenshot pixel space)"),
+      y2: z.number().describe("End Y (screenshot pixel space)"),
+      hold: z.number().min(0).default(500).describe("How long to hold still at the start before moving, ms (default: 500)"),
+      duration: z.number().min(0).default(500).describe("Longest the movement takes, ms (default: 500); a short move goes faster"),
+      hints: z.boolean().default(true).describe("Return hints about what changed after the action."),
+      platform: platformEnum,
+      deviceId: deviceIdField,
+    }),
+    handler: async (args, ctx) => {
+      throwIfAborted(ctx.signal);
+      const { deviceId, platform: currentPlatform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      if (currentPlatform !== "ios") {
+        throw new ValidationError("input(action:'drag') is supported on iOS only.");
+      }
+      const iosClient = ctx.deviceManager.getIosClient(deviceId);
+      if (typeof iosClient.drag !== "function") {
+        throw new ValidationError("The installed iOS plugin does not support drag.");
+      }
+
+      const p1 = await applyScale(args.x1, args.y1, currentPlatform, ctx, deviceId);
+      const p2 = await applyScale(args.x2, args.y2, currentPlatform, ctx, deviceId);
+      throwIfAborted(ctx.signal);
+      await iosClient.drag(p1.x, p1.y, p2.x, p2.y, args.hold, args.duration, deviceId);
+      throwIfAborted(ctx.signal);
+      ctx.invalidateUiTreeCache(currentPlatform, deviceId);
+      let result = `Dragged from (${p1.x}, ${p1.y}) to (${p2.x}, ${p2.y}) after a ${args.hold}ms hold`;
+      if (args.hints) {
+        throwIfAborted(ctx.signal);
+        result += await ctx.generateActionHints(args.platform, deviceId);
+      }
+      return textResult(result);
+    },
+  }),
+
+  defineTool({
     name: "input_text",
     description: "Type text into focused input field",
     schema: z.object({

@@ -98,6 +98,15 @@ export interface IosClientLike {
   findElements(options: Record<string, unknown>): Promise<IosElementLike[]>;
   getElementRect(elementId: string): Promise<IosElementLike["rect"] | null>;
   tapElement(elementId: string): Promise<void>;
+  drag?(
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    holdMs?: number,
+    durationMs?: number,
+    deviceId?: string,
+  ): Promise<void>;
   cleanup(): void | Promise<void>;
 }
 

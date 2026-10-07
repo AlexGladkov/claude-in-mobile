@@ -10,6 +10,10 @@ import type {
 const MAX_WDA_RESPONSE_BYTES = 16 * 1024 * 1024;
 const MAX_WDA_REQUEST_BYTES = 4 * 1024 * 1024;
 const MAX_WDA_IDENTIFIER_LENGTH = 1024;
+// A drag that leaves its start point slower than this lets a press-and-hold
+// outlast the context-menu delay (~0.65 s on a Reminders row); the menu opens
+// and the release lands on one of its items (Delete) instead of a drop.
+const MIN_DRAG_VELOCITY = 300;
 
 const wdaResponseSchema = z.object({
   status: z.number().int().safe().nonnegative().optional(),
@@ -354,6 +358,36 @@ export class WDAClient {
           ],
         },
       ],
+    });
+  }
+
+  /**
+   * Press at (x1, y1) for `hold` ms, move to (x2, y2) over at most `duration`
+   * ms and rest there before lifting. XCTest's own press-then-drag is used: the
+   * same gesture sent as W3C actions reaches UIKit as a pan, not a drag session.
+   * A short move goes no slower than MIN_DRAG_VELOCITY, so it finishes sooner.
+   */
+  async drag(
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    hold: number = 500,
+    duration: number = 500
+  ): Promise<void> {
+    if (!this.sessionId) {
+      throw new Error("No active WDA session");
+    }
+
+    const distance = Math.hypot(x2 - x1, y2 - y1);
+    await this.request("POST", `/session/${this.sessionId}/wda/pressAndDragWithVelocity`, {
+      fromX: x1,
+      fromY: y1,
+      toX: x2,
+      toY: y2,
+      pressDuration: hold / 1000,
+      velocity: Math.max(MIN_DRAG_VELOCITY, distance / Math.max(duration / 1000, 0.01)),
+      holdDuration: 0.3,
     });
   }
 
