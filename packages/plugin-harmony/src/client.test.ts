@@ -37,7 +37,7 @@ function fakeHdc(
     const recvIndex = semanticArgs.findIndex(
       (arg, index) => arg === "recv" && semanticArgs[index - 1] === "file",
     );
-    if (recvIndex !== -1) {
+    if (recvIndex !== -1 && semanticArgs[recvIndex + 1] !== "-b") {
       const localPath = semanticArgs[recvIndex + 2];
       const remotePath = semanticArgs[recvIndex + 1];
       if (localPath && remotePath) {
