@@ -20,7 +20,8 @@ impl AuroraPlugin {
                 capabilities: vec![
                     Capability::Screen,
                     Capability::Input,
-                    Capability::Ui,
+                    Capability::Permissions,
+                    Capability::FileTransfer,
                     Capability::Shell,
                     Capability::AppLifecycle,
                     Capability::Logs,

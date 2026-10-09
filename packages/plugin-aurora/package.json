@@ -41,5 +41,12 @@
     "type": "git",
     "url": "git+https://github.com/AlexGladkov/claude-in-mobile.git",
     "directory": "packages/plugin-aurora"
+  },
+  "externalTools": {
+    "audb": {
+      "version": "^0.3.0",
+      "jsonSchemaVersion": 1,
+      "contract": "https://github.com/KotDath/audb/tree/v0.3.0"
+    }
   }
 }

@@ -52,7 +52,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: cli
-      - run: cd cli && cargo test --locked --lib && cargo test --locked --test setup_grok && cargo test --locked --test repl_observability && cargo test --locked --test repl_live_tui && cargo test --locked --test harmony_cli
+      - run: cd cli && cargo test --locked --lib && cargo test --locked --test setup_grok && cargo test --locked --test repl_observability && cargo test --locked --test repl_live_tui && cargo test --locked --test harmony_cli && cargo test --locked --test aurora_cli
 
   desktop-test:
     runs-on: ubuntu-latest

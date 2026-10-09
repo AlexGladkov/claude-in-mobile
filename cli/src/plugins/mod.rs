@@ -55,7 +55,7 @@ mod tests {
     }
 
     #[test]
-    fn only_android_and_ios_declare_permissions() {
+    fn android_aurora_and_ios_declare_permissions() {
         let mut r = Registry::new();
         register_builtins(&mut r).unwrap();
         let mut ids: Vec<_> = r
@@ -64,7 +64,7 @@ mod tests {
             .map(|p| p.manifest().id.clone())
             .collect();
         ids.sort();
-        assert_eq!(ids, vec!["android", "ios"]);
+        assert_eq!(ids, vec!["android", "aurora", "ios"]);
     }
 
     #[test]

@@ -123,7 +123,12 @@ export interface WebViewInspectorLike {
 }
 
 export interface AuroraClientLike {
+  shell(command: string, root?: boolean): string;
   listPackages(): string[];
   pushFile(localPath: string, remotePath: string): string;
-  pullFile(remotePath: string, localPath?: string): Buffer;
+  pullFile(remotePath: string, localPath?: string): string;
+  permissionList(packageName: string): string;
+  grantPermission(packageName: string, permission: string, disablePrompt?: boolean): string;
+  grantAllPermissions(packageName: string, disablePrompt?: boolean): string;
+  permissionPrompt(packageName: string, enabled: boolean): string;
 }

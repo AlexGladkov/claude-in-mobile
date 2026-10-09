@@ -127,10 +127,14 @@ pub fn open_url(
 pub fn shell(
     platform: &str,
     command: &str,
+    root: bool,
     simulator: Option<&str>,
     device: Option<&str>,
     i_know_what_im_doing: bool,
 ) -> Result<()> {
+    if root && platform != "aurora" {
+        bail!("root is supported only for Aurora.");
+    }
     // SECURITY (issue #41): `shell` executes whatever the caller passes,
     // verbatim, on the device. Gate non-interactive use behind an explicit
     // opt-in to prevent supply-chain / CI misuse. Runs BEFORE any platform
@@ -142,7 +146,7 @@ pub fn shell(
         "android" => android::shell(command, device)?,
         "ios" => ios::shell(command, simulator)?,
         "harmony" => harmony::shell(command, device)?,
-        "aurora" => aurora::shell(command, device)?,
+        "aurora" => aurora::shell(command, root, device)?,
         _ => unreachable!(),
     };
     Ok(())
@@ -163,6 +167,9 @@ pub fn swipe(
     from_size: Option<&str>,
 ) -> Result<()> {
     if let Some(direction) = direction {
+        if platform == "aurora" {
+            return aurora::swipe_direction(direction, duration, device);
+        }
         let (center_x, center_y) = (540, 960);
         let distance = 400;
         match direction.to_lowercase().as_str() {
@@ -472,6 +479,7 @@ pub fn screen_size(platform: &str, simulator: Option<&str>, device: Option<&str>
             (image.width(), image.height())
         }
         "harmony" => harmony::screen_size(device)?,
+        "aurora" => aurora::get_screen_size(device)?,
         _ => bail!("Unsupported platform for screen-size: {platform}"),
     };
     println!("Screen size: {width}x{height}");
@@ -771,10 +779,15 @@ pub fn permission_grant(
     platform: &str,
     package: &str,
     permission: &str,
+    disable_prompt: bool,
     simulator: Option<&str>,
     device: Option<&str>,
 ) -> Result<()> {
+    if disable_prompt && platform != "aurora" {
+        anyhow::bail!("--disable-prompt is supported only for Aurora");
+    }
     match platform {
+        "aurora" => aurora::permission_grant(package, permission, disable_prompt, device),
         "android" => android::permission_grant(package, permission, device),
         "harmony" => harmony::permission_grant(package, permission, device),
         "ios" => {
@@ -805,6 +818,7 @@ pub fn permission_revoke(
     device: Option<&str>,
 ) -> Result<()> {
     match platform {
+        "aurora" => aurora::permission_revoke(package, permission, device),
         "android" => android::permission_revoke(package, permission, device),
         "harmony" => harmony::permission_revoke(package, permission, device),
         "ios" => {
@@ -834,6 +848,7 @@ pub fn permission_reset(
     device: Option<&str>,
 ) -> Result<()> {
     match platform {
+        "aurora" => aurora::permission_reset(package, device),
         "android" => android::permission_reset(package, device),
         "harmony" => harmony::permission_reset(package, device),
         "ios" => {

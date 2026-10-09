@@ -25,10 +25,11 @@
 
 ### Aurora OS
 
-- **Backend:** audb (Aurora Debug Bridge, similar to ADB)
-- **Device selection:** `--device <serial>`
-- **Supported:** screenshot, tap, long-press, swipe, input, key, devices, apps, launch, stop, install, uninstall, push-file, pull-file, logs, clear-logs, system-info, open-url, shell
-- **Not supported:** annotate, ui-dump, find, tap-text, analyze-screen, find-and-tap, clipboard, current-activity, reboot, screen power, screen-size
+- **Backend:** audb ^0.3.0; executable in PATH takes priority over AUDB_PATH.
+- **Device selection:** `--device <registry-id>`; omitted uses audb's default, not the first connected target. Phones and emulators share the same commands.
+- **Supported:** screenshots, coordinate tap/double tap/long press, swipe, Unicode input, named keys, devices, apps, launch, stop, RPM install/uninstall, push/pull, logs, info, screen-size, URL opening, shell and Sailjail permissions.
+- **Not supported:** UI tree/annotate/find/tap-text, clipboard, activity, reboot and screen power. Sensor/perf/sandbox extensions are outside this integration.
+- **Setup and limitations:** read [aurora.md](aurora.md). Check readiness with `mcp-devices-cli aurora --device ID doctor`; registry state unknown is not a connectivity result.
 
 ### Desktop (Compose/Swing/AWT)
 
@@ -67,7 +68,7 @@
 | current-activity | yes | yes | no | no | no |
 | reboot | yes | yes | no | no | no |
 | screen (power) | yes | no | no | no | no |
-| screen-size | yes | yes | no | no | no |
+| screen-size | yes | yes | no | yes | no |
 | open-url | yes | yes | yes | yes | no |
 | shell | yes | yes | yes | yes | no |
 | wait | n/a | n/a | n/a | n/a | n/a |

@@ -382,16 +382,16 @@ export class DeviceManager {
    * (4.0.0 physical split), so this resolves the client structurally via the
    * adapter's `getClient()` rather than an `instanceof` on a bundled class.
    */
-  getAuroraClient(): AuroraClientLike {
+  getAuroraClient(deviceId?: string): AuroraClientLike {
     const adapter = this.adapters.get("aurora") as
-      | { getClient?: () => AuroraClientLike }
+      | { getClient?: (deviceId?: string) => AuroraClientLike }
       | undefined;
     if (!adapter || typeof adapter.getClient !== "function") {
       throw new Error(
         "Aurora is not installed. Run `mcp-devices install aurora`."
       );
     }
-    return adapter.getClient();
+    return adapter.getClient(deviceId);
   }
 
   getWebViewInspector(): WebViewInspectorLike {

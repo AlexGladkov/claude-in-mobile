@@ -83,7 +83,7 @@ describe("bootstrapKernel", () => {
       .resolve({ capabilities: ["permissions"] })
       .map((p) => p.manifest.id)
       .sort();
-    expect(permProviders).toEqual(["android", "harmony", "ios"]);
+    expect(permProviders).toEqual(["android", "aurora", "harmony", "ios"]);
   });
 
   it("getPlugin returns typed plugin instance", async () => {

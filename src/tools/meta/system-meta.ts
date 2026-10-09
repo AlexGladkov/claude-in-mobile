@@ -37,11 +37,12 @@ export const systemMeta: ToolDefinition = {
             "activity", "shell", "wait", "open_url", "logs", "wait_log", "clear_logs",
             "pid_of", "is_running", "info", "webview",
             "clipboard_select", "clipboard_copy", "clipboard_paste", "clipboard_get",
-            "permission_grant", "permission_revoke", "permission_reset",
+            "permission_grant", "permission_revoke", "permission_reset", "permission_list", "permission_grant_all", "permission_prompt",
             "file_push", "file_pull",
             "metrics", "reset_metrics",
           ],
         },
+        root: { type: "boolean", description: "Aurora shell only: execute through audb as the configured root SSH account; default false" },
         command: { type: "string", description: "Shell command to execute (shell)" },
         url: { type: "string", description: "URL to open (open_url)" },
         ms: { type: "number", description: "Duration in milliseconds (wait, default: 1000)" },
@@ -55,6 +56,8 @@ export const systemMeta: ToolDefinition = {
         tag: { type: "string", description: "Filter by tag (logs/wait_log)" },
         lines: { type: "number", description: "Number of log lines (logs, default: 100)" },
         package: { type: "string", description: "Package or bundle ID (logs, wait_log, process, permissions)" },
+        disablePrompt: { type: "boolean", description: "Aurora only: explicitly disable the permission prompt when granting" },
+        enabled: { type: "boolean", description: "Aurora permission_prompt: true enables the prompt and clears grants; false disables it" },
         permission: { type: "string", description: "Permission to grant/revoke (permission_grant/revoke)" },
         fieldText: { type: "string", description: "Find input field by text before paste (clipboard_paste)" },
         fieldId: { type: "string", description: "Find input field by resource ID before paste (clipboard_paste)" },
@@ -87,7 +90,7 @@ export const systemMeta: ToolDefinition = {
     }
 
     const handler = handlers.get(action);
-    if (!handler) throw new UnknownActionError("system", action, ["activity", "shell", "wait", "open_url", "logs", "wait_log", "clear_logs", "pid_of", "is_running", "info", "webview", "clipboard_select", "clipboard_copy", "clipboard_paste", "clipboard_get", "permission_grant", "permission_revoke", "permission_reset", "file_push", "file_pull", "metrics", "reset_metrics"]);
+    if (!handler) throw new UnknownActionError("system", action, ["activity", "shell", "wait", "open_url", "logs", "wait_log", "clear_logs", "pid_of", "is_running", "info", "webview", "clipboard_select", "clipboard_copy", "clipboard_paste", "clipboard_get", "permission_grant", "permission_revoke", "permission_reset", "permission_list", "permission_grant_all", "permission_prompt", "file_push", "file_pull", "metrics", "reset_metrics"]);
     return handler(args, ctx, depth);
   },
 };
@@ -113,6 +116,9 @@ export const systemAliases: Record<string, { tool: string; defaults: Record<stri
   // permission tools
   permission_grant: { tool: "system", defaults: { action: "permission_grant" } },
   permission_revoke: { tool: "system", defaults: { action: "permission_revoke" } },
+  permission_list: { tool: "system", defaults: { action: "permission_list" } },
+  permission_grant_all: { tool: "system", defaults: { action: "permission_grant_all" } },
+  permission_prompt: { tool: "system", defaults: { action: "permission_prompt" } },
   permission_reset: { tool: "system", defaults: { action: "permission_reset" } },
   // capability-driven file tools
   file_push: { tool: "system", defaults: { action: "file_push" } },

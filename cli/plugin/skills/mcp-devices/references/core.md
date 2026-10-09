@@ -54,14 +54,15 @@ mcp-devices-cli annotate ios -o annotated.png
 
 ### screen-size
 
-Get screen resolution in pixels.
+Get screen resolution in pixels. Aurora uses the actual PNG dimensions.
 
 ```bash
 mcp-devices-cli screen-size android
 mcp-devices-cli screen-size ios
+mcp-devices-cli screen-size aurora --device phone
 ```
 
-**Platforms:** Android, iOS
+**Platforms:** Android, iOS, HarmonyOS, Aurora
 
 ---
 
@@ -539,3 +540,6 @@ mcp-devices-cli perf-heap-diff ./before.hprof ./after.hprof
 ```
 
 **Platforms:** local command; no device access
+
+For Aurora device setup, permission operations, coordinate scaling and recovery,
+read [aurora.md](aurora.md).

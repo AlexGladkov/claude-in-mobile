@@ -1,3 +1,4 @@
+import { MobileError } from "../errors.js";
 import type { ToolDefinition } from "./registry.js";
 import { defineTool, z } from "./define-tool.js";
 import { platformEnum, deviceIdField } from "./common-schema.js";
@@ -52,12 +53,18 @@ export const systemTools: ToolDefinition[] = [
           "Single shell command, no chaining or shell metacharacters. " +
             "Example: 'pm list packages -3' (valid), 'pm list packages | grep foo' (rejected).",
         ),
+      root: z.boolean().default(false).describe("Aurora only: execute as root through audb using the configured root SSH account."),
       ...commonFields,
     }),
     handler: async (args, ctx) => {
       const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+      if (args.root && platform !== "aurora") {
+        throw new MobileError("root is supported only for Aurora.", "INVALID_ARGUMENT");
+      }
       validateShellCommand(args.command);
-      const output = ctx.deviceManager.shell(args.command, platform, deviceId);
+      const output = args.root
+        ? ctx.deviceManager.getAuroraClient(deviceId).shell(args.command, true)
+        : ctx.deviceManager.shell(args.command, platform, deviceId);
       return textResult(truncateOutput(output || "(no output)"));
     },
   }),

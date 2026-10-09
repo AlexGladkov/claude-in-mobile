@@ -22,7 +22,7 @@ export class PermissionProxy {
     if (!hasPermissions(adapter)) {
       throw new Error(
         `Permission management is not supported for ${adapter.platform}. ` +
-        `Supported platforms: android, ios.`,
+        `Supported platforms: android, ios, aurora.`,
       );
     }
     return adapter.grantPermission(packageOrBundleId, permission, deviceId);
@@ -38,7 +38,7 @@ export class PermissionProxy {
     if (!hasPermissions(adapter)) {
       throw new Error(
         `Permission management is not supported for ${adapter.platform}. ` +
-        `Supported platforms: android, ios.`,
+        `Supported platforms: android, ios, aurora.`,
       );
     }
     return adapter.revokePermission(packageOrBundleId, permission, deviceId);
@@ -49,7 +49,7 @@ export class PermissionProxy {
     if (!hasPermissions(adapter)) {
       throw new Error(
         `Permission management is not supported for ${adapter.platform}. ` +
-        `Supported platforms: android, ios.`,
+        `Supported platforms: android, ios, aurora.`,
       );
     }
     return adapter.resetPermissions(packageOrBundleId, deviceId);

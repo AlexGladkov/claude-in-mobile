@@ -68,7 +68,7 @@ export const MODULE_METADATA: readonly ModuleMeta[] = [
   { name: "input", description: "Tap, swipe, type, key press — all input actions", category: "core", actions: ["tap", "double_tap", "long_press", "swipe", "text", "key"] },
   { name: "ui", description: "Accessibility tree, element search, assertions, waits", category: "core", actions: ["tree", "find", "find_tap", "tap_text", "analyze", "wait", "assert_visible", "assert_gone"] },
   { name: "app", description: "Launch, stop, install, list applications", category: "core", actions: ["launch", "stop", "install", "list"] },
-  { name: "system", description: "Shell, logs, clipboard, permissions, URL, device info", category: "core", actions: ["activity", "shell", "wait", "open_url", "logs", "clear_logs", "info", "webview", "clipboard_select", "clipboard_copy", "clipboard_paste", "clipboard_get", "permission_grant", "permission_revoke", "permission_reset", "file_push", "file_pull", "metrics", "reset_metrics"] },
+  { name: "system", description: "Shell, logs, clipboard, permissions, URL, device info", category: "core", actions: ["activity", "shell", "wait", "open_url", "logs", "clear_logs", "info", "webview", "clipboard_select", "clipboard_copy", "clipboard_paste", "clipboard_get", "permission_grant", "permission_revoke", "permission_reset", "permission_list", "permission_grant_all", "permission_prompt", "file_push", "file_pull", "metrics", "reset_metrics"] },
   { name: "flow", description: "Batch commands, multi-step automation, parallel execution", category: "automation", actions: ["batch", "run", "parallel"] },
 
   // Platform modules

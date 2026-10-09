@@ -12,7 +12,7 @@ pub fn run_with_limits(
     max_output_bytes: usize,
     action: &str,
 ) -> Result<Output> {
-    run(command, None, timeout, max_output_bytes, action)
+    run(command, None, timeout, max_output_bytes, action, false)
 }
 
 pub fn run_with_input_limits(
@@ -22,7 +22,26 @@ pub fn run_with_input_limits(
     max_output_bytes: usize,
     action: &str,
 ) -> Result<Output> {
-    run(command, Some(input), timeout, max_output_bytes, action)
+    run(
+        command,
+        Some(input),
+        timeout,
+        max_output_bytes,
+        action,
+        false,
+    )
+}
+
+/// Typed subprocess protocols need stdout even on a nonzero exit. Callers must
+/// parse and validate it; never print unvalidated output directly to a terminal.
+pub fn run_with_protocol_limits(
+    command: &mut Command,
+    input: Option<Vec<u8>>,
+    timeout: Duration,
+    max_output_bytes: usize,
+    action: &str,
+) -> Result<Output> {
+    run(command, input, timeout, max_output_bytes, action, true)
 }
 
 fn run(
@@ -31,6 +50,7 @@ fn run(
     timeout: Duration,
     max_output_bytes: usize,
     action: &str,
+    preserve_output: bool,
 ) -> Result<Output> {
     command
         .stdin(if input.is_some() {
@@ -75,9 +95,14 @@ fn run(
         }
     };
     if let Some(writer) = input_writer {
-        writer
+        let written = writer
             .join()
-            .map_err(|_| anyhow::anyhow!("{action} stdin writer failed"))??;
+            .map_err(|_| anyhow::anyhow!("{action} stdin writer failed"))?;
+        // A protocol child may reject input before reading it. Preserve its
+        // typed failure response even if the pipe writer sees BrokenPipe.
+        if !preserve_output || status.success() {
+            written?;
+        }
     }
     let (mut stdout, stdout_truncated) = stdout_reader
         .join()
@@ -89,7 +114,7 @@ fn run(
         bail!("{action} exceeded the output limit");
     }
 
-    if !status.success() {
+    if !status.success() && !preserve_output {
         stdout.clear();
         stderr.clear();
         stderr.extend_from_slice(b"command failed");
@@ -148,6 +173,39 @@ pub fn terminal_safe(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn protocol_retains_nonzero_output_while_default_redacts() {
+        let script = "printf '{\"ok\":false}'; exit 2";
+        let normal = run_with_limits(
+            Command::new("/bin/sh").args(["-c", script]),
+            Duration::from_secs(1),
+            1000,
+            "fixture",
+        )
+        .unwrap();
+        assert!(normal.stdout.is_empty());
+        let protocol = run_with_protocol_limits(
+            Command::new("/bin/sh").args(["-c", script]),
+            None,
+            Duration::from_secs(1),
+            1000,
+            "fixture",
+        )
+        .unwrap();
+        assert_eq!(protocol.stdout, br#"{"ok":false}"#);
+        assert_eq!(protocol.status.code(), Some(2));
+        let rejected_input = run_with_protocol_limits(
+            Command::new("/bin/sh").args(["-c", script]),
+            Some(vec![b'x'; 1024 * 1024]),
+            Duration::from_secs(1),
+            1000,
+            "fixture",
+        )
+        .unwrap();
+        assert_eq!(rejected_input.stdout, br#"{"ok":false}"#);
+    }
 
     #[test]
     fn capped_reader_reports_truncation() {

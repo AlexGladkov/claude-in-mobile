@@ -1,8 +1,8 @@
 /**
  * Built-in Aurora OS plugin.
  *
- * Wraps AuroraAdapter. Aurora supports app lifecycle, shell, and logs but
- * does NOT have runtime permissions.
+ * Wraps AuroraAdapter with screenshots, input, apps, files, diagnostics
+ * and Sailjail permissions through audb ^0.3.0.
  */
 
 import type {
@@ -18,7 +18,16 @@ export const AURORA_PLUGIN_MANIFEST: PluginManifest = {
   name: "Aurora OS",
   version: "4.4.1",
   apiVersion: "1",
-  capabilities: ["screen", "input", "ui", "shell", "appLifecycle", "logs", "fileTransfer", "deviceMgmt"],
+  capabilities: [
+    "screen",
+    "input",
+    "shell",
+    "appLifecycle",
+    "permissions",
+    "logs",
+    "fileTransfer",
+    "deviceMgmt",
+  ],
   description: "Aurora OS automation via audb (screen, input, app lifecycle, shell, logs)",
 };
 

@@ -10,6 +10,7 @@ const PLUGIN_FILES: &[&str] = &[
     ".claude-plugin/plugin.json",
     "skills/mcp-devices/SKILL.md",
     "skills/mcp-devices/references/core.md",
+    "skills/mcp-devices/references/aurora.md",
     "skills/mcp-devices/references/android-only.md",
     "skills/mcp-devices/references/desktop.md",
     "skills/mcp-devices/references/platform-support.md",
@@ -267,4 +268,12 @@ fn local_install_does_not_touch_opencode_or_cursor() {
     );
     assert_not_exists(&iso.cwd.path().join(".opencode/skills/mcp-devices"));
     assert_not_exists(&iso.cwd.path().join(".cursor/skills/mcp-devices"));
+}
+
+#[test]
+fn agent_skill_install_includes_aurora_reference() {
+    let fixture = Isolated::new();
+    assert_success(&fixture.run(&["setup", "codex", "--local"]));
+    let skill = fixture.cwd.path().join(".agents/skills/mcp-devices");
+    assert!(skill.join("references/aurora.md").is_file());
 }

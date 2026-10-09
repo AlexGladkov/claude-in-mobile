@@ -13,7 +13,7 @@ Binary: `mcp-devices-cli` (ensure it's in PATH or use its full path).
 
 | Flag | Description | Platforms |
 |------|-------------|-----------|
-| `--device <serial>` | Android/HarmonyOS/Aurora device serial (default: first connected) | Android, HarmonyOS, Aurora |
+| `--device <serial>` | Android/HarmonyOS serial or Aurora registry ID (Aurora default: audb selected ID) | Android, HarmonyOS, Aurora |
 | `--simulator <name>` | iOS Simulator name (default: booted) | iOS |
 | `--companion-path <path>` | Path to Desktop companion app (or set `MOBILE_TOOLS_COMPANION` env) | Desktop |
 
@@ -30,7 +30,7 @@ mcp-devices-cli devices              # All platforms
 mcp-devices-cli devices android      # Android only
 mcp-devices-cli devices ios          # iOS simulators only
 mcp-devices-cli devices --platform harmony # HarmonyOS devices only
-mcp-devices-cli devices aurora       # Aurora devices only
+mcp-devices-cli devices --platform aurora       # Aurora devices only
 ```
 
 ---
@@ -43,6 +43,7 @@ Full command documentation split by scope:
 |-----------|----------|-----------|
 | [`references/core.md`](references/core.md) | screenshot, gestures, apps, logs, shell, Perfetto/xctrace traces, Android/iOS heap artifacts, and more | Cross-platform |
 | [`references/android-only.md`](references/android-only.md) | analyze-screen, find-and-tap, screen on/off | Android |
+| [`references/aurora.md`](references/aurora.md) | audb 0.3 setup, device targeting, visual input, permissions, errors | Aurora phones and emulators |
 | [`references/desktop.md`](references/desktop.md) | get-window-info, focus-window, resize-window, launch/stop desktop apps, metrics, monitors | Desktop |
 | [`references/platform-support.md`](references/platform-support.md) | Per-platform support matrix and backend details | All |
 
@@ -53,7 +54,7 @@ Full command documentation split by scope:
 - Use `--compress` on screenshots when sending to LLM — reduces token usage significantly
 - `analyze-screen` gives structured JSON of buttons/inputs/texts — useful for automated testing
 - `find-and-tap` uses fuzzy matching with confidence scoring — good for flaky element names
-- Aurora commands use `audb` (Aurora Debug Bridge) — similar to ADB
+- For Aurora, read [`references/aurora.md`](references/aurora.md): audb ^0.3.0, PATH before AUDB_PATH, explicit device IDs, visual input and Sailjail permissions. UI tree is unavailable.
 - Desktop commands communicate via JSON-RPC with a companion app over stdin/stdout
 - Combine `ui-dump` + `tap --index N` for reliable element interaction by index
 - Use `wait` between actions in automation scripts to allow UI transitions

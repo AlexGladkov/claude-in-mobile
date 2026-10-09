@@ -408,6 +408,28 @@ describe("system_is_running", () => {
 describe("system_shell — injection denylist", () => {
   const handler = findHandler("system_shell");
 
+  it.each(["android", "ios", "harmony", "desktop"])("rejects privileged root on %s before dispatch", async platform => {
+    const shell = vi.fn(() => "");
+    const ctx = makeMockContext({ deviceManager: { getCurrentPlatform: vi.fn(() => platform), shell } as any });
+    await expect(systemMeta.handler({ action: "shell", command: "id", platform, root: true }, ctx)).rejects.toThrow(/root is supported only for Aurora/);
+    expect(shell).not.toHaveBeenCalled();
+    await systemMeta.handler({ action: "shell", command: "id", platform, root: false }, ctx);
+    expect(shell).toHaveBeenCalledWith("id", platform, undefined);
+  });
+
+  it("routes privileged Aurora shell to the explicit device without changing the ordinary path", async () => {
+    const privileged = vi.fn(() => "uid=0(root)\n"), shell = vi.fn(() => "uid=100000\n");
+    const getAuroraClient = vi.fn(() => ({ shell: privileged }));
+    const ctx = makeMockContext({ deviceManager: { getCurrentPlatform: vi.fn(() => "aurora"), getAuroraClient, shell } as any });
+    const result = await systemMeta.handler({ action: "shell", command: "id", platform: "aurora", deviceId: "emulator", root: true }, ctx);
+    expect(result.text).toBe("uid=0(root)\n");
+    expect(getAuroraClient).toHaveBeenCalledWith("emulator");
+    expect(privileged).toHaveBeenCalledWith("id", true);
+    expect(shell).not.toHaveBeenCalled();
+    await expect(systemMeta.handler({ action: "shell", command: "x & touch /tmp/RCE", platform: "aurora", root: true }, ctx)).rejects.toThrow();
+    expect(privileged).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects `& touch /tmp/RCE` via validateShellCommand (android)", async () => {
     const shell = vi.fn(() => "");
     const ctx = makeMockContext({

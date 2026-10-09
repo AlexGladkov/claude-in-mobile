@@ -272,24 +272,16 @@ fn check_desktop() -> bool {
 /// Returns `true` if all *critical* Aurora checks pass.
 fn check_aurora() -> bool {
     section("Aurora");
-    let mut all_ok = true;
-
-    // audb (Aurora debug bridge, analogous to adb)
-    if let Some(audb) = which("audb").or_else(|| which("audb-client")) {
-        let version = run_output(audb.to_str().unwrap_or("audb"), &["version"])
-            .or_else(|| run_output(audb.to_str().unwrap_or("audb"), &["--version"]))
-            .unwrap_or_else(|| "?".to_owned());
-        ok(&format!(
-            "audb found: {} ({})",
-            audb.display(),
-            version.trim()
-        ));
-    } else {
-        fail("audb-client not found — install: cargo install audb-client");
-        all_ok = false;
+    match crate::aurora::ensure_supported_version() {
+        Ok(path) => {
+            ok(&format!("audb ^0.3.0 found: {}", path.display()));
+            true
+        }
+        Err(error) => {
+            fail(&format!("{error}"));
+            false
+        }
     }
-
-    all_ok
 }
 /// Returns `true` when the HarmonyOS Device Connector is available.
 fn check_harmony() -> bool {

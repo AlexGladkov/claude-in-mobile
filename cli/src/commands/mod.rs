@@ -106,12 +106,14 @@ pub fn run(command: Commands) -> Result<()> {
         Commands::Shell {
             platform,
             command,
+            root,
             simulator,
             device,
             i_know_what_im_doing,
         } => device::shell(
             &platform,
             &command,
+            root,
             simulator.as_deref(),
             device.as_deref(),
             i_know_what_im_doing,
@@ -486,12 +488,14 @@ pub fn run(command: Commands) -> Result<()> {
             platform,
             package,
             permission,
+            disable_prompt,
             simulator,
             device,
         } => device::permission_grant(
             &platform,
             &package,
             &permission,
+            disable_prompt,
             simulator.as_deref(),
             device.as_deref(),
         ),
@@ -815,6 +819,10 @@ pub fn run(command: Commands) -> Result<()> {
         },
 
         // -- REPL supervisor (long-lived JSON-RPC stdio loop) ----------------
+        Commands::Aurora { device, command } => {
+            crate::aurora::passthrough(device.as_deref(), &command.into_audb_args())
+        }
+
         Commands::ReplSupervisor => crate::plugins::repl::bridge::run_supervisor_loop(),
     }
 }

@@ -15,6 +15,7 @@ const SKILL_NAME: &str = "mcp-devices";
 const SKILL_MD: &str = include_str!("../../plugin/skills/mcp-devices/SKILL.md");
 const PLATFORM_SUPPORT_MD: &str =
     include_str!("../../plugin/skills/mcp-devices/references/platform-support.md");
+const AURORA_MD: &str = include_str!("../../plugin/skills/mcp-devices/references/aurora.md");
 const CORE_MD: &str = include_str!("../../plugin/skills/mcp-devices/references/core.md");
 const ANDROID_ONLY_MD: &str =
     include_str!("../../plugin/skills/mcp-devices/references/android-only.md");
@@ -151,12 +152,16 @@ fn grok(local: bool, global: bool, force: bool) -> Result<()> {
 }
 
 fn install_grok_plugin(target_dir: &Path, force: bool) -> Result<()> {
-    let files: [(&[&str], &str); 8] = [
+    let files: [(&[&str], &str); 9] = [
         (&[".mcp.json"], MCP_JSON),
         (&[".grok-plugin", "plugin.json"], GROK_PLUGIN_JSON),
         (&[".claude-plugin", "plugin.json"], CLAUDE_PLUGIN_JSON),
         (&["skills", SKILL_NAME, "SKILL.md"], SKILL_MD),
         (&["skills", SKILL_NAME, "references", "core.md"], CORE_MD),
+        (
+            &["skills", SKILL_NAME, "references", "aurora.md"],
+            AURORA_MD,
+        ),
         (
             &["skills", SKILL_NAME, "references", "android-only.md"],
             ANDROID_ONLY_MD,
@@ -253,6 +258,11 @@ enum InstallScope {
 
 fn install_skill(target_dir: &Path, force: bool) -> Result<()> {
     write_file_if_needed(&target_dir.join("SKILL.md"), SKILL_MD, force)?;
+    write_file_if_needed(
+        &target_dir.join("references").join("aurora.md"),
+        AURORA_MD,
+        force,
+    )?;
     write_file_if_needed(
         &target_dir.join("references").join("platform-support.md"),
         PLATFORM_SUPPORT_MD,

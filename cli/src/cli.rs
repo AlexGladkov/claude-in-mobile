@@ -192,6 +192,10 @@ pub enum Commands {
         /// Command to execute
         command: String,
 
+        /// Aurora only: execute through audb as the configured root SSH account
+        #[arg(long)]
+        root: bool,
+
         /// iOS Simulator name
         #[arg(long)]
         simulator: Option<String>,
@@ -581,8 +585,8 @@ pub enum Commands {
 
     /// Get screen resolution
     ScreenSize {
-        /// Platform: android, ios, or harmony
-        #[arg(value_parser = ["android", "ios", "harmony"])]
+        /// Platform: android, ios, harmony, or aurora
+        #[arg(value_parser = ["android", "ios", "harmony", "aurora"])]
         platform: String,
 
         /// iOS Simulator name
@@ -989,32 +993,36 @@ pub enum Commands {
     // ===== Permission commands =====
     /// Grant a permission to a package
     PermissionGrant {
-        /// Platform: android, ios, or harmony
-        #[arg(value_parser = ["android", "ios", "harmony"])]
+        /// Platform: android, ios, harmony, or aurora
+        #[arg(value_parser = ["android", "ios", "harmony", "aurora"])]
         platform: String,
 
-        /// Package name (Android), bundle ID (iOS), or bundle name (HarmonyOS)
+        /// Package/application ID (Android/Aurora), bundle ID (iOS), or bundle name (HarmonyOS)
         package: String,
 
         /// Platform permission name
         permission: String,
 
+        /// Aurora only: explicitly disable its permission dialog before granting
+        #[arg(long)]
+        disable_prompt: bool,
+
         /// iOS Simulator name
         #[arg(long)]
         simulator: Option<String>,
 
-        /// Android or HarmonyOS device serial
+        /// Android/HarmonyOS serial or Aurora registry ID
         #[arg(long)]
         device: Option<String>,
     },
 
     /// Revoke a permission from a package
     PermissionRevoke {
-        /// Platform: android, ios, or harmony
-        #[arg(value_parser = ["android", "ios", "harmony"])]
+        /// Platform: android, ios, harmony, or aurora
+        #[arg(value_parser = ["android", "ios", "harmony", "aurora"])]
         platform: String,
 
-        /// Package name (Android), bundle ID (iOS), or bundle name (HarmonyOS)
+        /// Package/application ID (Android/Aurora), bundle ID (iOS), or bundle name (HarmonyOS)
         package: String,
 
         /// Platform permission name
@@ -1024,25 +1032,25 @@ pub enum Commands {
         #[arg(long)]
         simulator: Option<String>,
 
-        /// Android or HarmonyOS device serial
+        /// Android/HarmonyOS serial or Aurora registry ID
         #[arg(long)]
         device: Option<String>,
     },
 
     /// Reset all runtime permissions for a package
     PermissionReset {
-        /// Platform: android, ios, or harmony
-        #[arg(value_parser = ["android", "ios", "harmony"])]
+        /// Platform: android, ios, harmony, or aurora
+        #[arg(value_parser = ["android", "ios", "harmony", "aurora"])]
         platform: String,
 
-        /// Package name (Android), bundle ID (iOS), or bundle name (HarmonyOS)
+        /// Package/application ID (Android/Aurora), bundle ID (iOS), or bundle name (HarmonyOS)
         package: String,
 
         /// iOS Simulator name
         #[arg(long)]
         simulator: Option<String>,
 
-        /// Android or HarmonyOS device serial
+        /// Android/HarmonyOS serial or Aurora registry ID
         #[arg(long)]
         device: Option<String>,
     },
@@ -1488,11 +1496,41 @@ pub enum Commands {
         command: ConfigCommands,
     },
 
+    /// Aurora status, readiness and full permission operations through audb ^0.3.0
+    Aurora {
+        #[arg(long)]
+        device: Option<String>,
+        #[command(subcommand)]
+        command: AuroraCommands,
+    },
+
     /// REPL supervisor — long-lived JSON-RPC stdio loop hosting interactive
     /// PTY sessions. Used by the TypeScript REPL plugin; not intended for
     /// direct human use. Wire protocol is documented in
     /// cli/src/plugins/repl/bridge.rs.
     ReplSupervisor,
+}
+
+#[derive(Subcommand)]
+pub enum AuroraCommands {
+    Status,
+    Doctor,
+    Capabilities,
+    /// audb permission list/grant/revoke/reset/prompt, including --all-requested
+    Permission {
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+}
+impl AuroraCommands {
+    pub fn into_audb_args(self) -> Vec<String> {
+        match self {
+            Self::Status => vec!["status".into()],
+            Self::Doctor => vec!["doctor".into()],
+            Self::Capabilities => vec!["capabilities".into()],
+            Self::Permission { args } => std::iter::once("permission".into()).chain(args).collect(),
+        }
+    }
 }
 
 // -- Flow subcommands ---------------------------------------------------------

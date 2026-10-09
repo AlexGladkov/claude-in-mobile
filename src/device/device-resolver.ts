@@ -52,8 +52,8 @@ export interface ResolvedDevice {
  * Resolve a deviceId (with optional platform hint) to a Device.
  *
  * Match strategy (preserves legacy ordering):
- *   1. Exact id match across all platforms.
- *   2. If a platform hint is given and (1) failed, pick any booted device
+ *   1. Exact id match across all platforms; Aurora hints require an Aurora device.
+ *   2. For legacy platforms other than Aurora, if (1) failed, pick any booted device
  *      on that platform (state ∈ {device, booted, connected}).
  *   3. If nothing matched and the relevant adapter errored structurally,
  *      surface that error -- "Device not found" is misleading when the
@@ -69,9 +69,9 @@ export function resolveDevice(
 ): ResolvedDevice {
   const { devices, errors } = listing;
 
-  let device = devices.find((d) => d.id === deviceId);
+  let device = devices.find((d) => d.id === deviceId && (platform !== "aurora" || d.platform === "aurora"));
 
-  if (!device && platform) {
+  if (!device && platform && platform !== "aurora") {
     device = devices.find(
       (d) =>
         d.platform === platform &&

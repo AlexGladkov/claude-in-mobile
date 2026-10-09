@@ -8,7 +8,7 @@ import { AuroraClient } from "./client.js";
 /**
  * Security regression tests for issue #40 — host-side OS Command Injection (CWE-78).
  *
- * Strategy: install a fake `audb` shell script that always exits 0 in a tmp dir,
+ * Strategy: install a fake `audb` with the versioned JSON contract in a tmp dir,
  * then prepend that dir to PATH so `execFileSync("audb", ...)` resolves to the fake.
  * Invoke AuroraClient methods with payloads that would trigger host-side RCE under the old
  * `execSync(string)` implementation. Assert that the side-effect (touch on host filesystem)
@@ -18,7 +18,7 @@ import { AuroraClient } from "./client.js";
  * shim mechanism isn't portable. The vulnerability and fix are Unix-shell-specific.
  *
  * NOTE: Aurora client resolves `audb` by name from PATH (no resolver module / env-var
- * override), so we use the PATH-prepend strategy. The fake audb must precede the real one
+ * fallback), so we use the PATH-prepend strategy. The fake audb must precede the real one
  * (if any) in PATH.
  */
 
@@ -35,9 +35,14 @@ describeUnix("AuroraClient — host-side injection regression (issue #40)", () =
     const fakeAudb = join(workDir, "audb");
     proofFile = join(workDir, "RCE_PROOF");
 
-    // Fake audb: exit 0, ignore args. Real audb would also exit 0 for many sub-commands;
-    // we only care about host-side side-effects here.
-    writeFileSync(fakeAudb, "#!/bin/sh\nexit 0\n");
+    // Successful JSON responses let each payload reach the argv boundary.
+    writeFileSync(fakeAudb, `#!/usr/bin/python3
+import sys,json
+if sys.argv[1:] == ["--version"]:
+ print("audb 0.3.0");sys.exit()
+a=sys.argv[1:]; d=a[a.index("--device")+1] if "--device" in a else None
+print(json.dumps({"schemaVersion":1,"ok":True,"deviceId":d,"data":{"id":"phone","output":"ok"}}))
+`);
     chmodSync(fakeAudb, 0o755);
 
     savedPath = process.env.PATH;
